@@ -28,7 +28,7 @@ foldl f acc (x::xs) = foldl f (f acc x) xs
 fun foldl (f : a -> b -> a) (acc : a) (xs : [b]) : a =
   match xs with
   | [] -> acc
-  | (x::xs') -> foldl f (f acc x) xs'
+  | (x::xs) -> foldl f (f acc x) xs
 
 fun foldl' : (a -> b -> a) -> a -> [b] -> a
   | foldl' f !acc [] = acc
@@ -50,6 +50,10 @@ filter _ [] = []
 filter p (x::xs)
   | p x = x :: filter p xs
   | otherwise = filter p xs
+
+@pub
+fun filter (p : a -> Bool) (xs : [a]) : [a] =
+  foldr (\x acc -> if p x then x :: acc else acc) [] xs
 
 @pub
 concat : [[a]] -> [a]

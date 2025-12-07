@@ -1,62 +1,13 @@
 @pub
 @derive(Debug, PartialEq)
-record Stream m a forall s. { 
-  state :: s, 
-  step :: s -> m (Step s a),
-}
+codata Stream a =
+  | Nil  : Stream m a
+  | (::) : a -> m (Stream m a) -> Stream m a
 
 @pub
-@derive(Debug, PartialEq)
-data Step s a = Yield a s | Skip s | Done
-
-@pub
-map : (a -> b) -> Stream m a -> Stream m b
-map f (Stream s0 stp) = Stream s0 \s -> do
-  r <- stp s
-  pure match r with:
-    Yield a s' -> Yield (f a) s'
-    Skip    s' -> Skip s'
-    Done       -> Done
-
-@pub
-filter : (a -> Bool) -> Stream m a -> Stream m a
-filter p (Stream s0 stp) = Stream s0 \s -> do
-  r <- stp s
-  pure match r with:
-    Yield a s' -> if p a then Yield a s' else Skip s'
-    Skip    s' -> Skip s'
-    Done       -> Done
-
-@pub
-foldM : (a -> b -> m a) -> a -> Stream m b -> m a
-foldM f acc (Stream s0 stp) = go acc s0
-  where
-    go acc s = do
-      r <- stp s
-      match r with:
-        Yield b s' -> do
-          acc' <- f acc b
-          go acc' s''
-        Skip s' -> go acc s''
-        Done     -> pure acc
-
-@pub
-toListM : Stream m a -> m [a]
-toListM (Stream s0 stp) = go s0
-  where
-    go s = do
-      r <- stp s
-      match r with:
-        Yield a s' -> do
-          as <- go s'
-          pure (a :: as)
-        Skip s' -> go s'
-        Done     -> pure []
-
-@pub
-class ToStream t where
+class ToStream d t where
   type Elem t
-  toStream :: forall m. Monad m => t -> Stream m (Elem t)
+  toStream :: Monad m => d -> Stream (Elem t)
 
 @pub
 class FromStream t where
