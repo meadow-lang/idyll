@@ -9,9 +9,9 @@ import qualified Std.Collections.Array as Array
 @pub
 @derive(Debug, PartialEq, Eq)
 data Tree a
-  = Balanced !(Array (Tree a))
-  | Unbalanced !(Array (Tree a)) !(PrimArray Int)
-  | Leaf !(Array a)
+  = Balanced (Array (Tree a))
+  | Unbalanced (Array (Tree a)) (PrimArray Int)
+  | Leaf (Array a)
 
 Shift = Int
 
@@ -19,4 +19,4 @@ Shift = Int
 @derive(Debug, PartialEq, Eq)
 data Vector a
   = Empty 
-  | Root !Int !Shift !(Tree a)
+  | Root Int Shift (Tree a)

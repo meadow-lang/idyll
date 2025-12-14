@@ -18,7 +18,7 @@ $nonzero    = [1-9]
 $digit      = [0-9]
 $bindig     = [01]
 $octdig     = [0-7]
-$hexdig     = [0-9A-Fa-f]      
+$hexdig     = [0-9A-Fa-f]  
 $alpha      = [a-zA-Z]
 $lower      = [_a-z]
 $upper      = [A-Z]
@@ -60,7 +60,7 @@ miniml :-
 
   $tab                           { \p bs -> Token TokenKindTab (makeSpan p bs) }
   $whitespace+                   { \p bs -> Token TokenKindWhitespace (makeSpan p bs) }
-  "--".*                         { \p bs -> Token TokenKindComment (makeSpan p bs) }
+  "--".*                         ;
   $newline                       { \p bs -> Token TokenKindNewline (makeSpan p bs) }
 
   "("                            { \p bs -> Token TokenKindLParen (makeSpan p bs) }

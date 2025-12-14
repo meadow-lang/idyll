@@ -19,7 +19,6 @@ data TokenKind
   | TokenKindTab
   | TokenKindNewline
   | TokenKindWhitespace
-  | TokenKindComment
   | TokenKindUppercaseIdent
   | TokenKindLowercaseIdent
   | TokenKindOpIdent
@@ -54,7 +53,6 @@ isTrivia = go . tokenKind
     go TokenKindWhitespace = True
     go TokenKindNewline = True
     go TokenKindTab = True
-    go TokenKindComment = True
     go _ = False
 
 isSpace :: Token -> Bool
@@ -71,9 +69,7 @@ isKeyword t src = case tokenKind t of
   TokenKindLowercaseIdent -> go $ tokenText t src
   _ -> False
   where
-    go "module" = True
-    go "import" = True
-    go "mutual" = True
+    go "use" = True
     go "let" = True
     go "in" = True
     go "where" = True
@@ -85,9 +81,6 @@ isKeyword t src = case tokenKind t of
     go "record" = True
     go "data" = True
     go "type" = True
-    go "class" = True
-    go "instance" = True
-    go "do" = True
     go _ = False
 
 isLayoutKeyword :: Token -> ByteString -> Bool
@@ -97,6 +90,5 @@ isLayoutKeyword t src = case tokenKind t of
   where
     go "let" = True
     go "where" = True
-    go "do" = True
     go "with" = True
     go _ = False

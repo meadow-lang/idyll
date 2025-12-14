@@ -4,8 +4,8 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 
 data Span = Span
-  { start :: {-# UNPACK #-} !Int,
-    end :: {-# UNPACK #-} !Int
+  { spanStart :: {-# UNPACK #-} !Int,
+    spanEnd :: {-# UNPACK #-} !Int
   }
   deriving (Show, Eq, Ord)
 
