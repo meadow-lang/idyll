@@ -1,0 +1,15 @@
+data Vec n a where
+  Nil : Vec 0 a
+  (::) : a -> Vec n a -> Vec (n + 1) a
+
+map : (a -> b) -> Vec n a -> Vec n b
+map _ [] = []
+map f (x:xs) = f x : map f xs
+
+zip : Vec n a -> Vec n b -> Vec n (a, b)
+zip [] [] = []
+zip (x:xs) (y:ys) = (x, y) : zip xs ys
+
+zipWith : (a -> b -> c) -> Vec n a -> Vec n b -> Vec n c
+zipWith _ [] [] = []
+zipWith f (x:xs) (y:ys) = f x y : zipWith f xs ys
