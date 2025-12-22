@@ -1,5 +1,13 @@
 @pub
 @derive(Debug, PartialEq)
 codata Stream a where
+  (::) : a -> Stream a -> Stream a
+
+@pub
+@derive(Debug, PartialEq)
+data Stream a where
+  (::) : a -> Lazy (Stream a) -> Stream a
+
+codata Stream a where
   Head : Stream a -> a
   Tail : Stream a -> Stream a
