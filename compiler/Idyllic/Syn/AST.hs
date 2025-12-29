@@ -90,6 +90,7 @@ data Term
   | Match STerm [SAlt]
   | Infix STerm Ident STerm
   | Neg STerm
+  | Cons Ident STerm
   | Pi [Param] STerm -- (x : A) -> B, {x : A} -> B, A -> B
   | Ann STerm STerm -- e : A  (type annotation)
   | Hole (Maybe Ident) -- _ or ?name for user holes
@@ -106,6 +107,7 @@ instance Plated STerm where
   plate f (SynNode (Match scrut alts) s) = SynNode <$> (Match <$> f scrut <*> traverse (traverseAlt f) alts) <*> pure s
   plate f (SynNode (Infix left op right) s) = SynNode <$> (Infix <$> f left <*> pure op <*> f right) <*> pure s
   plate f (SynNode (Neg t) s) = (SynNode . Neg <$> f t) <*> pure s
+  plate f (SynNode (Cons con t) s) = (SynNode . Cons con <$> f t) <*> pure s
   plate f (SynNode (Pi params body) s) = (SynNode . Pi params <$> f body) <*> pure s
   plate f (SynNode (Ann t ann) s) = SynNode <$> (Ann <$> f t <*> f ann) <*> pure s
   plate _ (SynNode (Hole mi) s) = pure (SynNode (Hole mi) s)
