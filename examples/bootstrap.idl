@@ -43,7 +43,8 @@ sum = go xs 0
     go (x :: xs) acc = go xs (acc + x)
 
 -- match expressions
-map (f : a -> b) (xs : [a]) : [b] =
+map (a -> b) -> [a] -> [b]
+map f xs =
   match xs with
     [] -> []
     x :: xs -> f x :: map f xs
