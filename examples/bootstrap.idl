@@ -1,0 +1,125 @@
+-- function defs
+map : (a -> b) -> [a] -> [b]
+map _ [] = []
+map f (x :: xs) = f x :: map f xs
+
+-- where bindings
+fib : Int -> Int
+fib = go 0 1
+  where
+    go a b 0 = a
+    go a b n = go b (a + b) (n - 1)
+
+-- guards
+fib : Int -> Int
+fib n | n <= 1 = n
+fib n = fib (n - 1) + fib (n - 2)
+
+-- let expressions
+add x y = let sum = x + y in sum
+
+-- let fun expressions
+fib (n : Int) : Int =
+  let go a b i =
+    if i = 0 then a else go b (a + b) (i - 1)
+  in go 0 1 n
+
+sum : [Int] -> Int
+sum = foldl (+) 0
+
+foldl : (b -> a -> b) -> b -> [a] -> b
+foldl _ acc [] = acc
+foldl f acc (x::xs) = foldl f (f acc x) xs
+
+foldr : (a -> b -> b) -> b -> [a] -> b
+foldr _ acc [] = acc
+foldr f acc (x::xs) = f x (foldr f acc xs)
+
+sum : [Int] -> Int
+sum = go xs 0
+  where
+    go : [Int] -> Int -> Int
+    go [] acc = acc
+    go (x :: xs) acc = go xs (acc + x)
+
+-- match expressions
+map (f : a -> b) (xs : [a]) : [b] =
+  match xs with
+    [] -> []
+    x :: xs -> f x :: map f xs
+
+-- if expressions
+abs (x : Int) : Int =
+  if x < 0 then -x else x
+
+-- record defs
+record Person {
+  name : String,
+  age : Int,
+}
+
+-- layout-sensitive records
+record Point where
+  x : Float
+  y : Float
+
+-- data defs
+data Option a = None | Some a
+
+data List a = [] | a :: List a
+
+-- layout-sensitive data declaration
+data List a where
+  [] : List a
+  (::) : a -> List a -> List a
+
+-- record access
+alice = { name = "Alice", age = 30 }
+aliceName = alice.name
+
+-- record update
+olderAlice = { alice with age = alice.age + 1 }
+
+-- pattern matching with records
+describePerson : Person -> String
+describePerson (Person { name, age }) = name ++ " is " ++ Int.toString age ++ " years old"
+
+-- self-updating thunks
+record Thunk a where
+  force : ref (() -> a)
+
+delay : (() -> a) -> Thunk a
+delay f = Thunk { force = \() -> let res = f () in force := \() -> res; res }
+
+thunkedValue : Thunk Int = delay (expensiveComputation ())
+
+-- streams with thunks
+data Stream a where
+  (::) : a -> Thunk (Stream a) -> Stream a
+
+-- Operators
++ -- addition on a Int, Float, Integer, Rational
+- -- subtraction on a Int, Float, Integer, Rational
+* -- multiplication on a Int, Float, Integer, Rational
+/ -- division on a Int, Float, Integer, Rational
+% -- modulo on Int, Integer, Rational
+^ -- exponentiation on Int, Integer, Rational
+
+++ -- String concat
+. -- function composition
+|> -- forward pipe operator
+; -- sugar for let-binding with no name
+! -- dereference a ref
+
+-- Literals
+"hello" -- String
+123 -- Int
+123.45 -- Float
+True, False -- Bool
+'a' -- Char
+[..] -- range
+[1, 2, 3] -- list
+#[1, 2, 3] -- vector
+$[1, 2, 3] -- array
+(1, "a", True) -- tuple
+{ name = "Alice", age = 30 } -- record instance
