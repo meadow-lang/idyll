@@ -25,21 +25,6 @@ foldl f acc [] = acc
 foldl f acc (x::xs) = foldl f (f acc x) xs
 
 @pub
-fun foldl (f : a -> b -> a) (acc : a) (xs : [b]) : a =
-  match xs with
-  | [] -> acc
-  | (x::xs) -> foldl f (f acc x) xs
-
-fun foldl' : (a -> b -> a) -> a -> [b] -> a
-  | foldl' f !acc [] = acc
-  | foldl' f !acc (x::xs) = foldl' f (f acc x) xs
-
-@pub
-foldl' : (a -> b -> a) -> a -> [b] -> a
-foldl' f !acc [] = acc
-foldl' f !acc (x::xs) = foldl' f (f acc x) xs
-
-@pub
 foldr : (a -> b -> b) -> b -> [a] -> b
 foldr f acc [] = acc
 foldr f acc (x::xs) = f x (foldr f acc xs)
@@ -52,8 +37,8 @@ filter p (x::xs)
   | otherwise = filter p xs
 
 @pub
-fun filter (p : a -> Bool) (xs : [a]) : [a] =
-  foldr (\x acc -> if p x then x :: acc else acc) [] xs
+filter : (a -> Bool) -> [a] -> [a]
+filter p = foldr (\x acc -> if p x then x :: acc else acc) []
 
 @pub
 concat : [[a]] -> [a]
@@ -62,7 +47,7 @@ concat (x::xs) = x ++ concat xs
 
 @pub
 concatMap : (a -> [b]) -> [a] -> [b] 
-concatMap = concat >>> map
+concatMap = concat . map
 
 @pub
 (++) : [a] -> [a] -> [a]
@@ -121,12 +106,16 @@ elem : a -> [a] -> Bool
 elem x = foldr (\y acc -> x == y || acc) False
 
 @pub
+fun elem (x : a) (xs : [a]) : Bool =
+  foldr (\y acc -> x == y || acc) False xs
+
+@pub
 sum : Num a => [a] -> a 
-sum = foldl' (+) 0
+sum = foldl (+) 0
 
 @pub
 product : Num a => [a] -> a
-product = foldl' (*) 1
+product = foldl (*) 1
 
 @pub
 take : Nat -> [a] -> [a]
@@ -144,7 +133,7 @@ take n ls
 fun take : Nat -> [a] -> [a]
   | take n ls if n < 0 = unsafeTake n ls
   | take _ _ = []
-  where:
+  where
     @inline(never)
     fun unsafeTake : Nat -> [a] -> [a] =
       | unsafeTake !_ [] = []
@@ -174,7 +163,7 @@ takeWhile _ _ = []
 @pub
 dropWhile : (a -> Bool) -> [a] -> [a]
 dropWhile f [] = []
-dropWhile f (x::xs) if f x = dropWhile f xs
+dropWhile f (x::xs) | f x = dropWhile f xs
 dropWhile _ (x::xs) = x :: xs
 
 @pub
@@ -189,6 +178,19 @@ splitAt n ls
     splitAt' m (x::xs) = (x::xs', xs'')
       where
         (xs', xs'') = splitAt' (m - 1) xs
+
+fun splitAt : Nat -> [a] -> ([a], [a]) =
+  | splitAt n ls if n <= 0 = ([], ls)
+  | splitAt n ls = splitAt' n ls
+  where
+    fun splitAt' : Int -> [a] -> ([a], [a]) =
+      | splitAt' _ [] = ([], [])
+      | splitAt' 1 (x::xs) = ([x], xs)
+      | splitAt' m (x::xs) = (x::xs', xs'')
+        where
+          def (xs', xs'') = splitAt' (m - 1) xs
+        end
+  end
 
 @pub
 span : (a -> bool) -> [a] -> ([a], [a])
