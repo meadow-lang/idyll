@@ -91,7 +91,7 @@ runDefaultDriver = do
       liftIO $ runPipelineIO debug (InputModeFile $ T.pack fp) src
     DriverModeInteractive -> do
       liftIO $ putStrLn "Welcome to the Idyll REPL!"
-      env' <- liftIO $ mkPipelineEnv True InputModeInteractive B.empty
+      env' <- liftIO $ newPipelineEnv True InputModeInteractive B.empty
       liftIO $ runInputT settings (repl env')
 
 runDriver :: DriverEnv -> Driver a -> IO a

@@ -1,1 +1,0 @@
-module Idyllic.Syn.Green where

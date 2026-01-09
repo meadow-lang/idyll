@@ -22,5 +22,5 @@ pipelineMain = do
 
 runPipelineIO :: Bool -> InputMode -> ByteString -> IO ()
 runPipelineIO debug mode src = do
-  env <- mkPipelineEnv debug mode src
+  env <- newPipelineEnv debug mode src
   runReaderT pipelineMain env

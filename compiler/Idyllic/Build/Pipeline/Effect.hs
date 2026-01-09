@@ -1,7 +1,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
-module Idyllic.Build.Pipeline.Effect (InputMode (..), PipelineEnv (..), mkPipelineEnv, defaultPipelineEnv, Pipeline) where
+module Idyllic.Build.Pipeline.Effect (InputMode (..), PipelineEnv (..), newPipelineEnv, defaultPipelineEnv, Pipeline) where
 
 import Control.Concurrent.STM (TVar, newTVarIO)
 import Control.Monad.Reader (ReaderT)
@@ -24,8 +24,8 @@ data PipelineEnv = PipelineEnv
   }
   deriving (Eq)
 
-mkPipelineEnv :: Bool -> InputMode -> ByteString -> IO PipelineEnv
-mkPipelineEnv debug mode src = do
+newPipelineEnv :: Bool -> InputMode -> ByteString -> IO PipelineEnv
+newPipelineEnv debug mode src = do
   errVar <- newTVarIO []
   pure
     PipelineEnv
