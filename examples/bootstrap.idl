@@ -125,15 +125,6 @@ $[1, 2, 3] -- array
 (1, "a", True) -- tuple
 { name = "Alice", age = 30 } -- record instance
 
--- dependent types
-data Vect (n : Nat) a where
-  Nil : Vect 0 a
-  (::) : a -> Vect n a -> Vect (n + 1) a
-
--- dependent functions
-head : Vect (n + 1) a -> a
-head (x :: xs) = x
-
 -- row polymorphism
 foo : { x : Int | r } -> Int 
 foo rec = rec.x + 1
