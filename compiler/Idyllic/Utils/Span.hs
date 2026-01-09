@@ -1,13 +1,16 @@
+{-# LANGUAGE DeriveDataTypeable #-}
+
 module Idyllic.Utils.Span (Span (..), toPair, slice, Spanned (..)) where
 
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
+import Data.Data
 
 data Span = Span
   { spanStart :: {-# UNPACK #-} !Int,
     spanEnd :: {-# UNPACK #-} !Int
   }
-  deriving (Show, Eq, Ord)
+  deriving (Show, Eq, Ord, Data)
 
 toPair :: Span -> (Int, Int)
 toPair (Span s e) = (s, e)
