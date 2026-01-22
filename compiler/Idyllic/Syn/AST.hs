@@ -1,185 +1,180 @@
-{-# LANGUAGE DeriveDataTypeable #-}
+module Idyllic.Syn.AST
+  ( Prog,
+    Module (..),
+    LDecl,
+    Decl (..),
+    LRecordDef,
+    RecordDef (..),
+    LClassDef,
+    ClassDef (..),
+    LClasLDecl,
+    ClasLDecl (..),
+    LInstanceDecl,
+    InstanceDecl (..),
+    LSig,
+    Sig (..),
+    Rhs (..),
+    LExpr,
+    Expr (..),
+    LBind,
+    Bind (..),
+    LAlt,
+    Alt (..),
+    LGuard,
+    Guard (..),
+    LAnn,
+    Ann (..),
+    LPat,
+    Pat (..),
+    Ident (..),
+    Lit (..),
+  )
+where
 
-module Idyllic.Syn.AST where
-
-import Control.Lens (Plated (..))
-import Control.Lens.Extras (uniplate)
-import Data.Data (Data)
 import Data.Text (Text)
-import Idyllic.Utils.Span (Span)
+import Idyllic.Utils.Located (Located)
 
-data SynNode a = SynNode
-  { synNodeKind :: a,
-    synNodeSpan :: !Span
-  }
-  deriving (Show, Eq, Ord, Data)
+type Prog = Located Module
 
 data Module = Module
-  { moduleName :: Ident,
-    moduleDecls :: [SDecl]
+  { moduleName :: !Text,
+    moduleDecls :: [LDecl]
   }
-  deriving (Show, Eq, Ord, Data)
+  deriving (Show, Eq)
 
-type SDecl = SynNode Decl
+type LDecl = Located Decl
 
 data Decl
-  = DeclClassDecl SWhereDecl
-  | DeclClassDef SClassDef
-  | DeclInstanceDecl SInstancDecl
-  | DeclRecordDef SRecordDef
-  deriving (Show, Eq, Ord, Data)
+  = DeclImport ![Ident]
+  | DeclExport !Ident
+  | DeclClasLDecl LClasLDecl
+  | DeclClassDef LClassDef
+  | DeclInstanceDecl LInstanceDecl
+  | DeclRecordDef LRecordDef
+  deriving (Show, Eq)
 
-type SRecordDef = SynNode RecordDef
+type LRecordDef = Located RecordDef
 
 data RecordDef = RecordDef
   { recordName :: !Ident,
-    recordTypeParams :: [Ident],
-    recordFields :: [(Ident, STerm)]
+    recordTypeParams :: ![Ident],
+    recordFields :: [(Ident, LAnn)]
   }
-  deriving (Show, Eq, Ord, Data)
+  deriving (Show, Eq)
 
-type SClassDef = SynNode ClassDef
+type LClassDef = Located ClassDef
 
 data ClassDef
   = ClassDef
   { className :: !Ident,
-    classSuperclasses :: [Ident],
-    classTypeParams :: [Ident],
-    classDecls :: [SClassDecl]
+    classSuperclasses :: ![Ident],
+    classTypeParams :: ![Ident],
+    clasLDecls :: [LClasLDecl]
   }
-  deriving (Show, Eq, Ord, Data)
+  deriving (Show, Eq)
 
-type SClassDecl = SynNode ClassDecl
+type LClasLDecl = Located ClasLDecl
 
-data ClassDecl
-  = ClassDeclSig SSig
-  | ClassDeclBind FunBind
-  deriving (Show, Eq, Ord, Data)
+data ClasLDecl
+  = ClasLDeclSig LSig
+  | ClasLDeclBind LBind
+  deriving (Show, Eq)
 
-type SWhereDecl = SynNode WhereDecl
-
-data WhereDecl = WhereDecl
-  { whereDeclSig :: SSig,
-    whereDeclBind :: SBind
-  }
-  deriving (Show, Eq, Ord, Data)
-
-type SInstancDecl = SynNode InstanceDecl
+type LInstanceDecl = Located InstanceDecl
 
 data InstanceDecl = InstanceDecl
   { instanceClass :: !Ident,
-    instanceTypeParams :: [Ident],
-    instanceAnn :: STerm,
-    instanceDecls :: [SWhereDecl]
+    instanceTypeParams :: ![Ident],
+    instanceAnn :: LAnn,
+    instanceDecls :: [LClasLDecl]
   }
-  deriving (Show, Eq, Ord, Data)
+  deriving (Show, Eq)
 
-type SSig = SynNode Sig
+type LSig = Located Sig
 
 data Sig = Sig
-  { sigNames :: [Ident],
-    sigAnn :: STerm
+  { sigNames :: ![Ident],
+    sigTypeParams :: ![Ident],
+    sigAnn :: LAnn
   }
-  deriving (Show, Eq, Ord, Data)
+  deriving (Show, Eq)
 
-type STerm = SynNode Term
+data Rhs = RhLExpr LExpr | RhLGuard [LGuard]
+  deriving (Show, Eq)
 
-data Term
-  = Lit Lit
-  | Var Ident
-  | Let SBind STerm
-  | Lam [SPat] STerm
-  | App STerm [STerm]
-  | If STerm STerm STerm
-  | Match STerm [SAlt]
-  | Infix STerm Ident STerm
-  | Neg STerm
-  | Cons Ident STerm
-  | Record [(Ident, STerm)]
-  | FieldAccess STerm Ident
-  | RecordUpdate STerm [(Ident, STerm)]
-  | List [STerm]
-  | Vec [STerm]
-  | Tuple [STerm]
-  | Pi [Param] STerm -- (x : A) -> B, {x : A} -> B, A -> B
-  | Ann STerm STerm -- e : A  (type annotation)
-  | Hole (Maybe Ident) -- _ or ?name for user holes
-  | Type
+type LExpr = Located Expr
+
+data Expr
+  = Lit !Lit
+  | Var !Ident
+  | App LExpr LExpr
+  | Lam [LPat] LExpr
+  | Let [LBind] LExpr
+  | Do [LExpr]
+  | Neg LExpr
+  | Binary !Ident LExpr LExpr
+  | If LExpr LExpr LExpr
+  | Match LExpr [(LPat, LExpr)]
+  | List [LExpr]
+  | Tuple [LExpr]
+  | Cons Ident [LExpr]
+  | Record (Maybe Ident) [(Ident, LExpr)]
+  | RecordAccess LExpr Ident
+  | RecordUpdate LExpr [(Ident, LExpr)]
   | Unit
-  deriving (Show, Eq, Ord, Data)
+  deriving (Show, Eq)
 
-instance Plated STerm where
-  plate = uniplate
-
-data Param = Param
-  { paramIdent :: Ident,
-    paramType :: STerm,
-    paramImplicit :: Bool
-  }
-  deriving (Show, Eq, Ord, Data)
-
-type SBind = SynNode Bind
+type LBind = Located Bind
 
 data Bind
-  = BindPat PatBind
-  | BindFun FunBind
-  deriving (Show, Eq, Ord, Data)
+  = BindPat !LPat Rhs [LClasLDecl]
+  | BindFun !Ident [LAlt] [LClasLDecl]
+  deriving (Show, Eq)
 
-data Rhs = RhsTerm STerm | RhsGuard [SGuard]
-  deriving (Show, Eq, Ord, Data)
-
-data PatBind = PatBind
-  { patBindPat :: SPat,
-    patBindBody :: Rhs,
-    patBindWhereDecls :: [SWhereDecl]
-  }
-  deriving (Show, Eq, Ord, Data)
-
-data FunBind = FunBind
-  { funName :: !Ident,
-    funAlts :: [SAlt],
-    funWhereDecls :: [SWhereDecl]
-  }
-  deriving (Show, Eq, Ord, Data)
-
-type SAlt = SynNode Alt
+type LAlt = Located Alt
 
 data Alt = Alt
-  { altPat :: SPat,
-    altBody :: Rhs
+  { altPats :: [LPat],
+    altExpr :: Rhs
   }
-  deriving (Show, Eq, Ord, Data)
+  deriving (Show, Eq)
 
-type SGuard = SynNode Guard
+type LGuard = Located Guard
 
 data Guard = Guard
-  { guardPat :: SPat,
-    guardBody :: STerm
+  { guardPat :: LPat,
+    guardExpr :: LExpr
   }
-  deriving (Show, Eq, Ord, Data)
+  deriving (Show, Eq)
 
-type SPat = SynNode Pat
+type LAnn = Located Ann
+
+data Ann
+  = AnnVar !Ident
+  | AnnIdent !Ident
+  | AnnFun !LAnn !LAnn
+  | AnnList !LAnn
+  | AnnTuple [LAnn]
+  | AnnUnit
+  deriving (Show, Eq)
+
+type LPat = Located Pat
 
 data Pat
   = PatWildcard
-  | PatLit Lit
-  | PatIdent Ident
-  | PatCons Ident [SPat]
-  | PatAs Ident SPat
-  | PatList [SPat]
-  | PatTuple [SPat]
+  | PatLit !Lit
+  | PatIdent !Ident
+  | PatCons !Ident [LPat]
+  | PatAs !Ident LPat
+  | PatList [LPat]
+  | PatTuple [LPat]
   | PatUnit
-  deriving (Show, Eq, Ord, Data)
+  deriving (Show, Eq)
 
-instance Plated SPat where
-  plate = uniplate
-
-type Ident = SynNode Text
-
-type SLit = SynNode Lit
+newtype Ident = Ident (Located Text) deriving (Show, Eq, Ord)
 
 data Lit
-  = LitInt
-  | LitString
-  | LitChar
-  deriving (Show, Eq, Ord, Data)
+  = Int Integer
+  | Bool !Bool
+  | String !Text
+  deriving (Show, Eq)

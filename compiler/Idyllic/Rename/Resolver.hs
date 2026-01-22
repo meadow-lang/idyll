@@ -4,7 +4,6 @@ import Control.Monad.State (MonadState (get, put), State, runState)
 import Data.Text (Text)
 import Idyllic.Rename.HIR
 import Idyllic.Rename.Symbol (Symbol (Symbol))
-import Idyllic.Syn.AST (SynNode (..))
 import qualified Idyllic.Syn.AST as AST
 
 -- newtype RenameError = REUnboundName Text deriving (Show, Eq)
