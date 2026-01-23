@@ -7,7 +7,7 @@ module Idyllic.Syn.AST
     RecordDef (..),
     LClassDef,
     ClassDef (..),
-    LClasLDecl,
+    LClassDecl,
     ClasLDecl (..),
     LInstanceDecl,
     InstanceDecl (..),
@@ -47,7 +47,7 @@ type LDecl = Located Decl
 data Decl
   = DeclImport ![Ident]
   | DeclExport !Ident
-  | DeclClasLDecl LClasLDecl
+  | DecLClassDecl LClassDecl
   | DeclClassDef LClassDef
   | DeclInstanceDecl LInstanceDecl
   | DeclRecordDef LRecordDef
@@ -69,11 +69,11 @@ data ClassDef
   { className :: !Ident,
     classSuperclasses :: ![Ident],
     classTypeParams :: ![Ident],
-    clasLDecls :: [LClasLDecl]
+    clasLDecls :: [LClassDecl]
   }
   deriving (Show, Eq)
 
-type LClasLDecl = Located ClasLDecl
+type LClassDecl = Located ClasLDecl
 
 data ClasLDecl
   = ClasLDeclSig LSig
@@ -86,7 +86,7 @@ data InstanceDecl = InstanceDecl
   { instanceClass :: !Ident,
     instanceTypeParams :: ![Ident],
     instanceAnn :: LAnn,
-    instanceDecls :: [LClasLDecl]
+    instanceDecls :: [LClassDecl]
   }
   deriving (Show, Eq)
 
@@ -99,36 +99,36 @@ data Sig = Sig
   }
   deriving (Show, Eq)
 
-data Rhs = RhLExpr LExpr | RhLGuard [LGuard]
+data Rhs = RhsExpr LExpr | RhsGuard [LGuard]
   deriving (Show, Eq)
 
 type LExpr = Located Expr
 
 data Expr
-  = Lit !Lit
-  | Var !Ident
-  | App LExpr LExpr
-  | Lam [LPat] LExpr
-  | Let [LBind] LExpr
-  | Do [LExpr]
-  | Neg LExpr
-  | Binary !Ident LExpr LExpr
-  | If LExpr LExpr LExpr
-  | Match LExpr [(LPat, LExpr)]
-  | List [LExpr]
-  | Tuple [LExpr]
-  | Cons Ident [LExpr]
-  | Record (Maybe Ident) [(Ident, LExpr)]
-  | RecordAccess LExpr Ident
-  | RecordUpdate LExpr [(Ident, LExpr)]
-  | Unit
+  = ExprLit !Lit
+  | ExprVar !Ident
+  | ExprApp LExpr LExpr
+  | ExprLam [LPat] LExpr
+  | ExprLet [LBind] LExpr
+  | ExprDo [LExpr]
+  | ExprNeg LExpr
+  | ExprBinary !Ident LExpr LExpr
+  | ExprIf LExpr LExpr LExpr
+  | ExprMatch LExpr [(LPat, LExpr)]
+  | ExprList [LExpr]
+  | ExprTuple [LExpr]
+  | ExprCons Ident [LExpr]
+  | ExprRecord (Maybe Ident) [(Ident, LExpr)]
+  | ExprRecordAccess LExpr Ident
+  | ExprRecordUpdate LExpr [(Ident, LExpr)]
+  | ExprUnit
   deriving (Show, Eq)
 
 type LBind = Located Bind
 
 data Bind
-  = BindPat !LPat Rhs [LClasLDecl]
-  | BindFun !Ident [LAlt] [LClasLDecl]
+  = BindPat !LPat Rhs [LClassDecl]
+  | BindFun !Ident [LAlt] [LClassDecl]
   deriving (Show, Eq)
 
 type LAlt = Located Alt
