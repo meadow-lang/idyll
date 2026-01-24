@@ -4,12 +4,16 @@ data Vec n a where
 
 map : (a -> b) -> Vec n a -> Vec n b
 map _ [] = []
-map f (x:xs) = f x : map f xs
+map f (x::xs) = f x :: map f xs
 
 zip : Vec n a -> Vec n b -> Vec n (a, b)
 zip [] [] = []
-zip (x:xs) (y:ys) = (x, y) : zip xs ys
+zip (x::xs) (y::ys) = (x, y) :: zip xs ys
 
 zipWith : (a -> b -> c) -> Vec n a -> Vec n b -> Vec n c
 zipWith _ [] [] = []
-zipWith f (x:xs) (y:ys) = f x y : zipWith f xs ys
+zipWith f (x::xs) (y::ys) = f x y :: zipWith f xs ys
+
+append : Vec m a -> Vec n a -> Vec (m + n) a
+append [] ys = ys
+append (x::xs) ys = x :: append xs ys
