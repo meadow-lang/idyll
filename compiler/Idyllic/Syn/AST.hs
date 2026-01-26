@@ -14,16 +14,14 @@ module Idyllic.Syn.AST
     LSig,
     Sig (..),
     Rhs (..),
-    LExpr,
-    Expr (..),
+    LTerm,
+    Term (..),
     LBind,
     Bind (..),
     LAlt,
     Alt (..),
     LGuard,
     Guard (..),
-    LAnn,
-    Ann (..),
     LPat,
     Pat (..),
     Ident (..),
@@ -40,7 +38,7 @@ data Module = Module
   { moduleName :: !Text,
     moduleDecls :: [LDecl]
   }
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 
 type LDecl = Located Decl
 
@@ -51,16 +49,16 @@ data Decl
   | DeclClassDef LClassDef
   | DeclInstanceDecl LInstanceDecl
   | DeclRecordDef LRecordDef
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 
 type LRecordDef = Located RecordDef
 
 data RecordDef = RecordDef
   { recordName :: !Ident,
     recordTypeParams :: ![Ident],
-    recordFields :: [(Ident, LAnn)]
+    recordFields :: [(Ident, LTerm)]
   }
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 
 type LClassDef = Located ClassDef
 
@@ -71,92 +69,92 @@ data ClassDef
     classTypeParams :: ![Ident],
     clasLDecls :: [LClassDecl]
   }
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 
 type LClassDecl = Located ClasLDecl
 
 data ClasLDecl
   = ClasLDeclSig LSig
   | ClasLDeclBind LBind
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 
 type LInstanceDecl = Located InstanceDecl
 
 data InstanceDecl = InstanceDecl
   { instanceClass :: !Ident,
     instanceTypeParams :: ![Ident],
-    instanceAnn :: LAnn,
+    instanceAnn :: LTerm,
     instanceDecls :: [LClassDecl]
   }
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 
 type LSig = Located Sig
 
 data Sig = Sig
   { sigNames :: ![Ident],
     sigTypeParams :: ![Ident],
-    sigAnn :: LAnn
+    sigAnn :: LTerm
   }
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 
-data Rhs = RhsExpr LExpr | RhsGuard [LGuard]
-  deriving (Show, Eq)
+data Rhs = RhsTerm LTerm | RhsGuard [LGuard]
+  deriving (Show, Eq, Ord)
 
-type LExpr = Located Expr
+type LTerm = Located Term
 
-data Expr
-  = ExprLit !Lit
-  | ExprVar !Ident
-  | ExprApp LExpr LExpr
-  | ExprLam [LPat] LExpr
-  | ExprLet [LBind] LExpr
-  | ExprDo [LExpr]
-  | ExprNeg LExpr
-  | ExprBinary !Ident LExpr LExpr
-  | ExprIf LExpr LExpr LExpr
-  | ExprMatch LExpr [(LPat, LExpr)]
-  | ExprList [LExpr]
-  | ExprTuple [LExpr]
-  | ExprCons Ident [LExpr]
-  | ExprRecord (Maybe Ident) [(Ident, LExpr)]
-  | ExprRecordAccess LExpr Ident
-  | ExprRecordUpdate LExpr [(Ident, LExpr)]
-  | ExprUnit
-  deriving (Show, Eq)
+data Term
+  = TermLit !Lit
+  | TermVar !Ident
+  | TermApp LTerm LTerm
+  | TermLam [LPat] LTerm
+  | TermLet [LBind] LTerm
+  | TermDo [LTerm]
+  | TermNeg LTerm
+  | TermBinary !Ident LTerm LTerm
+  | TermIf LTerm LTerm LTerm
+  | TermMatch LTerm [(LPat, LTerm)]
+  | TermList [LTerm]
+  | TermTuple [LTerm]
+  | TermCons Ident [LTerm]
+  | TermRecord (Maybe Ident) [(Ident, LTerm)]
+  | TermRecordAccess LTerm Ident
+  | TermRecordUpdate LTerm [(Ident, LTerm)]
+  | TermUnit
+  | Pi [Param] LTerm -- (x : A) -> B, {x : A} -> B, A -> B
+  | Ann LTerm LTerm -- e : A  (type annotation)
+  | Hole (Maybe Ident) -- _ or ?name for user holes
+  | Type
+  deriving (Show, Eq, Ord)
+
+data Param = Param
+  { paramIdent :: Ident,
+    paramType :: LTerm,
+    paramImplicit :: Bool
+  }
+  deriving (Show, Eq, Ord)
 
 type LBind = Located Bind
 
 data Bind
   = BindPat !LPat Rhs [LClassDecl]
   | BindFun !Ident [LAlt] [LClassDecl]
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 
 type LAlt = Located Alt
 
 data Alt = Alt
   { altPats :: [LPat],
-    altExpr :: Rhs
+    altTerm :: Rhs
   }
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 
 type LGuard = Located Guard
 
 data Guard = Guard
   { guardPat :: LPat,
-    guardExpr :: LExpr
+    guardTerm :: LTerm
   }
-  deriving (Show, Eq)
-
-type LAnn = Located Ann
-
-data Ann
-  = AnnVar !Ident
-  | AnnIdent !Ident
-  | AnnFun !LAnn !LAnn
-  | AnnList !LAnn
-  | AnnTuple [LAnn]
-  | AnnUnit
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 
 type LPat = Located Pat
 
@@ -169,7 +167,7 @@ data Pat
   | PatList [LPat]
   | PatTuple [LPat]
   | PatUnit
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 
 newtype Ident = Ident (Located Text) deriving (Show, Eq, Ord)
 
@@ -177,4 +175,4 @@ data Lit
   = Int Integer
   | Bool !Bool
   | String !Text
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)

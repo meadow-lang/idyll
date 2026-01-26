@@ -6,9 +6,34 @@ lcm : Int -> Int -> Int
 lcm a b = a * b / gcd a b
 
 @pub
-sieve : [Int] -> [Int]
-sieve [] = []
-sieve (p :: xs) = p :: sieve [x | x <- xs, x `mod` p > 0]
+fakeSieve : [Int] -> [Int]
+fakeSieve [] = []
+fakeSieve (p :: xs) = p :: fakeSieve [x | x <- xs, x `mod` p > 0]
+
+@pub
+sieve : Stream Int -> Stream Int
+sieve xs = sieve' xs Map.empty
+  where
+    sieve' [] table = []
+    sieve' (x::xs) table =
+      case Map.lookup x table of
+        Nothing -> x :: sieve' xs (Map.insert (x*x) [x] table)
+        Just facts -> sieve' xs (foldl reinsert (Map.delete x table) facts)
+      where
+        reinsert table prime = Map.insertWith (++) (x+prime) [prime] table
+
+sieve : Stream Int -> Stream Int
+sieve xs = sieve' xs Map.empty
+  where {
+    sieve' [] table = [];
+    sieve' (x : xs) table =
+      case Map.lookup x table of {
+        Nothing -> x : sieve' xs (Map.insert (x * x) [x] table);
+        Just facts -> sieve' xs (foldl reinsert (Map.delete x table) facts)
+      } where {
+        reinsert table prime = Map.insertWith (++) (x + prime) [prime] table
+      }
+  }
 
 fibs : [Integer]
 fibs = 0 :: 1 :: zipWith (+) fibs (drop 1 fibs)
