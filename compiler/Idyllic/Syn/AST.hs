@@ -14,8 +14,8 @@ module Idyllic.Syn.AST
     LSig,
     Sig (..),
     Rhs (..),
-    LTerm,
-    Term (..),
+    LExpr,
+    Expr (..),
     LBind,
     Bind (..),
     LAlt,
@@ -56,7 +56,7 @@ type LRecordDef = Located RecordDef
 data RecordDef = RecordDef
   { recordName :: !Ident,
     recordTypeParams :: ![Ident],
-    recordFields :: [(Ident, LTerm)]
+    recordFields :: [(Ident, LExpr)]
   }
   deriving (Show, Eq, Ord)
 
@@ -83,7 +83,7 @@ type LInstanceDecl = Located InstanceDecl
 data InstanceDecl = InstanceDecl
   { instanceClass :: !Ident,
     instanceTypeParams :: ![Ident],
-    instanceAnn :: LTerm,
+    instanceAnn :: LExpr,
     instanceDecls :: [LClassDecl]
   }
   deriving (Show, Eq, Ord)
@@ -93,44 +93,34 @@ type LSig = Located Sig
 data Sig = Sig
   { sigNames :: ![Ident],
     sigTypeParams :: ![Ident],
-    sigAnn :: LTerm
+    sigAnn :: LExpr
   }
   deriving (Show, Eq, Ord)
 
-data Rhs = RhsTerm LTerm | RhsGuard [LGuard]
+data Rhs = RhsExpr LExpr | RhsGuard [LGuard]
   deriving (Show, Eq, Ord)
 
-type LTerm = Located Term
+type LExpr = Located Expr
 
-data Term
-  = TermLit !Lit
-  | TermVar !Ident
-  | TermApp LTerm LTerm
-  | TermLam [LPat] LTerm
-  | TermLet [LBind] LTerm
-  | TermDo [LTerm]
-  | TermNeg LTerm
-  | TermBinary !Ident LTerm LTerm
-  | TermIf LTerm LTerm LTerm
-  | TermMatch LTerm [(LPat, LTerm)]
-  | TermList [LTerm]
-  | TermTuple [LTerm]
-  | TermCons Ident [LTerm]
-  | TermRecord (Maybe Ident) [(Ident, LTerm)]
-  | TermRecordAccess LTerm Ident
-  | TermRecordUpdate LTerm [(Ident, LTerm)]
-  | TermUnit
-  | Pi [Param] LTerm -- (x : A) -> B, {x : A} -> B, A -> B
-  | Ann LTerm LTerm -- e : A  (type annotation)
-  | Hole (Maybe Ident) -- _ or ?name for user holes
+data Expr
+  = ExprLit !Lit
+  | ExprVar !Ident
+  | ExprApp LExpr LExpr
+  | ExprLam [LPat] LExpr
+  | ExprLet [LBind] LExpr
+  | ExprDo [LExpr]
+  | ExprNeg LExpr
+  | ExprBinary !Ident LExpr LExpr
+  | ExprIf LExpr LExpr LExpr
+  | ExprMatch LExpr [(LPat, LExpr)]
+  | ExprList [LExpr]
+  | ExprTuple [LExpr]
+  | ExprCons Ident [LExpr]
+  | ExprRecord (Maybe Ident) [(Ident, LExpr)]
+  | ExprRecordAccess LExpr Ident
+  | ExprRecordUpdate LExpr [(Ident, LExpr)]
+  | ExprUnit
   | Type
-  deriving (Show, Eq, Ord)
-
-data Param = Param
-  { paramIdent :: Ident,
-    paramType :: LTerm,
-    paramImplicit :: Bool
-  }
   deriving (Show, Eq, Ord)
 
 type LBind = Located Bind
@@ -144,7 +134,7 @@ type LAlt = Located Alt
 
 data Alt = Alt
   { altPats :: [LPat],
-    altTerm :: Rhs
+    altExpr :: Rhs
   }
   deriving (Show, Eq, Ord)
 
@@ -152,9 +142,20 @@ type LGuard = Located Guard
 
 data Guard = Guard
   { guardPat :: LPat,
-    guardTerm :: LTerm
+    guardExpr :: LExpr
   }
   deriving (Show, Eq, Ord)
+
+type LAnn = Located Ann
+
+data Ann
+  = AnnVar !Ident
+  | AnnIdent !Ident
+  | AnnFun !LAnn !LAnn
+  | AnnList !LAnn
+  | AnnTuple [LAnn]
+  | AnnUnit
+  deriving (Show, Eq)
 
 type LPat = Located Pat
 
