@@ -112,7 +112,7 @@ data Expr
   | ExprNeg LExpr
   | ExprBinary !Ident LExpr LExpr
   | ExprIf LExpr LExpr LExpr
-  | ExprMatch LExpr [(LPat, LExpr)]
+  | ExprCase LExpr [(LPat, LExpr)]
   | ExprList [LExpr]
   | ExprTuple [LExpr]
   | ExprCons Ident [LExpr]

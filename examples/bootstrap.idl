@@ -3,21 +3,12 @@ map : (a -> b) -> [a] -> [b]
 map _ [] = []
 map f (x :: xs) = f x :: map f xs
 
-fun map _ [] = []
-  | map f (x :: xs) = f x :: map f xs
-
 -- where bindings
 fib : Int -> Int
 fib = go 0 1
   where
     go a b 0 = a
     go a b n = go b (a + b) (n - 1)
-
-fun fib = go 0 1
-  where
-    fun go a b 0 = a
-      | go a b n = go b (a + b) (n - 1)
-  end
 
 -- guards
 fib : Int -> Int
@@ -26,12 +17,6 @@ fib n = fib (n - 1) + fib (n - 2)
 
 -- let expressions
 add x y = let sum = x + y in sum
-
--- let fun expressions
-fib (n : Int) : Int =
-  let go a b i =
-    if i = 0 then a else go b (a + b) (i - 1)
-  in go 0 1 n
 
 sum : [Int] -> Int
 sum = foldl (+) 0
@@ -51,10 +36,10 @@ sum = go xs 0
     go [] acc = acc
     go (x :: xs) acc = go xs (acc + x)
 
--- match expressions
+-- case expressions
 map (a -> b) -> [a] -> [b]
 map f xs =
-  match xs with
+  case xs of
     [] -> []
     x :: xs -> f x :: map f xs
 
@@ -88,24 +73,11 @@ alice = { name = "Alice", age = 30 }
 aliceName = alice.name
 
 -- record update
-olderAlice = { alice with age = alice.age + 1 }
+olderAlice = { alice of age = alice.age + 1 }
 
--- pattern matching with records
+-- pattern caseing of records
 describePerson : Person -> String
 describePerson (Person { name, age }) = name ++ " is " ++ Int.toString age ++ " years old"
-
--- self-updating thunks
-record Thunk a where
-  force : ref (() -> a)
-
-delay : (() -> a) -> Thunk a
-delay f = Thunk { force = \() -> let res = f () in force := \() -> res; res }
-
-thunkedValue : Thunk Int = delay (expensiveComputation ())
-
--- streams with thunks
-data Stream a where
-  (::) : a -> Thunk (Stream a) -> Stream a
 
 -- Operators
 + -- addition on a Int, Float, Integer, Rational
@@ -118,7 +90,7 @@ data Stream a where
 ++ -- String concat
 . -- function composition
 |> -- forward pipe operator
-; -- sugar for let-binding with no name
+; -- sugar for let-binding of no name
 ! -- dereference a ref
 
 -- Literals
