@@ -90,5 +90,6 @@ isLayoutKeyword t src = case tokenKind t of
   where
     go "let" = True
     go "where" = True
-    go "with" = True
+    go "of" = True
+    go "do" = True
     go _ = False
