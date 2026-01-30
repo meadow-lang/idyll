@@ -1,9 +1,10 @@
 module Idyllic.Syn.Token
   ( LToken,
     Token (..),
-    trivia,
-    kw,
-    punct,
+    tokenText,
+    -- trivia,
+    -- kw,
+    -- punct,
     -- isTrivia,
     -- isSpace,
     -- isKeyword,
@@ -11,8 +12,9 @@ module Idyllic.Syn.Token
   )
 where
 
-import Data.Text
+import Data.ByteString (ByteString)
 import Idyllic.Utils.Located
+import Idyllic.Utils.Span (slice)
 
 type LToken = Located Token
 
@@ -22,13 +24,13 @@ data Token
   | TokenTab
   | TokenNewline
   | TokenWhitespace
-  | TokenUppercaseIdent Text
-  | TokenLowercaseIdent Text
-  | TokenOpIdent Text
-  | TokenConOpIdent Text
-  | TokenInt Integer
-  | TokenString Text
-  | TokenChar Char
+  | TokenUppercaseIdent
+  | TokenLowercaseIdent
+  | TokenOpIdent
+  | TokenConOpIdent
+  | TokenInt
+  | TokenString
+  | TokenChar
   | TokenLParen
   | TokenRParen
   | TokenLBrace
@@ -50,49 +52,52 @@ data Token
   | TokenUnderscore
   deriving (Show, Eq, Ord)
 
-trivia :: Text -> Token
-trivia "\t" = TokenTab
-trivia "\n" = TokenNewline
-trivia "<WS>" = TokenWhitespace
-trivia "<EOF>" = TokenEOF
-trivia _ = TokenError
+tokenText :: LToken -> ByteString -> ByteString
+tokenText t = slice $ locSpan t
 
-kw :: Text -> Token
-kw "use" = TokenLowercaseIdent "use"
-kw "let" = TokenLowercaseIdent "let"
-kw "in" = TokenLowercaseIdent "in"
-kw "where" = TokenLowercaseIdent "where"
-kw "if" = TokenLowercaseIdent "if"
-kw "then" = TokenLowercaseIdent "then"
-kw "else" = TokenLowercaseIdent "else"
-kw "case" = TokenLowercaseIdent "case"
-kw "of" = TokenLowercaseIdent "of"
-kw "record" = TokenLowercaseIdent "record"
-kw "data" = TokenLowercaseIdent "data"
-kw "type" = TokenLowercaseIdent "type"
-kw _ = TokenError
+-- trivia :: Text -> Token
+-- trivia "\t" = TokenTab
+-- trivia "\n" = TokenNewline
+-- trivia "<WS>" = TokenWhitespace
+-- trivia "<EOF>" = TokenEOF
+-- trivia _ = TokenError
 
-punct :: Text -> Token
-punct "(" = TokenLParen
-punct ")" = TokenRParen
-punct "{" = TokenLBrace
-punct "}" = TokenRBrace
-punct "[" = TokenLBracket
-punct "]" = TokenRBracket
-punct "!" = TokenBang
-punct "#" = TokenHash
-punct "\\" = TokenBackSlash
-punct ":" = TokenColon
-punct ";" = TokenSemi
-punct "," = TokenComma
-punct "." = TokenPeriod
-punct "=" = TokenEq
-punct "<-" = TokenLArrow
-punct "->" = TokenRArrow
-punct "=>" = TokenLFatArrow
-punct "|" = TokenBar
-punct "_" = TokenUnderscore
-punct _ = TokenError
+-- kw :: Text -> Token
+-- kw "use" = TokenLowercaseIdent "use"
+-- kw "let" = TokenLowercaseIdent "let"
+-- kw "in" = TokenLowercaseIdent "in"
+-- kw "where" = TokenLowercaseIdent "where"
+-- kw "if" = TokenLowercaseIdent "if"
+-- kw "then" = TokenLowercaseIdent "then"
+-- kw "else" = TokenLowercaseIdent "else"
+-- kw "case" = TokenLowercaseIdent "case"
+-- kw "of" = TokenLowercaseIdent "of"
+-- kw "record" = TokenLowercaseIdent "record"
+-- kw "data" = TokenLowercaseIdent "data"
+-- kw "type" = TokenLowercaseIdent "type"
+-- kw _ = TokenError
+
+-- punct :: Text -> Token
+-- punct "(" = TokenLParen
+-- punct ")" = TokenRParen
+-- punct "{" = TokenLBrace
+-- punct "}" = TokenRBrace
+-- punct "[" = TokenLBracket
+-- punct "]" = TokenRBracket
+-- punct "!" = TokenBang
+-- punct "#" = TokenHash
+-- punct "\\" = TokenBackSlash
+-- punct ":" = TokenColon
+-- punct ";" = TokenSemi
+-- punct "," = TokenComma
+-- punct "." = TokenPeriod
+-- punct "=" = TokenEq
+-- punct "<-" = TokenLArrow
+-- punct "->" = TokenRArrow
+-- punct "=>" = TokenLFatArrow
+-- punct "|" = TokenBar
+-- punct "_" = TokenUnderscore
+-- punct _ = TokenError
 
 -- isTrivia :: Token -> Bool
 -- isTrivia = go . Token
@@ -107,9 +112,6 @@ punct _ = TokenError
 --   where
 --     go TokenWhitespace = True
 --     go _ = False
-
--- tokenText :: Token -> ByteString -> ByteString
--- tokenText t = slice $ tokenSpan t
 
 -- isKeyword :: Token -> ByteString -> Bool
 -- isKeyword t src = case Token t of

@@ -30,6 +30,11 @@ foldr f acc [] = acc
 foldr f acc (x::xs) = f x (foldr f acc xs)
 
 @pub
+def rec foldl : (a -> b -> a) -> a -> [b] -> a = fun
+  | _ acc [] = acc
+  | f acc (x::xs) = foldl f (f acc x) xs
+
+@pub
 filter : (a -> Bool) -> [a] -> [a]
 filter _ [] = []
 filter p (x::xs)
@@ -37,8 +42,18 @@ filter p (x::xs)
   | otherwise = filter p xs
 
 @pub
+def rec filter : (a -> Bool) -> [a] -> [a] = fun
+  | _ [] = []
+  | p x (x::xs) if p x = x :: filter p xs
+  | _ (x::xs) = filter p xs
+
+@pub
 filter : (a -> Bool) -> [a] -> [a]
 filter p = foldr (\x acc -> if p x then x :: acc else acc) []
+
+@pub
+def filter (p : a -> Bool) (xs : [a]) : [a] =
+  foldr (\x acc -> if p x then x :: acc else acc) [] xs
 
 @pub
 concat : [[a]] -> [a]
@@ -74,6 +89,12 @@ zipWith : (a -> b -> c) -> [a] -> [b] -> [c]
 zipWith f [] _ = []
 zipWith f _ [] = []
 zipWith f (x::xs) (y::ys) = f x y :: zipWith f xs ys
+
+@pub
+def rec zipWith : (a -> b -> c) -> [a] -> [b] -> [c] = fun
+  | _ _ [] = []
+  | _ [] _ = []
+  | f (x::xs) (y::ys) = f x y :: zipWith f xs ys
 
 @pub
 unzip : [(a, b)] -> ([a], [b])
@@ -139,6 +160,18 @@ fun take : Nat -> [a] -> [a]
       | unsafeTake !_ [] = []
       | unsafeTake 1 (x::_) = [x]
       | unsafeTake m (x::xs) = x :: unsafeTake (m - 1) xs
+  end
+
+@pub
+def take : Nat -> [a] -> [a] = fun
+  | n ls if n <= 0 = unsafeTake n ls
+  | _ _ = []
+  where
+    @inline(never)
+    def rec unsafeTake : Nat -> [a] -> [a] = fun
+      | !_ [] = []
+      | 1 (x::_) = [x]
+      | m (x::xs) = x :: unsafeTake (m - 1) xs
   end
 
 @pub
