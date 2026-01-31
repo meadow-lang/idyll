@@ -35,6 +35,43 @@ sieve xs = sieve' xs Map.empty
       }
   }
 
+def sieve (xs : Stream Int) : Stream Int =
+  sieve' xs Map.empty
+  where
+    def rec sieve' : Stream Int -> Map Int [Int] -> Stream Int = fun
+      | [] _ = []
+      | (x::xs) table =
+          case Map.lookup x table of
+          | Nothing -> x :: sieve' xs (Map.insert (x * x) [x] table)
+          | Just facts -> sieve' xs (foldl reinsert (Map.delete x table) facts)
+      where
+        def reinsert (table : Map Int [Int]) (prime : Int) : Map Int [Int] =
+          Map.insertWith (++) (x + prime) [prime] table
+      end
+  end
+
+runSieve :: Int -> UArray Int Bool
+runSieve lim = runSTUArray $ do
+  sieve' <- newArray (2, lim) True
+  let sqrtLim = floor (sqrt (fromIntegral lim))
+  forM_ [2 .. sqrtLim] $ \p -> do
+    isPrime <- readArray sieve' p
+    when isPrime $ forM_ [2 * p, 3 * p .. lim] $ \i ->
+      writeArray sieve' i False
+  pure sieve
+
+def runSieve (lim : Int) : UArray Int Bool =
+  runSTUArray $ do
+    sieve' <- newArray (2, lim) True;
+    let sqrtLim = floor (sqrt (fromIntegral lim));
+    forM_ [2 .. sqrtLim] $ \p -> do
+      isPrime <- readArray sieve' p;
+      when isPrime $ forM_ [2 * p, 3 * p .. lim] $ \i ->
+        writeArray sieve' i False
+    end
+    pure sieve'
+  end
+
 fibs : [Integer]
 fibs = 0 :: 1 :: zipWith (+) fibs (drop 1 fibs)
 
