@@ -164,7 +164,7 @@ fun take : Nat -> [a] -> [a]
 
 @pub
 def take : Nat -> [a] -> [a] = fun
-  | n ls if n <= 0 = unsafeTake n ls
+  | n ls if n < 0 = unsafeTake n ls
   | _ _ = []
   where
     @inline(never)

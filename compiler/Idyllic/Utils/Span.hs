@@ -1,6 +1,6 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 
-module Idyllic.Utils.Span (Span (..), toPair, slice) where
+module Idyllic.Utils.Span (Span (..), toPair, fromPair, slice) where
 
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
@@ -14,6 +14,9 @@ data Span = Span
 
 toPair :: Span -> (Int, Int)
 toPair (Span s e) = (s, e)
+
+fromPair :: (Int, Int) -> Span
+fromPair (s, e) = Span s e
 
 slice :: Span -> ByteString -> ByteString
 slice (Span s e) bs = BS.take (e - s) (BS.drop s bs)

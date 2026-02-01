@@ -9,6 +9,7 @@ import qualified Data.Text as T
 import qualified Data.Char as Char
 import Idyllic.Utils.Span
 import Data.Maybe (fromMaybe)
+import Idyllic.Utils.Located
 }
 
 %wrapper "posn-bytestring"
@@ -58,41 +59,42 @@ $escSimple = [0\'\"\\nrtabfv]
 
 miniml :-
 
-  $tab                           { \p bs -> Token TokenKindTab (makeSpan p bs) }
-  $whitespace+                   { \p bs -> Token TokenKindWhitespace (makeSpan p bs) }
+  -- $tab                           { \p bs -> Located TokenTab (makeSpan p bs) }
+  -- $whitespace+                   { \p bs -> Located TokenWhitespace (makeSpan p bs) }
   "--".*                         ;
-  $newline                       { \p bs -> Token TokenKindNewline (makeSpan p bs) }
+  -- $newline                       { \p bs -> Located TokenNewline (makeSpan p bs) }
+  $white+                        ;
 
-  "("                            { \p bs -> Token TokenKindLParen (makeSpan p bs) }
-  ")"                            { \p bs -> Token TokenKindRParen (makeSpan p bs) }
-  "{"                            { \p bs -> Token TokenKindLBrace (makeSpan p bs) }
-  "}"                            { \p bs -> Token TokenKindRBrace (makeSpan p bs) }
-  "["                            { \p bs -> Token TokenKindLBracket (makeSpan p bs) }
-  "]"                            { \p bs -> Token TokenKindRBracket (makeSpan p bs) }
-  "!"                            { \p bs -> Token TokenKindBang (makeSpan p bs) }
-  "#"                            { \p bs -> Token TokenKindHash (makeSpan p bs) }
-  [\\]                           { \p bs -> Token TokenKindBackSlash (makeSpan p bs) }
-  ":"                            { \p bs -> Token TokenKindColon (makeSpan p bs) }
-  ";"                            { \p bs -> Token TokenKindSemi (makeSpan p bs) }
-  ","                            { \p bs -> Token TokenKindComma (makeSpan p bs) }
-  "."                            { \p bs -> Token TokenKindPeriod (makeSpan p bs) }
-  "="                            { \p bs -> Token TokenKindEq (makeSpan p bs) }
-  "<-"                           { \p bs -> Token TokenKindLArrow (makeSpan p bs) }
-  "->"                           { \p bs -> Token TokenKindRArrow (makeSpan p bs) }
-  "=>"                           { \p bs -> Token TokenKindLFatArrow (makeSpan p bs) }
-  "|"                            { \p bs -> Token TokenKindBar (makeSpan p bs) }
-  "_"                            { \p bs -> Token TokenKindUnderscore (makeSpan p bs) }
+  "("                            { \p bs -> Located TokenLParen (makeSpan p bs) }
+  ")"                            { \p bs -> Located TokenRParen (makeSpan p bs) }
+  "{"                            { \p bs -> Located TokenLBrace (makeSpan p bs) }
+  "}"                            { \p bs -> Located TokenRBrace (makeSpan p bs) }
+  "["                            { \p bs -> Located TokenLBracket (makeSpan p bs) }
+  "]"                            { \p bs -> Located TokenRBracket (makeSpan p bs) }
+  "!"                            { \p bs -> Located TokenBang (makeSpan p bs) }
+  "#"                            { \p bs -> Located TokenHash (makeSpan p bs) }
+  [\\]                           { \p bs -> Located TokenBackSlash (makeSpan p bs) }
+  ":"                            { \p bs -> Located TokenColon (makeSpan p bs) }
+  ";"                            { \p bs -> Located TokenSemi (makeSpan p bs) }
+  ","                            { \p bs -> Located TokenComma (makeSpan p bs) }
+  "."                            { \p bs -> Located TokenPeriod (makeSpan p bs) }
+  "="                            { \p bs -> Located TokenEq (makeSpan p bs) }
+  "<-"                           { \p bs -> Located TokenLArrow (makeSpan p bs) }
+  "->"                           { \p bs -> Located TokenRArrow (makeSpan p bs) }
+  "=>"                           { \p bs -> Located TokenLFatArrow (makeSpan p bs) }
+  "|"                            { \p bs -> Located TokenBar (makeSpan p bs) }
+  "_"                            { \p bs -> Located TokenUnderscore (makeSpan p bs) }
 
-  @lowerCaseIdent                { \p bs -> Token TokenKindLowercaseIdent (makeSpan p bs) }
-  @upperCaseIdent                { \p bs -> Token TokenKindUppercaseIdent (makeSpan p bs) }
-  @conOpIdent                    { \p bs -> Token TokenKindConOpIdent (makeSpan p bs) }
-  @opIdent                       { \p bs -> Token TokenKindOpIdent (makeSpan p bs) }
+  @lowerCaseIdent                { \p bs -> Located TokenLowercaseIdent (makeSpan p bs) }
+  @upperCaseIdent                { \p bs -> Located TokenUppercaseIdent (makeSpan p bs) }
+  @conOpIdent                    { \p bs -> Located TokenConOpIdent (makeSpan p bs) }
+  @opIdent                       { \p bs -> Located TokenOpIdent (makeSpan p bs) }
 
-  @int                           { \p bs -> Token TokenKindInt (makeSpan p bs) }
-  @char                          { \p bs -> Token TokenKindChar (makeSpan p bs) }
-  @string                        { \p bs -> Token TokenKindString (makeSpan p bs) }
+  @int                           { \p bs -> Located TokenInt (makeSpan p bs) }
+  @char                          { \p bs -> Located TokenChar (makeSpan p bs) }
+  @string                        { \p bs -> Located TokenString (makeSpan p bs) }
 
-  $nonWhite                      { \p bs -> Token TokenKindError (makeSpan p bs) }
+  $nonWhite                      { \p bs -> Located TokenError (makeSpan p bs) }
 
 {
 makeSpan :: AlexPosn -> ByteString -> Span
@@ -103,6 +105,6 @@ makeSpan (AlexPn start _ _) bs = Span start end
 posnOffset :: AlexPosn -> Int
 posnOffset (AlexPn o _ _) = o
 
-tokenize :: ByteString -> [Token]
+tokenize :: ByteString -> [LToken]
 tokenize = alexScanTokens
 }

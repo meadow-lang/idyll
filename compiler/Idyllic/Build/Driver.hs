@@ -144,11 +144,3 @@ collectLines acc = do
     Nothing -> pure Nothing
     Just "" -> pure $ Just (init acc)
     Just input -> collectLines (acc ++ input ++ "\n")
-
--- let (out, _) = runState (runPipeline (InputModeFile "main") (pack src)) defaultPipelineEnv
--- case out of
---   Left e ->
---     let diag = errorDiagnosticFromBundle Nothing ("Parse error on input" :: Text) Nothing e
---         diag' = addFile diag "main" src
---      in printDiagnostic stderr True True 2 defaultStyle diag'
---   Right prog -> putStrLn $ unpack . toStrict $ pShow prog
