@@ -3,6 +3,7 @@ module Idyllic.Syn.Parser (parseFile, parseInteractive) where
 import Control.Monad (void)
 import Control.Monad.Combinators.Expr
 import Data.Functor (($>))
+import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text, pack, unpack)
 import Data.Void
 import Error.Diagnose.Compat.Megaparsec (HasHints (..))
@@ -12,6 +13,7 @@ import Idyllic.Utils.Located
 import Idyllic.Utils.Span
 import Text.Megaparsec
 import Text.Megaparsec.Char
+import Text.Megaparsec.Char.Lexer (indentGuard)
 import qualified Text.Megaparsec.Char.Lexer as L
 import Text.Megaparsec.Debug (MonadParsecDbg (dbg))
 
@@ -27,7 +29,7 @@ parseInteractive :: Text -> Either (ParseErrorBundle Text Void) (Either [LDecl] 
 parseInteractive = parse interactive "<interactive>"
 
 interactive :: Parser (Either [LDecl] LExpr)
-interactive = sc *> choice [Left <$> many (L.nonIndented scn decl), Right <$> expr] <* eof
+interactive = scn *> choice [Left <$> try (some $ L.nonIndented scn decl), Right <$> expr] <* eof
 
 mod' :: Text -> Parser Prog
 mod' filename = do
@@ -65,7 +67,17 @@ expr = dbg "expr" $ makeExprParser apply operatorTable
     lambda = ExprLam <$> (char '\\' *> some pat) <* symbol "->" <*> expr
 
     let' :: Parser Expr
-    let' = ExprLet <$> (kw "let" *> some bind) <* kw "in" <*> expr
+    let' = ExprLet <$> try (kw "let" *> some bind) <* kw "in" <*> expr
+
+    letIndent :: Parser Expr
+    letIndent = dbg "letIndent" $ ExprLet <$> try (indentBlock scn binds) <* kw "in" <*> expr
+      where
+        binds = do
+          kw "let"
+          return (L.IndentSome Nothing return bind)
+
+    letBraces :: Parser Expr
+    letBraces = ExprLet <$> (kw "let" *> braces (bind `sepEndBy1` charL ';')) <* kw "in" <*> expr
 
     if' :: Parser Expr
     if' = ExprIf <$> (kw "if" *> expr) <* kw "then" <*> expr <* kw "else" <*> expr
@@ -93,7 +105,7 @@ expr = dbg "expr" $ makeExprParser apply operatorTable
     record :: Parser Expr
     record =
       ExprRecord
-        <$> optional upperCaseIdent
+        <$> upperCaseIdent
         <*> braces (((,) <$> lowerCaseIdent <*> (char '=' *> expr)) `sepEndBy1` char ',')
 
     atom :: Parser LExpr
@@ -101,6 +113,8 @@ expr = dbg "expr" $ makeExprParser apply operatorTable
       located $
         choice
           [ let',
+            letIndent,
+            letBraces,
             lambda,
             if',
             -- case',
@@ -148,10 +162,10 @@ prefix name f = Prefix (f . locSpan <$> located (string name))
 postfix name f = Postfix (f . locSpan <$> located (string name))
 
 bind :: Parser LBind
-bind = dbg "bind" $ located $ funBind <|> patternBind
+bind = dbg "bind" $ try $ located $ funBind <|> patternBind
   where
     patternBind :: Parser Bind
-    patternBind = BindPat <$> pat <* charL '=' <*> rhs <*> where'
+    patternBind = dbg "patBind" $ BindPat <$> try (pat <* charL '=') <*> rhs <*> where'
 
     funBind :: Parser Bind
     funBind = try $ BindFun <$> lowerCaseIdent <*> some alt <*> where'
@@ -330,3 +344,59 @@ located p = do
 --       _ <- symbol "in"
 --       body <- expr
 --       return $ Let binds body
+
+indentBlock ::
+  (TraversableStream s, MonadParsec e s m, Token s ~ Char) =>
+  -- | How to consume indentation (white space)
+  m () ->
+  -- | How to parse “reference” token
+  m (L.IndentOpt m a b) ->
+  m a
+indentBlock sc r = do
+  sc
+  ref <- L.indentLevel
+  a <- r
+  case a of
+    L.IndentNone x -> x <$ sc
+    L.IndentMany indent f p -> do
+      mlvl <- (optional . try) (optional eol *> indentGuard sc GT ref)
+      done <- isJust <$> optional eof
+      case (mlvl, done) of
+        (Just lvl, False) ->
+          indentedItems ref (fromMaybe lvl indent) sc p >>= f
+        _ -> sc *> f []
+    L.IndentSome indent f p -> do
+      pos <- optional eol *> indentGuard sc GT ref
+      let lvl = fromMaybe pos indent
+      x <-
+        if
+          | pos <= ref -> L.incorrectIndent GT ref pos
+          | pos == lvl -> p
+          | otherwise -> L.incorrectIndent EQ lvl pos
+      xs <- indentedItems ref lvl sc p
+      f (x : xs)
+
+indentedItems ::
+  (TraversableStream s, MonadParsec e s m) =>
+  -- | Reference indentation level
+  Pos ->
+  -- | Level of the first indented item ('lookAhead'ed)
+  Pos ->
+  -- | How to consume indentation (white space)
+  m () ->
+  -- | How to parse indented tokens
+  m b ->
+  m [b]
+indentedItems ref lvl sc p = go
+  where
+    go = do
+      sc
+      pos <- L.indentLevel
+      done <- isJust <$> optional eof
+      if done
+        then return []
+        else
+          if
+            | pos <= ref -> return []
+            | pos == lvl -> (:) <$> p <*> go
+            | otherwise -> L.incorrectIndent EQ lvl pos

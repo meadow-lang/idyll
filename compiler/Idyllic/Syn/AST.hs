@@ -120,7 +120,7 @@ data Expr
   | ExprList [LExpr]
   | ExprTuple [LExpr]
   | ExprCons Ident [LExpr]
-  | ExprRecord (Maybe Ident) [(Ident, LExpr)]
+  | ExprRecord Ident [(Ident, LExpr)]
   | ExprRecordAccess LExpr Ident
   | ExprRecordUpdate LExpr [(Ident, LExpr)]
   | ExprAnn LExpr LAnn
