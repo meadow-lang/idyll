@@ -70,11 +70,11 @@ expr = dbg "expr" $ makeExprParser apply operatorTable
     let' = ExprLet <$> try (kw "let" *> some bind) <* kw "in" <*> expr
 
     letIndent :: Parser Expr
-    letIndent = dbg "letIndent" $ ExprLet <$> try (indentBlock scn binds) <* kw "in" <*> expr
+    letIndent = dbg "letIndent" $ ExprLet <$> try (L.indentBlock scn binds) <* kw "in" <*> expr
       where
         binds = do
           kw "let"
-          return (L.IndentSome Nothing return bind)
+          pure (L.IndentSome Nothing pure bind)
 
     letBraces :: Parser Expr
     letBraces = ExprLet <$> (kw "let" *> braces (bind `sepEndBy1` charL ';')) <* kw "in" <*> expr
@@ -83,18 +83,18 @@ expr = dbg "expr" $ makeExprParser apply operatorTable
     if' = ExprIf <$> (kw "if" *> expr) <* kw "then" <*> expr <* kw "else" <*> expr
 
     case' :: Parser Expr
-    case' = undefined
-    --   indentBlock scn $ do
-    --     kwMatch
-    --     scrut <- expr
-    --     kwWith
-    --     pure $ L.IndentSome Nothing (cont scrut) alt
-    --   where
-    --     alt :: Parser (LPat, LExpr)
-    --     alt = (,) <$> pattern' <*> (symbol "->" *> expr)
+    case' =
+      L.indentBlock scn $ do
+        kw "case"
+        scrut <- expr
+        kw "of"
+        pure $ L.IndentSome Nothing (cont scrut) alt
+      where
+        alt :: Parser (LPat, LExpr)
+        alt = (,) <$> pat <*> (symbol "->" *> expr)
 
-    --     cont :: LExpr -> [(LPat, LExpr)] -> Parser Expr
-    --     cont scr alts = pure $ Match scr alts
+        cont :: LExpr -> [(LPat, LExpr)] -> Parser Expr
+        cont scr alts = pure $ ExprCase scr alts
 
     list :: Parser Expr
     list = ExprList <$> brackets (expr `sepEndBy` char ',')
@@ -117,7 +117,7 @@ expr = dbg "expr" $ makeExprParser apply operatorTable
             letBraces,
             lambda,
             if',
-            -- case',
+            case',
             list,
             tuple <|> simple,
             record
@@ -155,7 +155,7 @@ operatorTable =
   ]
 
 binary :: Text -> (Span -> LExpr -> LExpr -> LExpr) -> Operator Parser LExpr
-binary name f = InfixL (f . locSpan <$> located (symbol name))
+binary name f = InfixL (f . locSpan <$> located (string name))
 
 prefix, postfix :: Text -> (Span -> LExpr -> LExpr) -> Operator Parser LExpr
 prefix name f = Prefix (f . locSpan <$> located (string name))
@@ -226,7 +226,7 @@ braces = between (lexeme $ char '{') (lexeme $ char '}')
 
 lowerCaseIdent :: Parser Ident
 lowerCaseIdent = dbg "lowerCaseIdent" $ try $ do
-  name <- located $ pack <$> ((:) <$> identStartChar <*> many identChar)
+  name <- lexeme . located $ pack <$> ((:) <$> identStartChar <*> many identChar)
   let !sv = locItem name
   if sv `elem` keywords
     then fail $ "keyword " ++ unpack sv ++ " cannot be an identifier"
@@ -288,11 +288,12 @@ str = char '\"' *> (pack <$> manyTill L.charLiteral (char '\"'))
 
 lit :: Parser Lit
 lit =
-  choice
-    [ Int <$> int,
-      Bool <$> bool,
-      String <$> str
-    ]
+  lexeme $
+    choice
+      [ Int <$> int,
+        Bool <$> bool,
+        String <$> str
+      ]
 
 unit :: Parser ()
 unit = symbol "()" $> ()
@@ -311,7 +312,6 @@ located p = do
   start <- getOffset
   res <- p
   end <- getOffset
-  sc
   pure $ Located res (fromPair (start, end))
 
 -- located :: Parser a -> Parser (Located a)
@@ -323,27 +323,6 @@ located p = do
 --   --   endOff <- getOffset
 --   let end = locSpan $ head input
 --   pure $ Located res (start <> end)
-
--- letExpr :: Parser Expr
--- letExpr = do
---   _ <- symbol "let"
---   -- Check for '{' immediately
---   isExplicit <- optional (symbol "{")
---   case isExplicit of
---     Just _ -> do
---       -- Standard non-layout parsing
---       binds <- binding `sepBy` symbol ";"
---       _ <- symbol "}"
---       _ <- symbol "in"
---       body <- expr
---       return $ Let binds body
---     Nothing -> do
---       -- Layout-sensitive parsing via indentBlock
---       binds <- L.indentBlock scn $
---         return (L.IndentMany Nothing return binding)
---       _ <- symbol "in"
---       body <- expr
---       return $ Let binds body
 
 indentBlock ::
   (TraversableStream s, MonadParsec e s m, Token s ~ Char) =>
