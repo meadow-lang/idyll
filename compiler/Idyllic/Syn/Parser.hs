@@ -206,14 +206,16 @@ ann = arrowType <|> baseType
         <$> try (parens ((:) <$> (ann <* char ',')) <*> ann `sepEndBy1` char ',')
 
 pat :: Parser LPat
-pat = located $ choice [wildcard, litP, identP, consP, listP, unitP]
+pat = choice [wildcard, litP, identP, consP, listP, unitP]
   where
-    wildcard = char '_' $> PatWildcard
-    litP = PatLit <$> lit
-    identP = PatIdent <$> lowerCaseIdent
-    consP = PatCons <$> (upperCaseIdent <* char '@') <*> some pat
-    listP = PatList <$> brackets (pat `sepEndBy` char ',')
-    unitP = unit $> PatUnit
+    wildcard = located $ char '_' $> PatWildcard
+    litP = located $ PatLit <$> lit
+    identP = do
+      name <- lowerCaseIdent
+      pure $ Located (PatIdent name) (locSpan name)
+    consP = located $ PatCons <$> (upperCaseIdent <* char '@') <*> some pat
+    listP = located $ PatList <$> brackets (pat `sepEndBy` char ',')
+    unitP = located $ unit $> PatUnit
 
 parens :: Parser a -> Parser a
 parens = between (lexeme $ char '(') (lexeme $ char ')')
