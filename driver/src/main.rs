@@ -1,5 +1,5 @@
 use rustyline::{
-    Completer, Editor, Helper, Highlighter, Hinter, error::ReadlineError, validate::Validator,
+    error::ReadlineError, validate::Validator, Completer, Editor, Helper, Highlighter, Hinter,
 };
 
 #[derive(Completer, Helper, Highlighter, Hinter)]
