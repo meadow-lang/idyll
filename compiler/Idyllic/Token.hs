@@ -43,22 +43,23 @@ data Token
   | TokenBar
   | TokenUnderscore
   | TokenAt
-  | TokenWhere
-  | TokenLet
-  | TokenIn
-  | TokenIf
-  | TokenThen
-  | TokenElse
-  | TokenCase
-  | TokenOf
-  | TokenData
-  | TokenRecord
-  | TokenClass
-  | TokenInstance
-  | TokenMod
-  | TokenUse
-  | TokenEnd
-  deriving (Show, Eq, Ord)
+  deriving (-- | TokenWhere
+            -- | TokenLet
+            -- | TokenIn
+            -- | TokenIf
+            -- | TokenThen
+            -- | TokenElse
+            -- | TokenCase
+            -- | TokenOf
+            -- | TokenData
+            -- | TokenRecord
+            -- | TokenClass
+            -- | TokenInstance
+            -- | TokenMod
+            -- | TokenUse
+            -- | TokenAs
+            -- | TokenEnd
+            Show, Eq, Ord)
 
 tokenText :: LToken -> ByteString -> ByteString
 tokenText t = slice $ locSpan t

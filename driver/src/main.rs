@@ -39,7 +39,7 @@ fn main() {
         eprintln!("No previous history.");
     }
 
-    println!("Welcome to Idyll!");
+    println!("{}", BANNER);
 
     loop {
         let readline = rl.readline("> ");
