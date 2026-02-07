@@ -75,6 +75,19 @@ optionsInfo =
 parseOptions :: IO CliOptions
 parseOptions = execParser optionsInfo
 
+banner :: String
+banner =
+  """
+      ____    __      ____
+     /  _/___/ /_  __/ / /
+     / // __  / / / / / / 
+   _/ // /_/ / /_/ / / /  
+  /___/\\__,_/\\__, /_/_/   
+            /____/        
+  Welcome to the Idyll REPL!
+  Type :quit or :q to exit.
+  """
+
 runDefaultDriver :: IO ()
 runDefaultDriver = do
   opts <- parseOptions
@@ -90,7 +103,7 @@ runDefaultDriver = do
       debug <- asks (optDebug . driverArgs)
       liftIO $ runPipelineIO debug (InputModeFile $ T.pack fp) src
     DriverModeInteractive -> do
-      liftIO $ putStrLn "Welcome to the Idyll REPL!"
+      liftIO $ putStrLn banner
       env' <- liftIO $ newPipelineEnv True InputModeInteractive B.empty
       liftIO $ runInputT settings (repl env')
 
