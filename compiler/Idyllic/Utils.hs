@@ -1,12 +1,8 @@
-module Idyllic.Utils.LineIndex
-  ( LineIndex (..),
-    buildLineIndex,
-    offsetToLineCol,
-  )
-where
+module Idyllic.Utils where
 
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
+import qualified Data.ByteString as BS
 import qualified Data.Vector.Unboxed as U
 
 newtype LineIndex = LineIndex {lineStarts :: U.Vector Int} deriving (Show, Eq)
@@ -32,3 +28,27 @@ binarySearch !v !x = go 0 (U.length v - 1)
       where
         mid = (low + high) `div` 2
         midVal = v U.! mid
+
+data Located a = Located {locItem :: a, locSpan :: Span}
+  deriving (Show, Eq, Ord)
+
+data Span = Span
+  { spanStart :: {-# UNPACK #-} !Int,
+    spanEnd :: {-# UNPACK #-} !Int
+  }
+  deriving (Show, Eq, Ord)
+
+toPair :: Span -> (Int, Int)
+toPair (Span s e) = (s, e)
+
+fromPair :: (Int, Int) -> Span
+fromPair (s, e) = Span s e
+
+slice :: Span -> ByteString -> ByteString
+slice (Span s e) bs = BS.take (e - s) (BS.drop s bs)
+
+-- instance Pretty Span where
+--   pretty (Loc s e) = pack $ show s <> ".." <> show e
+
+instance Semigroup Span where
+  Span s1 e1 <> Span s2 e2 = Span (min s1 s2) (max e1 e2)

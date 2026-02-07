@@ -26,26 +26,19 @@ executable idyllic
   import: warnings
   main-is: Main.hs
   other-modules:
-    Idyllic.Build
-    Idyllic.Build.Driver
-    Idyllic.Build.Pipeline
-    Idyllic.Build.Pipeline.Effect
+    Idyllic.AST
+    Idyllic.Builtin
+    Idyllic.Comb
     Idyllic.Core
-    Idyllic.Rename.HIR
-    Idyllic.Rename.Resolver
-    Idyllic.Rename.Symbol
-    Idyllic.Static.Scc
-    Idyllic.Syn.AST
-    Idyllic.Syn.Layout
-    Idyllic.Syn.Lexer
-    Idyllic.Syn.Parser
-    Idyllic.Syn.Token
-    Idyllic.Syn.TokenTree
-    Idyllic.Typing.Infer
-    Idyllic.Typing.Ty
-    Idyllic.Utils.LineIndex
-    Idyllic.Utils.Located
-    Idyllic.Utils.Span
+    Idyllic.Effect
+    Idyllic.Lexer
+    Idyllic.Parser
+    Idyllic.Pipeline
+    Idyllic.Rename
+    Idyllic.Scc
+    Idyllic.Token
+    Idyllic.TypeCheck
+    Idyllic.Utils
 
   default-extensions:
     BangPatterns
@@ -53,6 +46,7 @@ executable idyllic
     FunctionalDependencies
     LambdaCase
     MagicHash
+    MultiWayIf
     MultilineStrings
     OrPatterns
     OverloadedStrings
@@ -64,26 +58,17 @@ executable idyllic
     TypeFamilies
     TypeSynonymInstances
     ViewPatterns
-    MultiWayIf
 
   build-depends:
     array,
     base,
     bytestring,
     containers,
-    data-default,
     diagnose,
     hashable,
-    haskeline,
-    intern,
-    lens,
-    megaparsec,
     mtl,
-    optics,
-    optparse-applicative,
     parser-combinators,
     pretty-simple,
-    prettyprinter,
     primitive,
     stm,
     text,
@@ -92,6 +77,5 @@ executable idyllic
     vector,
     wcwidth,
 
-  build-tool-depends: alex:alex
   hs-source-dirs: compiler
   default-language: Haskell2010

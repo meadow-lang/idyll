@@ -1,7 +1,8 @@
 module Main where
 
-import Idyllic.Build.Driver (runDefaultDriver)
+-- import Idyllic.Driver (runDefaultDriver)
 
 main :: IO ()
-main = do
-  runDefaultDriver
+main = putStrLn "Hello, Idyllic!"
+
+-- runDefaultDriver

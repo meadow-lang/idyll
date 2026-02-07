@@ -1,14 +1,14 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
-module Idyllic.Build.Pipeline.Effect (InputMode (..), PipelineEnv (..), newPipelineEnv, defaultPipelineEnv, Pipeline) where
+module Idyllic.Effect (InputMode (..), PipelineEnv (..), newPipelineEnv, defaultPipelineEnv, Pipeline) where
 
 import Control.Concurrent.STM (TVar, newTVarIO)
 import Control.Monad.Reader (ReaderT)
 import Data.ByteString (ByteString)
 import Data.Text (Text)
 import Error.Diagnose (Diagnostic)
-import Idyllic.Utils.LineIndex (LineIndex, buildLineIndex)
+import Idyllic.Utils (LineIndex, buildLineIndex)
 
 data InputMode
   = InputModeFile Text

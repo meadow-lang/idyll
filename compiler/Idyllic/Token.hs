@@ -1,4 +1,4 @@
-module Idyllic.Syn.Token
+module Idyllic.Token
   ( LToken,
     Token (..),
     tokenText,
@@ -6,8 +6,7 @@ module Idyllic.Syn.Token
 where
 
 import Data.ByteString (ByteString)
-import Idyllic.Utils.Located
-import Idyllic.Utils.Span (slice)
+import Idyllic.Utils
 
 type LToken = Located Token
 
@@ -44,9 +43,6 @@ data Token
   | TokenBar
   | TokenUnderscore
   | TokenAt
-  | TokenDef
-  | TokenRec
-  | TokenMutual
   | TokenWhere
   | TokenLet
   | TokenIn

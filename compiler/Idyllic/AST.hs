@@ -1,4 +1,4 @@
-module Idyllic.Syn.AST
+module Idyllic.AST
   ( Prog,
     Module (..),
     LDecl,
@@ -32,7 +32,7 @@ module Idyllic.Syn.AST
 where
 
 import Data.Text (Text)
-import Idyllic.Utils.Located (Located)
+import Idyllic.Utils (Located)
 
 type Prog = Located Module
 
