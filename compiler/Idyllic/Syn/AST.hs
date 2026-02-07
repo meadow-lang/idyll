@@ -16,12 +16,10 @@ module Idyllic.Syn.AST
     Rhs (..),
     LExpr,
     Expr (..),
-    LBinOp,
-    BinOp (..),
     LBind,
     Bind (..),
-    LAlt,
-    Alt (..),
+    LFunLhs,
+    FunLhs (..),
     LGuard,
     Guard (..),
     LAnn,
@@ -101,7 +99,7 @@ data Sig = Sig
   }
   deriving (Show, Eq, Ord)
 
-data Rhs = RhsExpr LExpr | RhsGuard [LGuard]
+data Rhs = RhsExpr LExpr [LClassDecl] | RhsGuard [LGuard] [LClassDecl]
   deriving (Show, Eq, Ord)
 
 type LExpr = Located Expr
@@ -114,7 +112,7 @@ data Expr
   | ExprLet [LBind] LExpr
   | ExprDo [LExpr]
   | ExprNeg LExpr
-  | ExprBinary LBinOp LExpr LExpr
+  | ExprBinary Ident LExpr LExpr
   | ExprIf LExpr LExpr LExpr
   | ExprCase LExpr [(LPat, LExpr)]
   | ExprList [LExpr]
@@ -128,37 +126,18 @@ data Expr
   | Type
   deriving (Show, Eq, Ord)
 
-type LBinOp = Located BinOp
-
-data BinOp
-  = BinOpAdd
-  | BinOpSub
-  | BinOpMul
-  | BinOpDiv
-  | BinOpMod
-  | BinOpAnd
-  | BinOpOr
-  | BinOpEq
-  | BinOpNeq
-  | BinOpLt
-  | BinOpLte
-  | BinOpGt
-  | BinOpGte
-  deriving (Show, Eq, Ord)
-
 type LBind = Located Bind
 
 data Bind
-  = BindPat !LPat Rhs [LClassDecl]
-  | BindFun !Ident [LAlt] [LClassDecl]
+  = BindPat LPat Rhs
+  | BindFun LFunLhs Rhs
   deriving (Show, Eq, Ord)
 
-type LAlt = Located Alt
+type LFunLhs = Located FunLhs
 
-data Alt = Alt
-  { altPats :: [LPat],
-    altExpr :: Rhs
-  }
+data FunLhs
+  = FunLhsName Ident [LPat]
+  | FunLhsOp LPat Ident LPat
   deriving (Show, Eq, Ord)
 
 type LGuard = Located Guard
@@ -187,6 +166,7 @@ data Pat
   | PatLit Lit
   | PatIdent Ident
   | PatCons Ident [LPat]
+  | PatOpCons LPat Ident LPat
   | PatAs Ident LPat
   | PatList [LPat]
   | PatTuple [LPat]

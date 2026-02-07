@@ -1,4 +1,5 @@
-module Idyllic.Syn.Parser (parseFile, parseInteractive) where
+-- module Idyllic.Syn.Parser (parseFile, parseInteractive) where
+module Idyllic.Syn.Parser where
 
 import Control.Monad (void)
 import Control.Monad.Combinators.Expr
@@ -51,7 +52,10 @@ sig =
     tyVars = try (some lowerCaseIdent <* charL '.') <|> pure []
 
 rhs :: Parser Rhs
-rhs = choice [RhsGuard <$> some guard, RhsExpr <$> expr]
+rhs = choice [RhsGuard <$> some guard, RhsExpr <$> expr] <*> where'
+
+where' :: Parser [LClassDecl]
+where' = option [] (kw "where" *> some classDecl)
 
 expr :: Parser LExpr
 expr = dbg "expr" $ makeExprParser apply operatorTable
@@ -134,23 +138,23 @@ expr = dbg "expr" $ makeExprParser apply operatorTable
 operatorTable :: [[Operator Parser LExpr]]
 operatorTable =
   [ [prefix "-" (\s e -> Located (ExprNeg e) (s <> locSpan e))],
-    [ binary "*" (\s l r -> Located (ExprBinary (Located BinOpMul s) l r) (locSpan l <> locSpan r)),
-      binary "/" (\s l r -> Located (ExprBinary (Located BinOpDiv s) l r) (locSpan l <> locSpan r)),
-      binary "%" (\s l r -> Located (ExprBinary (Located BinOpMod s) l r) (locSpan l <> locSpan r))
+    [ binary "*" (\s l r -> Located (ExprBinary (Located "*" s) l r) (locSpan l <> locSpan r)),
+      binary "/" (\s l r -> Located (ExprBinary (Located "/" s) l r) (locSpan l <> locSpan r)),
+      binary "%" (\s l r -> Located (ExprBinary (Located "%" s) l r) (locSpan l <> locSpan r))
     ],
-    [ binary "+" (\s l r -> Located (ExprBinary (Located BinOpAdd s) l r) (locSpan l <> locSpan r)),
-      binary "-" (\s l r -> Located (ExprBinary (Located BinOpSub s) l r) (locSpan l <> locSpan r))
+    [ binary "+" (\s l r -> Located (ExprBinary (Located "+" s) l r) (locSpan l <> locSpan r)),
+      binary "-" (\s l r -> Located (ExprBinary (Located "-" s) l r) (locSpan l <> locSpan r))
     ],
-    [ binary "==" (\s l r -> Located (ExprBinary (Located BinOpEq s) l r) (locSpan l <> locSpan r)),
-      binary "!=" (\s l r -> Located (ExprBinary (Located BinOpNeq s) l r) (locSpan l <> locSpan r)),
-      binary "<" (\s l r -> Located (ExprBinary (Located BinOpLt s) l r) (locSpan l <> locSpan r)),
-      binary "<=" (\s l r -> Located (ExprBinary (Located BinOpLte s) l r) (locSpan l <> locSpan r)),
-      binary ">" (\s l r -> Located (ExprBinary (Located BinOpGt s) l r) (locSpan l <> locSpan r)),
-      binary ">=" (\s l r -> Located (ExprBinary (Located BinOpGte s) l r) (locSpan l <> locSpan r))
+    [ binary "==" (\s l r -> Located (ExprBinary (Located "==" s) l r) (locSpan l <> locSpan r)),
+      binary "!=" (\s l r -> Located (ExprBinary (Located "!=" s) l r) (locSpan l <> locSpan r)),
+      binary "<" (\s l r -> Located (ExprBinary (Located "<" s) l r) (locSpan l <> locSpan r)),
+      binary "<=" (\s l r -> Located (ExprBinary (Located "<=" s) l r) (locSpan l <> locSpan r)),
+      binary ">" (\s l r -> Located (ExprBinary (Located ">" s) l r) (locSpan l <> locSpan r)),
+      binary ">=" (\s l r -> Located (ExprBinary (Located ">=" s) l r) (locSpan l <> locSpan r))
     ],
-    [ binary "&&" (\s l r -> Located (ExprBinary (Located BinOpAnd s) l r) (locSpan l <> locSpan r))
+    [ binary "&&" (\s l r -> Located (ExprBinary (Located "&&" s) l r) (locSpan l <> locSpan r))
     ],
-    [ binary "||" (\s l r -> Located (ExprBinary (Located BinOpOr s) l r) (locSpan l <> locSpan r))
+    [ binary "||" (\s l r -> Located (ExprBinary (Located "||" s) l r) (locSpan l <> locSpan r))
     ]
   ]
 
@@ -165,16 +169,19 @@ bind :: Parser LBind
 bind = dbg "bind" $ try $ located $ funBind <|> patternBind
   where
     patternBind :: Parser Bind
-    patternBind = dbg "patBind" $ BindPat <$> try (pat <* charL '=') <*> rhs <*> where'
+    patternBind = dbg "patBind" $ BindPat <$> try (pat <* charL '=') <*> rhs
 
     funBind :: Parser Bind
-    funBind = try $ BindFun <$> lowerCaseIdent <*> some alt <*> where'
+    funBind = dbg "funBind" $ try $ BindFun <$> funLhs <*> rhs
 
-    alt :: Parser LAlt
-    alt = located $ Alt <$> some pat <* charL '=' <*> rhs
+    funLhs :: Parser LFunLhs
+    funLhs = located $ choice [funLhsName, funLhsOp] <* charL '='
+      where
+        funLhsName :: Parser FunLhs
+        funLhsName = FunLhsName <$> lowerCaseIdent <*> some pat
 
-    where' :: Parser [LClassDecl]
-    where' = option [] (kw "where" *> some classDecl)
+        funLhsOp :: Parser FunLhs
+        funLhsOp = undefined
 
 guard :: Parser LGuard
 guard = located . try $ Guard <$> pat <* charL '|' <*> expr
@@ -206,16 +213,22 @@ ann = arrowType <|> baseType
         <$> try (parens ((:) <$> (ann <* char ',')) <*> ann `sepEndBy1` char ',')
 
 pat :: Parser LPat
-pat = choice [wildcard, litP, identP, consP, listP, unitP]
+pat = dbg "pat" $ choice [opConsP, basePat]
   where
-    wildcard = located $ char '_' $> PatWildcard
-    litP = located $ PatLit <$> lit
-    identP = do
-      name <- lowerCaseIdent
-      pure $ Located (PatIdent name) (locSpan name)
-    consP = located $ PatCons <$> (upperCaseIdent <* char '@') <*> some pat
-    listP = located $ PatList <$> brackets (pat `sepEndBy` char ',')
-    unitP = located $ unit $> PatUnit
+    opConsP = try $ located $ PatOpCons <$> basePat <*> conOpIdent <*> pat
+
+    basePat :: Parser LPat
+    basePat = lexeme $ choice [wildcard, litP, identP, consP, listP, groupP, unitP]
+      where
+        wildcard = located $ char '_' $> PatWildcard
+        litP = located $ PatLit <$> lit
+        identP = do
+          name <- lowerCaseIdent
+          pure $ Located (PatIdent name) (locSpan name)
+        consP = located $ PatCons <$> (upperCaseIdent <* char '@') <*> some pat
+        listP = located $ PatList <$> brackets (pat `sepEndBy` char ',')
+        groupP = parens pat
+        unitP = located $ unit $> PatUnit
 
 parens :: Parser a -> Parser a
 parens = between (lexeme $ char '(') (lexeme $ char ')')
@@ -225,6 +238,17 @@ brackets = between (lexeme $ char '[') (lexeme $ char ']')
 
 braces :: Parser a -> Parser a
 braces = between (lexeme $ char '{') (lexeme $ char '}')
+
+conOpIdent :: Parser Ident
+conOpIdent = lexeme $ located $ pack <$> ((:) <$> char ':' <*> many conOpChar)
+  where
+    conOpChar = oneOf (":!#$%&*+./<=>?@\\^|~-" :: String)
+
+opIdent :: Parser Ident
+opIdent = located $ pack <$> ((:) <$> opStartChar <*> many opChar)
+  where
+    opStartChar = oneOf ("!#$%&*+./<=>?@\\^|~-" :: String)
+    opChar = opStartChar <|> char '\''
 
 lowerCaseIdent :: Parser Ident
 lowerCaseIdent = dbg "lowerCaseIdent" $ try $ do
