@@ -3,7 +3,7 @@ module Idyllic.Comb where
 import Control.Applicative (Alternative (..))
 import Control.Monad.Identity (Identity)
 import Data.Text (Text)
-import qualified Data.Text as Text
+import Data.Text qualified as Text
 
 data Parsecesult e a = Parsecesult
   { resultValue :: Maybe a, -- The partial or successful output
@@ -53,22 +53,22 @@ instance (Monad m) => Monad (ParsecT e m) where
         Nothing -> pure resA {resultValue = Nothing} -- Propagate failure
         Just a -> runParsecT (f a) (remaining resA)
 
-(<?>) :: ParsecT e m a -> Text -> ParsecT e m a
-(ParsecT p) <?> errMsg = ParsecT $ \input -> do
-  res <- p input
-  case resultValue res of
-    Just _ -> pure res
-    Nothing -> pure res {errors = errors res ++ [errorMessage errMsg]}
+-- (<?>) :: ParsecT e m a -> Text -> ParsecT e m a
+-- (ParsecT p) <?> errMsg = ParsecT $ \input -> do
+--   res <- p input
+--   case resultValue res of
+--     Just _ -> pure res
+--     Nothing -> pure res {errors = errors res ++ [errorMessage errMsg]}
 
-anyChar :: Parsec Char e
-anyChar = ParsecT $ \input ->
-  case Text.uncons input of
-    Nothing -> pure $ Parsecesult Nothing input []
-    Just (c, rest) -> pure $ Parsecesult (Just c) rest []
+-- anyChar :: Parsec Char e
+-- anyChar = ParsecT $ \input ->
+--   case Text.uncons input of
+--     Nothing -> pure $ Parsecesult Nothing input []
+--     Just (c, rest) -> pure $ Parsecesult (Just c) rest []
 
-satisfy :: (Char -> Bool) -> Parsec Char e
-satisfy predicate = do
-  c <- anyChar
-  if predicate c
-    then return c
-    else ParsecT $ \input -> pure $ Parsecesult Nothing input [errorMessage "Unexpected character"]
+-- satisfy :: (Char -> Bool) -> Parsec Char e
+-- satisfy predicate = do
+--   c <- anyChar
+--   if predicate c
+--     then return c
+--     else ParsecT $ \input -> pure $ Parsecesult Nothing input [errorMessage "Unexpected character"]
