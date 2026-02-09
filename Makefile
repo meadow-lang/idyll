@@ -28,6 +28,6 @@ run: drv_build
 	cd driver && cargo run -- --compiler-path "$$HS_PATH"
 
 clean:
-	cd compiler && cabal clean
+	cabal clean
 	cd driver && cargo clean
 	cd rts && cargo clean
