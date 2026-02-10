@@ -1,19 +1,44 @@
-module Idyllic.Comb where
+module Idyllic.Parsec where
 
 import Control.Applicative (Alternative (..))
 import Control.Monad.Identity (Identity)
 import Data.Text (Text)
+import qualified Data.Text as T
 
 data ParseResult e s a = ParseResult
   { resultValue :: Maybe a, -- The partial or successful output
     remaining :: s, -- The rest of the input
     errors :: [e] -- Accumulated errors
   }
-  deriving (Show)
+  deriving (Show, Eq, Ord)
 
 class Stream s where
   type Token s
-  uncons :: s -> Maybe (Token s, s)
+  type Tokens s
+  tokenToChunk :: forall c -> (s ~ c) => Token s -> Tokens s
+  tokensToChunk :: forall c -> (s ~ c) => [Token s] -> Tokens s
+  chunkToTokens :: forall c -> (s ~ c) => Tokens s -> [Token s]
+  chunkLength :: forall c -> (s ~ c) => Tokens s -> Int
+  chunkEmpty :: forall c -> (s ~ c) => Tokens s -> Bool
+  take1Token :: s -> Maybe (Token s, s)
+  takeNTokens :: Int -> s -> Maybe (Tokens s, s)
+  takeTokensWhile :: (Token s -> Bool) -> s -> (Tokens s, s)
+
+instance Stream Text where
+  type Token Text = Char
+  type Tokens Text = Text
+
+  tokenToChunk Text = T.singleton
+  tokensToChunk Text = T.pack
+  chunkToTokens Text = T.unpack
+  chunkLength Text = T.length
+  chunkEmpty Text = T.null
+  take1Token = T.uncons
+  takeNTokens n s
+    | n <= 0 = Just (T.empty, s)
+    | T.null s = Nothing
+    | otherwise = Just $ T.splitAt n s
+  takeTokensWhile = T.span
 
 newtype ParsecT e s m a = ParsecT
   {runParsecT :: s -> m (ParseResult e s a)}
