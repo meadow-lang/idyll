@@ -81,6 +81,9 @@ instance (Stream s, Monad m) => Monad (ParsecT e s m) where
         Nothing -> pure resA {resultValue = Nothing} -- Propagate failure
         Just a -> runParsecT (f a) (remaining resA)
 
+satisfy :: (Stream s) => (Token s -> Bool) -> Parsec e s (Token s)
+satisfy = undefined
+
 -- (<?>) :: ParsecT e m a -> Text -> ParsecT e m a
 -- (ParsecT p) <?> errMsg = ParsecT $ \input -> do
 --   res <- p input
