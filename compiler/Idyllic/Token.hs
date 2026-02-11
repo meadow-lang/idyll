@@ -1,11 +1,6 @@
-module Idyllic.Token
-  ( LToken,
-    Token (..),
-    tokenText,
-  )
-where
+module Idyllic.Token (LToken, Token (..)) where
 
-import Data.ByteString (ByteString)
+import Data.Text (Text)
 import Idyllic.Utils
 
 type LToken = Located Token
@@ -16,19 +11,22 @@ data Token
   | TokenTab
   | TokenNewline
   | TokenWhitespace
-  | TokenUppercaseIdent
-  | TokenLowercaseIdent
-  | TokenOpIdent
-  | TokenConOpIdent
-  | TokenInt
-  | TokenString
-  | TokenChar
+  | TokenIndent
+  | TokenUppercaseIdent Text
+  | TokenLowercaseIdent Text
+  | TokenOpIdent Text
+  | TokenConOpIdent Text
+  | TokenInt Integer
+  | TokenString Text
+  | TokenChar Char
   | TokenLParen
   | TokenRParen
   | TokenLBrace
   | TokenRBrace
   | TokenLBracket
   | TokenRBracket
+  | TokenVLBrace
+  | TokenVRBrace
   | TokenBang
   | TokenHash
   | TokenBackSlash
@@ -43,23 +41,4 @@ data Token
   | TokenBar
   | TokenUnderscore
   | TokenAt
-  deriving (-- | TokenWhere
-            -- | TokenLet
-            -- | TokenIn
-            -- | TokenIf
-            -- | TokenThen
-            -- | TokenElse
-            -- | TokenCase
-            -- | TokenOf
-            -- | TokenData
-            -- | TokenRecord
-            -- | TokenClass
-            -- | TokenInstance
-            -- | TokenMod
-            -- | TokenUse
-            -- | TokenAs
-            -- | TokenEnd
-            Show, Eq, Ord)
-
-tokenText :: LToken -> ByteString -> ByteString
-tokenText t = slice $ locSpan t
+  deriving (Show, Eq, Ord)

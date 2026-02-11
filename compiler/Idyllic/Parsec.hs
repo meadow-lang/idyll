@@ -1,7 +1,7 @@
-{-# LANGUAGE InstanceSigs #-}
 module Idyllic.Parsec where
 
 import Control.Applicative (Alternative (..))
+import Control.Monad (MonadPlus)
 import Control.Monad.Identity (Identity)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -82,14 +82,20 @@ instance (Stream s, Monad m) => Monad (ParsecT e s m) where
         Nothing -> pure resA {resultValue = Nothing} -- Propagate failure
         Just a -> runParsecT (f a) (remaining resA)
 
+class (Stream s, MonadPlus m) => MonadParsec e s m | m -> e s where
+  parseError :: e -> m a
+  token :: (Token s -> Maybe a) -> m a
+
 anyToken :: (Stream s, Monad m) => ParsecT e s m (Token s)
 anyToken = ParsecT $ \input ->
   case take1Token input of
     Nothing -> pure $ ParseResult Nothing input []
     Just (t, rest) -> pure $ ParseResult (Just t) rest []
 
-satisfy :: Stream s => (Token s -> Bool) -> ParsecT e s m (Token s)
-satisfy = undefined
+satisfy :: (MonadParsec e s m) => (Token s -> Bool) -> m (Token s)
+satisfy p = token testTok
+  where
+    testTok x = if p x then Just x else Nothing
 
 -- (<?>) :: ParsecT e m a -> Text -> ParsecT e m a
 -- (ParsecT p) <?> errMsg = ParsecT $ \input -> do
@@ -97,7 +103,6 @@ satisfy = undefined
 --   case resultValue res of
 --     Just _ -> pure res
 --     Nothing -> pure res {errors = errors res ++ [errorMessage errMsg]}
-
 
 -- satisfy :: (Char -> Bool) -> Parsec Char e
 -- satisfy predicate = do
