@@ -27,10 +27,7 @@ import qualified Text.Megaparsec.Char.Lexer as L
 type Lexer = Parsec Void Text
 
 tokenize :: Text -> Either (ParseErrorBundle Text Void) [LToken]
-tokenize = (parse . many) locTokenL ""
-
-locTokenL :: Lexer LToken
-locTokenL = located tokenL
+tokenize = (parse . many) (located tokenL) ""
 
 tokenL :: Lexer Token
 tokenL =
