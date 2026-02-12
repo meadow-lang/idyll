@@ -14,4 +14,7 @@ import Idyllic.Token
 import Idyllic.Utils
 import Text.Megaparsec
 
-type Parser = Parsec Void LToken
+type Parser = Parsec Void [LToken]
+
+tokenP :: Parser LToken
+tokenP = undefined
