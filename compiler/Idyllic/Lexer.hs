@@ -27,15 +27,12 @@ import qualified Text.Megaparsec.Char.Lexer as L
 type Lexer = Parsec Void Text
 
 tokenize :: Text -> Either (ParseErrorBundle Text Void) [LToken]
-tokenize = (parse . many) (located tokenL) ""
+tokenize = parse (sc *> many (located tokenL <* sc)) ""
 
 tokenL :: Lexer Token
 tokenL =
   choice
-    [ lineComment *> tokenL,
-      whitespace,
-      newline,
-      upperCaseIdent,
+    [ upperCaseIdent,
       lowerCaseIdent,
       conOpIdent,
       opIdent,
@@ -127,8 +124,13 @@ str = TokenString <$> (char '\"' *> (pack <$> manyTill L.charLiteral (char '\"')
 charT :: Lexer Token
 charT = TokenChar <$> (char '\'' *> L.charLiteral <* char '\'')
 
+sc :: Lexer ()
+sc = L.space space1 (L.skipLineComment "--") (L.skipBlockComment "{-" "-}")
+
 located :: Lexer a -> Lexer (Located a)
 located l = do
   start <- getOffset
   res <- l
   Located res . Span start <$> getOffset
+
+-- data TokenStream = TokenStream {lexer :: Lexer LToken, left :: ~TokenStream, right :: ~TokenStream}

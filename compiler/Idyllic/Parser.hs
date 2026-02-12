@@ -10,4 +10,8 @@ import Data.Void
 import Error.Diagnose.Compat.Megaparsec (HasHints (..))
 import Idyllic.AST
 import Idyllic.Effect
+import Idyllic.Token
 import Idyllic.Utils
+import Text.Megaparsec
+
+type Parser = Parsec Void LToken
