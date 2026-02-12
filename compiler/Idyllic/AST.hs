@@ -1,6 +1,9 @@
 module Idyllic.AST
   ( Prog,
     Module (..),
+    LBind,
+    Bind (..),
+    LExpr,
     Expr (..),
     Ident,
     Lit (..),
