@@ -1,5 +1,4 @@
--- module Idyllic.Syn.Parser (parseFile, parseInteractive) where
-module Idyllic.Parser where
+module Idyllic.Parser (parseInteractive, parseFile) where
 
 import Control.Monad (void)
 import Control.Monad.Combinators.Expr
@@ -34,31 +33,28 @@ located p = do
 tokenP :: Token -> Parser Token
 tokenP t = token (\(Located lt _) -> if t == lt then Just t else Nothing) Set.empty
 
-int :: Parser (Located Integer)
-int = token (\case (Located (TokenInt n) s) -> Just (Located n s); _ -> Nothing) Set.empty
+int :: Parser Integer
+int = token (\case (Located (TokenInt n) _) -> Just n; _ -> Nothing) Set.empty
 
-bool :: Parser (Located Bool)
+bool :: Parser Bool
 bool = token test Set.empty
   where
-    test (Located (TokenUppercaseIdent name) s) =
+    test (Located (TokenUppercaseIdent name) _) =
       case name of
-        "True" -> Just (Located True s)
-        "False" -> Just (Located False s)
+        "True" -> Just True
+        "False" -> Just False
         _ -> Nothing
     test _ = Nothing
 
-string :: Parser (Located Text)
-string = token (\case (Located (TokenString str) s) -> Just (Located str s); _ -> Nothing) Set.empty
+string :: Parser Text
+string = token (\case (Located (TokenString str) _) -> Just str; _ -> Nothing) Set.empty
 
-unit :: Parser ()
-unit = tokenP TokenLParen *> tokenP TokenRParen $> ()
-
-lit :: Parser (Located Lit)
+lit :: Parser Lit
 lit =
   choice
-    [ fmap Int <$> int,
-      fmap Bool <$> bool,
-      fmap String <$> string
+    [ Int <$> int,
+      Bool <$> bool,
+      String <$> string
     ]
 
 kw :: Text -> Parser LToken
@@ -87,16 +83,30 @@ braces :: Parser a -> Parser a
 braces = between (tokenP TokenLBrace) (tokenP TokenRBrace)
 
 expr :: Parser LExpr
-expr = undefined
+expr = app <|> atom
+  where
+    unit = tokenP TokenLParen *> tokenP TokenRParen $> ExprUnit
+    litExpr = ExprLit <$> lit
+    varExpr = ExprVar <$> lowerIdent
+    lam = ExprLam <$> (tokenP TokenBackSlash *> some lowerIdent) <*> expr
+    let' = ExprLet <$> (kw "let" *> lowerIdent) <*> (tokenP TokenEq *> expr) <*> (kw "in" *> expr)
+    atom = located $ choice [unit, litExpr, let', varExpr, lam, parens (locItem <$> expr)]
+    app = try $ located $ ExprApp <$> atom <*> some atom
 
 bind :: Parser LBind
 bind = located $ bindFun <|> bindName
   where
-    bindFun = BindFun <$> (kw "fun" *> lowerIdent) <*> some lowerIdent <*> expr
-    bindName = BindName <$> (kw "def" *> lowerIdent) <*> expr
+    bindFun = try $ BindFun <$> (kw "fun" *> lowerIdent) <*> some lowerIdent <*> (tokenP TokenEq *> expr)
+    bindName = try $ BindName <$> (kw "def" *> lowerIdent) <*> (tokenP TokenEq *> expr)
 
-mod :: Text -> Parser Module
-mod name = Module name <$> many bind
+mod' :: Text -> Parser Module
+mod' name = Module name <$> many bind
 
 interactive :: Parser (Either [LBind] LExpr)
-interactive = undefined
+interactive = Left <$> try (some bind) <|> Right <$> expr
+
+parseFile :: Text -> [LToken] -> Either (ParseErrorBundle [LToken] Void) Prog
+parseFile filename = parse (located $ mod' filename) (unpack filename)
+
+parseInteractive :: [LToken] -> Either (ParseErrorBundle [LToken] Void) (Either [LBind] LExpr)
+parseInteractive = parse (interactive <* eof) "<interactive>"
