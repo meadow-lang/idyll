@@ -97,3 +97,6 @@ bind = located $ bindFun <|> bindName
 
 mod :: Text -> Parser Module
 mod name = Module name <$> many bind
+
+interactive :: Parser (Either [LBind] LExpr)
+interactive = undefined
