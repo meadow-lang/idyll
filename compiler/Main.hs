@@ -7,7 +7,7 @@ import Text.Megaparsec
 import Text.Pretty.Simple
 
 src :: Text
-src = "id x = x\nconst x y = x"
+src = "fun s f g x = f x (g x)"
 
 main :: IO ()
 main = do

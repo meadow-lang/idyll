@@ -46,15 +46,15 @@ tokenL =
       TokenLBracket <$ char '[',
       TokenRBracket <$ char ']',
       TokenBang <$ char '!',
-      TokenLArrow <$ string "->",
+      TokenRArrow <$ string "->",
       TokenBackSlash <$ char '\\',
       TokenColon <$ char ':',
       TokenSemi <$ char ';',
       TokenComma <$ char ',',
       TokenPeriod <$ char '.',
-      TokenLFatArrow <$ string "=>",
+      TokenRFatArrow <$ string "=>",
       TokenEq <$ char '=',
-      TokenRArrow <$ string "<-",
+      TokenLArrow <$ string "<-",
       TokenBar <$ char '|',
       TokenUnderscore <$ char '_'
     ]

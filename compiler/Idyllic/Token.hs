@@ -37,7 +37,7 @@ data Token
   | TokenEq
   | TokenLArrow
   | TokenRArrow
-  | TokenLFatArrow
+  | TokenRFatArrow
   | TokenBar
   | TokenUnderscore
   | TokenAt

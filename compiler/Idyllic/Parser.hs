@@ -82,15 +82,27 @@ brackets = between (tokenP TokenLBracket) (tokenP TokenRBracket)
 braces :: Parser a -> Parser a
 braces = between (tokenP TokenLBrace) (tokenP TokenRBrace)
 
+keywords :: [Text]
+keywords =
+  [ "fun",
+    "def",
+    "let",
+    "in"
+  ]
+
 expr :: Parser LExpr
 expr = app <|> atom
   where
     unit = tokenP TokenLParen *> tokenP TokenRParen $> ExprUnit
     litExpr = ExprLit <$> lit
-    varExpr = ExprVar <$> lowerIdent
-    lam = ExprLam <$> (tokenP TokenBackSlash *> some lowerIdent) <*> expr
+    varExpr = do
+      name <- lowerIdent
+      if locItem name `elem` keywords
+        then fail $ "keyword " ++ show name ++ " cannot be used as an identifier"
+        else pure $ ExprVar name
+    lam = ExprLam <$> (tokenP TokenBackSlash *> some lowerIdent) <*> (tokenP TokenRArrow *> expr)
     let' = ExprLet <$> (kw "let" *> lowerIdent) <*> (tokenP TokenEq *> expr) <*> (kw "in" *> expr)
-    atom = located $ choice [unit, litExpr, let', varExpr, lam, parens (locItem <$> expr)]
+    atom = located $ choice [try unit, litExpr, let', varExpr, lam, parens (locItem <$> expr)]
     app = try $ located $ ExprApp <$> atom <*> some atom
 
 bind :: Parser LBind
