@@ -1,6 +1,5 @@
 module Idyllic.Layout where
 
-import Data.Set (Set)
 import Data.Text
 import Idyllic.Token
 
@@ -25,7 +24,7 @@ layDKillaz :: [(Herald, Text)]
 layDKillaz = [(Of, "where"), (Do, "where"), (Let, "in")]
 
 closingDelim :: [Text]
-closingDelim = [")", "}", "]"]
+closingDelim = [")", "}", "]", ";"]
 
-layout :: [Int]
+layout :: [LToken] -> LayoutStack -> [LToken]
 layout = undefined
