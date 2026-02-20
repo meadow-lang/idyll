@@ -21,7 +21,7 @@ import Text.Megaparsec
     some,
     (<?>),
   )
-import Text.Megaparsec.Char (alphaNumChar, char, char', lowerChar, space1, string, upperChar)
+import Text.Megaparsec.Char (alphaNumChar, char, char', hspace1, lowerChar, space1, string, upperChar)
 import qualified Text.Megaparsec.Char.Lexer as L
 
 type Lexer = Parsec Void Text
@@ -32,7 +32,8 @@ tokenize = parse (sc *> some (located tokenL <* sc)) ""
 tokenL :: Lexer Token
 tokenL =
   choice
-    [ upperCaseIdent,
+    [ newline,
+      upperCaseIdent,
       lowerCaseIdent,
       conOpIdent,
       opIdent,
@@ -98,10 +99,10 @@ isOpChar c = c `elem` ("!$%&*+./<=>?@|\\~:" ++ ['^' .. '`'] :: String)
 newline :: Lexer Token
 newline = TokenNewline <$ oneOf ['\n', '\r']
 
-whitespace :: Lexer Token
-whitespace = TokenWhitespace <$ takeWhile1P (Just "whitespace") isSpace
-  where
-    isSpace c = c == ' ' || c == '\t'
+-- whitespace :: Lexer Token
+-- whitespace = TokenWhitespace <$ takeWhile1P (Just "whitespace") isSpace
+--   where
+--     isSpace c = c == ' ' || c == '\t'
 
 lineComment :: Lexer ()
 lineComment = L.skipLineComment "--"
@@ -125,12 +126,10 @@ charT :: Lexer Token
 charT = TokenChar <$> (char '\'' *> L.charLiteral <* char '\'')
 
 sc :: Lexer ()
-sc = L.space space1 (L.skipLineComment "--") (L.skipBlockComment "{-" "-}")
+sc = L.space hspace1 lineComment (L.skipBlockCommentNested "{-" "-}")
 
 located :: Lexer a -> Lexer (Located a)
 located l = do
   start <- getOffset
   res <- l
   Located res . Span start <$> getOffset
-
--- data TokenStream = TokenStream {lexer :: Lexer LToken, left :: ~TokenStream, right :: ~TokenStream}

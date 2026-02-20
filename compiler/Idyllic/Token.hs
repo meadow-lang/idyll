@@ -8,10 +8,7 @@ type LToken = Located Token
 data Token
   = TokenError
   | TokenEOF
-  | TokenTab
   | TokenNewline
-  | TokenWhitespace
-  | TokenIndent
   | TokenUppercaseIdent Text
   | TokenLowercaseIdent Text
   | TokenOpIdent Text
@@ -27,6 +24,7 @@ data Token
   | TokenRBracket
   | TokenVLBrace
   | TokenVRBrace
+  | TokenVSemi
   | TokenBang
   | TokenHash
   | TokenBackSlash

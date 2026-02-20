@@ -7,7 +7,7 @@ import Text.Megaparsec
 import Text.Pretty.Simple
 
 src :: Text
-src = "fun s f g x = f x (g x)"
+src = "s f g x = f x (g x);\nk x y = x;\ni x = x;"
 
 main :: IO ()
 main = do
@@ -15,4 +15,6 @@ main = do
     Left es -> print $ errorBundlePretty es
     Right ts -> case parseInteractive ts of
       Left es -> pPrint es
-      Right ast -> pPrint ast
+      Right ast -> do
+        pPrint ts
+        pPrint ast

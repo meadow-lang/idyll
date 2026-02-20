@@ -12,6 +12,15 @@ data Delim
 
 data Herald = Let | Of | Where | Do deriving (Show, Eq, Ord)
 
+data TokenTree
+  = Token LToken
+  | Open Int Delim TokenTree
+  | Line Int TokenTree
+  | Close Delim
+
+mark :: [LToken] -> [TokenTree]
+mark (t : ts) = undefined
+
 data LayoutContext = LayoutContext
   { indent :: Int,
     delim :: Delim

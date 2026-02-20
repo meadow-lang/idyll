@@ -108,8 +108,8 @@ expr = app <|> atom
 bind :: Parser LBind
 bind = located $ bindFun <|> bindName
   where
-    bindFun = try $ BindFun <$> (kw "fun" *> lowerIdent) <*> some lowerIdent <*> (tokenP TokenEq *> expr)
-    bindName = try $ BindName <$> (kw "def" *> lowerIdent) <*> (tokenP TokenEq *> expr)
+    bindFun = try $ BindFun <$> lowerIdent <*> some lowerIdent <*> (tokenP TokenEq *> expr) <* tokenP TokenSemi
+    bindName = try $ BindName <$> lowerIdent <*> (tokenP TokenEq *> expr) <* tokenP TokenSemi
 
 mod' :: Text -> Parser Module
 mod' name = Module name <$> many bind
