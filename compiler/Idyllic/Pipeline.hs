@@ -3,22 +3,28 @@ module Idyllic.Pipeline (runPipelineIO) where
 import Control.Monad.Reader (MonadIO (liftIO), MonadReader (ask), ReaderT (runReaderT), asks)
 import Data.Text
 import Idyllic.Effect
+import Idyllic.Layout
 import Idyllic.Lexer
 import Idyllic.Parser
-import Text.Pretty.Simple
 import Text.Megaparsec (errorBundlePretty)
+import Text.Pretty.Simple
 
 pipelineMain :: Pipeline ()
 pipelineMain = do
   env <- ask
+  li <- asks pipelineLineIndex
   let src = pipelineSrc env
   case tokenize src of
     Left es -> liftIO $ print $ errorBundlePretty es
-    Right ts -> case parseInteractive ts of
-      Left es -> pPrint es
-      Right ast -> do
-        pPrint ts
-        pPrint ast
+    Right ts -> do
+      -- pPrint ts
+      -- pPrint $ mark li ts
+      pPrint $ layout li ts
+  -- Right ts -> case parseInteractive ts of
+  --   Left es -> pPrint es
+  --   Right ast -> do
+  --     pPrint ts
+  --     pPrint ast
   -- let result = parseInteractive src
   -- case result of
   --   Left e ->

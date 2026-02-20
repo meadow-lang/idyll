@@ -7,7 +7,6 @@ type LToken = Located Token
 
 data Token
   = TokenError
-  | TokenEOF
   | TokenNewline
   | TokenUppercaseIdent Text
   | TokenLowercaseIdent Text
