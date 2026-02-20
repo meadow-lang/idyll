@@ -16,7 +16,7 @@ data InputMode
   deriving (Show, Eq)
 
 data PipelineEnv = PipelineEnv
-  { pipelineSrc :: ByteString,
+  { pipelineSrc :: Text,
     pipelineDebug :: Bool,
     pipelineMode :: InputMode,
     pipelineLineIndex :: LineIndex,
@@ -24,7 +24,7 @@ data PipelineEnv = PipelineEnv
   }
   deriving (Eq)
 
-newPipelineEnv :: Bool -> InputMode -> ByteString -> IO PipelineEnv
+newPipelineEnv :: Bool -> InputMode -> Text -> IO PipelineEnv
 newPipelineEnv debug mode src = do
   errVar <- newTVarIO []
   pure
@@ -36,7 +36,7 @@ newPipelineEnv debug mode src = do
         pipelineErrors = errVar
       }
 
-defaultPipelineEnv :: ByteString -> IO PipelineEnv
+defaultPipelineEnv :: Text -> IO PipelineEnv
 defaultPipelineEnv src = do
   errVar <- newTVarIO []
   pure

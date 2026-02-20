@@ -1,14 +1,13 @@
 module Idyllic.Utils where
 
-import Data.ByteString (ByteString)
-import qualified Data.ByteString as B
-import qualified Data.ByteString as BS
+import Data.Text (Text)
+import qualified Data.Text.Internal.Search as T
 import qualified Data.Vector.Unboxed as U
 
 newtype LineIndex = LineIndex {lineStarts :: U.Vector Int} deriving (Show, Eq)
 
-buildLineIndex :: ByteString -> LineIndex
-buildLineIndex bs = LineIndex . U.fromList $ 0 : map (+ 1) (B.elemIndices 0x0A bs)
+buildLineIndex :: Text -> LineIndex
+buildLineIndex bs = LineIndex . U.fromList $ 0 : map (+ 1) (T.indices "\n" bs)
 
 offsetToLineCol :: LineIndex -> Int -> (Int, Int)
 offsetToLineCol (LineIndex starts) !offset =
@@ -33,8 +32,8 @@ data Located a = Located {locItem :: a, locSpan :: Span}
   deriving (Show, Eq, Ord, Functor)
 
 data Span = Span
-  { spanStart :: {-# UNPACK #-} !Int,
-    spanEnd :: {-# UNPACK #-} !Int
+  { spanStart :: {-# UNPACK #-} Int,
+    spanEnd :: {-# UNPACK #-} Int
   }
   deriving (Show, Eq, Ord)
 
@@ -44,11 +43,8 @@ toPair (Span s e) = (s, e)
 fromPair :: (Int, Int) -> Span
 fromPair (s, e) = Span s e
 
-slice :: Span -> ByteString -> ByteString
-slice (Span s e) bs = BS.take (e - s) (BS.drop s bs)
-
--- instance Pretty Span where
---   pretty (Loc s e) = pack $ show s <> ".." <> show e
+-- slice :: Span -> ByteString -> ByteString
+-- slice (Span s e) bs = BS.take (e - s) (BS.drop s bs)
 
 instance Semigroup Span where
   Span s1 e1 <> Span s2 e2 = Span (min s1 s2) (max e1 e2)
