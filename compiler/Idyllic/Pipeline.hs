@@ -21,7 +21,9 @@ pipelineMain = do
     --   -- pPrint $ mark li ts
     --   pPrint $ layout li ts
     Right ts -> case parseInteractive ts of
-      Left es -> pPrint es
+      Left es -> do
+        pPrint $ layout li ts
+        pPrint es
       Right ast -> do
         -- pPrint $ mark li ts
         pPrint $ layout li ts
