@@ -16,15 +16,16 @@ pipelineMain = do
   let src = pipelineSrc env
   case tokenize src of
     Left es -> liftIO $ print $ errorBundlePretty es
-    Right ts -> do
-      -- pPrint ts
-      -- pPrint $ mark li ts
-      pPrint $ layout li ts
-  -- Right ts -> case parseInteractive ts of
-  --   Left es -> pPrint es
-  --   Right ast -> do
-  --     pPrint ts
-  --     pPrint ast
+    -- Right ts -> do
+    --   -- pPrint ts
+    --   -- pPrint $ mark li ts
+    --   pPrint $ layout li ts
+    Right ts -> case parseInteractive ts of
+      Left es -> pPrint es
+      Right ast -> do
+        -- pPrint $ mark li ts
+        pPrint $ layout li ts
+        pPrint ast
   -- let result = parseInteractive src
   -- case result of
   --   Left e ->

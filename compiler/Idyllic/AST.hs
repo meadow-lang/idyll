@@ -35,7 +35,7 @@ data Expr
   | ExprVar Ident
   | ExprApp LExpr [LExpr]
   | ExprLam [Ident] LExpr
-  | ExprLet Ident LExpr LExpr
+  | ExprLet [LBind] LExpr
   | -- | ExprDo [LExpr]
     -- | ExprNeg LExpr
     -- | ExprBinary Ident LExpr LExpr

@@ -82,11 +82,15 @@ brackets = between (tokenP TokenLBracket) (tokenP TokenRBracket)
 braces :: Parser a -> Parser a
 braces = between (tokenP TokenLBrace) (tokenP TokenRBrace)
 
+vbraces :: Parser a -> Parser a
+vbraces = between (tokenP TokenVLBrace) (tokenP TokenVRBrace)
+
 keywords :: [Text]
 keywords =
-  [ "fun",
-    "def",
-    "let",
+  [ "let",
+    "where",
+    "do",
+    "of",
     "in"
   ]
 
@@ -101,7 +105,9 @@ expr = app <|> atom
         then fail $ "keyword " ++ show name ++ " cannot be used as an identifier"
         else pure $ ExprVar name
     lam = ExprLam <$> (tokenP TokenBackSlash *> some lowerIdent) <*> (tokenP TokenRArrow *> expr)
-    let' = ExprLet <$> (kw "let" *> lowerIdent) <*> (tokenP TokenEq *> expr) <*> (kw "in" *> expr)
+    let' = ExprLet <$> (kw "let" *> letBinds) <*> (kw "in" *> expr)
+      where
+        letBinds = vbraces (bind `sepEndBy` tokenP TokenVSemi)
     atom = located $ choice [try unit, litExpr, let', varExpr, lam, parens (locItem <$> expr)]
     app = try $ located $ ExprApp <$> atom <*> some atom
 
