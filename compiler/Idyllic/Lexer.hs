@@ -33,6 +33,18 @@ tokenL :: Lexer Token
 tokenL =
   choice
     [ newline,
+      TokenMod <$ string "mod",
+      TokenData <$ string "data",
+      TokenType <$ string "type",
+      TokenLet <$ string "let",
+      TokenIn <$ string "in",
+      TokenWhere <$ string "where",
+      TokenDo <$ string "do",
+      TokenCase <$ string "case",
+      TokenOf <$ string "of",
+      TokenIf <$ string "if",
+      TokenThen <$ string "then",
+      TokenElse <$ string "else",
       upperCaseIdent,
       lowerCaseIdent,
       conOpIdent,

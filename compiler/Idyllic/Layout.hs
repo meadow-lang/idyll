@@ -1,6 +1,5 @@
 module Idyllic.Layout where
 
-import Data.Text (Text)
 import Idyllic.Token
 import Idyllic.Utils
 
@@ -10,7 +9,7 @@ data Marked
   | Indent Int
   deriving (Show, Eq, Ord)
 
-data Herald = IsHerald Text | NotHerald
+data Herald = IsHerald Token | NotHerald
   deriving (Show, Eq, Ord)
 
 mark :: LineIndex -> [LToken] -> [Marked]
@@ -43,8 +42,8 @@ mark li = markIndents . markBlocks
     layoutHerald :: LToken -> Herald
     layoutHerald = go . locItem
       where
-        go (TokenLowercaseIdent "let") = IsHerald "let"
-        go (TokenLowercaseIdent "do") = IsHerald "do"
+        go TokenLet = IsHerald TokenLet
+        go TokenDo = IsHerald TokenDo
         go _ = NotHerald
 
 layout :: LineIndex -> [LToken] -> [LToken]
@@ -64,11 +63,10 @@ layout li ts' = Located TokenVLBrace (Span 0 0) : go (mark li ts') [(1, NotHeral
     go (Token t : ts) ((0, NotHerald) : ms) | locItem t == TokenRBrace = t : go ts ms
     go (Token t : _) _ | locItem t == TokenRBrace = error "unexpected closing brace"
     go (Token t : ts) ms | locItem t == TokenLBrace = t : go ts ((0, NotHerald) : ms)
-    go (Token t : ts) ((m, IsHerald kw) : ms) | m /= 0 && closesBlock t kw = Located TokenVRBrace (Span m 7) : t : go ts ms
+    go (Token t : ts) ((m, IsHerald kw) : ms) | m /= 0 && closesBlock (locItem t) kw = Located TokenVRBrace (Span m 7) : t : go ts ms
       where
-        closesBlock (locItem -> TokenLowercaseIdent name) hd
-          | hd == "do" = name == "where"
-          | hd == "let" = name == "in"
+        closesBlock TokenIn TokenLet = True
+        closesBlock TokenWhere TokenDo = True
         closesBlock _ _ = False
     go (Token t : ts) ms = t : go ts ms
     go [] [] = []

@@ -102,16 +102,6 @@ lit =
       String <$> string
     ]
 
-kw :: Text -> Parser LToken
-kw target = token test expectedSet
-  where
-    test (Located (TokenLowercaseIdent name) s)
-      | name == target = Just (Located (TokenLowercaseIdent name) s)
-    test _ = Nothing
-
-    -- This ensures the error message says: "expecting 'fun'"
-    expectedSet = Set.singleton (Label (NonEmpty.fromList $ unpack target))
-
 lowerIdent :: Parser Ident
 lowerIdent = token (\case (Located (TokenLowercaseIdent name) s) -> Just (Located name s); _ -> Nothing) Set.empty
 
@@ -130,27 +120,14 @@ braces = between (tokenP TokenLBrace) (tokenP TokenRBrace)
 vbraces :: Parser a -> Parser a
 vbraces = between (tokenP TokenVLBrace) (tokenP TokenVRBrace)
 
-keywords :: [Text]
-keywords =
-  [ "let",
-    "where",
-    "do",
-    "of",
-    "in"
-  ]
-
 expr :: Parser LExpr
 expr = app <|> atom
   where
     unit = tokenP TokenLParen *> tokenP TokenRParen $> ExprUnit
     litExpr = ExprLit <$> lit
-    varExpr = do
-      name <- lowerIdent
-      if locItem name `elem` keywords
-        then fail $ "keyword " ++ show name ++ " cannot be used as an identifier"
-        else pure $ ExprVar name
+    varExpr = ExprVar <$> lowerIdent
     lam = ExprLam <$> (tokenP TokenBackSlash *> some lowerIdent) <*> (tokenP TokenRArrow *> expr)
-    let' = ExprLet <$> (kw "let" *> (cfgLet <|> letBinds)) <*> (kw "in" *> expr)
+    let' = ExprLet <$> (tokenP TokenLet *> (cfgLet <|> letBinds)) <*> (tokenP TokenIn *> expr)
       where
         cfgLet = try $ braces (bind `sepEndBy` tokenP TokenSemi)
         letBinds = vbraces (bind `sepEndBy` tokenP TokenVSemi)

@@ -38,4 +38,16 @@ data Token
   | TokenBar
   | TokenUnderscore
   | TokenAt
+  | TokenMod
+  | TokenData
+  | TokenType
+  | TokenLet
+  | TokenIn
+  | TokenWhere
+  | TokenDo
+  | TokenCase
+  | TokenOf
+  | TokenIf
+  | TokenThen
+  | TokenElse
   deriving (Show, Eq, Ord)
