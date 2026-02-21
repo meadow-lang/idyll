@@ -28,23 +28,23 @@ mark li = markIndents . markBlocks
 
     markBlocks :: [LToken] -> [Marked]
     markBlocks [t@(layoutHerald -> h@(IsHerald _))] = [Token t, OpenBlock 0 h]
-    markBlocks (t@(layoutHerald -> IsHerald _) : n : ts) = case locItem n of
+    markBlocks (t@(layoutHerald -> h@(IsHerald _)) : n : ts) = case locItem n of
       TokenNewline -> case ts of
-        [] -> [Token t, OpenBlock 0 (layoutHerald t)]
+        [] -> [Token t, OpenBlock 0 h]
         (t' : ts') ->
           let (_, col) = offsetToLineCol li (spanStart $ locSpan t')
-           in Token t : OpenBlock col (layoutHerald t) : Token t' : markBlocks ts'
+           in Token t : OpenBlock col h : Token t' : markBlocks ts'
       _ ->
         let (_, col) = offsetToLineCol li (spanStart $ locSpan n)
-         in Token t : OpenBlock col (layoutHerald t) : Token n : markBlocks ts
+         in Token t : OpenBlock col h : Token n : markBlocks ts
     markBlocks (t : ts) = Token t : markBlocks ts
     markBlocks [] = []
 
     layoutHerald :: LToken -> Herald
     layoutHerald = go . locItem
       where
-        go (TokenLowercaseIdent n) =
-          if n `elem` ["let", "where", "do", "of"] then IsHerald n else NotHerald
+        go (TokenLowercaseIdent "let") = IsHerald "let"
+        go (TokenLowercaseIdent "do") = IsHerald "do"
         go _ = NotHerald
 
 layout :: LineIndex -> [LToken] -> [LToken]
@@ -66,13 +66,9 @@ layout li ts' = Located TokenVLBrace (Span 0 0) : go (mark li ts') [(1, NotHeral
     go (Token t : ts) ms | locItem t == TokenLBrace = t : go ts ((0, NotHerald) : ms)
     go (Token t : ts) ((m, IsHerald kw) : ms) | m /= 0 && closesBlock t kw = Located TokenVRBrace (Span m 7) : t : go ts ms
       where
-        layDKillaz :: [(Text, Text)]
-        layDKillaz = [("do", "where"), ("let", "in")]
-
-        closesBlock (locItem -> TokenLowercaseIdent name) hd =
-          case lookup hd layDKillaz of
-            Nothing -> False
-            Just closer -> name == closer
+        closesBlock (locItem -> TokenLowercaseIdent name) hd
+          | hd == "do" = name == "where"
+          | hd == "let" = name == "in"
         closesBlock _ _ = False
     go (Token t : ts) ms = t : go ts ms
     go [] [] = []

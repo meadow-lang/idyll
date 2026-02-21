@@ -3,7 +3,7 @@ module Idyllic.Rename where
 import Control.Monad.State
 import Data.Text (Text)
 
-newtype RenameError = REUnboundName Text deriving (Show, Eq)
+newtype RenameError = ResUnboundName Text deriving (Show, Eq)
 
 data Env = Env
   { nameMap :: [(Text, Int)],
@@ -15,15 +15,15 @@ data Env = Env
 
 defaultEnv :: Env
 defaultEnv =
-  let initialNames = zip ops [0 ..]
-   in Env
-        { nameMap = initialNames,
-          nameCounter = length ops,
-          nodeIdCounter = 0,
-          errors = []
-        }
+  Env
+    { nameMap = initialNames,
+      nameCounter = length ops,
+      nodeIdCounter = 0,
+      errors = []
+    }
   where
     ops = ["+", "-", "*", "/", "%", "neg", "==", "!=", "<", "<=", ">", ">=", "&&", "||"]
+    initialNames = zip ops [0 ..]
 
 type Rename a = State Env a
 
@@ -33,7 +33,7 @@ find name = do
   case lookup name (nameMap env) of
     Just n -> pure (Just n)
     Nothing -> do
-      put env {errors = REUnboundName name : errors env}
+      put env {errors = ResUnboundName name : errors env}
       pure Nothing
 
 freshName :: Text -> Rename Int
