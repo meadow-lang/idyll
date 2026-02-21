@@ -28,7 +28,7 @@ binarySearch !v !x = go 0 (U.length v - 1)
         mid = (low + high) `div` 2
         midVal = v U.! mid
 
-data Located a = Located {locItem :: a, locSpan :: Span}
+data Located a = Located {unLoc :: a, locSpan :: Span}
   deriving (Show, Eq, Ord, Functor)
 
 data Span = Span

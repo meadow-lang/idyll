@@ -131,7 +131,7 @@ expr = app <|> atom
       where
         cfgLet = try $ braces (bind `sepEndBy` tokenP TokenSemi)
         letBinds = vbraces (bind `sepEndBy` tokenP TokenVSemi)
-    atom = located $ choice [try unit, litExpr, let', varExpr, lam, parens (locItem <$> expr)]
+    atom = located $ choice [try unit, litExpr, let', varExpr, lam, parens (unLoc <$> expr)]
     app = try $ located $ ExprApp <$> atom <*> some atom
 
 bind :: Parser LBind

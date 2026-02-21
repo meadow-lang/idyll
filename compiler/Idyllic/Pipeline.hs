@@ -18,28 +18,18 @@ pipelineMain = do
   let src = pipelineSrc env
   case tokenize src of
     Left es -> liftIO $ print $ errorBundlePretty es
-    -- Right ts -> do
-    --   -- pPrint ts
-    --   pPrint $ mark li ts
-    --   pPrint $ layout li ts
-    Right ts -> case parseInteractive $ layout li ts of
-      Left es -> do
-        pPrint $ layout li ts
-        pPrint es
-      -- let diag = errorDiagnosticFromBundle Nothing ("Parse error on input" :: Text) Nothing es
-      --     diag' = addFile diag "<interactive>" (unpack src)
-      --  in liftIO $ printDiagnostic stderr True True 2 defaultStyle diag'
-      Right ast -> do
-        -- pPrint $ mark li ts
-        pPrint $ layout li ts
-        pPrint ast
-  -- let result = parseInteractive src
-  -- case result of
-  --   Left e ->
-  --     let diag = errorDiagnosticFromBundle Nothing ("Parse error on input" :: Text) Nothing e
-  --         diag' = addFile diag "<interactive>" (unpack src)
-  --      in liftIO $ printDiagnostic stderr True True 2 defaultStyle diag'
-  --   Right ast -> pPrint ast
+    Right ts -> case layout li ts of
+      (lts, []) -> case parseInteractive lts of
+        Left es -> liftIO $ pPrint es
+        Right ast -> pPrint ast
+      (lts, es) -> liftIO $ do
+        putStrLn "Layout errors:"
+        mapM_ print es
+        case parseInteractive lts of
+          Left es' -> do
+            putStrLn "Parse errors:"
+            pPrint es'
+          Right ast -> pPrint ast
   pure ()
 
 runPipelineIO :: Bool -> InputMode -> Text -> IO ()

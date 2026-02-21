@@ -3,10 +3,16 @@ module Idyllic.Layout where
 import Idyllic.Token
 import Idyllic.Utils
 
+data LayoutError
+  = NestedLayoutContextError Int Int Span
+  | UnexpectedClosingBraceError Span
+  | NotInLayoutContextAtEndOfInputError Span
+  deriving (Show, Eq, Ord)
+
 data Marked
   = Token LToken
-  | OpenBlock Int Herald
-  | Indent Int
+  | OpenBlock Int Herald Span
+  | Indent Int Span
   deriving (Show, Eq, Ord)
 
 data Herald = IsHerald Token | NotHerald
@@ -16,60 +22,74 @@ mark :: LineIndex -> [LToken] -> [Marked]
 mark li = markIndents . markBlocks
   where
     markIndents :: [Marked] -> [Marked]
-    markIndents (m@(OpenBlock _ _) : ms) = m : markIndents ms
-    markIndents [Token n] | locItem n == TokenNewline = []
+    markIndents (m@(OpenBlock {}) : ms) = m : markIndents ms
+    markIndents [Token n] | unLoc n == TokenNewline = []
     markIndents (Token n : m@(Token t) : ms)
-      | locItem n == TokenNewline =
+      | unLoc n == TokenNewline =
           let (_, col) = offsetToLineCol li (spanStart $ locSpan t)
-           in Indent col : m : markIndents ms
+           in Indent col (locSpan n) : m : markIndents ms
     markIndents (m : ms) = m : markIndents ms
     markIndents [] = []
 
     markBlocks :: [LToken] -> [Marked]
-    markBlocks [t@(layoutHerald -> h@(IsHerald _))] = [Token t, OpenBlock 0 h]
-    markBlocks (t@(layoutHerald -> h@(IsHerald _)) : n : ts) = case locItem n of
+    markBlocks [t@(layoutHerald -> h@(IsHerald _))] = [Token t, OpenBlock 0 h (locSpan t)]
+    markBlocks (t@(layoutHerald -> h@(IsHerald _)) : n : ts) = case unLoc n of
       TokenNewline -> case ts of
-        [] -> [Token t, OpenBlock 0 h]
+        [] -> [Token t, OpenBlock 0 h (locSpan t)]
         (t' : ts') ->
           let (_, col) = offsetToLineCol li (spanStart $ locSpan t')
-           in Token t : OpenBlock col h : Token t' : markBlocks ts'
+           in Token t : OpenBlock col h (locSpan t) : Token t' : markBlocks ts'
       _ ->
         let (_, col) = offsetToLineCol li (spanStart $ locSpan n)
-         in Token t : OpenBlock col h : Token n : markBlocks ts
+         in Token t : OpenBlock col h (locSpan t) : Token n : markBlocks ts
     markBlocks (t : ts) = Token t : markBlocks ts
     markBlocks [] = []
 
     layoutHerald :: LToken -> Herald
-    layoutHerald = go . locItem
+    layoutHerald = go . unLoc
       where
         go TokenLet = IsHerald TokenLet
         go TokenDo = IsHerald TokenDo
         go _ = NotHerald
 
-layout :: LineIndex -> [LToken] -> [LToken]
-layout li ts' = Located TokenVLBrace (Span 0 0) : go (mark li ts') [(1, NotHerald)]
+data LayoutState = LayoutState
+  { layoutStack :: [(Int, Herald)],
+    layoutErrors :: [LayoutError]
+  }
+  deriving (Show, Eq)
+
+layout :: LineIndex -> [LToken] -> ([LToken], [LayoutError])
+layout li ts' =
+  let (ts, es) = go (mark li ts') [(1, NotHerald)]
+   in (Located TokenVLBrace (Span 0 0) : ts, es)
   where
-    go :: [Marked] -> [(Int, Herald)] -> [LToken]
-    go (i@(Indent n) : ts) ((m, h) : ms)
-      | m == n = Located TokenVSemi (Span m 1) : go ts ((m, h) : ms)
-      | n < m = Located TokenVRBrace (Span m 2) : go (i : ts) ms
-    go (Indent _ : ts) ms = go ts ms
-    go (OpenBlock n h : ts) ((m, h') : ms)
-      | n > m = Located TokenVLBrace (Span 0 3) : go ts ((n, h) : (m, h') : ms)
-      | otherwise = error "nested context must be further indented than enclosing"
-    go (OpenBlock n h : ts) []
-      | n > 0 = Located TokenVLBrace (Span 0 4) : go ts [(n, h)]
-    go (OpenBlock n _ : ts) ms = Located TokenVLBrace (Span 0 5) : Located TokenVRBrace (Span 0 7) : go (Indent n : ts) ms
-    go (Token t : ts) ((0, NotHerald) : ms) | locItem t == TokenRBrace = t : go ts ms
-    go (Token t : _) _ | locItem t == TokenRBrace = error "unexpected closing brace"
-    go (Token t : ts) ms | locItem t == TokenLBrace = t : go ts ((0, NotHerald) : ms)
-    go (Token t : ts) ((m, IsHerald kw) : ms) | m /= 0 && closesBlock (locItem t) kw = Located TokenVRBrace (Span m 7) : t : go ts ms
+    go :: [Marked] -> [(Int, Herald)] -> ([LToken], [LayoutError])
+    go (i@(Indent n s) : ts) ((m, h) : ms)
+      | m == n = let (ts'', es) = go ts ((m, h) : ms) in (Located TokenVSemi s : ts'', es)
+      | n < m = let (ts'', es) = go (i : ts) ms in (Located TokenVRBrace s : ts'', es)
+    go (Indent {} : ts) ms = go ts ms
+    go (OpenBlock n h s : ts) ((m, h') : ms)
+      | n > m = let (ts'', es) = go ts ((n, h) : (m, h') : ms) in (Located TokenVLBrace s : ts'', es)
+      | otherwise = let (ts'', es) = go ts ms in (ts'', NestedLayoutContextError m n s : es)
+    go (OpenBlock n h s : ts) []
+      | n > 0 = let (ts'', es) = go ts [(n, h)] in (Located TokenVLBrace s : ts'', es)
+    go (OpenBlock n _ s : ts) ms = let (ts'', es) = go (Indent n s : ts) ms in (Located TokenVLBrace s : Located TokenVRBrace s : ts'', es)
+    go (Token t : ts) ((0, NotHerald) : ms) | unLoc t == TokenRBrace = let (ts'', es) = go ts ms in (t : ts'', es)
+    go (Token t : ts) ms | unLoc t == TokenRBrace = let (ts'', es) = go ts ms in (ts'', UnexpectedClosingBraceError (locSpan t) : es)
+    go (Token t : ts) ms | unLoc t == TokenLBrace = let (ts'', es) = go ts ((0, NotHerald) : ms) in (t : ts'', es)
+    go (Token t : ts) ((m, IsHerald kw) : ms)
+      | m /= 0 && closesBlock (unLoc t) kw =
+          let (ts'', es) = go ts ms in (Located TokenVRBrace (locSpan t) : t : ts'', es)
       where
         closesBlock TokenIn TokenLet = True
         closesBlock TokenWhere TokenDo = True
         closesBlock _ _ = False
-    go (Token t : ts) ms = t : go ts ms
-    go [] [] = []
+    go (Token t : ts) ms = let (ts'', es) = go ts ms in (t : ts'', es)
+    go [] [] = ([], [])
     go [] ((m, _) : ms)
-      | m /= 0 = Located TokenVRBrace (Span 0 8) : go [] ms
-      | otherwise = error "not in layout context at end of input"
+      | m /= 0 = let (ts'', es) = go [] ms in (Located TokenVRBrace (lastSpan ts') : ts'', es)
+      | otherwise = ([], [NotInLayoutContextAtEndOfInputError (lastSpan ts')])
+      where
+        lastSpan [] = Span 0 0
+        lastSpan [t] = locSpan t
+        lastSpan (_ : rst) = lastSpan rst
