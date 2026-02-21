@@ -1,11 +1,15 @@
+{-# OPTIONS_GHC -Wno-orphans #-}
+
 module Idyllic.Parser (parseInteractive, parseFile) where
 
 import Control.Monad (void)
 import Control.Monad.Combinators.Expr
 import Data.Functor (($>))
 import Data.List (unsnoc)
+import qualified Data.List.NonEmpty as NE
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Maybe (fromMaybe, isJust)
+import Data.Proxy
 import qualified Data.Set as Set
 import Data.Text (Text, pack, unpack)
 import Data.Void
@@ -17,6 +21,47 @@ import Idyllic.Utils
 import Text.Megaparsec hiding (Token)
 
 type Parser = Parsec Void [LToken]
+
+-- instance VisualStream [LToken] where
+--   -- showTokens Proxy = show
+--   showTokens _ = unwords . map show . NE.toList
+
+-- instance TraversableStream [LToken] where
+--   reachOffset o PosState {..} =
+--     ( Just (prefix ++ restOfLine),
+--       PosState
+--         { pstateInput = post,
+--           pstateOffset = max pstateOffset o,
+--           pstateSourcePos = newSourcePos,
+--           pstateTabWidth = pstateTabWidth,
+--           pstateLinePrefix = prefix
+--         }
+--     )
+--     where
+--       prefix =
+--         if sameLine
+--           then pstateLinePrefix ++ preLine
+--           else preLine
+--       preLine = reverse . takeWhile (/= '\n') . reverse $ preStr
+--       (preStr, postStr) = splitAt tokensConsumed (unpack $ streamSrc pstateInput)
+--       newSourcePos =
+--         case post of
+--           [] -> case pstateInput of
+--             [] -> pstateSourcePos
+--             ts -> let (l,c) = offsetToLineCol $ spanEnd (last ts) in SourcePos (sourceName pstateSourcePos) l c
+--           (x : _) -> wpStart x
+--       sameLine = sourceLine newSourcePos == sourceLine pstateSourcePos
+--       (pre, post) = splitAt (o - pstateOffset) pstateInput
+--       tokensConsumed =
+--         case NE.nonEmpty pre of
+--           Nothing -> 0
+--           Just nePre -> tokensLength pxy nePre
+--       restOfLine = takeWhile (/= '\n') postStr
+--       pxy :: Proxy [LToken]
+--       pxy = Proxy
+
+-- instance HasHints Void msg where
+--   hints _ = mempty
 
 located :: Parser a -> Parser (Located a)
 located p = do
@@ -105,8 +150,9 @@ expr = app <|> atom
         then fail $ "keyword " ++ show name ++ " cannot be used as an identifier"
         else pure $ ExprVar name
     lam = ExprLam <$> (tokenP TokenBackSlash *> some lowerIdent) <*> (tokenP TokenRArrow *> expr)
-    let' = ExprLet <$> (kw "let" *> letBinds) <*> (kw "in" *> expr)
+    let' = ExprLet <$> (kw "let" *> (cfgLet <|> letBinds)) <*> (kw "in" *> expr)
       where
+        cfgLet = try $ braces (bind `sepEndBy` tokenP TokenSemi)
         letBinds = vbraces (bind `sepEndBy` tokenP TokenVSemi)
     atom = located $ choice [try unit, litExpr, let', varExpr, lam, parens (locItem <$> expr)]
     app = try $ located $ ExprApp <$> atom <*> some atom
@@ -114,17 +160,25 @@ expr = app <|> atom
 bind :: Parser LBind
 bind = located $ bindFun <|> bindName
   where
-    bindFun = try $ BindFun <$> lowerIdent <*> some lowerIdent <*> (tokenP TokenEq *> expr) <* tokenP TokenSemi
-    bindName = try $ BindName <$> lowerIdent <*> (tokenP TokenEq *> expr) <* tokenP TokenSemi
+    bindFun = try $ BindFun <$> lowerIdent <*> some lowerIdent <*> (tokenP TokenEq *> expr)
+    bindName = try $ BindName <$> lowerIdent <*> (tokenP TokenEq *> expr)
 
 mod' :: Text -> Parser Module
 mod' name = Module name <$> many bind
 
 interactive :: Parser (Either [LBind] LExpr)
-interactive = Left <$> try (some bind) <|> Right <$> expr
+interactive = Left <$> (cfgBind <|> layoutBind) <|> Right <$> (cfgExpr <|> layoutExpr)
+  where
+    cfgBind = try $ braces (bind `sepEndBy1` tokenP TokenSemi)
+    layoutBind = try $ vbraces (bind `sepEndBy1` tokenP TokenVSemi)
+    cfgExpr = try $ braces expr
+    layoutExpr = vbraces expr
 
 parseFile :: Text -> [LToken] -> Either (ParseErrorBundle [LToken] Void) Prog
-parseFile filename = parse (located $ mod' filename) (unpack filename)
+parseFile filename = parse (cfg <|> layout) (unpack filename)
+  where
+    cfg = try $ located $ braces (mod' filename)
+    layout = located $ vbraces (mod' filename)
 
 parseInteractive :: [LToken] -> Either (ParseErrorBundle [LToken] Void) (Either [LBind] LExpr)
 parseInteractive = parse (interactive <* eof) "<interactive>"

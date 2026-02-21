@@ -62,18 +62,15 @@ markBlocks li (t : ts) = Token t : markBlocks li ts
 markBlocks _ [] = []
 
 layDKillaz :: [(Herald, Text)]
-layDKillaz = [(Of, "where"), (Do, "where"), (Let, "in")]
-
-closingDelim :: [Text]
-closingDelim = [")", "}", "]", ";"]
+layDKillaz = [(Do, "where"), (Let, "in")]
 
 layout :: LineIndex -> [LToken] -> [LToken]
 layout li ts' = Located TokenVLBrace (Span 0 0) : go (mark li ts') [(1, Just Where)]
   where
     go :: [Marked] -> [(Int, Maybe Herald)] -> [LToken]
     go (i@(Indent n) : ts) ((m, h) : ms)
-      | m == n = Located TokenVSemi (Span 0 1) : go ts ((m, h) : ms)
-      | n < m = Located TokenVRBrace (Span 0 2) : go (i : ts) ms
+      | m == n = Located TokenVSemi (Span m 1) : go ts ((m, h) : ms)
+      | n < m = Located TokenVRBrace (Span m 2) : go (i : ts) ms
     go (Indent _ : ts) ms = go ts ms
     go (OpenBlock n h : ts) ((m, h') : ms)
       | n > m = Located TokenVLBrace (Span 0 3) : go ts ((n, Just h) : (m, h') : ms)
@@ -85,24 +82,15 @@ layout li ts' = Located TokenVLBrace (Span 0 0) : go (mark li ts') [(1, Just Whe
     go (Token t : ts) ((0, Nothing) : ms) | locItem t == TokenRBrace = t : go ts ms
     go (Token t : _) _ | locItem t == TokenRBrace = error "unexpected closing brace"
     go (Token t : ts) ms | locItem t == TokenLBrace = t : go ts ((0, Nothing) : ms)
-    go (t : ts) ((m, Just h) : ms) | m /= 0 && closesBlock t h = Located TokenVRBrace (Span 0 7) : go (t : ts) ms
+    go (Token t : ts) ((m, Just h) : ms) | m /= 0 && closesBlock t h = Located TokenVRBrace (Span m 7) : t : go ts ms
       where
-        closesBlock (Token t') hd = closesAny kw || closesHerald kw
+        closesBlock t' hd = closesHerald (locItem t')
           where
-            kw = locItem t'
-
-            closesAny TokenRParen = True
-            closesAny TokenRBrace = True
-            closesAny TokenRBracket = True
-            closesAny TokenSemi = True
-            closesAny _ = False
-
             closesHerald (TokenLowercaseIdent name) =
               case lookup hd layDKillaz of
                 Nothing -> False
                 Just closer -> name == closer
             closesHerald _ = False
-        closesBlock _ _ = False
     go (Token t : ts) ms = t : go ts ms
     go [] [] = []
     go [] ((m, _) : ms)

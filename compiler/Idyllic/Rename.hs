@@ -1,49 +1,52 @@
 module Idyllic.Rename where
 
--- newtype RenameError = REUnboundName Text deriving (Show, Eq)
+import Control.Monad.State
+import Data.Text (Text)
 
--- data Env = Env
---   { nameMap :: [(Text, Int)],
---     nameCounter :: Int,
---     nodeIdCounter :: Int,
---     errors :: [RenameError]
---   }
---   deriving (Show, Eq)
+newtype RenameError = REUnboundName Text deriving (Show, Eq)
 
--- defaultEnv :: Env
--- defaultEnv =
---   let initialNames = zip ops [0 ..]
---    in Env
---         { nameMap = initialNames,
---           nameCounter = length ops,
---           nodeIdCounter = 0,
---           errors = []
---         }
---   where
---     ops = ["+", "-", "*", "/", "%", "neg", "==", "!=", "<", "<=", ">", ">=", "&&", "||"]
+data Env = Env
+  { nameMap :: [(Text, Int)],
+    nameCounter :: Int,
+    nodeIdCounter :: Int,
+    errors :: [RenameError]
+  }
+  deriving (Show, Eq)
 
--- find :: Text -> Rename (Maybe Int)
--- find name = do
---   env <- get
---   case lookup name (nameMap env) of
---     Just n -> pure (Just n)
---     Nothing -> do
---       put env {errors = REUnboundName name : errors env}
---       pure Nothing
+defaultEnv :: Env
+defaultEnv =
+  let initialNames = zip ops [0 ..]
+   in Env
+        { nameMap = initialNames,
+          nameCounter = length ops,
+          nodeIdCounter = 0,
+          errors = []
+        }
+  where
+    ops = ["+", "-", "*", "/", "%", "neg", "==", "!=", "<", "<=", ">", ">=", "&&", "||"]
 
--- freshName :: Text -> Rename Int
--- freshName name = do
---   env <- get
---   put env {nameMap = (name, nameCounter env) : nameMap env, nameCounter = nameCounter env + 1}
---   pure $ nameCounter env
+type Rename a = State Env a
 
--- freshNodeId :: Rename Int
--- freshNodeId = do
---   env <- get
---   put env {nodeIdCounter = nodeIdCounter env + 1}
---   pure $ nodeIdCounter env
+find :: Text -> Rename (Maybe Int)
+find name = do
+  env <- get
+  case lookup name (nameMap env) of
+    Just n -> pure (Just n)
+    Nothing -> do
+      put env {errors = REUnboundName name : errors env}
+      pure Nothing
 
--- type Rename a = State Env a
+freshName :: Text -> Rename Int
+freshName name = do
+  env <- get
+  put env {nameMap = (name, nameCounter env) : nameMap env, nameCounter = nameCounter env + 1}
+  pure $ nameCounter env
+
+freshNodeId :: Rename Int
+freshNodeId = do
+  env <- get
+  put env {nodeIdCounter = nodeIdCounter env + 1}
+  pure $ nodeIdCounter env
 
 -- rename :: AST.Expr -> Either [RenameError] Expr
 -- rename expr =
