@@ -2,9 +2,11 @@ module Idyllic.Lexer (tokenize) where
 
 import Control.Applicative (empty, liftA, optional, (<|>))
 import Control.Monad (void)
+import qualified Data.List.NonEmpty as NE
 import Data.Text (Text, pack, unpack)
 import qualified Data.Text as T
 import Data.Void (Void)
+import Error.Diagnose.Compat.Megaparsec
 import Idyllic.Token (LToken, Token (..))
 import Idyllic.Utils (Located (..), Span (..))
 import Text.Megaparsec
@@ -23,6 +25,7 @@ import Text.Megaparsec
   )
 import Text.Megaparsec.Char (alphaNumChar, char, char', hspace1, lowerChar, space1, string, upperChar)
 import qualified Text.Megaparsec.Char.Lexer as L
+import Text.Megaparsec.Stream (VisualStream (..))
 
 type Lexer = Parsec Void Text
 
@@ -145,3 +148,44 @@ located l = do
   start <- getOffset
   res <- l
   Located res . Span start <$> getOffset
+
+instance VisualStream [LToken] where
+  -- showTokens Proxy = show
+  showTokens _ = unwords . map show . NE.toList
+
+-- instance TraversableStream [LToken] where
+--   reachOffset o PosState {..} =
+--     ( Just (prefix ++ restOfLine),
+--       PosState
+--         { pstateInput = post,
+--           pstateOffset = max pstateOffset o,
+--           pstateSourcePos = newSourcePos,
+--           pstateTabWidth = pstateTabWidth,
+--           pstateLinePrefix = prefix
+--         }
+--     )
+--     where
+--       prefix =
+--         if sameLine
+--           then pstateLinePrefix ++ preLine
+--           else preLine
+--       preLine = reverse . takeWhile (/= '\n') . reverse $ preStr
+--       (preStr, postStr) = splitAt tokensConsumed (unpack $ streamSrc pstateInput)
+--       newSourcePos =
+--         case post of
+--           [] -> case pstateInput of
+--             [] -> pstateSourcePos
+--             ts -> let (l,c) = offsetToLineCol $ spanEnd (last ts) in SourcePos (sourceName pstateSourcePos) l c
+--           (x : _) -> wpStart x
+--       sameLine = sourceLine newSourcePos == sourceLine pstateSourcePos
+--       (pre, post) = splitAt (o - pstateOffset) pstateInput
+--       tokensConsumed =
+--         case NE.nonEmpty pre of
+--           Nothing -> 0
+--           Just nePre -> tokensLength pxy nePre
+--       restOfLine = takeWhile (/= '\n') postStr
+--       pxy :: Proxy [LToken]
+--       pxy = Proxy
+
+instance HasHints Void msg where
+  hints _ = mempty

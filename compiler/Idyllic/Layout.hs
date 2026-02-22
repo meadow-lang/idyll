@@ -11,16 +11,20 @@ data LayoutError
 
 data Marked
   = Token LToken
-  | OpenBlock Int Herald Span
+  | OpenBlock Int (Maybe Token) Span
   | Indent Int Span
-  deriving (Show, Eq, Ord)
-
-data Herald = IsHerald Token | NotHerald
   deriving (Show, Eq, Ord)
 
 mark :: LineIndex -> [LToken] -> [Marked]
 mark li = markIndents . markBlocks
   where
+    skipNewlines :: [LToken] -> [LToken]
+    skipNewlines (Located TokenNewline _ : ts) = dropWhile isNewline ts
+      where
+        isNewline (Located TokenNewline _) = True
+        isNewline _ = False
+    skipNewlines ts = ts
+
     markIndents :: [Marked] -> [Marked]
     markIndents (m@(OpenBlock {}) : ms) = m : markIndents ms
     markIndents [Token n] | unLoc n == TokenNewline = []
@@ -32,9 +36,9 @@ mark li = markIndents . markBlocks
     markIndents [] = []
 
     markBlocks :: [LToken] -> [Marked]
-    markBlocks [t@(layoutHerald -> h@(IsHerald _))] = [Token t, OpenBlock 0 h (locSpan t)]
-    markBlocks (t@(layoutHerald -> h@(IsHerald _)) : n : ts) = case unLoc n of
-      TokenNewline -> case ts of
+    markBlocks [t@(layoutHerald -> h@(Just _))] = [Token t, OpenBlock 0 h (locSpan t)]
+    markBlocks (t@(layoutHerald -> h@(Just _)) : n : ts) | unLoc n /= TokenLBrace = case unLoc n of
+      TokenNewline -> case skipNewlines ts of
         [] -> [Token t, OpenBlock 0 h (locSpan t)]
         (t' : ts') ->
           let (_, col) = offsetToLineCol li (spanStart $ locSpan t')
@@ -45,25 +49,19 @@ mark li = markIndents . markBlocks
     markBlocks (t : ts) = Token t : markBlocks ts
     markBlocks [] = []
 
-    layoutHerald :: LToken -> Herald
+    layoutHerald :: LToken -> Maybe Token
     layoutHerald = go . unLoc
       where
-        go TokenLet = IsHerald TokenLet
-        go TokenDo = IsHerald TokenDo
-        go _ = NotHerald
-
-data LayoutState = LayoutState
-  { layoutStack :: [(Int, Herald)],
-    layoutErrors :: [LayoutError]
-  }
-  deriving (Show, Eq)
+        go TokenLet = Just TokenLet
+        go TokenDo = Just TokenDo
+        go _ = Nothing
 
 layout :: LineIndex -> [LToken] -> ([LToken], [LayoutError])
 layout li ts' =
-  let (ts, es) = go (mark li ts') [(1, NotHerald)]
+  let (ts, es) = go (mark li ts') [(1, Nothing)]
    in (Located TokenVLBrace (Span 0 0) : ts, es)
   where
-    go :: [Marked] -> [(Int, Herald)] -> ([LToken], [LayoutError])
+    go :: [Marked] -> [(Int, Maybe Token)] -> ([LToken], [LayoutError])
     go (i@(Indent n s) : ts) ((m, h) : ms)
       | m == n = let (ts'', es) = go ts ((m, h) : ms) in (Located TokenVSemi s : ts'', es)
       | n < m = let (ts'', es) = go (i : ts) ms in (Located TokenVRBrace s : ts'', es)
@@ -74,10 +72,10 @@ layout li ts' =
     go (OpenBlock n h s : ts) []
       | n > 0 = let (ts'', es) = go ts [(n, h)] in (Located TokenVLBrace s : ts'', es)
     go (OpenBlock n _ s : ts) ms = let (ts'', es) = go (Indent n s : ts) ms in (Located TokenVLBrace s : Located TokenVRBrace s : ts'', es)
-    go (Token t : ts) ((0, NotHerald) : ms) | unLoc t == TokenRBrace = let (ts'', es) = go ts ms in (t : ts'', es)
+    go (Token t : ts) ((0, Nothing) : ms) | unLoc t == TokenRBrace = let (ts'', es) = go ts ms in (t : ts'', es)
     go (Token t : ts) ms | unLoc t == TokenRBrace = let (ts'', es) = go ts ms in (ts'', UnexpectedClosingBraceError (locSpan t) : es)
-    go (Token t : ts) ms | unLoc t == TokenLBrace = let (ts'', es) = go ts ((0, NotHerald) : ms) in (t : ts'', es)
-    go (Token t : ts) ((m, IsHerald kw) : ms)
+    go (Token t : ts) ms | unLoc t == TokenLBrace = let (ts'', es) = go ts ((0, Nothing) : ms) in (t : ts'', es)
+    go (Token t : ts) ((m, Just kw) : ms)
       | m /= 0 && closesBlock (unLoc t) kw =
           let (ts'', es) = go ts ms in (Located TokenVRBrace (locSpan t) : t : ts'', es)
       where

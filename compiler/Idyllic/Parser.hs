@@ -22,47 +22,6 @@ import Text.Megaparsec hiding (Token)
 
 type Parser = Parsec Void [LToken]
 
--- instance VisualStream [LToken] where
---   -- showTokens Proxy = show
---   showTokens _ = unwords . map show . NE.toList
-
--- instance TraversableStream [LToken] where
---   reachOffset o PosState {..} =
---     ( Just (prefix ++ restOfLine),
---       PosState
---         { pstateInput = post,
---           pstateOffset = max pstateOffset o,
---           pstateSourcePos = newSourcePos,
---           pstateTabWidth = pstateTabWidth,
---           pstateLinePrefix = prefix
---         }
---     )
---     where
---       prefix =
---         if sameLine
---           then pstateLinePrefix ++ preLine
---           else preLine
---       preLine = reverse . takeWhile (/= '\n') . reverse $ preStr
---       (preStr, postStr) = splitAt tokensConsumed (unpack $ streamSrc pstateInput)
---       newSourcePos =
---         case post of
---           [] -> case pstateInput of
---             [] -> pstateSourcePos
---             ts -> let (l,c) = offsetToLineCol $ spanEnd (last ts) in SourcePos (sourceName pstateSourcePos) l c
---           (x : _) -> wpStart x
---       sameLine = sourceLine newSourcePos == sourceLine pstateSourcePos
---       (pre, post) = splitAt (o - pstateOffset) pstateInput
---       tokensConsumed =
---         case NE.nonEmpty pre of
---           Nothing -> 0
---           Just nePre -> tokensLength pxy nePre
---       restOfLine = takeWhile (/= '\n') postStr
---       pxy :: Proxy [LToken]
---       pxy = Proxy
-
--- instance HasHints Void msg where
---   hints _ = mempty
-
 located :: Parser a -> Parser (Located a)
 located p = do
   startInp <- getInput
@@ -127,12 +86,15 @@ expr = app <|> atom
     litExpr = ExprLit <$> lit
     varExpr = ExprVar <$> lowerIdent
     lam = ExprLam <$> (tokenP TokenBackSlash *> some lowerIdent) <*> (tokenP TokenRArrow *> expr)
-    let' = ExprLet <$> (tokenP TokenLet *> (cfgLet <|> letBinds)) <*> (tokenP TokenIn *> expr)
-      where
-        cfgLet = try $ braces (bind `sepEndBy` tokenP TokenSemi)
-        letBinds = vbraces (bind `sepEndBy` tokenP TokenVSemi)
+    let' = ExprLet <$> (tokenP TokenLet *> binds) <*> (tokenP TokenIn *> expr)
     atom = located $ choice [try unit, litExpr, let', varExpr, lam, parens (unLoc <$> expr)]
     app = try $ located $ ExprApp <$> atom <*> some atom
+
+binds :: Parser [LBind]
+binds = cfgBind <|> layoutBind
+  where
+    cfgBind = try $ braces (bind `sepEndBy1` tokenP TokenSemi)
+    layoutBind = try $ vbraces (bind `sepEndBy1` tokenP TokenVSemi)
 
 bind :: Parser LBind
 bind = located $ bindFun <|> bindName
@@ -144,10 +106,8 @@ mod' :: Text -> Parser Module
 mod' name = Module name <$> many bind
 
 interactive :: Parser (Either [LBind] LExpr)
-interactive = Left <$> (cfgBind <|> layoutBind) <|> Right <$> (cfgExpr <|> layoutExpr)
+interactive = Left <$> binds <|> Right <$> (cfgExpr <|> layoutExpr)
   where
-    cfgBind = try $ braces (bind `sepEndBy1` tokenP TokenSemi)
-    layoutBind = try $ vbraces (bind `sepEndBy1` tokenP TokenVSemi)
     cfgExpr = try $ braces expr
     layoutExpr = vbraces expr
 

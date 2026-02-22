@@ -12,7 +12,7 @@ src :: Text
 src =
   """
   let x = 1
-      y = let j = 1 in j
+      y = let {j = 1} in j
       z = 3
    in add x y z
   """

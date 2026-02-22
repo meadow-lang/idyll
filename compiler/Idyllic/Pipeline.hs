@@ -20,8 +20,12 @@ pipelineMain = do
     Left es -> liftIO $ print $ errorBundlePretty es
     Right ts -> case layout li ts of
       (lts, []) -> case parseInteractive lts of
-        Left es -> liftIO $ pPrint es
-        Right ast -> pPrint ast
+        Left es -> do
+          pPrint lts
+          pPrint es
+        Right ast -> do
+          pPrint lts
+          pPrint ast
       (lts, es) -> liftIO $ do
         putStrLn "Layout errors:"
         mapM_ print es
