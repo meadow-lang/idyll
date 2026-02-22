@@ -2,6 +2,7 @@ module Idyllic.Layout where
 
 import Idyllic.Token
 import Idyllic.Utils
+import Control.Monad.State (State)
 
 data LayoutError
   = NestedLayoutContextError Int Int Span
@@ -56,6 +57,13 @@ mark li = markIndents . markBlocks
         go TokenDo = Just TokenDo
         go _ = Nothing
 
+data Delim = Braces | Layout Int
+  deriving (Show, Eq, Ord)
+
+type LayoutStack = [(Delim, Maybe Token)]
+
+type LayoutM a = State LayoutStack a
+
 layout :: LineIndex -> [LToken] -> ([LToken], [LayoutError])
 layout li ts' =
   let (ts, es) = go (mark li ts') [(1, Nothing)]
@@ -64,7 +72,8 @@ layout li ts' =
     go :: [Marked] -> [(Int, Maybe Token)] -> ([LToken], [LayoutError])
     go (i@(Indent n s) : ts) ((m, h) : ms)
       | m == n = let (ts'', es) = go ts ((m, h) : ms) in (Located TokenVSemi s : ts'', es)
-      | n < m = let (ts'', es) = go (i : ts) ms in (Located TokenVRBrace s : ts'', es)
+      -- \| n < m = let (ts'', es) = go (i : ts) ms in (Located TokenVRBrace s : ts'', es)
+      | n < m = let (ts'', es) = go (i : ts) ms in (Located TokenVRBrace (Span m 1) : ts'', es)
     go (Indent {} : ts) ms = go ts ms
     go (OpenBlock n h s : ts) ((m, h') : ms)
       | n > m = let (ts'', es) = go ts ((n, h) : (m, h') : ms) in (Located TokenVLBrace s : ts'', es)
@@ -77,7 +86,8 @@ layout li ts' =
     go (Token t : ts) ms | unLoc t == TokenLBrace = let (ts'', es) = go ts ((0, Nothing) : ms) in (t : ts'', es)
     go (Token t : ts) ((m, Just kw) : ms)
       | m /= 0 && closesBlock (unLoc t) kw =
-          let (ts'', es) = go ts ms in (Located TokenVRBrace (locSpan t) : t : ts'', es)
+          -- let (ts'', es) = go ts ms in (Located TokenVRBrace (locSpan t) : t : ts'', es)
+          let (ts'', es) = go ts ms in (Located TokenVRBrace (Span m 2) : t : ts'', es)
       where
         closesBlock TokenIn TokenLet = True
         closesBlock TokenWhere TokenDo = True

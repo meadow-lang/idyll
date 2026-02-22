@@ -16,6 +16,10 @@ src =
       z = 3
    in add x y z
   """
+  -- """
+  -- let x = 1
+  --     y = 2 in y
+  -- """
 
 -- src =
 --   """
