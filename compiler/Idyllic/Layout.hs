@@ -1,6 +1,5 @@
 module Idyllic.Layout where
 
-import Control.Monad.State (State)
 import Idyllic.Token
 import Idyllic.Utils
 
@@ -57,13 +56,6 @@ mark li = markIndents . markBlocks
         go TokenDo = Just TokenDo
         go _ = Nothing
 
-data Delim = Braces | Layout Int
-  deriving (Show, Eq, Ord)
-
-type LayoutStack = [(Delim, Maybe Token)]
-
-type LayoutM a = State LayoutStack a
-
 layout :: LineIndex -> [LToken] -> ([LToken], [LayoutError])
 layout li ts' =
   let (ts, es) = go (mark li ts') [(1, Nothing)]
@@ -91,6 +83,14 @@ layout li ts' =
         isHerald TokenDo = True
         isHerald _ = False
     go (Token t : ts) ms | unLoc t == TokenLBrace = let (ts'', es) = go ts ((0, Nothing) : ms) in (t : ts'', es)
+    -- go (Indent _ s : ts) ((m, Just kw) : ms) = case skipIndents ts of
+    --   [] -> let (ts'', es) = go [] ms in (Located TokenVRBrace s : ts'', es)
+    --   where
+    --     skipIndents :: [Marked] -> [Marked]
+    --     skipIndents (Indent _ _ : ms) = dropWhile isIndent ms
+    --       where
+    --         isIndent (Indent _ _) = True
+    --         isIndent _ = False
     go (Token t : ts) ((m, Just kw) : ms)
       | m /= 0 && closesBlock (unLoc t) kw =
           let (ts'', es) = go ts ms in (Located TokenVRBrace (locSpan t) : t : ts'', es)
