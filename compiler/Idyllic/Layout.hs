@@ -64,7 +64,8 @@ layout li ts' =
     go :: [Marked] -> [(Int, Maybe Token)] -> ([LToken], [LayoutError])
     go (i@(Indent n s) : ts) ((m, h) : ms)
       | m == n = let (ts'', es) = go ts ((m, h) : ms) in (Located TokenVSemi s : ts'', es)
-      | n < m = let (ts'', es) = go (i : ts) ms in (Located TokenVRBrace s : ts'', es)
+      -- \| n < m = let (ts'', es) = go (i : ts) ms in (Located TokenVRBrace s : ts'', es)
+      | n < m = let (ts'', es) = go (i : ts) ms in (Located TokenVRBrace (Span m 1) : ts'', es)
     go (Indent {} : ts) ms = go ts ms
     go (OpenBlock n h s : ts) ((m, h') : ms)
       | n > m = let (ts'', es) = go ts ((n, h) : (m, h') : ms) in (Located TokenVLBrace s : ts'', es)
@@ -83,17 +84,10 @@ layout li ts' =
         isHerald TokenDo = True
         isHerald _ = False
     go (Token t : ts) ms | unLoc t == TokenLBrace = let (ts'', es) = go ts ((0, Nothing) : ms) in (t : ts'', es)
-    -- go (Indent _ s : ts) ((m, Just kw) : ms) = case skipIndents ts of
-    --   [] -> let (ts'', es) = go [] ms in (Located TokenVRBrace s : ts'', es)
-    --   where
-    --     skipIndents :: [Marked] -> [Marked]
-    --     skipIndents (Indent _ _ : ms) = dropWhile isIndent ms
-    --       where
-    --         isIndent (Indent _ _) = True
-    --         isIndent _ = False
     go (Token t : ts) ((m, Just kw) : ms)
       | m /= 0 && closesBlock (unLoc t) kw =
-          let (ts'', es) = go ts ms in (Located TokenVRBrace (locSpan t) : t : ts'', es)
+          -- let (ts'', es) = go ts ms in (Located TokenVRBrace (locSpan t) : t : ts'', es)
+          let (ts'', es) = go ts ms in (Located TokenVRBrace (Span m 2) : t : ts'', es)
     go (Token t : ts) ms = let (ts'', es) = go ts ms in (t : ts'', es)
     go [] [] = ([], [])
     go [] ((m, _) : ms)
