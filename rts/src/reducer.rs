@@ -54,12 +54,10 @@ impl Heap {
         self.to_space.clear();
         self.scan_ptr = 0;
 
-        // Copy roots
         for root in roots.iter_mut() {
             *root = self.copy(*root);
         }
 
-        // Cheney scan loop
         while self.scan_ptr < self.to_space.len() {
             let node_ptr = self.to_space.as_mut_ptr().add(self.scan_ptr);
             self.scan_ptr += 1;
