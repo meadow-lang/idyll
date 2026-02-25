@@ -102,3 +102,9 @@ closesBlock :: Token -> Token -> Bool
 closesBlock TokenIn TokenLet = True
 closesBlock TokenWhere TokenDo = True
 closesBlock _ _ = False
+
+foo :: IO Int
+foo = do
+  let x = 1
+      y = 2
+  pure y
