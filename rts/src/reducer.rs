@@ -9,14 +9,12 @@ pub enum Node {
     S,
     K,
     I,
+    Y,
     B,
     C,
-    Y,
+    W,
 
-    P,
-    O,
-
-    Pair(i64, i64),
+    Pair(Ptr, Ptr),
     Int(i64),
 
     Forward(Ptr),
@@ -125,32 +123,51 @@ pub unsafe fn reduce(heap: &mut Heap, mut current: Ptr) -> Ptr {
                 return heap.alloc(Node::App(fx, gx), &mut stack);
             }
 
-            Node::P => {
-                let b = reduce(heap, stack.pop().unwrap());
-                let a = reduce(heap, stack.pop().unwrap());
+            Node::Y => {
+                // Y f = f (Y f)
+                // In graph reduction, we create a self-referencing App node.
+                let f = stack.pop().expect("Y requires 1 argument");
 
-                let av = match &*a {
-                    Node::Int(v) => *v,
-                    _ => panic!("Expected Int"),
-                };
+                // We need to create an App(f, self).
+                // This is tricky with raw pointers and a copying GC.
+                // Standard approach: create a dummy App, then update it.
+                let app_ptr = heap.alloc(Node::App(f, ptr::null_mut()), &mut stack);
 
-                let bv = match &*b {
-                    Node::Int(v) => *v,
-                    _ => panic!("Expected Int"),
-                };
+                // Make the second field of the App point to the App itself
+                if let Node::App(_, ref mut x) = unsafe { &mut *app_ptr } {
+                    *x = app_ptr;
+                }
 
-                return heap.alloc(Node::Pair(av, bv), &mut stack);
+                return app_ptr;
             }
 
-            Node::O => {
-                let pair = reduce(heap, stack.pop().unwrap());
+            Node::B => {
+                // B f g x = f (g x)
+                let f = stack.pop().unwrap();
+                let g = stack.pop().unwrap();
+                let x = stack.pop().unwrap();
 
-                match &*pair {
-                    Node::Pair(a, _) => {
-                        return heap.alloc(Node::Int(*a), &mut stack);
-                    }
-                    _ => panic!("Expected Pair"),
-                }
+                let gx = heap.alloc(Node::App(g, x), &mut stack);
+                return heap.alloc(Node::App(f, gx), &mut stack);
+            }
+
+            Node::C => {
+                // C f x y = f y x
+                let f = stack.pop().unwrap();
+                let x = stack.pop().unwrap();
+                let y = stack.pop().unwrap();
+
+                let fy = heap.alloc(Node::App(f, y), &mut stack);
+                return heap.alloc(Node::App(fy, x), &mut stack);
+            }
+
+            Node::W => {
+                // W f x = f x x
+                let f = stack.pop().unwrap();
+                let x = stack.pop().unwrap();
+
+                let fx = heap.alloc(Node::App(f, x), &mut stack);
+                return heap.alloc(Node::App(fx, x), &mut stack);
             }
 
             Node::Pair(_, _) | Node::Int(_) => {
