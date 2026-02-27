@@ -1,7 +1,7 @@
 cabal-version: 3.0
-name: idyll
+name: idyllic
 version: 0.1.0.0
-synopsis: The Idyll programming language
+synopsis: The official compiler for the Idyll programming language
 license: BSD-3-Clause
 license-file: LICENSE
 author: Chris McDearman
@@ -18,13 +18,50 @@ common warnings
     -Werror=incomplete-uni-patterns
     -Wno-unused-do-bind
 
---   -fllvm
---   -haddock
---   -ddump-simpl -ddump-cmm -ddump-stg-final -ddump-to-file -dsuppress-all
+  default-extensions:
+    FunctionalDependencies
+    MagicHash
+    MultiWayIf
+    MultilineStrings
+    OrPatterns
+    OverloadedStrings
+    PatternSynonyms
+    RecordWildCards
+    RequiredTypeArguments
+    ScopedTypeVariables
+    StrictData
+    TypeFamilies
+    ViewPatterns
+
+  build-depends:
+    array,
+    base,
+    bytestring,
+    containers,
+    diagnose,
+    hashable,
+    megaparsec,
+    mtl,
+    parser-combinators,
+    pretty-simple,
+    primitive,
+    stm,
+    text,
+    transformers,
+    unordered-containers,
+    vector,
+    wcwidth,
+
 executable idyllic
   import: warnings
   main-is: Main.hs
-  other-modules:
+  build-depends: idyllic
+  hs-source-dirs: compiler/driver
+  default-language: GHC2024
+
+library
+  import: warnings
+  exposed-modules:
     Idyllic.AST
     Idyllic.Builtin
     Idyllic.Core
@@ -41,39 +78,25 @@ executable idyllic
     Idyllic.TypeCheck
     Idyllic.Utils
 
-  default-extensions:
-    FunctionalDependencies
-    MagicHash
-    MultiWayIf
-    MultilineStrings
-    OrPatterns
-    OverloadedStrings
-    PatternSynonyms
-    RecordWildCards
-    ScopedTypeVariables
-    StrictData
-    TypeFamilies
-    ViewPatterns
-    RequiredTypeArguments
+  hs-source-dirs: compiler
+  default-language: GHC2024
+
+test-suite tests
+  import: warnings
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+    Idyllic.LayoutSpec
 
   build-depends:
-    array,
-    base,
-    bytestring,
-    containers,
-    diagnose,
-    hashable,
-    mtl,
-    megaparsec,
-    parser-combinators,
-    pretty-simple,
-    primitive,
-    stm,
-    text,
-    transformers,
-    unordered-containers,
-    vector,
-    wcwidth,
+    -- hspec-golden-diff,
+    hspec,
+    hspec-discover,
+    hspec-golden,
+    idyllic,
 
-  hs-source-dirs: compiler
+  build-tool-depends:
+    hspec-discover:hspec-discover
+
+  hs-source-dirs: compiler/tests
   default-language: GHC2024

@@ -22,8 +22,8 @@ pipelineMain = do
       (lts, []) -> case parseInteractive lts of
         Left es -> do
           pPrint $ mark li ts
-          pPrint lts
-          pPrint es
+        -- pPrint lts
+        -- pPrint es
         Right ast -> do
           pPrint $ mark li ts
       -- pPrint lts

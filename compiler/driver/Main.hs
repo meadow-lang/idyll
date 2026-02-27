@@ -8,14 +8,13 @@ src :: Text
 -- src = "s f g x = f x (g x)\nk x y = x\ni x = x"
 
 -- src = "let x = 1 in x"
-src = "do\n  let x = 1\n      y = 2\n  pure y"
--- src =
---   """
---   do
---     let x = 1
---         y = 2
---     pure y 
---   """
+src =
+  """
+  do
+    let x = 1
+        y = 2
+    pure y 
+  """
 
 -- src =
 --   """
