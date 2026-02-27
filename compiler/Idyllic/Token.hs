@@ -2,6 +2,7 @@ module Idyllic.Token (LToken, Token (..)) where
 
 import Data.Text (Text)
 import Idyllic.Utils
+import Prettyprinter (Pretty (..))
 
 type LToken = Located Token
 
@@ -51,3 +52,50 @@ data Token
   | TokenThen
   | TokenElse
   deriving (Show, Eq, Ord)
+
+instance Pretty Token where
+  pretty = \case
+    TokenError -> "ERROR"
+    TokenNewline -> "NEWLINE"
+    TokenUppercaseIdent t -> "UppercaseIdent(" <> pretty t <> ")"
+    TokenLowercaseIdent t -> "LowercaseIdent(" <> pretty t <> ")"
+    TokenOpIdent t -> "OpIdent(" <> pretty t <> ")"
+    TokenConOpIdent t -> "ConOpIdent(" <> pretty t <> ")"
+    TokenInt i -> "Int(" <> pretty i <> ")"
+    TokenString s -> "String(" <> pretty s <> ")"
+    TokenChar c -> "Char(" <> pretty c <> ")"
+    TokenLParen -> "LParen"
+    TokenRParen -> "RParen"
+    TokenLBrace -> "LBrace"
+    TokenRBrace -> "RBrace"
+    TokenLBracket -> "LBracket"
+    TokenRBracket -> "RBracket"
+    TokenVLBrace -> "VLBrace"
+    TokenVRBrace -> "VRBrace"
+    TokenVSemi -> "VSemi"
+    TokenBang -> "Bang"
+    TokenHash -> "Hash"
+    TokenBackSlash -> "BackSlash"
+    TokenColon -> "Colon"
+    TokenSemi -> "Semi"
+    TokenComma -> "Comma"
+    TokenPeriod -> "Period"
+    TokenEq -> "Eq"
+    TokenLArrow -> "LArrow"
+    TokenRArrow -> "RArrow"
+    TokenRFatArrow -> "RFatArrow"
+    TokenBar -> "Bar"
+    TokenUnderscore -> "Underscore"
+    TokenAt -> "At"
+    TokenMod -> "Mod"
+    TokenData -> "Data"
+    TokenType -> "Type"
+    TokenLet -> "Let"
+    TokenIn -> "In"
+    TokenWhere -> "Where"
+    TokenDo -> "Do"
+    TokenCase -> "Case"
+    TokenOf -> "Of"
+    TokenIf -> "If"
+    TokenThen -> "Then"
+    TokenElse -> "Else"

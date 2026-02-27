@@ -20,8 +20,8 @@ myGoldenTest name actualOutput =
       encodePretty = prettyText,
       writeToFile = T.writeFile,
       readFromFile = T.readFile,
-      goldenFile = name,
-      actualFile = Just (name <> "-actual"),
+      goldenFile = ".golden/" <> name,
+      actualFile = Just (".golden/" <> name <> "-actual"),
       failFirstTime = False
     }
 

@@ -1,8 +1,9 @@
 module Idyllic.Utils where
 
 import Data.Text (Text)
-import qualified Data.Text.Internal.Search as T
-import qualified Data.Vector.Unboxed as U
+import Data.Text.Internal.Search qualified as T
+import Data.Vector.Unboxed qualified as U
+import Prettyprinter
 
 newtype LineIndex = LineIndex {lineStarts :: U.Vector Int} deriving (Show, Eq)
 
@@ -31,11 +32,17 @@ binarySearch !v !x = go 0 (U.length v - 1)
 data Located a = Located {unLoc :: a, locSpan :: Span}
   deriving (Show, Eq, Ord, Functor)
 
+instance (Pretty a) => Pretty (Located a) where
+  pretty (Located a s) = pretty a <> " @ " <> pretty s
+
 data Span = Span
   { spanStart :: {-# UNPACK #-} Int,
     spanEnd :: {-# UNPACK #-} Int
   }
   deriving (Show, Eq, Ord)
+
+instance Pretty Span where
+  pretty (Span s e) = "Span(" <> pretty s <> ", " <> pretty e <> ")"
 
 toPair :: Span -> (Int, Int)
 toPair (Span s e) = (s, e)

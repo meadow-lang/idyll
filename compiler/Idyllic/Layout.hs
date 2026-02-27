@@ -2,6 +2,7 @@ module Idyllic.Layout where
 
 import Idyllic.Token
 import Idyllic.Utils
+import Prettyprinter
 
 data LayoutError
   = NestedLayoutContextError Int Int Span
@@ -14,6 +15,12 @@ data Marked
   | OpenBlock Int (Maybe Token) Span
   | Indent Int Span
   deriving (Show, Eq, Ord)
+
+instance Pretty Marked where
+  pretty = \case
+    Token t -> pretty t
+    OpenBlock n h s -> "OpenBlock(" <> pretty n <> ", " <> pretty h <> ") @ " <> pretty s
+    Indent n s -> "Indent(" <> pretty n <> ") @ " <> pretty s
 
 mark :: LineIndex -> [LToken] -> [Marked]
 mark li = markIndents . markBlocks
