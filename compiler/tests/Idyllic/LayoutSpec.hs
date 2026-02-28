@@ -2,47 +2,46 @@
 
 module Idyllic.LayoutSpec where
 
-import Data.Text (Text, unpack)
-import Data.Text.IO qualified as T
-import Data.Text.Lazy (toStrict)
+import Data.Text (Text)
 import Idyllic.Layout (mark)
 import Idyllic.Lexer (tokenize)
 import Idyllic.Token (LToken)
-import Idyllic.Utils (LineIndex, buildLineIndex)
+import Idyllic.Utils (LineIndex, buildLineIndex, prettyShowNoColor)
 import Test.Hspec (Spec, describe, it)
 import Test.Hspec.Golden
-import Text.Pretty.Simple (pShow)
-import Prettyprinter
-import Prettyprinter.Render.Util.StackMachine (renderSimplyDecorated)
-
-myGoldenTest :: String -> Text -> Golden Text
-myGoldenTest name actualOutput =
-  Golden
-    { output = actualOutput,
-      encodePretty = prettyText,
-      writeToFile = T.writeFile,
-      readFromFile = T.readFile,
-      goldenFile = ".golden/" <> name,
-      actualFile = Just (".golden/" <> name <> "-actual"),
-      failFirstTime = False
-    }
-
-prettyText :: Text -> String
-prettyText = unpack . renderSimplyDecorated . layoutPretty defaultLayoutOptions . pretty
 
 spec :: Spec
 spec = do
-  testMark
+  markSpec
 
-layoutTestSetup :: Text -> ([LToken], LineIndex)
-layoutTestSetup src = case tokenize src of
-  Left es -> error $ "Tokenization failed: " ++ show es
-  Right ts -> (ts, buildLineIndex src)
+markSpec :: Spec
+markSpec =
+  describe "mark" $ do
+    goldenMark "single_line_let" "let x = 1 in x"
+    goldenMark
+      "multi_line_let"
+      """
+      let x = 1
+          y = 2
+       in y
+      """
+    goldenMark
+      "multi_line_let_nested"
+      """
+      let x = 1
+          y = let j = 1
+                  k = 2
+               in j
+          z = 3
+       in add x y z
+      """
 
-testMark :: Spec
-testMark =
-  describe "mark" $
-    it "marks indents and opened blocks" $
-      let (ts, li) = layoutTestSetup "some source code"
-          out = toStrict . pShow $ mark li ts
-       in myGoldenTest (show 'mark) out
+goldenMark :: String -> Text -> Spec
+goldenMark name src =
+  it ("correctly marks: " ++ name) $
+    let (ts, li) = case tokenize src of
+          Left es -> error $ "Tokenization failed: " ++ show es
+          Right ts' -> (ts', buildLineIndex src)
+        out = prettyShowNoColor $ mark li ts
+        fileName = show 'mark ++ "_" ++ name
+     in defaultGolden fileName out

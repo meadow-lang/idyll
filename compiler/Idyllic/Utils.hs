@@ -2,8 +2,11 @@ module Idyllic.Utils where
 
 import Data.Text (Text)
 import Data.Text.Internal.Search qualified as T
+import Data.Text.Lazy qualified as TL
 import Data.Vector.Unboxed qualified as U
 import Prettyprinter
+import Text.Pretty.Simple (pShowOpt)
+import Text.Pretty.Simple.Internal.Printer
 
 newtype LineIndex = LineIndex {lineStarts :: U.Vector Int} deriving (Show, Eq)
 
@@ -55,3 +58,11 @@ fromPair (s, e) = Span s e
 
 instance Semigroup Span where
   Span s1 e1 <> Span s2 e2 = Span (min s1 s2) (max e1 e2)
+
+prettyShowNoColor :: (Show a) => a -> String
+prettyShowNoColor a = TL.unpack $ pShowOpt config a
+  where
+    config =
+      defaultOutputOptionsDarkBg
+        { outputOptionsColorOptions = Nothing
+        }
