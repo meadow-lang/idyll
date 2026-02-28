@@ -12,6 +12,8 @@ import Idyllic.Utils (LineIndex, buildLineIndex)
 import Test.Hspec (Spec, describe, it)
 import Test.Hspec.Golden
 import Text.Pretty.Simple (pShow)
+import Prettyprinter
+import Prettyprinter.Render.Util.StackMachine (renderSimplyDecorated)
 
 myGoldenTest :: String -> Text -> Golden Text
 myGoldenTest name actualOutput =
@@ -26,7 +28,7 @@ myGoldenTest name actualOutput =
     }
 
 prettyText :: Text -> String
-prettyText = unpack . toStrict . pShow
+prettyText = unpack . renderSimplyDecorated . layoutPretty defaultLayoutOptions . pretty
 
 spec :: Spec
 spec = do
