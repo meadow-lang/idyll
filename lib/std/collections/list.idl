@@ -34,6 +34,11 @@ def rec foldl : (a -> b -> a) -> a -> [b] -> a = fun
   | _ acc [] = acc
   | f acc (x::xs) = foldl f (f acc x) xs
 
+@pub def rec foldl (f : a -> b -> a) (acc : a) (xs : [b]) : a = 
+  match xs with
+  | [] -> acc
+  | x::xs -> foldl f (f acc x) xs
+
 @pub
 filter : (a -> Bool) -> [a] -> [a]
 filter _ [] = []
@@ -41,18 +46,20 @@ filter p (x::xs)
   | p x = x :: filter p xs
   | otherwise = filter p xs
 
-@pub
-def rec filter : (a -> Bool) -> [a] -> [a] = fun
-  | _ [] = []
-  | p x (x::xs) if p x = x :: filter p xs
-  | _ (x::xs) = filter p xs
+@pub def rec filter (p : a -> Bool) (xs : [a]) : [a] =
+  match xs with
+  | [] -> []
+  | x::xs if p x -> x :: filter p xs
+  | _::xs -> filter p xs
 
 @pub
 filter : (a -> Bool) -> [a] -> [a]
 filter p = foldr (\x acc -> if p x then x :: acc else acc) []
 
-@pub
-def filter (p : a -> Bool) (xs : [a]) : [a] =
+@pub filter (p : a -> Bool) (xs : [a]) : [a] =
+  foldr (\x acc -> if p x then x :: acc else acc) [] xs
+
+@pub def filter (p : a -> Bool) (xs : [a]) : [a] =
   foldr (\x acc -> if p x then x :: acc else acc) [] xs
 
 @pub
