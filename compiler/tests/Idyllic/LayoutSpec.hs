@@ -44,6 +44,12 @@ markSpec =
        in add x y z
       """
     goldenMark
+      "multi_line_let_in_inline"
+      """
+      let x = 1
+          y = 2 in y
+      """
+    goldenMark
       "case_expression"
       """
       case xs of
@@ -65,6 +71,14 @@ markSpec =
         y -> case y of
                2 -> 2
                z -> 3
+      """
+    goldenMark
+      "do_let"
+      """
+      do
+        let x = 1
+            y = 2
+        pure y 
       """
 
 goldenMark :: String -> Text -> Spec
