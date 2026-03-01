@@ -43,8 +43,8 @@ mark li = markIndents . markBlocks
     markIndents [] = []
 
     markBlocks :: [LToken] -> [Marked]
-    markBlocks [t@(layoutHerald -> h@(Just _))] = [Token t, OpenBlock 0 h (locSpan t)]
-    markBlocks (t@(layoutHerald -> h@(Just _)) : n : ts) | unLoc n /= TokenLBrace = case unLoc n of
+    markBlocks [t@(needsCloser -> h@(Just _))] = [Token t, OpenBlock 0 h (locSpan t)]
+    markBlocks (t@(needsCloser -> h@(Just _)) : n : ts) | unLoc n /= TokenLBrace = case unLoc n of
       TokenNewline -> case skipNewlines ts of
         [] -> [Token t, OpenBlock 0 h (locSpan t)]
         (t' : ts') ->
@@ -56,8 +56,8 @@ mark li = markIndents . markBlocks
     markBlocks (t : ts) = Token t : markBlocks ts
     markBlocks [] = []
 
-    layoutHerald :: LToken -> Maybe Token
-    layoutHerald = go . unLoc
+    needsCloser :: LToken -> Maybe Token
+    needsCloser = go . unLoc
       where
         go TokenLet = Just TokenLet
         go TokenDo = Just TokenDo
