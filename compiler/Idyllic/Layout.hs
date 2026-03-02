@@ -63,6 +63,13 @@ mark li = markIndents . markBlocks
         go TokenDo = Just TokenDo
         go _ = Nothing
 
+    isLayoutHerald :: Token -> Bool
+    isLayoutHerald TokenLet = True
+    isLayoutHerald TokenDo = True
+    isLayoutHerald TokenWhere = True
+    isLayoutHerald TokenOf = True
+    isLayoutHerald _ = False
+
 layout :: LineIndex -> [LToken] -> ([LToken], [LayoutError])
 layout li ts' =
   let (ts, es) = go (mark li ts') [(1, Nothing)]
