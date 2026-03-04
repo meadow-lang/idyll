@@ -136,6 +136,8 @@ pub unsafe fn reduce(heap: &mut Heap, mut current: Ptr) -> Ptr {
                 // Make the second field of the App point to the App itself
                 if let Node::App(_, ref mut x) = unsafe { &mut *app_ptr } {
                     *x = app_ptr;
+                } else {
+                    panic!("Expected App node for Y combinator");
                 }
 
                 return app_ptr;
