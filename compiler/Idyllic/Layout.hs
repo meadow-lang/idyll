@@ -44,16 +44,18 @@ mark li = markIndents . markBlocks
 
     markBlocks :: [LToken] -> [Marked]
     markBlocks [t@(hasCloser -> h@(Just _))] = [Token t, OpenBlock 0 h (locSpan t)]
-    markBlocks (t@(hasCloser -> h@(Just _)) : n : ts) | unLoc n /= TokenLBrace = case unLoc n of
-      TokenNewline -> case skipNewlines ts of
-        [] -> [Token t, OpenBlock 0 h (locSpan t)]
-        (t' : ts') ->
-          let (_, col) = offsetToLineCol li (spanStart $ locSpan t')
-           in Token t : OpenBlock col h (locSpan t) : Token t' : markBlocks ts'
-      _ ->
-        let (_, col) = offsetToLineCol li (spanStart $ locSpan n)
-         in Token t : OpenBlock col h (locSpan t) : Token n : markBlocks ts
-    markBlocks (t : ts) | isLayoutHerald (unLoc t) = Token t : OpenBlock 0 (Just (unLoc t)) (locSpan t) : markBlocks ts
+    markBlocks (t@(hasCloser -> h@(Just _)) : n : ts) | unLoc n /= TokenLBrace = case skipNewlines (n : ts) of
+      [] -> [Token t, OpenBlock 0 h (locSpan t)]
+      (t' : ts') ->
+        let (_, col) = offsetToLineCol li (spanStart $ locSpan t')
+         in Token t : OpenBlock col h (locSpan t) : markBlocks (t' : ts')
+    markBlocks (t : n : ts)
+      | isLayoutHerald (unLoc t) && unLoc n /= TokenLBrace =
+          case skipNewlines (n : ts) of
+            [] -> [Token t, OpenBlock 0 Nothing (locSpan t)]
+            (t' : ts') ->
+              let (_, col) = offsetToLineCol li (spanStart $ locSpan t')
+               in Token t : OpenBlock col Nothing (locSpan t) : Token t' : markBlocks ts'
     markBlocks (t : ts) = Token t : markBlocks ts
     markBlocks [] = []
 
