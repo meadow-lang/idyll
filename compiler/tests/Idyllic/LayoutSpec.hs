@@ -109,5 +109,25 @@ inputs =
             y = 2
         pure y 
       """
+    ),
+    ( "case_multi_line_let",
+      """
+      case x of
+        1 -> 1
+        y -> let z = 2 
+                 g = 3
+              in z
+      """
+    ),
+    ( "let_case_let",
+      """
+      let x = case y of
+            1 -> 1
+            z -> let g = 2 
+                     b = 3
+                  in g
+            f -> 4
+        in x
+      """
     )
   ]
