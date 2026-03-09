@@ -78,33 +78,33 @@ layout li ts' =
   let (ts, es) = go (mark li ts') [(1, Nothing)]
    in (Located TokenVLBrace (Span 0 0) : ts, es)
   where
-    go :: [Marked] -> [(Int, Maybe (Token, Int))] -> ([LToken], [LayoutError])
+    go :: [Marked] -> [(Int, Maybe Token)] -> ([LToken], [LayoutError])
     go (i@(Indent n s) : ts) ((m, h) : ms)
       | m == n = let (ts'', es) = go ts ((m, h) : ms) in (Located TokenVSemi s : ts'', es)
       | n < m = let (ts'', es) = go (i : ts) ms in (Located TokenVRBrace s : ts'', es)
-      -- | n < m = let (ts'', es) = go (i : ts) ms in (Located TokenVRBrace (Span m 1) : ts'', es)
+    -- \| n < m = let (ts'', es) = go (i : ts) ms in (Located TokenVRBrace (Span m 1) : ts'', es)
     go (Indent {} : ts) ms = go ts ms
     go (OpenBlock n h s : ts) ((m, h') : ms)
-      | n > m = let (ts'', es) = go ts ((n, (,n) <$> h) : (m, h') : ms) in (Located TokenVLBrace s : ts'', es)
+      | n > m = let (ts'', es) = go ts ((n, h) : (m, h') : ms) in (Located TokenVLBrace s : ts'', es)
       | otherwise = let (ts'', es) = go ts ms in (ts'', NestedLayoutContextError m n s : es)
     go (OpenBlock n h s : ts) []
-      | n > 0 = let (ts'', es) = go ts [(n, (,n) <$> h)] in (Located TokenVLBrace s : ts'', es)
+      | n > 0 = let (ts'', es) = go ts [(n, h)] in (Located TokenVLBrace s : ts'', es)
     go (OpenBlock n _ s : ts) ms = let (ts'', es) = go (Indent n s : ts) ms in (Located TokenVLBrace s : Located TokenVRBrace s : ts'', es)
     go (Token t : ts) ((0, Nothing) : ms) | unLoc t == TokenRBrace = let (ts'', es) = go ts ms in (t : ts'', es)
-    go (Token t : Token kw : ts) ((0, Just (h, _)) : ms) | unLoc t == TokenRBrace && closesBlock (unLoc kw) h = let (ts'', es) = go ts ms in (t : kw : ts'', es)
+    go (Token t : Token kw : ts) ((0, Just h) : ms) | unLoc t == TokenRBrace && closesBlock (unLoc kw) h = let (ts'', es) = go ts ms in (t : kw : ts'', es)
     go (Token t : ts) ms | unLoc t == TokenRBrace = let (ts'', es) = go ts ms in (ts'', UnexpectedClosingBraceError (locSpan t) : es)
     go (Token kw : Token lb : ts) ms
       | unLoc lb == TokenLBrace && isHerald (unLoc kw) =
-          let (ts'', es) = go ts ((0, Just (unLoc kw, 0)) : ms) in (kw : lb : ts'', es)
+          let (ts'', es) = go ts ((0, Just (unLoc kw)) : ms) in (kw : lb : ts'', es)
       where
         isHerald TokenLet = True
         isHerald TokenDo = True
         isHerald _ = False
     go (Token t : ts) ms | unLoc t == TokenLBrace = let (ts'', es) = go ts ((0, Nothing) : ms) in (t : ts'', es)
-    go (Token t : ts) ((m, Just (kw, n)) : ms)
-      | m /= 0 && closesBlock (unLoc t) kw && n < m =
+    go (Token t : ts) ((m, Just kw) : ms)
+      | m /= 0 && closesBlock (unLoc t) kw =
           let (ts'', es) = go ts ms in (Located TokenVRBrace (locSpan t) : t : ts'', es)
-          -- let (ts'', es) = go ts ms in (Located TokenVRBrace (Span m 2) : t : ts'', es)
+    -- let (ts'', es) = go ts ms in (Located TokenVRBrace (Span m 2) : t : ts'', es)
     go (Token t : ts) ms = let (ts'', es) = go ts ms in (t : ts'', es)
     go [] [] = ([], [])
     go [] ((m, _) : ms)
