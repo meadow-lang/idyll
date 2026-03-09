@@ -81,7 +81,10 @@ layout li ts' =
     go :: [Marked] -> [(Int, Maybe Token)] -> ([LToken], [LayoutError])
     go (i@(Indent n s) : ts) ((m, h) : ms)
       | m == n = let (ts'', es) = go ts ((m, h) : ms) in (Located TokenVSemi s : ts'', es)
-      | n < m = let (ts'', es) = go (i : ts) ms in (Located TokenVRBrace s : ts'', es)
+      | n < m =
+          case (ts, h) of
+            (Token t : ts', Just h') | closesBlock (unLoc t) h' -> let (ts'', es) = go ts' ms in (Located TokenVRBrace s : t : ts'', es)
+            _ -> let (ts'', es) = go (i : ts) ms in (Located TokenVRBrace s : ts'', es)
     -- \| n < m = let (ts'', es) = go (i : ts) ms in (Located TokenVRBrace (Span m 1) : ts'', es)
     go (Indent {} : ts) ms = go ts ms
     go (OpenBlock n h s : ts) ((m, h') : ms)
