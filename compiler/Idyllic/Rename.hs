@@ -2,9 +2,9 @@ module Idyllic.Rename where
 
 import Control.Monad.State
 import Data.Text (Text)
-import qualified Idyllic.AST as A
-import Idyllic.Utils
+import Idyllic.AST qualified as A
 import Idyllic.HIR
+import Idyllic.Utils
 
 newtype RenameError = ResUnboundName Text deriving (Show, Eq)
 

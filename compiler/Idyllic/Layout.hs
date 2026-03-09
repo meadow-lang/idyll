@@ -81,11 +81,9 @@ layout li ts' =
     go :: [Marked] -> [(Int, Maybe Token)] -> ([LToken], [LayoutError])
     go (i@(Indent n s) : ts) ((m, h) : ms)
       | m == n = let (ts'', es) = go ts ((m, h) : ms) in (Located TokenVSemi s : ts'', es)
-      | n < m =
-          case (ts, h) of
-            (Token t : ts', Just h') | closesBlock (unLoc t) h' -> let (ts'', es) = go ts' ms in (Located TokenVRBrace s : t : ts'', es)
-            _ -> let (ts'', es) = go (i : ts) ms in (Located TokenVRBrace s : ts'', es)
-    -- \| n < m = let (ts'', es) = go (i : ts) ms in (Located TokenVRBrace (Span m 1) : ts'', es)
+      | n < m = case (ts, h) of
+          (Token t : rst, Just h') | closesBlock (unLoc t) h' -> let (ts'', es) = go rst ms in (Located TokenVRBrace s : t : ts'', es)
+          _ -> let (ts'', es) = go (i : ts) ms in (Located TokenVRBrace s : ts'', es)
     go (Indent {} : ts) ms = go ts ms
     go (OpenBlock n h s : ts) ((m, h') : ms)
       | n > m = let (ts'', es) = go ts ((n, h) : (m, h') : ms) in (Located TokenVLBrace s : ts'', es)
@@ -105,9 +103,7 @@ layout li ts' =
         isHerald _ = False
     go (Token t : ts) ms | unLoc t == TokenLBrace = let (ts'', es) = go ts ((0, Nothing) : ms) in (t : ts'', es)
     go (Token t : ts) ((m, Just kw) : ms)
-      | m /= 0 && closesBlock (unLoc t) kw =
-          let (ts'', es) = go ts ms in (Located TokenVRBrace (locSpan t) : t : ts'', es)
-    -- let (ts'', es) = go ts ms in (Located TokenVRBrace (Span m 2) : t : ts'', es)
+      | m /= 0 && closesBlock (unLoc t) kw = let (ts'', es) = go ts ms in (Located TokenVRBrace (locSpan t) : t : ts'', es)
     go (Token t : ts) ms = let (ts'', es) = go ts ms in (t : ts'', es)
     go [] [] = ([], [])
     go [] ((m, _) : ms)
@@ -118,7 +114,7 @@ layout li ts' =
         lastSpan [t] = locSpan t
         lastSpan (_ : rst) = lastSpan rst
 
-closesBlock :: Token -> Token -> Bool
-closesBlock TokenIn TokenLet = True
-closesBlock TokenWhere TokenDo = True
-closesBlock _ _ = False
+    closesBlock :: Token -> Token -> Bool
+    closesBlock TokenIn TokenLet = True
+    closesBlock TokenWhere TokenDo = True
+    closesBlock _ _ = False

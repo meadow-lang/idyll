@@ -6,11 +6,11 @@ import Control.Monad (void)
 import Control.Monad.Combinators.Expr
 import Data.Functor (($>))
 import Data.List (unsnoc)
-import qualified Data.List.NonEmpty as NE
-import qualified Data.List.NonEmpty as NonEmpty
+import Data.List.NonEmpty qualified as NE
+import Data.List.NonEmpty qualified as NonEmpty
 import Data.Maybe (fromMaybe, isJust)
 import Data.Proxy
-import qualified Data.Set as Set
+import Data.Set qualified as Set
 import Data.Text (Text, pack, unpack)
 import Data.Void
 import Error.Diagnose.Compat.Megaparsec (HasHints (..))
