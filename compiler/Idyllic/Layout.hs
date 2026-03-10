@@ -95,12 +95,12 @@ layout li ts' =
     go (Token t : Token kw : ts) ((0, Just h) : ms) | unLoc t == TokenRBrace && closesBlock (unLoc kw) h = let (ts'', es) = go ts ms in (t : kw : ts'', es)
     go (Token t : ts) ms | unLoc t == TokenRBrace = let (ts'', es) = go ts ms in (ts'', UnexpectedClosingBraceError (locSpan t) : es)
     go (Token kw : Token lb : ts) ms
-      | unLoc lb == TokenLBrace && isHerald (unLoc kw) =
+      | unLoc lb == TokenLBrace && hasCloser (unLoc kw) =
           let (ts'', es) = go ts ((0, Just (unLoc kw)) : ms) in (kw : lb : ts'', es)
       where
-        isHerald TokenLet = True
-        isHerald TokenDo = True
-        isHerald _ = False
+        hasCloser TokenLet = True
+        hasCloser TokenDo = True
+        hasCloser _ = False
     go (Token t : ts) ms | unLoc t == TokenLBrace = let (ts'', es) = go ts ((0, Nothing) : ms) in (t : ts'', es)
     go (Token t : ts) ((m, Just kw) : ms)
       | m /= 0 && closesBlock (unLoc t) kw = let (ts'', es) = go ts ms in (Located TokenVRBrace (locSpan t) : t : ts'', es)
