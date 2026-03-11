@@ -116,6 +116,5 @@ layout li ts' =
 
     closesBlock :: Token -> Token -> Bool
     closesBlock TokenIn TokenLet = True
-    -- closesBlock TokenEq TokenDo = True
     closesBlock TokenWhere TokenDo = True
     closesBlock _ _ = False

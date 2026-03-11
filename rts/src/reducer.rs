@@ -16,8 +16,13 @@ pub enum Node {
 
     Pair(Ptr, Ptr),
     Int(i64),
-
+    String(Ptr),
     Indirect(Ptr),
+
+    Add,
+    Sub,
+    Mul,
+    Div,
 }
 
 pub struct Heap {
