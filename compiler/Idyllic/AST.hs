@@ -38,7 +38,7 @@ data Expr
   | ExprLet [LBind] LExpr
   | -- | ExprDo [LExpr]
     -- | ExprNeg LExpr
-    -- | ExprBinary Ident LExpr LExpr
+    -- | ExprBinary []
     -- | ExprIf LExpr LExpr LExpr
     -- | ExprCase LExpr [(LPat, LExpr)]
     ExprUnit

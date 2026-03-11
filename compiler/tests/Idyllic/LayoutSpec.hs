@@ -127,7 +127,33 @@ inputs =
                      b = 3
                   in g
             f -> 4
-        in x
+        in x      """
+    ),
+    ( "do_let_in",
+      """
+      do
+        let x = 1 in pure x
+        5
+      """
+    ),
+    ( "let_do_let_in",
+      """
+      let x = do
+            let y = True
+            y
+       in x
       """
     )
   ]
+
+-- f =
+--   let x = do
+--         let y = True
+--         y
+--    in x
+
+-- f = do
+-- let x = 5 in pure ()
+-- 5
+f :: Integer
+f | let x = 1 = x

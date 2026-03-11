@@ -17,7 +17,7 @@ pub enum Node {
     Pair(Ptr, Ptr),
     Int(i64),
 
-    Forward(Ptr),
+    Indirect(Ptr),
 }
 
 pub struct Heap {
@@ -78,7 +78,7 @@ impl Heap {
         }
 
         match &mut *ptr {
-            Node::Forward(new_ptr) => return *new_ptr,
+            Node::Indirect(new_ptr) => return *new_ptr,
             _ => {}
         }
 
@@ -87,7 +87,7 @@ impl Heap {
 
         let new_ptr = self.to_space.as_mut_ptr().add(new_location);
 
-        *ptr = Node::Forward(new_ptr);
+        *ptr = Node::Indirect(new_ptr);
 
         new_ptr
     }
@@ -125,15 +125,9 @@ pub unsafe fn reduce(heap: &mut Heap, mut current: Ptr) -> Ptr {
 
             Node::Y => {
                 // Y f = f (Y f)
-                // In graph reduction, we create a self-referencing App node.
                 let f = stack.pop().expect("Y requires 1 argument");
-
-                // We need to create an App(f, self).
-                // This is tricky with raw pointers and a copying GC.
-                // Standard approach: create a dummy App, then update it.
                 let app_ptr = heap.alloc(Node::App(f, ptr::null_mut()), &mut stack);
 
-                // Make the second field of the App point to the App itself
                 if let Node::App(_, ref mut x) = unsafe { &mut *app_ptr } {
                     *x = app_ptr;
                 } else {
