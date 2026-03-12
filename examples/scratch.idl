@@ -25,18 +25,6 @@ sieve xs = sieve' xs Map.empty
       where
         reinsert table prime = Map.insertWith (++) (x+prime) [prime] table
 
-@pub def sieve(xs : Stream Int) : Stream Int =
-  let rec sieve'(xs : Stream Int, table : Map Int [Int]) : Stream Int =
-    match xs with
-    | [] -> []
-    | x :: xs ->
-      match table.lookup(x) with
-      | None -> x :: sieve'(xs, table.insert(x * x, [x]))
-      | Some facts -> sieve'(xs, facts.foldl(reinsert, Map.delete x table))
-  and reinsert (table : Map Int [Int], prime : Int) : Map Int [Int] =
-    table.insertWith((++), x + prime, [prime])
-  in sieve'(xs, Map.empty)
-
 sieve : Stream Int -> Stream Int
 sieve xs = sieve' xs Map.empty
   where {
