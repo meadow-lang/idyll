@@ -145,15 +145,3 @@ inputs =
       """
     )
   ]
-
--- f =
---   let x = do
---         let y = True
---         y
---    in x
-
--- f = do
--- let x = 5 in pure ()
--- 5
-f :: Integer
-f | let x = 1 = x
