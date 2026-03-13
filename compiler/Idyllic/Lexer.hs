@@ -2,9 +2,9 @@ module Idyllic.Lexer (tokenize) where
 
 import Control.Applicative (empty, liftA, optional, (<|>))
 import Control.Monad (void)
-import qualified Data.List.NonEmpty as NE
+import Data.List.NonEmpty qualified as NE
 import Data.Text (Text, pack, unpack)
-import qualified Data.Text as T
+import Data.Text qualified as T
 import Data.Void (Void)
 import Error.Diagnose.Compat.Megaparsec
 import Idyllic.Token (LToken, Token (..))
@@ -24,7 +24,7 @@ import Text.Megaparsec
     (<?>),
   )
 import Text.Megaparsec.Char (alphaNumChar, char, char', hspace1, lowerChar, space1, string, upperChar)
-import qualified Text.Megaparsec.Char.Lexer as L
+import Text.Megaparsec.Char.Lexer qualified as L
 import Text.Megaparsec.Stream (VisualStream (..))
 
 type Lexer = Parsec Void Text

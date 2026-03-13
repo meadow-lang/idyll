@@ -4,7 +4,7 @@ import Control.Applicative (Alternative (..))
 import Control.Monad (MonadPlus)
 import Control.Monad.Identity (Identity)
 import Data.Text (Text)
-import qualified Data.Text as T
+import Data.Text qualified as T
 
 data ParseResult e s a = ParseResult
   { resultValue :: Maybe a, -- The partial or successful output
