@@ -18,12 +18,37 @@ pub enum Node {
     Int(i64),
     String(Ptr),
     Indirect(Ptr),
+    Data {
+        tag: usize,
+        fields: Ptr,
+        arity: usize,
+    },
 
     Add,
     Sub,
     Mul,
     Div,
 }
+
+// #[repr(C)]
+// pub struct Value {
+//     pub info: *const InfoTable,
+//     pub payload: [Ptr],
+// }
+
+// #[repr(C)]
+// pub struct InfoTable {
+//     pub entry: Ptr,
+//     pub tag: u32,
+//     pub layout: LayoutInfo,
+// }
+
+// #[repr(C)]
+// pub struct LayoutInfo {
+//     pub size: usize,
+//     pub pointers: usize,
+//     pub pointer_offsets: [usize],
+// }
 
 pub struct Heap {
     from_space: Vec<Node>,
