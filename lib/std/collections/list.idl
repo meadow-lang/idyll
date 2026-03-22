@@ -266,7 +266,7 @@ instance FromStream [a] where:
           Skip  s'   -> go s'
           Done       -> pure []
 
-instance Functor [a] where:
+instance Mappable [a] where:
   map f xs = foldr (\x acc -> f x :: acc) [] xs
   (<$) x xs = map (\_ -> x) xs
   (<$>) f xs = map f xs
@@ -279,7 +279,7 @@ instance Applicative [a] where:
   (<*>) fs xs = foldr (\f acc -> map f xs ++ acc) [] fs
   liftA2 f xs ys = foldr (\x acc -> map (f x) ys ++ acc) [] xs
 
-instance Monad [a] where:
+instance FlatMap [a] where:
   (>>=) xs f = foldr (\x acc -> map f x ++ acc) [] xs
   (>>) xs ys = foldr (\_ acc -> ys ++ acc) [] xs
   join xs = foldr (\x acc -> x ++ acc) [] xs
