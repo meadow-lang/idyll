@@ -16,7 +16,7 @@ pub enum Node {
 
     Pair(Ptr, Ptr),
     Int(i64),
-    String(Ptr),
+    Array(Ptr, usize),
     Indirect(Ptr),
     Data {
         tag: usize,
@@ -179,7 +179,7 @@ pub unsafe fn reduce(heap: &mut Heap, mut current: Ptr) -> Ptr {
                 return heap.alloc(Node::App(fx, x), &mut stack);
             }
 
-            Node::Pair(_, _) | Node::Int(_) => {
+            Node::Pair(_, _) | Node::Int(_) | Node::Array(_, _) => {
                 return current;
             }
 
