@@ -1,1 +1,1 @@
-module Desugar where
+module Idyllic.Desugar where
