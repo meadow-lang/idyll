@@ -1,6 +1,8 @@
 module Idyllic.Rename where
 
 import Control.Monad.State
+import Data.Map (Map)
+import Data.Map qualified as Map
 import Data.Text (Text)
 import Idyllic.AST qualified as AST
 import Idyllic.HIR
@@ -9,7 +11,7 @@ import Idyllic.Utils
 newtype RenameError = ResUnboundName Text deriving (Show, Eq)
 
 data Env = Env
-  { nameMap :: [(Text, Int)],
+  { nameMap :: Map Text Int,
     nameCounter :: Int,
     nodeIdCounter :: Int,
     errors :: [RenameError]
@@ -26,14 +28,14 @@ defaultEnv =
     }
   where
     ops = ["+", "-", "*", "/", "%", "neg", "==", "!=", "<", "<=", ">", ">=", "&&", "||", "print", "println", "error"]
-    initialNames = zip ops [0 ..]
+    initialNames = Map.fromList $ zip ops [0 ..]
 
 type Rename a = State Env a
 
 find :: Text -> Rename (Maybe Int)
 find name = do
   env <- get
-  case lookup name (nameMap env) of
+  case Map.lookup name (nameMap env) of
     Just n -> pure (Just n)
     Nothing -> do
       put env {errors = ResUnboundName name : errors env}
@@ -42,8 +44,14 @@ find name = do
 freshName :: Text -> Rename Int
 freshName name = do
   env <- get
-  put env {nameMap = (name, nameCounter env) : nameMap env, nameCounter = nameCounter env + 1}
+  put env {nameMap = Map.insert name (nameCounter env) (nameMap env), nameCounter = nameCounter env + 1}
   pure $ nameCounter env
+
+freshNodeId :: Rename Int
+freshNodeId = do
+  env <- get
+  put env {nodeIdCounter = nodeIdCounter env + 1}
+  pure $ nodeIdCounter env
 
 runRename :: AST.Prog -> (Prog, [RenameError])
 runRename prog = let (p, env) = runState (renameModule prog) defaultEnv in (p, errors env)

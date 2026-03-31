@@ -3,7 +3,7 @@ module Idyllic.HIR
     Module (..),
     LBind,
     Bind (..),
-    LExpr,
+    ExprId,
     Expr (..),
     Ident,
     Lit (..),
@@ -12,6 +12,14 @@ where
 
 import Data.Text (Text)
 import Idyllic.Utils (Located)
+
+type NodeId = Int
+
+data Node a = Node
+  { nodeId :: NodeId,
+    nodeData :: a
+  }
+  deriving (Show, Eq, Ord)
 
 type Prog = Located Module
 
@@ -24,18 +32,18 @@ data Module = Module
 type LBind = Located Bind
 
 data Bind
-  = BindName Ident LExpr
-  | BindFun Ident [Ident] LExpr
+  = BindName Ident ExprId
+  | BindFun Ident [Ident] ExprId
   deriving (Show, Eq, Ord)
 
-type LExpr = Located Expr
+type ExprId = Int
 
 data Expr
   = ExprLit Lit
   | ExprVar Ident
-  | ExprApp LExpr [LExpr]
-  | ExprLam [Ident] LExpr
-  | ExprLet [LBind] LExpr
+  | ExprApp ExprId [ExprId]
+  | ExprLam [Ident] ExprId
+  | ExprLet [LBind] ExprId
   | ExprUnit
   deriving (Show, Eq, Ord)
 
