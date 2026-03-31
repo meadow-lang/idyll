@@ -2,7 +2,7 @@ module Idyllic.Rename where
 
 import Control.Monad.State
 import Data.Text (Text)
-import Idyllic.AST qualified as A
+import Idyllic.AST qualified as AST
 import Idyllic.HIR
 import Idyllic.Utils
 
@@ -25,7 +25,7 @@ defaultEnv =
       errors = []
     }
   where
-    ops = ["+", "-", "*", "/", "%", "neg", "==", "!=", "<", "<=", ">", ">=", "&&", "||"]
+    ops = ["+", "-", "*", "/", "%", "neg", "==", "!=", "<", "<=", ">", ">=", "&&", "||", "print", "println", "error"]
     initialNames = zip ops [0 ..]
 
 type Rename a = State Env a
@@ -45,87 +45,47 @@ freshName name = do
   put env {nameMap = (name, nameCounter env) : nameMap env, nameCounter = nameCounter env + 1}
   pure $ nameCounter env
 
-freshNodeId :: Rename Int
-freshNodeId = do
-  env <- get
-  put env {nodeIdCounter = nodeIdCounter env + 1}
-  pure $ nodeIdCounter env
+runRename :: AST.Prog -> (Prog, [RenameError])
+runRename prog = let (p, env) = runState (renameModule prog) defaultEnv in (p, errors env)
 
--- rename :: AST.Expr -> Either [RenameError] Expr
--- rename expr =
---   let (result, env) = runState (renameExpr expr) defaultEnv
---    in case errors env of
---         [] -> Right result
---         errs -> Left (reverse errs)
+renameModule :: AST.Prog -> Rename Prog
+renameModule (Located (AST.Module name decls) s) = do
+  decls' <- mapM renameBind decls
+  pure $ Located (Module name decls') s
 
--- renameExpr :: AST.Expr -> Rename Expr
--- renameExpr expr = go $ synNodeKind expr
---   where
---     go :: AST.ExprKind -> Rename Expr
---     go (AST.Lit (AST.LitInt n)) = do
---       nodeId <- freshNodeId
---       pure $ HirNode nodeId (ExprLit (LitInt n)) (synNodeSpan expr)
---     go (AST.Lit (AST.LitBool b)) = do
---       nodeId <- freshNodeId
---       pure $ HirNode nodeId (ExprLit (LitBool b)) (synNodeSpan expr)
---     go (AST.Lit (AST.LitString s)) = do
---       nodeId <- freshNodeId
---       pure $ HirNode nodeId (ExprLit (LitString s)) (synNodeSpan expr)
---     go (AST.Var x) = do
---       nodeId <- freshNodeId
---       var <- find $ synNodeKind x
---       let sym = Symbol <$> var <*> pure (synNodeSpan x)
---       let m = maybe ExprError ExprVar sym
---       pure $ HirNode nodeId m (synNodeSpan expr)
---     go (AST.Let bind body) = do
---       nodeId <- freshNodeId
---       (bind', body') <- renameBind bind body
---       pure $ HirNode nodeId (ExprLet bind' body') (synNodeSpan expr)
---       where
---         renameBind :: AST.Bind -> AST.Expr -> Rename (Bind, Expr)
---         renameBind (AST.BindName x e) b = do
---           x' <- Symbol <$> freshName (synNodeKind x) <*> pure (synNodeSpan x) -- we add the name to the env first since laziness means it can be recursive
---           e' <- renameExpr e
---           body' <- renameExpr b
---           pure (BindName x' e', body')
---         renameBind (AST.BindFun f args e) b = do
---           f' <- Symbol <$> freshName (synNodeKind f) <*> pure (synNodeSpan f)
---           args' <- mapM (\p -> Symbol <$> freshName (synNodeKind p) <*> pure (synNodeSpan p)) args
---           e' <- renameExpr e
---           body' <- renameExpr b
---           pure (BindFun f' args' e', body')
---     go (AST.If cond thenBr elseBr) = do
---       nodeId <- freshNodeId
---       cond' <- renameExpr cond
---       thenBr' <- renameExpr thenBr
---       elseBr' <- renameExpr elseBr
---       pure $ HirNode nodeId (ExprIf cond' thenBr' elseBr') (synNodeSpan expr)
---     go (AST.Lam params body) = do
---       nodeId <- freshNodeId
---       params' <- mapM (\p -> Symbol <$> freshName (synNodeKind p) <*> pure (synNodeSpan p)) params
---       body' <- renameExpr body
---       pure $ HirNode nodeId (ExprLam params' body') (synNodeSpan expr)
---     go (AST.App f args) = do
---       nodeId <- freshNodeId
---       f' <- renameExpr f
---       args' <- mapM renameExpr args
---       pure $ HirNode nodeId (ExprApp f' args') (synNodeSpan expr)
---     go (AST.Infix l op r) = do
---       nodeId <- freshNodeId
---       l' <- renameExpr l
---       opId <- freshNodeId
---       r' <- renameExpr r
---       opSym <- find (synNodeKind op)
---       let opNode = case opSym of
---             Just s -> ExprVar (Symbol s (synNodeSpan op))
---             Nothing -> ExprError
---       pure $ HirNode nodeId (ExprApp (HirNode opId opNode (synNodeSpan op)) [l', r']) (synNodeSpan expr)
---     go (AST.Neg e) = do
---       nodeId <- freshNodeId
---       opId <- freshNodeId
---       e' <- renameExpr e
---       opSym <- find "neg"
---       let opNode = case opSym of
---             Just s -> ExprVar (Symbol s (synNodeSpan expr))
---             Nothing -> ExprError
---       pure $ HirNode nodeId (ExprApp (HirNode opId opNode (synNodeSpan expr)) [e']) (synNodeSpan expr)
+renameExpr :: AST.LExpr -> Rename LExpr
+renameExpr (Located (AST.ExprLit l) s) = pure $ Located (ExprLit (mapLit l)) s
+renameExpr (Located (AST.ExprVar x) s) = do
+  varId <- find (unLoc x)
+  case varId of
+    Just n -> pure $ Located (ExprVar (Located (n, unLoc x) s)) s
+    Nothing -> pure $ Located (ExprVar (Located (-1, unLoc x) s)) s
+renameExpr (Located (AST.ExprApp f args) s) = do
+  f' <- renameExpr f
+  args' <- mapM renameExpr args
+  pure $ Located (ExprApp f' args') s
+renameExpr (Located (AST.ExprLam args body) s) = do
+  args' <- mapM (\p -> do pId <- freshName (unLoc p); pure $ Located (pId, unLoc p) s) args
+  body' <- renameExpr body
+  pure $ Located (ExprLam args' body') s
+renameExpr (Located (AST.ExprLet binds body) s) = do
+  binds' <- mapM renameBind binds
+  body' <- renameExpr body
+  pure $ Located (ExprLet binds' body') s
+renameExpr (Located AST.ExprUnit s) = pure $ Located ExprUnit s
+
+renameBind :: AST.LBind -> Rename LBind
+renameBind (Located (AST.BindName x e) s) = do
+  xId <- freshName (unLoc x)
+  e' <- renameExpr e
+  pure $ Located (BindName (Located (xId, unLoc x) s) e') s
+renameBind (Located (AST.BindFun f args e) s) = do
+  fId <- freshName (unLoc f)
+  args' <- mapM (\p -> do pId <- freshName (unLoc p); pure $ Located (pId, unLoc p) s) args
+  e' <- renameExpr e
+  pure $ Located (BindFun (Located (fId, unLoc f) s) args' e') s
+
+mapLit :: AST.Lit -> Lit
+mapLit (AST.LitInt n) = LitInt n
+mapLit (AST.LitBool b) = LitBool b
+mapLit (AST.LitString str) = LitString str

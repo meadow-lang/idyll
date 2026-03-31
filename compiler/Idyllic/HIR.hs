@@ -39,10 +39,10 @@ data Expr
   | ExprUnit
   deriving (Show, Eq, Ord)
 
-type Ident = Located Int
+type Ident = Located (Int, Text)
 
 data Lit
-  = Int Integer
-  | Bool Bool
-  | String Text
+  = LitInt Integer
+  | LitBool Bool
+  | LitString Text
   deriving (Show, Eq, Ord)

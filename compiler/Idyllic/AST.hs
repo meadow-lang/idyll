@@ -47,7 +47,7 @@ data Expr
 type Ident = Located Text
 
 data Lit
-  = Int Integer
-  | Bool Bool
-  | String Text
+  = LitInt Integer
+  | LitBool Bool
+  | LitString Text
   deriving (Show, Eq, Ord)

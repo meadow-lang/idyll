@@ -56,9 +56,9 @@ string = token (\case (Located (TokenString str) _) -> Just str; _ -> Nothing) S
 lit :: Parser Lit
 lit =
   choice
-    [ Int <$> int,
-      Bool <$> bool,
-      String <$> string
+    [ LitInt <$> int,
+      LitBool <$> bool,
+      LitString <$> string
     ]
 
 lowerIdent :: Parser Ident
