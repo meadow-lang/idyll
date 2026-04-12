@@ -1,4 +1,4 @@
-module Idyllic.Rename where
+module Idyllic.Rename.Pass where
 
 import Control.Monad.State
 import Data.Map (Map)
@@ -6,11 +6,14 @@ import Data.Map qualified as Map
 import Data.Text (Text)
 import Idyllic.AST qualified as AST
 import Idyllic.HIR
+import Idyllic.Rename.Env
 import Idyllic.Utils
 
-defaultEnv :: NameEnv
+newtype RenameError = ResUnboundName Text deriving (Show, Eq)
+
+defaultEnv :: RenameEnv
 defaultEnv =
-  NameEnv
+  RenameEnv
     { nameMap = initialNames,
       nameCounter = length ops,
       nodeIdCounter = 0,
@@ -20,7 +23,7 @@ defaultEnv =
     ops = ["+", "-", "*", "/", "%", "neg", "==", "!=", "<", "<=", ">", ">=", "&&", "||", "print", "println", "error"]
     initialNames = Map.fromList $ zip ops [0 ..]
 
-type Rename a = State NameEnv a
+type Rename a = State RenameEnv a
 
 find :: Text -> Rename (Maybe Int)
 find name = do
@@ -28,7 +31,7 @@ find name = do
   case Map.lookup name (nameMap env) of
     Just n -> pure (Just n)
     Nothing -> do
-      put env {errors = ResUnboundName name : errors env}
+      put env {errors = name : errors env}
       pure Nothing
 
 freshName :: Text -> Rename Int

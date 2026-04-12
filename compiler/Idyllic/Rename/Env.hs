@@ -1,13 +1,13 @@
-module Idyllic.RenameEnv where
+module Idyllic.Rename.Env where
 
 import Data.Map (Map)
 import Data.Text (Text)
 import Idyllic.Schema
 
-data RenameEnv = NameEnv
+data RenameEnv = RenameEnv
   { nameMap :: Map Text Int,
     nameCounter :: Int,
     nodeIdCounter :: Int,
-    errors :: [RenameError]
+    errors :: [Text]
   }
   deriving (Show, Eq)
