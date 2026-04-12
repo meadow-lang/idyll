@@ -3,7 +3,6 @@ module Idyllic.TypeCheck where
 import Data.Map (Map)
 import Data.STRef (STRef, modifySTRef', newSTRef, readSTRef, writeSTRef)
 import Data.Text (Text)
-import Idyllic.Rename
 
 -- type MetaId = Int
 

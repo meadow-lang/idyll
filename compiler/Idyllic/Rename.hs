@@ -6,7 +6,6 @@ import Data.Map qualified as Map
 import Data.Text (Text)
 import Idyllic.AST qualified as AST
 import Idyllic.HIR
-import Idyllic.Types
 import Idyllic.Utils
 
 defaultEnv :: NameEnv

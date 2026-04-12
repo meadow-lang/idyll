@@ -1,11 +1,10 @@
-module Idyllic.Types where
+module Idyllic.RenameEnv where
 
 import Data.Map (Map)
 import Data.Text (Text)
+import Idyllic.Schema
 
-newtype RenameError = ResUnboundName Text deriving (Show, Eq)
-
-data NameEnv = NameEnv
+data RenameEnv = NameEnv
   { nameMap :: Map Text Int,
     nameCounter :: Int,
     nodeIdCounter :: Int,
