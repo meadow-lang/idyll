@@ -79,16 +79,28 @@ braces = between (tokenP TokenLBrace) (tokenP TokenRBrace)
 vbraces :: Parser a -> Parser a
 vbraces = between (tokenP TokenVLBrace) (tokenP TokenVRBrace)
 
-expr :: Parser LExpr
-expr = app <|> atom
+pat :: Parser LPat
+pat = located $ choice [try patWildcard, patLit, patIdent, patCons, patAs, patList, patTuple, patUnit]
   where
-    unit = tokenP TokenLParen *> tokenP TokenRParen $> ExprUnit
-    litExpr = ExprLit <$> lit
-    varExpr = ExprVar <$> lowerIdent
-    lam = ExprLam <$> (tokenP TokenBackSlash *> some lowerIdent) <*> (tokenP TokenRArrow *> expr)
-    let' = ExprLet <$> (tokenP TokenLet *> binds) <*> (tokenP TokenIn *> expr)
-    atom = located $ choice [try unit, litExpr, let', varExpr, lam, parens (unLoc <$> expr)]
-    app = try $ located $ ExprApp <$> atom <*> some atom
+    patWildcard = tokenP TokenUnderscore $> PatWildcard
+    patLit = PatLit <$> lit
+    patIdent = PatIdent <$> lowerIdent
+    patCons = PatCons <$> upperIdent <*> many pat
+    patAs = PatAs <$> lowerIdent <*> (tokenP TokenAt *> pat)
+    patList = PatList <$> brackets (pat `sepBy` tokenP TokenComma)
+    patTuple = PatTuple <$> parens (pat `sepBy` tokenP TokenComma)
+    patUnit = tokenP TokenLParen *> tokenP TokenRParen $> PatUnit 
+
+term :: Parser LTerm
+term = app <|> atom
+  where
+    unit = tokenP TokenLParen *> tokenP TokenRParen $> TermUnit
+    litterm = TermLit <$> lit
+    varterm = TermVar <$> lowerIdent
+    lam = TermLam <$> (tokenP TokenBackSlash *> some pat) <*> (tokenP TokenRArrow *> term)
+    let' = TermLet <$> (tokenP TokenLet *> binds) <*> (tokenP TokenIn *> term)
+    atom = located $ choice [try unit, litterm, let', varterm, lam, parens (unLoc <$> term)]
+    app = try $ located $ TermApp <$> atom <*> some atom
 
 binds :: Parser [LBind]
 binds = cfgBind <|> layoutBind
@@ -99,17 +111,17 @@ binds = cfgBind <|> layoutBind
 bind :: Parser LBind
 bind = located $ bindFun <|> bindName
   where
-    bindFun = try $ BindFun <$> lowerIdent <*> some lowerIdent <*> (tokenP TokenEq *> expr)
-    bindName = try $ BindName <$> lowerIdent <*> (tokenP TokenEq *> expr)
+    bindFun = try $ BindFun <$> lowerIdent <*> some pat <*> (tokenP TokenEq *> term)
+    bindName = try $ BindPat <$> pat <*> (tokenP TokenEq *> term)
 
 mod' :: Text -> Parser Module
 mod' name = Module name <$> many bind
 
-interactive :: Parser (Either [LBind] LExpr)
-interactive = Left <$> binds <|> Right <$> (cfgExpr <|> layoutExpr)
+interactive :: Parser (Either [LBind] LTerm)
+interactive = Left <$> binds <|> Right <$> (cfgterm <|> layoutterm)
   where
-    cfgExpr = try $ braces expr
-    layoutExpr = vbraces expr
+    cfgterm = try $ braces term
+    layoutterm = vbraces term
 
 parseFile :: Text -> [LToken] -> Either (ParseErrorBundle [LToken] Void) Prog
 parseFile filename = parse (cfg <|> layout) (unpack filename)
@@ -117,5 +129,5 @@ parseFile filename = parse (cfg <|> layout) (unpack filename)
     cfg = try $ located $ braces (mod' filename)
     layout = located $ vbraces (mod' filename)
 
-parseInteractive :: [LToken] -> Either (ParseErrorBundle [LToken] Void) (Either [LBind] LExpr)
+parseInteractive :: [LToken] -> Either (ParseErrorBundle [LToken] Void) (Either [LBind] LTerm)
 parseInteractive = parse (interactive <* eof) "<interactive>"

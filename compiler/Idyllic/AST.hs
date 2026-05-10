@@ -5,6 +5,13 @@ module Idyllic.AST
     Bind (..),
     LTerm,
     Term (..),
+    Param (..),
+    LAlt,
+    Alt (..),
+    LGuard,
+    Guard (..),
+    LPat,
+    Pat (..),
     Ident,
     Lit (..),
   )
@@ -24,11 +31,9 @@ data Module = Module
 type LBind = Located Bind
 
 data Bind
-  = BindName Ident LTerm
-  | BindFun Ident [Ident] LTerm
+  = BindPat LPat LTerm
+  | BindFun Ident [LPat] LTerm
   deriving (Show, Eq, Ord)
-
-type LTerm = Located Term
 
 data Rhs = RhsTerm LTerm | RhsGuard [LGuard]
   deriving (Show, Eq, Ord)
@@ -49,28 +54,30 @@ data Guard = Guard
   }
   deriving (Show, Eq, Ord)
 
+type LTerm = Located Term
+
 data Term
-  = Lit Lit
-  | Var Ident
-  | Let LBind LTerm
-  | Lam [LPat] LTerm
-  | App LTerm [LTerm]
-  | If LTerm LTerm LTerm
-  | Case LTerm [LAlt]
-  | Infix LTerm Ident LTerm
-  | Neg LTerm
-  | Cons Ident LTerm
-  | Record [(Ident, LTerm)]
-  | FieldAccess LTerm Ident
-  | RecordUpdate LTerm [(Ident, LTerm)]
-  | List [LTerm]
-  | Vec [LTerm]
-  | Tuple [LTerm]
-  | Pi [Param] LTerm -- (x : A) -> B, {x : A} -> B, A -> B
-  | Ann LTerm LTerm -- e : A  (type annotation)
-  | Hole (Maybe Ident) -- _ or ?name for user holes
-  | Type
-  | Unit
+  = TermLit Lit
+  | TermVar Ident
+  | TermLet LBind LTerm
+  | TermLam [LPat] LTerm
+  | TermApp LTerm [LTerm]
+  | TermIf LTerm LTerm LTerm
+  | TermCase LTerm [LAlt]
+  | TermInfix LTerm Ident LTerm
+  | TermNeg LTerm
+  | TermCons Ident LTerm
+  | TermRecord [(Ident, LTerm)]
+  | TermFieldAccess LTerm Ident
+  | TermRecordUpdate LTerm [(Ident, LTerm)]
+  | TermList [LTerm]
+  | TermVec [LTerm]
+  | TermTuple [LTerm]
+  | TermPi [Param] LTerm -- (x : A) -> B, {x : A} -> B, A -> B
+  | TermAnn LTerm LTerm -- e : A  (type annotation)
+  | TermHole (Maybe Ident) -- _ or ?name for user holes
+  | TermType
+  | TermUnit
   deriving (Show, Eq, Ord)
 
 data Param = Param
