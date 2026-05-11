@@ -4,6 +4,10 @@ import Idyllic.Token
 import Idyllic.Utils
 import Prettyprinter
 
+data LayoutLexer
+  = Lex !LToken LayoutLexer LayoutLexer
+  | End !Span
+
 data LayoutError
   = NestedLayoutContextError Int Int Span
   | UnexpectedClosingBraceError Span

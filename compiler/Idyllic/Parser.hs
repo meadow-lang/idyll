@@ -89,7 +89,7 @@ pat = located $ choice [try patWildcard, patLit, patIdent, patCons, patAs, patLi
     patAs = PatAs <$> lowerIdent <*> (tokenP TokenAt *> pat)
     patList = PatList <$> brackets (pat `sepBy` tokenP TokenComma)
     patTuple = PatTuple <$> parens (pat `sepBy` tokenP TokenComma)
-    patUnit = tokenP TokenLParen *> tokenP TokenRParen $> PatUnit 
+    patUnit = tokenP TokenLParen *> tokenP TokenRParen $> PatUnit
 
 term :: Parser LTerm
 term = app <|> atom
