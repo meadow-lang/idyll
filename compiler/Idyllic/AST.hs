@@ -59,7 +59,7 @@ type LTerm = Located Term
 data Term
   = TermLit Lit
   | TermVar Ident
-  | TermLet LBind LTerm
+  | TermLet [LBind] LTerm
   | TermLam [LPat] LTerm
   | TermApp LTerm [LTerm]
   | TermIf LTerm LTerm LTerm
