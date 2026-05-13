@@ -32,6 +32,11 @@ data Module = Module
   }
   deriving (Show, Eq, Ord)
 
+data Decl
+  = DeclBind LBind
+  | DeclRecord Record
+  deriving (Show, Eq, Ord)
+
 type LRecord = Located Record
 
 data Record = Record
@@ -86,8 +91,9 @@ data Term
   | TermList [LTerm]
   | TermVec [LTerm]
   | TermTuple [LTerm]
-  | TermPi [LParam] LTerm -- (x : A) -> B, {x : A} -> B, A -> B
-  | TermAnn LTerm LTerm -- e : A  (type annotation)
+  | TermPi [LParam] LTerm -- (x : a) -> b, {x : a} -> b, a -> b
+  | TermAnn LTerm LTerm -- e : a  (type annotation)
+  | TermRecordSig RecordSig -- {x : a | r}
   | TermHole (Maybe Ident) -- _ or ?name for user holes
   | TermUniverse Int -- Type 0, Type 1, etc.
   | TermUnit
@@ -111,7 +117,13 @@ data Param = Param
 data ParamKind
   = ParamAnon Ident -- a
   | ParamIdent Ident LTerm -- (x : a)
-  | ParamRecord [(Ident, LTerm, Maybe Ident)] -- {x : a | r}
+  | ParamRecord RecordSig -- {x : a | r}
+  deriving (Show, Eq, Ord)
+
+data RecordSig = RecordSig
+  { recordSigFields :: [(Ident, LTerm)],
+    recordSigRow :: Maybe Ident
+  }
   deriving (Show, Eq, Ord)
 
 -- instance Plated LTerm where
