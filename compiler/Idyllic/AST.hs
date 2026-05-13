@@ -78,6 +78,7 @@ data Term
   | TermCase LTerm [LAlt]
   | TermInfix LTerm Ident LTerm
   | TermNeg LTerm
+  | TermDo [LDoBinding] LTerm
   | TermCons Ident LTerm
   | TermRecord (Maybe Ident) [(Ident, LTerm)]
   | TermFieldAccess LTerm Ident
@@ -88,8 +89,15 @@ data Term
   | TermPi [LParam] LTerm -- (x : A) -> B, {x : A} -> B, A -> B
   | TermAnn LTerm LTerm -- e : A  (type annotation)
   | TermHole (Maybe Ident) -- _ or ?name for user holes
-  | TermType
+  | TermUniverse Int -- Type 0, Type 1, etc.
   | TermUnit
+  deriving (Show, Eq, Ord)
+
+type LDoBinding = Located DoBinding
+
+data DoBinding
+  = DoBind Ident LTerm -- x <- action
+  | DoLet [LBind] -- let ... in ...
   deriving (Show, Eq, Ord)
 
 type LParam = Located Param
@@ -103,13 +111,11 @@ data Param = Param
 data ParamKind
   = ParamAnon Ident -- a
   | ParamIdent Ident LTerm -- (x : a)
-  | ParamRecord [(Ident, LTerm)] -- {x : a, ...}
+  | ParamRecord [(Ident, LTerm, Maybe Ident)] -- {x : a | r}
   deriving (Show, Eq, Ord)
 
 -- instance Plated LTerm where
 --   plate = uniplate
-
-type Ident = Located Text
 
 type LPat = Located Pat
 
@@ -121,8 +127,11 @@ data Pat
   | PatAs Ident LPat
   | PatList [LPat]
   | PatTuple [LPat]
+  | PatRecord (Maybe Ident) [(Ident, LPat)]
   | PatUnit
   deriving (Show, Eq, Ord)
+
+type Ident = Located Text
 
 data Lit
   = LitInt Integer
