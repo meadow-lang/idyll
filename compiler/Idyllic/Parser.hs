@@ -112,10 +112,18 @@ bind :: Parser LBind
 bind = located $ bindFun <|> bindName
   where
     bindFun = try $ BindFun <$> lowerIdent <*> some pat <*> (tokenP TokenEq *> term)
-    bindName = try $ BindPat <$> pat <*> (tokenP TokenEq *> term)
+    bindName = try $ BindPat <$> pat <*> (tokenP TokenEq *> rhs)
+
+rhs :: Parser Rhs
+rhs = RhsTerm <$> term
+
+decl :: Parser LDecl
+decl = located $ choice [try declUse]
+  where
+    declUse = DeclUse <$> (tokenP TokenUse *> some upperIdent)
 
 mod' :: Text -> Parser Module
-mod' name = Module name <$> many bind
+mod' name = Module name <$> many decl
 
 interactive :: Parser (Either [LBind] LTerm)
 interactive = Left <$> binds <|> Right <$> (cfgterm <|> layoutterm)

@@ -1,10 +1,18 @@
 module Idyllic.AST
   ( Prog,
     Module (..),
+    LDecl,
+    Decl (..),
     LRecord,
+    LClassDef,
+    LClassDecl,
+    LInstanceDecl,
+    LSig,
+    Sig (..),
     Record (..),
     LBind,
     Bind (..),
+    Rhs (..),
     LTerm,
     Term (..),
     LParam,
@@ -28,13 +36,19 @@ type Prog = Located Module
 
 data Module = Module
   { moduleName :: Text,
-    moduleDecls :: [LBind]
+    moduleDecls :: [LDecl]
   }
   deriving (Show, Eq, Ord)
 
+type LDecl = Located Decl
+
 data Decl
-  = DeclBind LBind
-  | DeclRecord Record
+  = DeclUse ![Ident]
+  | DeclExport !Ident
+  | DeclClassDecl LClassDecl
+  | DeclClassDef LClassDef
+  | DeclInstanceDecl LInstanceDecl
+  | DeclRecordDef LRecord
   deriving (Show, Eq, Ord)
 
 type LRecord = Located Record
@@ -45,10 +59,47 @@ data Record = Record
   }
   deriving (Show, Eq, Ord)
 
+type LClassDef = Located ClassDef
+
+data ClassDef
+  = ClassDef
+  { className :: !Ident,
+    classSuperclasses :: ![Ident],
+    classTypeParams :: ![Ident],
+    clasLDecls :: [LClassDecl]
+  }
+  deriving (Show, Eq, Ord)
+
+type LClassDecl = Located ClasLDecl
+
+data ClasLDecl
+  = ClasLDeclSig LSig
+  | ClasLDeclBind LBind
+  deriving (Show, Eq, Ord)
+
+type LInstanceDecl = Located InstanceDecl
+
+data InstanceDecl = InstanceDecl
+  { instanceClass :: !Ident,
+    instanceTypeParams :: ![Ident],
+    instanceAnn :: LTerm,
+    instanceDecls :: [LClassDecl]
+  }
+  deriving (Show, Eq, Ord)
+
+type LSig = Located Sig
+
+data Sig = Sig
+  { sigNames :: ![Ident],
+    sigTypeParams :: ![Ident],
+    sigAnn :: LTerm
+  }
+  deriving (Show, Eq, Ord)
+
 type LBind = Located Bind
 
 data Bind
-  = BindPat LPat LTerm
+  = BindPat LPat Rhs
   | BindFun Ident [LPat] LTerm
   deriving (Show, Eq, Ord)
 
@@ -58,7 +109,7 @@ data Rhs = RhsTerm LTerm | RhsGuard [LGuard]
 type LAlt = Located Alt
 
 data Alt = Alt
-  { altPat :: LPat,
+  { altPat :: [LPat],
     altBody :: Rhs
   }
   deriving (Show, Eq, Ord)
