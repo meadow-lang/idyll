@@ -17,3 +17,11 @@ zipWith f (x::xs) (y::ys) = f x y :: zipWith f xs ys
 append : Vec m a -> Vec n a -> Vec (m + n) a
 append [] ys = ys
 append (x::xs) ys = x :: append xs ys
+
+foldl : (b -> a -> b) -> b -> Vec n a -> b
+foldl _ acc [] = acc
+foldl f acc (x::xs) = foldl f (f acc x) xs
+
+foldr : (a -> b -> b) -> b -> Vec n a -> b
+foldr _ acc [] = acc
+foldr f acc (x::xs) = f x (foldr f acc xs)
