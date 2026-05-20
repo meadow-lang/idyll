@@ -40,6 +40,7 @@ data Token
   | TokenUnderscore
   | TokenAt
   | TokenMod
+  | TokenUse
   | TokenData
   | TokenType
   | TokenLet
@@ -60,6 +61,7 @@ instance Pretty Token where
     TokenUppercaseIdent t -> "UppercaseIdent(" <> pretty t <> ")"
     TokenLowercaseIdent t -> "LowercaseIdent(" <> pretty t <> ")"
     TokenOpIdent t -> "OpIdent(" <> pretty t <> ")"
+    TokenUse -> "Use"
     TokenConOpIdent t -> "ConOpIdent(" <> pretty t <> ")"
     TokenInt i -> "Int(" <> pretty i <> ")"
     TokenString s -> "String(" <> pretty s <> ")"
