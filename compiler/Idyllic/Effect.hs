@@ -3,11 +3,12 @@
 
 module Idyllic.Effect (InputMode (..), PipelineEnv (..), newPipelineEnv, defaultPipelineEnv, Pipeline) where
 
-import Control.Concurrent.STM (TVar, newTVarIO)
 import Control.Monad.Reader (ReaderT)
 import Data.ByteString (ByteString)
+import Data.IORef (IORef)
 import Data.Text (Text)
 import Error.Diagnose (Diagnostic)
+import GHC.IORef (newIORef)
 import Idyllic.Utils (LineIndex, buildLineIndex)
 
 data InputMode
@@ -20,13 +21,13 @@ data PipelineEnv = PipelineEnv
     pipelineDebug :: Bool,
     pipelineMode :: InputMode,
     pipelineLineIndex :: LineIndex,
-    pipelineErrors :: TVar [Diagnostic Text]
+    pipelineErrors :: IORef [Diagnostic Text]
   }
   deriving (Eq)
 
 newPipelineEnv :: Bool -> InputMode -> Text -> IO PipelineEnv
 newPipelineEnv debug mode src = do
-  errVar <- newTVarIO []
+  errVar <- newIORef []
   pure
     PipelineEnv
       { pipelineSrc = src,
@@ -38,7 +39,7 @@ newPipelineEnv debug mode src = do
 
 defaultPipelineEnv :: Text -> IO PipelineEnv
 defaultPipelineEnv src = do
-  errVar <- newTVarIO []
+  errVar <- newIORef []
   pure
     PipelineEnv
       { pipelineSrc = src,
