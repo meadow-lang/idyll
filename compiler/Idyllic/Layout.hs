@@ -77,6 +77,12 @@ mark li = markIndents . markBlocks
     isLayoutHerald TokenOf = True
     isLayoutHerald _ = False
 
+data LayoutEnv = LayoutEnv
+  { layoutLineIndex :: LineIndex,
+    layoutTokens :: [LToken],
+    layoutErrors :: [LayoutError]
+  }
+
 layout :: LineIndex -> [LToken] -> ([LToken], [LayoutError])
 layout li ts' =
   let (ts, es) = go (mark li ts') [(1, Nothing)]
