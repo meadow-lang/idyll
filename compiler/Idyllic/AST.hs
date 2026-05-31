@@ -66,15 +66,15 @@ data ClassDef
   { className :: !Ident,
     classSuperclasses :: ![Ident],
     classTypeParams :: ![Ident],
-    clasLDecls :: [LClassDecl]
+    classDecls :: [LClassDecl]
   }
   deriving (Show, Eq, Ord)
 
-type LClassDecl = Located ClasLDecl
+type LClassDecl = Located ClassDecl
 
-data ClasLDecl
-  = ClasLDeclSig LSig
-  | ClasLDeclBind LBind
+data ClassDecl
+  = ClassDeclSig LSig
+  | ClassDeclBind LBind
   deriving (Show, Eq, Ord)
 
 type LInstanceDecl = Located InstanceDecl
@@ -142,11 +142,10 @@ data Term
   | TermList [LTerm]
   | TermVec [LTerm]
   | TermTuple [LTerm]
-  | TermPi [LParam] LTerm -- (x : a) -> b, {x : a} -> b, a -> b
+  | TermPi [LParam] LTerm -- (x : a) -> b, (?x : a) -> b, a -> b
   | TermAnn LTerm LTerm -- e : a  (type annotation)
   | TermRecordSig RecordSig -- {x : a | r}
   | TermHole (Maybe Ident) -- _ or ?name for user holes
-  | TermUniverse Int -- Type 0, Type 1, etc.
   | TermUnit
   deriving (Show, Eq, Ord)
 
