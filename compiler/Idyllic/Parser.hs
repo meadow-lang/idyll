@@ -95,11 +95,11 @@ term :: Parser LTerm
 term = app <|> atom
   where
     unit = tokenP TokenLParen *> tokenP TokenRParen $> TermUnit
-    litterm = TermLit <$> lit
+    litTerm = TermLit <$> lit
     varterm = TermVar <$> lowerIdent
     lam = TermLam <$> (tokenP TokenBackSlash *> some pat) <*> (tokenP TokenRArrow *> term)
     let' = TermLet <$> (tokenP TokenLet *> binds) <*> (tokenP TokenIn *> term)
-    atom = located $ choice [try unit, litterm, let', varterm, lam, parens (unLoc <$> term)]
+    atom = located $ choice [try unit, litTerm, let', varterm, lam, parens (unLoc <$> term)]
     app = try $ located $ TermApp <$> atom <*> some atom
 
 binds :: Parser [LBind]
