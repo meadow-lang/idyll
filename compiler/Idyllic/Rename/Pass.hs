@@ -85,8 +85,3 @@ freshNodeId = do
 --   args' <- mapM (\p -> do pId <- freshName (unLoc p); pure $ Located (pId, unLoc p) s) args
 --   e' <- renameExpr e
 --   pure $ Located (BindFun (Located (fId, unLoc f) s) args' e') s
-
--- mapLit :: AST.Lit -> Lit
--- mapLit (AST.LitInt n) = LitInt n
--- mapLit (AST.LitBool b) = LitBool b
--- mapLit (AST.LitString str) = LitString str
