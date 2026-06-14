@@ -1,36 +1,39 @@
-module Idyllic.AST
-  ( Prog,
-    Module (..),
-    LDecl,
-    Decl (..),
-    LRecord,
-    LDataDef,
-    DataDef (..),
-    DataCons (..),
-    LClassDef,
-    LClassDecl,
-    LInstanceDecl,
-    LSig,
-    Sig (..),
-    Record (..),
-    LBind,
-    Bind (..),
-    Rhs (..),
-    LTerm,
-    Term (..),
-    LParam,
-    Param (..),
-    ParamKind (..),
-    LAlt,
-    Alt (..),
-    LGuard,
-    Guard (..),
-    LPat,
-    Pat (..),
-    Ident,
-    Lit (..),
-  )
-where
+module Idyllic.AST where
+
+--   ( Prog,
+--     Module (..),
+--     LDecl,
+--     Decl (..),
+--     LRecord,
+--     LDataDef,
+--     DataDef (..),
+--     DataCons (..),
+--     LClassDef,
+--     LClassDecl,
+--     LInstanceDecl,
+--     LSig,
+--     Sig (..),
+--     Record (..),
+--     LBind,
+--     Bind (..),
+--     Rhs (..),
+--     LTerm,
+--     Term (..),
+--     LParam,
+--     Param (..),
+--     ParamKind (..),
+--     LAlt,
+--     Alt (..),
+--     LGuardedTerm,
+--     GuardedTerm (..),
+--     LGuardStmt,
+--     GuardStmt (..),
+--     LPat,
+--     Pat (..),
+--     Ident,
+--     Lit (..),
+--   )
+-- where
 
 import Data.Text (Text)
 import Idyllic.Utils (Located)
@@ -120,7 +123,7 @@ data Bind
   | BindFun Ident [LPat] Rhs
   deriving (Show, Eq, Ord)
 
-data Rhs = RhsTerm LTerm | RhsGuard [LGuard]
+data Rhs = RhsTerm LTerm | RhsGuard [LGuardedTerm]
   deriving (Show, Eq, Ord)
 
 type LAlt = Located Alt
@@ -131,12 +134,19 @@ data Alt = Alt
   }
   deriving (Show, Eq, Ord)
 
-type LGuard = Located Guard
+type LGuardedTerm = Located GuardedTerm
 
-data Guard = Guard
-  { guardPat :: LPat,
-    guardBody :: LTerm
+data GuardedTerm = GuardedTerm
+  { guardStmts :: [LGuardStmt], -- the conditions, comma-separated
+    guardResult :: LTerm -- the = result
   }
+  deriving (Show, Eq, Ord)
+
+type LGuardStmt = Located GuardStmt
+
+data GuardStmt
+  = GuardBool LTerm -- x > 0
+  | GuardPat LPat LTerm -- Just y <- f x
   deriving (Show, Eq, Ord)
 
 type LTerm = Located Term
@@ -152,7 +162,6 @@ data Term
   | TermInfix LTerm Ident LTerm
   | TermNeg LTerm
   | TermDo [LDoBinding] LTerm
-  | TermCons Ident [LTerm]
   | TermRecord (Maybe Ident) [(Ident, LTerm)]
   | TermFieldAccess LTerm Ident
   | TermRecordUpdate LTerm [(Ident, LTerm)]
@@ -163,6 +172,7 @@ data Term
   | TermAnn LTerm LTerm -- e : a  (type annotation)
   | TermRecordSig RecordSig -- {x : a | r}
   | TermHole (Maybe Ident) -- _ or ?name for user holes
+  | TermType -- TypeInType
   | TermUnit
   deriving (Show, Eq, Ord)
 
@@ -214,10 +224,20 @@ data Pat
   | PatUnit
   deriving (Show, Eq, Ord)
 
-type Ident = Located Text
+type Ident = Located Name
+
+data Name = Name
+  { nameKind :: NameKind,
+    nameText :: Text
+  }
+  deriving (Show, Eq, Ord)
+
+data NameKind
+  = NameLower
+  | NameUpper
+  deriving (Show, Eq, Ord)
 
 data Lit
   = LitInt Integer
-  | LitBool Bool
   | LitString Text
   deriving (Show, Eq, Ord)

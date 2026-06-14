@@ -50,7 +50,7 @@ term = app <|> atom
   where
     unit = tokenP TokenLParen *> tokenP TokenRParen $> TermUnit
     litTerm = TermLit <$> lit
-    varTerm = TermVar <$> lowerIdent
+    varTerm = TermVar <$> ident
     lam = TermLam <$> (tokenP TokenBackSlash *> some pat) <*> (tokenP TokenRArrow *> term)
     let' = TermLet <$> (tokenP TokenLet *> binds) <*> (tokenP TokenIn *> term)
     atom = located $ choice [try unit, litTerm, let', varTerm, lam, parens (unLoc <$> term)]
@@ -95,17 +95,19 @@ braces = between (tokenP TokenLBrace) (tokenP TokenRBrace)
 vbraces :: Parser a -> Parser a
 vbraces = between (tokenP TokenVLBrace) (tokenP TokenVRBrace)
 
+ident :: Parser Ident
+ident = choice [lowerIdent, upperIdent]
+
 lowerIdent :: Parser Ident
-lowerIdent = token (\case (Located (TokenLowercaseIdent name) s) -> Just (Located name s); _ -> Nothing) Set.empty
+lowerIdent = token (\case (Located (TokenLowercaseIdent n) s) -> Just (Located (Name NameLower n) s); _ -> Nothing) Set.empty
 
 upperIdent :: Parser Ident
-upperIdent = token (\case (Located (TokenUppercaseIdent name) s) -> Just (Located name s); _ -> Nothing) Set.empty
+upperIdent = token (\case (Located (TokenUppercaseIdent n) s) -> Just (Located (Name NameUpper n) s); _ -> Nothing) Set.empty
 
 lit :: Parser Lit
 lit =
   choice
     [ LitInt <$> int,
-      LitBool <$> bool,
       LitString <$> string
     ]
 
