@@ -4,6 +4,9 @@ module Idyllic.AST
     LDecl,
     Decl (..),
     LRecord,
+    LDataDef,
+    DataDef (..),
+    DataCons (..),
     LClassDef,
     LClassDecl,
     LInstanceDecl,
@@ -43,12 +46,13 @@ data Module = Module
 type LDecl = Located Decl
 
 data Decl
-  = DeclUse ![Ident]
-  | DeclExport !Ident
+  = DeclUse [Ident]
+  | DeclExport Ident
   | DeclClassDecl LClassDecl
   | DeclClassDef LClassDef
   | DeclInstanceDecl LInstanceDecl
   | DeclRecordDef LRecord
+  | DeclDataDef LDataDef
   deriving (Show, Eq, Ord)
 
 type LRecord = Located Record
@@ -59,13 +63,26 @@ data Record = Record
   }
   deriving (Show, Eq, Ord)
 
+type LDataDef = Located DataDef
+
+data DataDef = DataDef
+  { dataName :: Ident,
+    dataConstructors :: [DataCons]
+  }
+  deriving (Show, Eq, Ord)
+
+data DataCons
+  = DataConsRecord {dataConsName :: Ident, dataConsRecordFields :: [(Ident, LTerm)]}
+  | DataConsAnon {dataConsName :: Ident, dataConsArgs :: [LTerm]}
+  deriving (Show, Eq, Ord)
+
 type LClassDef = Located ClassDef
 
 data ClassDef
   = ClassDef
-  { className :: !Ident,
-    classSuperclasses :: ![Ident],
-    classTypeParams :: ![Ident],
+  { className :: Ident,
+    classSuperclasses :: [Ident],
+    classTypeParams :: [Ident],
     classDecls :: [LClassDecl]
   }
   deriving (Show, Eq, Ord)
@@ -80,8 +97,8 @@ data ClassDecl
 type LInstanceDecl = Located InstanceDecl
 
 data InstanceDecl = InstanceDecl
-  { instanceClass :: !Ident,
-    instanceTypeParams :: ![Ident],
+  { instanceClass :: Ident,
+    instanceTypeParams :: [Ident],
     instanceAnn :: LTerm,
     instanceDecls :: [LClassDecl]
   }
@@ -90,8 +107,8 @@ data InstanceDecl = InstanceDecl
 type LSig = Located Sig
 
 data Sig = Sig
-  { sigNames :: ![Ident],
-    sigTypeParams :: ![Ident],
+  { sigNames :: [Ident],
+    sigTypeParams :: [Ident],
     sigAnn :: LTerm
   }
   deriving (Show, Eq, Ord)
@@ -100,7 +117,7 @@ type LBind = Located Bind
 
 data Bind
   = BindPat LPat Rhs
-  | BindFun Ident [LPat] LTerm
+  | BindFun Ident [LPat] Rhs
   deriving (Show, Eq, Ord)
 
 data Rhs = RhsTerm LTerm | RhsGuard [LGuard]
@@ -135,7 +152,7 @@ data Term
   | TermInfix LTerm Ident LTerm
   | TermNeg LTerm
   | TermDo [LDoBinding] LTerm
-  | TermCons Ident LTerm
+  | TermCons Ident [LTerm]
   | TermRecord (Maybe Ident) [(Ident, LTerm)]
   | TermFieldAccess LTerm Ident
   | TermRecordUpdate LTerm [(Ident, LTerm)]
@@ -160,14 +177,21 @@ type LParam = Located Param
 
 data Param = Param
   { paramKind :: ParamKind,
-    paramImplicit :: Bool
+    paramImplicit :: Plicity
   }
   deriving (Show, Eq, Ord)
 
 data ParamKind
-  = ParamAnon Ident -- a
+  = ParamAnon LTerm -- a, Vec n a, etc.
   | ParamIdent Ident LTerm -- (x : a)
   | ParamRecord RecordSig -- {x : a | r}
+  deriving (Show, Eq, Ord)
+
+data Plicity
+  = Explicit
+  | Implicit
+  | AutoImplicit
+  | Constraint
   deriving (Show, Eq, Ord)
 
 data RecordSig = RecordSig
@@ -175,9 +199,6 @@ data RecordSig = RecordSig
     recordSigRow :: Maybe Ident
   }
   deriving (Show, Eq, Ord)
-
--- instance Plated LTerm where
---   plate = uniplate
 
 type LPat = Located Pat
 

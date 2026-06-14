@@ -2,20 +2,20 @@
 
 module Idyllic.Parser (parseInteractive, parseFile) where
 
-import Control.Monad (void)
-import Control.Monad.Combinators.Expr
+-- import Control.Monad (void)
+-- import Control.Monad.Combinators.Expr
 import Data.Functor (($>))
 import Data.List (unsnoc)
-import Data.List.NonEmpty qualified as NE
-import Data.List.NonEmpty qualified as NonEmpty
-import Data.Maybe (fromMaybe, isJust)
-import Data.Proxy
+-- import Data.List.NonEmpty qualified as NE
+-- import Data.List.NonEmpty qualified as NonEmpty
+-- import Data.Maybe (fromMaybe, isJust)
+-- import Data.Proxy
 import Data.Set qualified as Set
-import Data.Text (Text, pack, unpack)
+import Data.Text (Text, unpack)
 import Data.Void
-import Error.Diagnose.Compat.Megaparsec (HasHints (..))
+-- import Error.Diagnose.Compat.Megaparsec (HasHints (..))
 import Idyllic.AST
-import Idyllic.Effect
+-- import Idyllic.Effect
 import Idyllic.Token
 import Idyllic.Utils
 import Text.Megaparsec hiding (Token)
@@ -50,10 +50,10 @@ term = app <|> atom
   where
     unit = tokenP TokenLParen *> tokenP TokenRParen $> TermUnit
     litTerm = TermLit <$> lit
-    varterm = TermVar <$> lowerIdent
+    varTerm = TermVar <$> lowerIdent
     lam = TermLam <$> (tokenP TokenBackSlash *> some pat) <*> (tokenP TokenRArrow *> term)
     let' = TermLet <$> (tokenP TokenLet *> binds) <*> (tokenP TokenIn *> term)
-    atom = located $ choice [try unit, litTerm, let', varterm, lam, parens (unLoc <$> term)]
+    atom = located $ choice [try unit, litTerm, let', varTerm, lam, parens (unLoc <$> term)]
     app = try $ located $ TermApp <$> atom <*> some atom
 
 binds :: Parser [LBind]
@@ -65,7 +65,7 @@ binds = cfgBind <|> layoutBind
 bind :: Parser LBind
 bind = located $ bindFun <|> bindName
   where
-    bindFun = try $ BindFun <$> lowerIdent <*> some pat <*> (tokenP TokenEq *> term)
+    bindFun = try $ BindFun <$> lowerIdent <*> some pat <*> (tokenP TokenEq *> rhs)
     bindName = try $ BindPat <$> pat <*> (tokenP TokenEq *> rhs)
 
 rhs :: Parser Rhs
@@ -95,6 +95,20 @@ braces = between (tokenP TokenLBrace) (tokenP TokenRBrace)
 vbraces :: Parser a -> Parser a
 vbraces = between (tokenP TokenVLBrace) (tokenP TokenVRBrace)
 
+lowerIdent :: Parser Ident
+lowerIdent = token (\case (Located (TokenLowercaseIdent name) s) -> Just (Located name s); _ -> Nothing) Set.empty
+
+upperIdent :: Parser Ident
+upperIdent = token (\case (Located (TokenUppercaseIdent name) s) -> Just (Located name s); _ -> Nothing) Set.empty
+
+lit :: Parser Lit
+lit =
+  choice
+    [ LitInt <$> int,
+      LitBool <$> bool,
+      LitString <$> string
+    ]
+
 int :: Parser Integer
 int = token (\case (Located (TokenInt n) _) -> Just n; _ -> Nothing) Set.empty
 
@@ -111,19 +125,8 @@ bool = token test Set.empty
 string :: Parser Text
 string = token (\case (Located (TokenString str) _) -> Just str; _ -> Nothing) Set.empty
 
-lit :: Parser Lit
-lit =
-  choice
-    [ LitInt <$> int,
-      LitBool <$> bool,
-      LitString <$> string
-    ]
-
-lowerIdent :: Parser Ident
-lowerIdent = token (\case (Located (TokenLowercaseIdent name) s) -> Just (Located name s); _ -> Nothing) Set.empty
-
-upperIdent :: Parser Ident
-upperIdent = token (\case (Located (TokenUppercaseIdent name) s) -> Just (Located name s); _ -> Nothing) Set.empty
+tokenP :: Token -> Parser Token
+tokenP t = token (\(Located lt _) -> if t == lt then Just t else Nothing) Set.empty
 
 located :: Parser a -> Parser (Located a)
 located p = do
@@ -136,6 +139,3 @@ located p = do
     (t : ts, []) -> case unsnoc ts of
       Nothing -> pure $ Located x (locSpan t)
       Just (_, eoi) -> pure $ Located x (locSpan t <> locSpan eoi)
-
-tokenP :: Token -> Parser Token
-tokenP t = token (\(Located lt _) -> if t == lt then Just t else Nothing) Set.empty
