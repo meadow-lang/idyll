@@ -171,7 +171,7 @@ data Term
   | TermPi [LParam] LTerm -- (x : a) -> b, (?x : a) -> b, a -> b
   | TermAnn LTerm LTerm -- e : a  (type annotation)
   | TermRecordSig RecordSig -- {x : a | r}
-  | TermHole (Maybe Ident) -- _ or ?name for user holes
+  | TermHole (Maybe Ident) -- _ or _name for user holes
   | TermType -- TypeInType
   | TermUnit
   deriving (Show, Eq, Ord)
