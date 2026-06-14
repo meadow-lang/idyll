@@ -150,7 +150,6 @@ located l = do
   Located res . Span start <$> getOffset
 
 instance VisualStream [LToken] where
-  -- showTokens Proxy = show
   showTokens _ = unwords . map show . NE.toList
 
 -- instance TraversableStream [LToken] where

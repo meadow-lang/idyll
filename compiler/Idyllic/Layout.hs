@@ -4,10 +4,6 @@ import Idyllic.Token
 import Idyllic.Utils
 import Prettyprinter
 
-data LayoutLexer
-  = Lex LToken ~LayoutLexer ~LayoutLexer
-  | End Span
-
 data LayoutError
   = NestedLayoutContextError Int Int Span
   | UnexpectedClosingBraceError Span
@@ -76,12 +72,6 @@ mark li = markIndents . markBlocks
     isLayoutHerald TokenWhere = True
     isLayoutHerald TokenOf = True
     isLayoutHerald _ = False
-
-data LayoutEnv = LayoutEnv
-  { layoutLineIndex :: LineIndex,
-    layoutTokens :: [LToken],
-    layoutErrors :: [LayoutError]
-  }
 
 layout :: LineIndex -> [LToken] -> ([LToken], [LayoutError])
 layout li ts' =

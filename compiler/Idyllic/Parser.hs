@@ -22,20 +22,78 @@ import Text.Megaparsec hiding (Token)
 
 type Parser = Parsec Void [LToken]
 
-located :: Parser a -> Parser (Located a)
-located p = do
-  startInp <- getInput
-  x <- p
-  endInp <- getInput
-  case (startInp, endInp) of
-    ([], _) -> fail "empty input"
-    (t : _, t' : _) -> pure $ Located x (locSpan t <> locSpan t')
-    (t : ts, []) -> case unsnoc ts of
-      Nothing -> pure $ Located x (locSpan t)
-      Just (_, eoi) -> pure $ Located x (locSpan t <> locSpan eoi)
+parseFile :: Text -> [LToken] -> Either (ParseErrorBundle [LToken] Void) Prog
+parseFile filename = parse (cfg <|> layout) (unpack filename)
+  where
+    cfg = try $ located $ braces (mod' filename)
+    layout = located $ vbraces (mod' filename)
 
-tokenP :: Token -> Parser Token
-tokenP t = token (\(Located lt _) -> if t == lt then Just t else Nothing) Set.empty
+parseInteractive :: [LToken] -> Either (ParseErrorBundle [LToken] Void) (Either [LBind] LTerm)
+parseInteractive = parse (interactive <* eof) "<interactive>"
+
+interactive :: Parser (Either [LBind] LTerm)
+interactive = Left <$> binds <|> Right <$> (cfgTerm <|> layoutTerm)
+  where
+    cfgTerm = try $ braces term
+    layoutTerm = vbraces term
+
+mod' :: Text -> Parser Module
+mod' name = Module name <$> many decl
+
+decl :: Parser LDecl
+decl = located $ choice [try declUse]
+  where
+    declUse = DeclUse <$> (tokenP TokenUse *> some upperIdent)
+
+term :: Parser LTerm
+term = app <|> atom
+  where
+    unit = tokenP TokenLParen *> tokenP TokenRParen $> TermUnit
+    litTerm = TermLit <$> lit
+    varterm = TermVar <$> lowerIdent
+    lam = TermLam <$> (tokenP TokenBackSlash *> some pat) <*> (tokenP TokenRArrow *> term)
+    let' = TermLet <$> (tokenP TokenLet *> binds) <*> (tokenP TokenIn *> term)
+    atom = located $ choice [try unit, litTerm, let', varterm, lam, parens (unLoc <$> term)]
+    app = try $ located $ TermApp <$> atom <*> some atom
+
+binds :: Parser [LBind]
+binds = cfgBind <|> layoutBind
+  where
+    cfgBind = try $ braces (bind `sepEndBy1` tokenP TokenSemi)
+    layoutBind = try $ vbraces (bind `sepEndBy1` tokenP TokenVSemi)
+
+bind :: Parser LBind
+bind = located $ bindFun <|> bindName
+  where
+    bindFun = try $ BindFun <$> lowerIdent <*> some pat <*> (tokenP TokenEq *> term)
+    bindName = try $ BindPat <$> pat <*> (tokenP TokenEq *> rhs)
+
+rhs :: Parser Rhs
+rhs = RhsTerm <$> term
+
+pat :: Parser LPat
+pat = located $ choice [try patWildcard, patLit, patIdent, patCons, patAs, patList, patTuple, patUnit]
+  where
+    patWildcard = tokenP TokenUnderscore $> PatWildcard
+    patLit = PatLit <$> lit
+    patIdent = PatIdent <$> lowerIdent
+    patCons = PatCons <$> upperIdent <*> many pat
+    patAs = PatAs <$> lowerIdent <*> (tokenP TokenAt *> pat)
+    patList = PatList <$> brackets (pat `sepBy` tokenP TokenComma)
+    patTuple = PatTuple <$> parens (pat `sepBy` tokenP TokenComma)
+    patUnit = tokenP TokenLParen *> tokenP TokenRParen $> PatUnit
+
+parens :: Parser a -> Parser a
+parens = between (tokenP TokenLParen) (tokenP TokenRParen)
+
+brackets :: Parser a -> Parser a
+brackets = between (tokenP TokenLBracket) (tokenP TokenRBracket)
+
+braces :: Parser a -> Parser a
+braces = between (tokenP TokenLBrace) (tokenP TokenRBrace)
+
+vbraces :: Parser a -> Parser a
+vbraces = between (tokenP TokenVLBrace) (tokenP TokenVRBrace)
 
 int :: Parser Integer
 int = token (\case (Located (TokenInt n) _) -> Just n; _ -> Nothing) Set.empty
@@ -67,75 +125,17 @@ lowerIdent = token (\case (Located (TokenLowercaseIdent name) s) -> Just (Locate
 upperIdent :: Parser Ident
 upperIdent = token (\case (Located (TokenUppercaseIdent name) s) -> Just (Located name s); _ -> Nothing) Set.empty
 
-parens :: Parser a -> Parser a
-parens = between (tokenP TokenLParen) (tokenP TokenRParen)
+located :: Parser a -> Parser (Located a)
+located p = do
+  startInp <- getInput
+  x <- p
+  endInp <- getInput
+  case (startInp, endInp) of
+    ([], _) -> fail "empty input"
+    (t : _, t' : _) -> pure $ Located x (locSpan t <> locSpan t')
+    (t : ts, []) -> case unsnoc ts of
+      Nothing -> pure $ Located x (locSpan t)
+      Just (_, eoi) -> pure $ Located x (locSpan t <> locSpan eoi)
 
-brackets :: Parser a -> Parser a
-brackets = between (tokenP TokenLBracket) (tokenP TokenRBracket)
-
-braces :: Parser a -> Parser a
-braces = between (tokenP TokenLBrace) (tokenP TokenRBrace)
-
-vbraces :: Parser a -> Parser a
-vbraces = between (tokenP TokenVLBrace) (tokenP TokenVRBrace)
-
-pat :: Parser LPat
-pat = located $ choice [try patWildcard, patLit, patIdent, patCons, patAs, patList, patTuple, patUnit]
-  where
-    patWildcard = tokenP TokenUnderscore $> PatWildcard
-    patLit = PatLit <$> lit
-    patIdent = PatIdent <$> lowerIdent
-    patCons = PatCons <$> upperIdent <*> many pat
-    patAs = PatAs <$> lowerIdent <*> (tokenP TokenAt *> pat)
-    patList = PatList <$> brackets (pat `sepBy` tokenP TokenComma)
-    patTuple = PatTuple <$> parens (pat `sepBy` tokenP TokenComma)
-    patUnit = tokenP TokenLParen *> tokenP TokenRParen $> PatUnit
-
-term :: Parser LTerm
-term = app <|> atom
-  where
-    unit = tokenP TokenLParen *> tokenP TokenRParen $> TermUnit
-    litTerm = TermLit <$> lit
-    varterm = TermVar <$> lowerIdent
-    lam = TermLam <$> (tokenP TokenBackSlash *> some pat) <*> (tokenP TokenRArrow *> term)
-    let' = TermLet <$> (tokenP TokenLet *> binds) <*> (tokenP TokenIn *> term)
-    atom = located $ choice [try unit, litTerm, let', varterm, lam, parens (unLoc <$> term)]
-    app = try $ located $ TermApp <$> atom <*> some atom
-
-binds :: Parser [LBind]
-binds = cfgBind <|> layoutBind
-  where
-    cfgBind = try $ braces (bind `sepEndBy1` tokenP TokenSemi)
-    layoutBind = try $ vbraces (bind `sepEndBy1` tokenP TokenVSemi)
-
-bind :: Parser LBind
-bind = located $ bindFun <|> bindName
-  where
-    bindFun = try $ BindFun <$> lowerIdent <*> some pat <*> (tokenP TokenEq *> term)
-    bindName = try $ BindPat <$> pat <*> (tokenP TokenEq *> rhs)
-
-rhs :: Parser Rhs
-rhs = RhsTerm <$> term
-
-decl :: Parser LDecl
-decl = located $ choice [try declUse]
-  where
-    declUse = DeclUse <$> (tokenP TokenUse *> some upperIdent)
-
-mod' :: Text -> Parser Module
-mod' name = Module name <$> many decl
-
-interactive :: Parser (Either [LBind] LTerm)
-interactive = Left <$> binds <|> Right <$> (cfgterm <|> layoutterm)
-  where
-    cfgterm = try $ braces term
-    layoutterm = vbraces term
-
-parseFile :: Text -> [LToken] -> Either (ParseErrorBundle [LToken] Void) Prog
-parseFile filename = parse (cfg <|> layout) (unpack filename)
-  where
-    cfg = try $ located $ braces (mod' filename)
-    layout = located $ vbraces (mod' filename)
-
-parseInteractive :: [LToken] -> Either (ParseErrorBundle [LToken] Void) (Either [LBind] LTerm)
-parseInteractive = parse (interactive <* eof) "<interactive>"
+tokenP :: Token -> Parser Token
+tokenP t = token (\(Located lt _) -> if t == lt then Just t else Nothing) Set.empty
