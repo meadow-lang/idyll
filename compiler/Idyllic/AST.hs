@@ -163,7 +163,7 @@ data Term
   | TermNeg LTerm
   | TermDo [LDoBinding] LTerm
   | TermRecord (Maybe Ident) [(Ident, LTerm)]
-  | TermFieldAccess LTerm Ident
+  | TermSel LTerm Ident
   | TermRecordUpdate LTerm [(Ident, LTerm)]
   | TermList [LTerm]
   | TermVec [LTerm]
