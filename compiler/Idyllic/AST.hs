@@ -1,40 +1,5 @@
 module Idyllic.AST where
 
---   ( Prog,
---     Module (..),
---     LDecl,
---     Decl (..),
---     LRecord,
---     LDataDef,
---     DataDef (..),
---     DataCons (..),
---     LClassDef,
---     LClassDecl,
---     LInstanceDecl,
---     LSig,
---     Sig (..),
---     Record (..),
---     LBind,
---     Bind (..),
---     Rhs (..),
---     LTerm,
---     Term (..),
---     LParam,
---     Param (..),
---     ParamKind (..),
---     LAlt,
---     Alt (..),
---     LGuardedTerm,
---     GuardedTerm (..),
---     LGuardStmt,
---     GuardStmt (..),
---     LPat,
---     Pat (..),
---     Ident,
---     Lit (..),
---   )
--- where
-
 import Data.Text (Text)
 import Idyllic.Utils (Located)
 
