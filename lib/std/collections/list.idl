@@ -82,12 +82,6 @@ zipWith f _ [] = []
 zipWith f (x::xs) (y::ys) = f x y :: zipWith f xs ys
 
 @pub
-def rec zipWith : (a -> b -> c) -> [a] -> [b] -> [c] = fun
-  | _ _ [] = []
-  | _ [] _ = []
-  | f (x::xs) (y::ys) = f x y :: zipWith f xs ys
-
-@pub
 unzip : [(a, b)] -> ([a], [b])
 unzip [] = ([], [])
 unzip (x, y) :: xs = let (xs1, ys1) = unzip xs in (x :: xs1, y :: ys1)
