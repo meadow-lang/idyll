@@ -1,4 +1,4 @@
-module Idyllic.Parsec where
+module Idyllic.Syntax.Parsec where
 
 import Control.Applicative (Alternative (..))
 import Control.Monad (MonadPlus)

@@ -1,6 +1,6 @@
 {-# OPTIONS_GHC -Wno-orphans #-}
 
-module Idyllic.Parser (parseInteractive, parseFile) where
+module Idyllic.Syntax.Parser (parseInteractive, parseFile) where
 
 -- import Control.Monad (void)
 -- import Control.Monad.Combinators.Expr
@@ -14,9 +14,9 @@ import Data.Set qualified as Set
 import Data.Text (Text, unpack)
 import Data.Void
 -- import Error.Diagnose.Compat.Megaparsec (HasHints (..))
-import Idyllic.AST
+import Idyllic.Syntax.AST
 -- import Idyllic.Effect
-import Idyllic.Token
+import Idyllic.Syntax.Token
 import Idyllic.Utils
 import Text.Megaparsec hiding (Token)
 

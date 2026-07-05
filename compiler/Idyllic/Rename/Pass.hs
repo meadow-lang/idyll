@@ -4,9 +4,8 @@ import Control.Monad.State
 import Data.Map (Map)
 import Data.Map qualified as Map
 import Data.Text (Text)
-import Idyllic.AST qualified as AST
-import Idyllic.HIR
 import Idyllic.Rename.Env
+import Idyllic.Syntax.AST qualified as AST
 import Idyllic.Utils
 
 newtype RenameError = ResUnboundName Text deriving (Show, Eq)

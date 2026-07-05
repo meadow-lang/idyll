@@ -1,6 +1,6 @@
-module Idyllic.Layout where
+module Idyllic.Syntax.Layout where
 
-import Idyllic.Token
+import Idyllic.Syntax.Token
 import Idyllic.Utils
 import Prettyprinter
 

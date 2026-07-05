@@ -5,9 +5,9 @@ import Data.Text
 import Error.Diagnose
 import Error.Diagnose.Compat.Megaparsec
 import Idyllic.Effect
-import Idyllic.Layout
-import Idyllic.Lexer
-import Idyllic.Parser
+import Idyllic.Syntax.Layout
+import Idyllic.Syntax.Lexer
+import Idyllic.Syntax.Parser
 import Text.Megaparsec (errorBundlePretty)
 import Text.Pretty.Simple
 

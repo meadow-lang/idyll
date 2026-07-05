@@ -1,4 +1,4 @@
-module Idyllic.Token (LToken, Token (..)) where
+module Idyllic.Syntax.Token (LToken, Token (..)) where
 
 import Data.Text (Text)
 import Idyllic.Utils

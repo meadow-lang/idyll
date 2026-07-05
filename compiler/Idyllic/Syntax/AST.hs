@@ -1,4 +1,4 @@
-module Idyllic.AST where
+module Idyllic.Syntax.AST where
 
 import Data.Text (Text)
 import Idyllic.Utils (Located)

@@ -1,4 +1,4 @@
-module Idyllic.Lexer (tokenize) where
+module Idyllic.Syntax.Lexer (tokenize) where
 
 import Control.Applicative (empty, liftA, optional, (<|>))
 import Control.Monad (void)
@@ -7,7 +7,7 @@ import Data.Text (Text, pack, unpack)
 import Data.Text qualified as T
 import Data.Void (Void)
 import Error.Diagnose.Compat.Megaparsec
-import Idyllic.Token (LToken, Token (..))
+import Idyllic.Syntax.Token (LToken, Token (..))
 import Idyllic.Utils (Located (..), Span (..))
 import Text.Megaparsec
   ( MonadParsec (eof, getParserState, lookAhead, notFollowedBy, takeWhile1P, takeWhileP, token, try),
