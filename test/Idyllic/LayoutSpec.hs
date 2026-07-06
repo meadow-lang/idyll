@@ -3,9 +3,9 @@
 module Idyllic.LayoutSpec where
 
 import Data.Text (Text)
-import Idyllic.Layout (layout, mark)
-import Idyllic.Lexer (tokenize)
-import Idyllic.Token (LToken)
+import Idyllic.Syntax.Layout (layout, mark)
+import Idyllic.Syntax.Lexer (tokenize)
+import Idyllic.Syntax.Token (LToken)
 import Idyllic.Utils (LineIndex, buildLineIndex, prettyShowNoColor)
 import Test.Hspec (Spec, after, describe, it)
 import Test.Hspec.Golden
@@ -142,6 +142,16 @@ inputs =
             let y = True
             y
        in x
+      """
+    ),
+    ( "let_do_let_with_do_call",
+      """
+      foo = do
+        let s = f ", " $ map show $ do
+           x <- [1,2,3,4]
+           return (x, y)
+        putStrLn s
+        return ()
       """
     )
   ]

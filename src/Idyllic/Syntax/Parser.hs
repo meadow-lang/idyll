@@ -35,8 +35,9 @@ term = app <|> atom
     varTerm = TermVar <$> ident
     lam = TermLam <$> (tokenP TokenBackSlash *> some lowerIdent) <*> (tokenP TokenRArrow *> term)
     let' = TermLet <$> (tokenP TokenLet *> binds) <*> (tokenP TokenIn *> term)
-    atom = located $ choice [try litTerm, let', varTerm, lam, parens (unLoc <$> term)]
+    atom = located $ choice [try litTerm, let', varTerm, lam, ann, parens (unLoc <$> term)]
     app = try $ located $ TermApp <$> atom <*> some atom
+    ann = try $ TermAnn <$> atom <*> (tokenP TokenColon *> term)
 
 binds :: Parser [LBind]
 binds = cfgBind <|> layoutBind
