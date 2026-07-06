@@ -4,10 +4,12 @@
 module Idyllic.Effect (InputMode (..), PipelineEnv (..), newPipelineEnv, defaultPipelineEnv, Pipeline) where
 
 import Control.Monad.Reader (ReaderT)
+import Control.Monad.Trans.Maybe (MaybeT)
+import Control.Monad.Trans.Writer (WriterT)
 import Data.ByteString (ByteString)
 import Data.IORef (IORef)
 import Data.Text (Text)
-import Error.Diagnose (Diagnostic)
+import Error.Diagnose (Diagnostic, Report)
 import GHC.IORef (newIORef)
 import Idyllic.Utils (LineIndex, buildLineIndex)
 
@@ -50,3 +52,5 @@ defaultPipelineEnv src = do
       }
 
 type Pipeline = ReaderT PipelineEnv IO
+
+type CompilerM = MaybeT (WriterT [Report Text] IO)
