@@ -114,11 +114,6 @@ isOpChar c = c `elem` ("!$%&*+./<=>?@|\\~:" ++ ['^' .. '`'] :: String)
 newline :: Lexer Token
 newline = TokenNewline <$ oneOf ['\n', '\r']
 
--- whitespace :: Lexer Token
--- whitespace = TokenWhitespace <$ takeWhile1P (Just "whitespace") isSpace
---   where
---     isSpace c = c == ' ' || c == '\t'
-
 lineComment :: Lexer ()
 lineComment = L.skipLineComment "--"
 

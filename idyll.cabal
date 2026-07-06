@@ -57,28 +57,27 @@ executable idyllic
   import: warnings
   main-is: Main.hs
   build-depends: idyllic
-  hs-source-dirs: compiler/driver
+  hs-source-dirs: app
   default-language: GHC2024
 
 library
   import: warnings
   exposed-modules:
+    Idyllic.Effect
+    Idyllic.Pipeline
     Idyllic.Rename.Env
     Idyllic.Rename.Pass
+    Idyllic.Scc
     Idyllic.Syntax.AST
     Idyllic.Syntax.Layout
     Idyllic.Syntax.Lexer
-    Idyllic.Syntax.Parsec
     Idyllic.Syntax.Parser
     Idyllic.Syntax.Token
-    Idyllic.Effect
-    Idyllic.Pipeline
-    Idyllic.Scc
     Idyllic.TypeCheck
     Idyllic.Utils
 
-  build-tool-depends: alex:alex
-  hs-source-dirs: compiler
+  -- build-tool-depends: alex:alex
+  hs-source-dirs: src
   default-language: GHC2024
 
 test-suite tests
@@ -89,7 +88,6 @@ test-suite tests
     Idyllic.LayoutSpec
 
   build-depends:
-    -- hspec-golden-diff,
     hspec,
     hspec-discover,
     hspec-golden,
@@ -98,5 +96,5 @@ test-suite tests
   build-tool-depends:
     hspec-discover:hspec-discover
 
-  hs-source-dirs: compiler/tests
+  hs-source-dirs: test
   default-language: GHC2024

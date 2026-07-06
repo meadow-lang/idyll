@@ -1,59 +1,41 @@
 {-# OPTIONS_GHC -Wno-orphans #-}
 
-module Idyllic.Syntax.Parser (parseInteractive, parseFile) where
+module Idyllic.Syntax.Parser (parseInteractive) where
 
--- import Control.Monad (void)
--- import Control.Monad.Combinators.Expr
-import Data.Functor (($>))
 import Data.List (unsnoc)
--- import Data.List.NonEmpty qualified as NE
--- import Data.List.NonEmpty qualified as NonEmpty
--- import Data.Maybe (fromMaybe, isJust)
--- import Data.Proxy
 import Data.Set qualified as Set
-import Data.Text (Text, unpack)
+import Data.Text (Text)
 import Data.Void
--- import Error.Diagnose.Compat.Megaparsec (HasHints (..))
 import Idyllic.Syntax.AST
--- import Idyllic.Effect
 import Idyllic.Syntax.Token
 import Idyllic.Utils
 import Text.Megaparsec hiding (Token)
 
 type Parser = Parsec Void [LToken]
 
-parseFile :: Text -> [LToken] -> Either (ParseErrorBundle [LToken] Void) Prog
-parseFile filename = parse (cfg <|> layout) (unpack filename)
-  where
-    cfg = try $ located $ braces (mod' filename)
-    layout = located $ vbraces (mod' filename)
+-- parseFile :: Text -> [LToken] -> Either (ParseErrorBundle [LToken] Void) Prog
+-- parseFile filename = parse (cfg <|> layout) (unpack filename)
+--   where
+--     cfg = try $ located $ braces (mod' filename)
+--     layout = located $ vbraces (mod' filename)
 
-parseInteractive :: [LToken] -> Either (ParseErrorBundle [LToken] Void) (Either [LBind] LTerm)
+parseInteractive :: [LToken] -> Either (ParseErrorBundle [LToken] Void) LTerm
 parseInteractive = parse (interactive <* eof) "<interactive>"
 
-interactive :: Parser (Either [LBind] LTerm)
-interactive = Left <$> binds <|> Right <$> (cfgTerm <|> layoutTerm)
+interactive :: Parser LTerm
+interactive = cfgTerm <|> layoutTerm
   where
     cfgTerm = try $ braces term
     layoutTerm = vbraces term
 
-mod' :: Text -> Parser Module
-mod' name = Module name <$> many decl
-
-decl :: Parser LDecl
-decl = located $ choice [try declUse]
-  where
-    declUse = DeclUse <$> (tokenP TokenUse *> some upperIdent)
-
 term :: Parser LTerm
 term = app <|> atom
   where
-    unit = tokenP TokenLParen *> tokenP TokenRParen $> TermUnit
     litTerm = TermLit <$> lit
     varTerm = TermVar <$> ident
-    lam = TermLam <$> (tokenP TokenBackSlash *> some pat) <*> (tokenP TokenRArrow *> term)
+    lam = TermLam <$> (tokenP TokenBackSlash *> some lowerIdent) <*> (tokenP TokenRArrow *> term)
     let' = TermLet <$> (tokenP TokenLet *> binds) <*> (tokenP TokenIn *> term)
-    atom = located $ choice [try unit, litTerm, let', varTerm, lam, parens (unLoc <$> term)]
+    atom = located $ choice [try litTerm, let', varTerm, lam, parens (unLoc <$> term)]
     app = try $ located $ TermApp <$> atom <*> some atom
 
 binds :: Parser [LBind]
@@ -65,23 +47,8 @@ binds = cfgBind <|> layoutBind
 bind :: Parser LBind
 bind = located $ bindFun <|> bindName
   where
-    bindFun = try $ BindFun <$> lowerIdent <*> some pat <*> (tokenP TokenEq *> rhs)
-    bindName = try $ BindPat <$> pat <*> (tokenP TokenEq *> rhs)
-
-rhs :: Parser Rhs
-rhs = RhsTerm <$> term
-
-pat :: Parser LPat
-pat = located $ choice [try patWildcard, patLit, patIdent, patCons, patAs, patList, patTuple, patUnit]
-  where
-    patWildcard = tokenP TokenUnderscore $> PatWildcard
-    patLit = PatLit <$> lit
-    patIdent = PatIdent <$> lowerIdent
-    patCons = PatCons <$> upperIdent <*> many pat
-    patAs = PatAs <$> lowerIdent <*> (tokenP TokenAt *> pat)
-    patList = PatList <$> brackets (pat `sepBy` tokenP TokenComma)
-    patTuple = PatTuple <$> parens (pat `sepBy` tokenP TokenComma)
-    patUnit = tokenP TokenLParen *> tokenP TokenRParen $> PatUnit
+    bindFun = try $ BindFun <$> lowerIdent <*> some lowerIdent <*> (tokenP TokenEq *> term)
+    bindName = try $ BindName <$> lowerIdent <*> (tokenP TokenEq *> term)
 
 parens :: Parser a -> Parser a
 parens = between (tokenP TokenLParen) (tokenP TokenRParen)
@@ -99,15 +66,17 @@ ident :: Parser Ident
 ident = choice [lowerIdent, upperIdent]
 
 lowerIdent :: Parser Ident
-lowerIdent = token (\case (Located (TokenLowercaseIdent n) s) -> Just (Located (Name NameLower n) s); _ -> Nothing) Set.empty
+lowerIdent = token (\case (Located (TokenLowercaseIdent n) s) -> Just (Located n s); _ -> Nothing) Set.empty
 
 upperIdent :: Parser Ident
-upperIdent = token (\case (Located (TokenUppercaseIdent n) s) -> Just (Located (Name NameUpper n) s); _ -> Nothing) Set.empty
+upperIdent = token (\case (Located (TokenUppercaseIdent n) s) -> Just (Located n s); _ -> Nothing) Set.empty
 
 lit :: Parser Lit
 lit =
   choice
-    [ LitInt <$> int,
+    [ LitUnit <$ tokenP TokenLParen <* tokenP TokenRParen,
+      LitInt <$> int,
+      LitBool <$> bool,
       LitString <$> string
     ]
 

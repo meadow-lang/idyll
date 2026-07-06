@@ -8,11 +8,13 @@ import qualified Data.Text.Encoding as TE
 import Data.Text (Text, stripPrefix)
 import qualified Data.Text as T
 import qualified Data.Char as Char
-import Idyllic.Utils.Span
+import Idyllic.Utils
 import Data.Maybe (fromMaybe)
+import Control.Monad.State.Strict
+import Error.Diagnose 
 }
 
-%wrapper "posn-bytestring"
+-- %wrapper "posn-bytestring"
 
 $unispace   = \x05
 $nonzero    = [1-9]
@@ -32,7 +34,7 @@ $opChar     = [\!\$\%\&\*\+\.\/\<\=\>\?\@\|\\\~\:\^-\`]
 
 $strBare    = [^\"\\\n\xD800-\xDFFF]
 $bareScalar = [^\'\\\n\xD800-\xDFFF]
-$escSimple = [0\'\"\\nrtabfv] 
+$escSimple  = [0\'\"\\nrtabfv] 
 
 @escByte = x ($hexdig | $hexdig $hexdig)
 
@@ -89,16 +91,28 @@ miniml :-
   @conOpIdent                    { tok TokenKindConOpIdent }
   @opIdent                       { tok TokenKindOpIdent }
 
-  @decimal                       { tok TokenKindInt }
-  @binary                        { tok TokenKindInt }
-  @octal                         { tok TokenKindInt }
-  @hexadecimal                   { tok TokenKindInt }
+  @int                           { tok TokenKindInt }
   @char                          { tok TokenKindChar }
   @string                        { tok TokenKindString }
-
-  $nonWhite                      { tok TokenKindError }
-
 {
+
+data LexerState = LexerState
+  { lexerInput    :: !ByteString
+  , lexerPos      :: !AlexPosn
+  , lexerLastChar :: !Char
+  , lexerErrors   :: ![Report Text]
+  }
+
+type Lexer a = State LexerState a
+
+-- Helper to log an error into the state
+logDiagnostic :: AlexPosn -> String -> Lexer ()
+logDiagnostic (AlexPn _ line col) msg = modify $ \st ->
+  let -- Construct your 'diagnose' report here 
+      -- (Adjust this to match your exact 'diagnose' configuration/markers)
+      newReport = Err Nothing ("Lexical Error: " ++ msg) [(Position line col line (col + 1) "src", Where msg)] []
+  in st { lexerErrors = newReport : lexerErrors st }
+
 tok :: TokenKind -> AlexPosn -> ByteString -> Token
 tok kind p bs = Token kind (makeSpan p bs)
 

@@ -3,6 +3,8 @@ module Idyllic.Syntax.AST where
 import Data.Text (Text)
 import Idyllic.Utils (Located)
 
+type Prog = LTerm
+
 type LTerm = Located Term
 
 data Term
@@ -30,5 +32,6 @@ type Ident = Located Text
 data Lit
   = LitUnit
   | LitInt Integer
+  | LitBool Bool
   | LitString Text
   deriving (Show, Eq, Ord)
