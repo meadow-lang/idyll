@@ -148,8 +148,8 @@ inputs =
       """
       foo = do
         let s = f ", " $ map show $ do
-           x <- [1,2,3,4]
-           return (x, y)
+             x <- [1,2,3,4]
+             return (x, y)
         putStrLn s
         return ()
       """
