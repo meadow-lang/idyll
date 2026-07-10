@@ -52,5 +52,3 @@ defaultPipelineEnv src = do
       }
 
 type Pipeline = ReaderT PipelineEnv IO
-
-type CompilerM = MaybeT (WriterT [Report Text] IO)
