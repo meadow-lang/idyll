@@ -3,8 +3,7 @@ module Main (main) where
 import Control.Monad.IO.Class (liftIO)
 import Data.Text (pack)
 import GHC.IO.Handle (BufferMode (..), hSetBuffering)
-import Idyllic.Effect
-import Idyllic.Pipeline (runPipelineIO)
+import Idyllic.Pipeline
 import System.Console.Haskeline
 import System.IO (stdout)
 

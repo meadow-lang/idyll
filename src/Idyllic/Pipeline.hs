@@ -1,15 +1,56 @@
-module Idyllic.Pipeline (runPipelineIO) where
+module Idyllic.Pipeline (runPipelineIO, newPipelineEnv, defaultPipelineEnv, PipelineEnv (..), InputMode (..)) where
 
 import Control.Monad.Reader (MonadIO (liftIO), MonadReader (ask), ReaderT (runReaderT), asks)
+import Data.IORef
 import Data.Text
 import Error.Diagnose
 import Error.Diagnose.Compat.Megaparsec
-import Idyllic.Effect
 import Idyllic.Syntax.Layout
 import Idyllic.Syntax.Lexer
 import Idyllic.Syntax.Parser
+import Idyllic.Utils
 import Text.Megaparsec (errorBundlePretty)
 import Text.Pretty.Simple
+
+data InputMode
+  = InputModeFile Text
+  | InputModeInteractive
+  deriving (Show, Eq)
+
+data PipelineEnv = PipelineEnv
+  { pipelineSrc :: Text,
+    pipelineDebug :: Bool,
+    pipelineMode :: InputMode,
+    pipelineLineIndex :: LineIndex,
+    pipelineErrors :: IORef [Diagnostic Text]
+  }
+  deriving (Eq)
+
+newPipelineEnv :: Bool -> InputMode -> Text -> IO PipelineEnv
+newPipelineEnv debug mode src = do
+  errVar <- newIORef []
+  pure
+    PipelineEnv
+      { pipelineSrc = src,
+        pipelineDebug = debug,
+        pipelineMode = mode,
+        pipelineLineIndex = buildLineIndex src,
+        pipelineErrors = errVar
+      }
+
+defaultPipelineEnv :: Text -> IO PipelineEnv
+defaultPipelineEnv src = do
+  errVar <- newIORef []
+  pure
+    PipelineEnv
+      { pipelineSrc = src,
+        pipelineDebug = True,
+        pipelineMode = InputModeInteractive,
+        pipelineLineIndex = buildLineIndex src,
+        pipelineErrors = errVar
+      }
+
+type Pipeline = ReaderT PipelineEnv IO
 
 pipelineMain :: Pipeline ()
 pipelineMain = do
