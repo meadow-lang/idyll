@@ -2,7 +2,10 @@ module Idyllic.Pipeline (runPipelineIO, newPipelineEnv, defaultPipelineEnv, Pipe
 
 import Control.Monad.Reader (MonadIO (liftIO), MonadReader (ask), ReaderT (runReaderT), asks)
 import Data.IORef
-import Data.Text
+import Data.Text (Text, pack)
+import Data.Text qualified as T
+import Data.Text.Lazy (toStrict)
+import Data.Text.Lazy qualified as TL
 import Error.Diagnose
 import Error.Diagnose.Compat.Megaparsec
 import Idyllic.Syntax.Layout
@@ -50,31 +53,31 @@ defaultPipelineEnv src = do
         pipelineErrors = errVar
       }
 
-type Pipeline = ReaderT PipelineEnv IO
+type PipelineM = ReaderT PipelineEnv IO
 
-pipelineMain :: Pipeline ()
+pipelineMain :: PipelineM String
 pipelineMain = do
   env <- ask
   li <- asks pipelineLineIndex
   let src = pipelineSrc env
   case tokenize src of
-    Left es -> liftIO $ print $ errorBundlePretty es
-    Right ts -> case layout li ts of
-      (lts, []) -> case parseInteractive lts of
-        Left es -> pPrint es
-        Right ast -> do
-          pPrint ast
-      (lts, es) -> liftIO $ do
-        putStrLn "Layout errors:"
-        mapM_ print es
-        case parseInteractive lts of
-          Left es' -> do
-            putStrLn "Parse errors:"
-            pPrint es'
-          Right ast -> pPrint ast
-  pure ()
+    Left es -> pure $ errorBundlePretty es
+    Right ts -> pure $ TL.unpack $ pShow ts
 
-runPipelineIO :: Bool -> InputMode -> Text -> IO ()
+--     (lts, []) -> case parseInteractive lts of
+--       Left es -> pPrint es
+--       Right ast -> do
+--         pPrint ast
+--     (lts, es) -> liftIO $ do
+--       putStrLn "Layout errors:"
+--       mapM_ print es
+--       case parseInteractive lts of
+--         Left es' -> do
+--           putStrLn "Parse errors:"
+--           pPrint es'
+--         Right ast -> pPrint ast
+
+runPipelineIO :: Bool -> InputMode -> Text -> IO String
 runPipelineIO debug mode src = do
   env <- newPipelineEnv debug mode src
   runReaderT pipelineMain env

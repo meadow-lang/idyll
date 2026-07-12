@@ -1,7 +1,7 @@
 module Main (main) where
 
 import Control.Monad.IO.Class (liftIO)
-import Data.Text (pack)
+import Data.Text (Text, pack, unpack)
 import GHC.IO.Handle (BufferMode (..), hSetBuffering)
 import Idyllic.Pipeline
 import System.Console.Haskeline
@@ -48,10 +48,11 @@ main = do
           | null line && not (null acc) -> do
               -- blank line and we have accumulated input: process it
               let code = unlines (reverse acc)
-              liftIO (runOneInput code)
+              out <- liftIO (runOneInput code)
+              liftIO $ putStrLn out
               loop []
           | null line -> loop acc -- blank line with nothing typed yet, ignore
           | otherwise -> loop (line : acc)
 
-runOneInput :: String -> IO ()
+runOneInput :: String -> IO String
 runOneInput code = runPipelineIO False InputModeInteractive (pack code)
