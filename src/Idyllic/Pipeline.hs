@@ -15,17 +15,11 @@ import Idyllic.Utils
 import Text.Megaparsec (errorBundlePretty)
 import Text.Pretty.Simple
 
-data InputMode
-  = InputModeFile Text
-  | InputModeInteractive
-  deriving (Show, Eq)
-
 data PipelineEnv = PipelineEnv
-  { pipelineSrc :: Text,
-    pipelineDebug :: Bool,
-    pipelineMode :: InputMode,
-    pipelineLineIndex :: LineIndex,
-    pipelineErrors :: IORef [Diagnostic Text]
+  { peSrc :: Text,
+    peConfig :: Config,
+    peLineIndex :: LineIndex,
+    peErrors :: IORef [Report Text]
   }
   deriving (Eq)
 
@@ -34,11 +28,10 @@ newPipelineEnv debug mode src = do
   errVar <- newIORef []
   pure
     PipelineEnv
-      { pipelineSrc = src,
-        pipelineDebug = debug,
-        pipelineMode = mode,
-        pipelineLineIndex = buildLineIndex src,
-        pipelineErrors = errVar
+      { peSrc = src,
+        peConfig = Config debug mode,
+        peLineIndex = buildLineIndex src,
+        peErrors = errVar
       }
 
 defaultPipelineEnv :: Text -> IO PipelineEnv
@@ -46,38 +39,45 @@ defaultPipelineEnv src = do
   errVar <- newIORef []
   pure
     PipelineEnv
-      { pipelineSrc = src,
-        pipelineDebug = True,
-        pipelineMode = InputModeInteractive,
-        pipelineLineIndex = buildLineIndex src,
-        pipelineErrors = errVar
+      { peSrc = src,
+        peConfig = Config False InputModeInteractive,
+        peLineIndex = buildLineIndex src,
+        peErrors = errVar
       }
+
+data InputMode
+  = InputModeFile Text
+  | InputModeInteractive
+  deriving (Show, Eq)
+
+data Config = Config
+  { cfgDebug :: Bool,
+    cfgMode :: InputMode
+  }
+  deriving (Show, Eq)
 
 type PipelineM = ReaderT PipelineEnv IO
 
-pipelineMain :: PipelineM String
-pipelineMain = do
+pipeline :: PipelineM String
+pipeline = do
   env <- ask
-  li <- asks pipelineLineIndex
-  let src = pipelineSrc env
+  li <- asks peLineIndex
+  let src = peSrc env
   case tokenize src of
     Left es -> pure $ errorBundlePretty es
     Right ts -> pure $ TL.unpack $ pShow ts
 
---     (lts, []) -> case parseInteractive lts of
---       Left es -> pPrint es
---       Right ast -> do
---         pPrint ast
---     (lts, es) -> liftIO $ do
---       putStrLn "Layout errors:"
---       mapM_ print es
---       case parseInteractive lts of
---         Left es' -> do
---           putStrLn "Parse errors:"
---           pPrint es'
---         Right ast -> pPrint ast
-
 runPipelineIO :: Bool -> InputMode -> Text -> IO String
 runPipelineIO debug mode src = do
   env <- newPipelineEnv debug mode src
-  runReaderT pipelineMain env
+  runReaderT pipeline env
+
+type Pass input out = Config -> input -> IO (out, [Report Text])
+
+runPass :: Pass input out -> input -> PipelineM out
+runPass run input = do
+  cfg <- asks peConfig
+  diagsRef <- asks peErrors
+  (result, diags) <- liftIO (run cfg input)
+  liftIO (modifyIORef' diagsRef (<> diags))
+  pure result
