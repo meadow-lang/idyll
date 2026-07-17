@@ -16,11 +16,11 @@ data Marked
   | Indent Int Span
   deriving (Show, Eq, Ord)
 
-instance Pretty Marked where
-  pretty = \case
-    Token t -> pretty t
-    OpenBlock n h s -> "OpenBlock(" <> pretty n <> ", " <> pretty h <> ") @ " <> pretty s
-    Indent n s -> "Indent(" <> pretty n <> ") @ " <> pretty s
+-- instance Pretty Marked where
+--   pretty = \case
+--     Token t -> pretty t
+--     OpenBlock n h s -> "OpenBlock(" <> pretty n <> ", " <> pretty h <> ") @ " <> pretty s
+--     Indent n s -> "Indent(" <> pretty n <> ") @ " <> pretty s
 
 mark :: LineIndex -> [LToken] -> [Marked]
 mark li = markIndents . markBlocks
