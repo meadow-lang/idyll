@@ -15,7 +15,7 @@ data Term
   | TermApp LTerm [LTerm]
   | TermNeg LTerm
   | TermList [LTerm]
-  | TermPi Ident LTerm LTerm -- (x : a) -> b, (?x : a) -> b, a -> b
+  | TermPi (Maybe Ident) LTerm LTerm -- (x : a) -> b, (?x : a) -> b, a -> b
   | TermAnn LTerm LTerm -- e : a  (type annotation)
   | TermType
   deriving (Show, Eq, Ord)
