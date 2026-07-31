@@ -100,14 +100,12 @@ string = token (\case (Located (TokenString str) _) -> Just str; _ -> Nothing) S
 tokenP :: Token -> Parser Token
 tokenP t = token (\(Located lt _) -> if t == lt then Just t else Nothing) Set.empty
 
+peekSpan :: Parser Span
+peekSpan = lookAhead (locSpan <$> anySingle)
+
 located :: Parser a -> Parser (Located a)
 located p = do
-  startInp <- getInput
+  startSpan <- peekSpan
   x <- p
-  endInp <- getInput
-  case (startInp, endInp) of
-    ([], _) -> fail "empty input"
-    (t : _, t' : _) -> pure $ Located x (locSpan t <> locSpan t')
-    (t : ts, []) -> case unsnoc ts of
-      Nothing -> pure $ Located x (locSpan t)
-      Just (_, eoi) -> pure $ Located x (locSpan t <> locSpan eoi)
+  nextSpan <- peekSpan <|> pure startSpan
+  pure $ Located x (startSpan <> nextSpan)
