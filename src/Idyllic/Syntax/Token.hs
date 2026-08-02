@@ -2,7 +2,6 @@ module Idyllic.Syntax.Token (LToken, Token (..)) where
 
 import Data.ByteString (ByteString)
 import Idyllic.Utils
-import Prettyprinter (Pretty (..))
 
 type LToken = Located Token
 
