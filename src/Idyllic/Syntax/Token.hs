@@ -1,6 +1,7 @@
-module Idyllic.Syntax.Token (LToken, Token (..)) where
+module Idyllic.Syntax.Token (LToken, Token (..), showToken) where
 
-import Data.ByteString (ByteString)
+import Data.Text (Text)
+import Data.Text qualified as T
 import Idyllic.Utils
 
 type LToken = Located Token
@@ -8,12 +9,12 @@ type LToken = Located Token
 data Token
   = TokenError
   | TokenNewline
-  | TokenUppercaseIdent ByteString
-  | TokenLowercaseIdent ByteString
-  | TokenOpIdent ByteString
-  | TokenConOpIdent ByteString
+  | TokenUppercaseIdent Text
+  | TokenLowercaseIdent Text
+  | TokenOpIdent Text
+  | TokenConOpIdent Text
   | TokenInt Integer
-  | TokenString ByteString
+  | TokenString Text
   | TokenChar Char
   | TokenLParen
   | TokenRParen
@@ -52,6 +53,57 @@ data Token
   | TokenThen
   | TokenElse
   deriving (Show, Eq, Ord)
+
+-- | A short, human-facing rendering of a token, used in parser error
+--   messages (via the 'Text.Megaparsec.VisualStream' instance for the token
+--   stream).
+showToken :: Token -> String
+showToken t = case t of
+  TokenError -> "<lex-error>"
+  TokenNewline -> "<newline>"
+  TokenUppercaseIdent s -> T.unpack s
+  TokenLowercaseIdent s -> T.unpack s
+  TokenOpIdent s -> T.unpack s
+  TokenConOpIdent s -> T.unpack s
+  TokenInt n -> show n
+  TokenString s -> show (T.unpack s)
+  TokenChar c -> show c
+  TokenLParen -> "("
+  TokenRParen -> ")"
+  TokenLBrace -> "{"
+  TokenRBrace -> "}"
+  TokenLBracket -> "["
+  TokenRBracket -> "]"
+  TokenVLBrace -> "{ (virtual)"
+  TokenVRBrace -> "} (virtual)"
+  TokenVSemi -> "; (virtual)"
+  TokenBang -> "!"
+  TokenHash -> "#"
+  TokenBackSlash -> "\\"
+  TokenColon -> ":"
+  TokenSemi -> ";"
+  TokenComma -> ","
+  TokenPeriod -> "."
+  TokenEq -> "="
+  TokenLArrow -> "<-"
+  TokenRArrow -> "->"
+  TokenRFatArrow -> "=>"
+  TokenBar -> "|"
+  TokenUnderscore -> "_"
+  TokenAt -> "@"
+  TokenMod -> "mod"
+  TokenUse -> "use"
+  TokenData -> "data"
+  TokenType -> "Type"
+  TokenLet -> "let"
+  TokenIn -> "in"
+  TokenWhere -> "where"
+  TokenDo -> "do"
+  TokenCase -> "case"
+  TokenOf -> "of"
+  TokenIf -> "if"
+  TokenThen -> "then"
+  TokenElse -> "else"
 
 -- instance Pretty Token where
 --   pretty = \case

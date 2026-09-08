@@ -28,9 +28,8 @@ layoutSpec =
 goldenMark :: String -> Text -> Spec
 goldenMark name src =
   it ("correctly marks: " ++ name) $
-    let (ts, li) = case tokenize src of
-          Left es -> error $ "Tokenization failed: " ++ show es
-          Right ts' -> (ts', buildLineIndex src)
+    let (ts, _diags) = tokenize src
+        li = buildLineIndex src
         out = prettyShowNoColor $ mark li ts
         fileName = show 'mark ++ "_" ++ name
      in defaultGolden fileName out
@@ -38,9 +37,8 @@ goldenMark name src =
 goldenLayout :: String -> Text -> Spec
 goldenLayout name src =
   it ("correctly lays out: " ++ name) $
-    let (ts, li) = case tokenize src of
-          Left es -> error $ "Tokenization failed: " ++ show es
-          Right ts' -> (ts', buildLineIndex src)
+    let (ts, _diags) = tokenize src
+        li = buildLineIndex src
         out = prettyShowNoColor $ fst $ layout li ts
         fileName = show 'layout ++ "_" ++ name
      in defaultGolden fileName out

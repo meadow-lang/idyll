@@ -2,17 +2,21 @@ module Idyllic.Pipeline (runPipelineIO, newPipelineEnv, defaultPipelineEnv, Pipe
 
 import Control.Monad.Reader (MonadIO (liftIO), MonadReader (ask), ReaderT (runReaderT), asks)
 import Data.IORef
-import Data.Text (Text, pack)
+import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Text.Lazy (toStrict)
 import Data.Text.Lazy qualified as TL
 import Error.Diagnose
-import Error.Diagnose.Compat.Megaparsec
+import Error.Diagnose.Compat.Megaparsec ()
+import Idyllic.Rename.Env (renameErrorReport)
+import Idyllic.Rename.Pass (RenameResult (..), renameModule)
+import Idyllic.Scc (sccModule)
 import Idyllic.Syntax.Layout
 import Idyllic.Syntax.Lexer
 import Idyllic.Syntax.Parser
+import Idyllic.TypeCheck (TypeCheckResult (..), checkModule, showCore, typeErrorReport)
 import Idyllic.Utils
-import Text.Megaparsec (errorBundlePretty)
+import Prettyprinter (defaultLayoutOptions, layoutPretty, unAnnotate)
+import Prettyprinter.Render.String (renderString)
 import Text.Pretty.Simple
 
 data PipelineEnv = PipelineEnv
@@ -61,11 +65,63 @@ type PipelineM = ReaderT PipelineEnv IO
 pipeline :: PipelineM String
 pipeline = do
   env <- ask
-  li <- asks peLineIndex
   let src = peSrc env
-  case tokenize src of
-    Left es -> pure $ errorBundlePretty es
-    Right ts -> pure $ TL.unpack $ pShow ts
+      li = peLineIndex env
+      debug = cfgDebug (peConfig env)
+      (toks, lexDiags) = tokenize src
+      (laidOut, layoutErrs) = layout li toks
+  diagsRef <- asks peErrors
+  let record ds = liftIO (modifyIORef' diagsRef (<> ds))
+  record (lexDiags <> map (layoutErrorReport li) layoutErrs)
+  body <- case parseInteractive src laidOut of
+    Left e -> pure (prettyParseError e)
+    Right ast -> do
+      -- name resolution -> HIR, then SCC / retopologize, then type check
+      let RenameResult {rrModule, rrSpans, rrErrors} = renameModule ast
+          hir = sccModule rrModule
+          TypeCheckResult {tcrBodyType, tcrErrors} = checkModule hir
+      record (map (renameErrorReport li) rrErrors)
+      record (map (typeErrorReport li rrSpans) tcrErrors)
+      pure $
+        (if debug then TL.unpack (pShow hir) <> "\n" else "")
+          <> ": "
+          <> T.unpack (showCore tcrBodyType)
+  -- render everything the passes reported, against the original source
+  diags <- liftIO (readIORef diagsRef)
+  pure $ case diags of
+    [] -> body
+    _ -> renderDiagnostics src diags <> "\n" <> body
+
+-- | Pretty-print the accumulated reports, with the source attached so
+--   'Error.Diagnose' can show the offending lines.
+renderDiagnostics :: Text -> [Report Text] -> String
+renderDiagnostics src reports =
+  renderString
+    . layoutPretty defaultLayoutOptions
+    . unAnnotate
+    $ prettyDiagnostic False 4 diagnostic
+  where
+    diagnostic =
+      foldl addReport (addFile (def :: Diagnostic Text) "<input>" (T.unpack src)) reports
+
+layoutErrorReport :: LineIndex -> LayoutError -> Report Text
+layoutErrorReport li e = case e of
+  NestedLayoutContextError outer inner sp ->
+    mk sp $
+      "nested layout context: expected indentation greater than "
+        <> tshow outer
+        <> ", but got "
+        <> tshow inner
+  UnexpectedClosingBraceError sp -> mk sp "unexpected closing brace"
+  NotInLayoutContextAtEndOfInputError sp ->
+    mk sp "not inside a layout context at end of input"
+  where
+    tshow :: (Show a) => a -> Text
+    tshow = T.pack . show
+    mk (Span s eoff) msg =
+      let (l1, c1) = offsetToLineCol li s
+          (l2, c2) = offsetToLineCol li eoff
+       in err Nothing msg [(Position (l1, c1) (l2, c2) "<input>", This msg)] []
 
 runPipelineIO :: Bool -> InputMode -> Text -> IO String
 runPipelineIO debug mode src = do
