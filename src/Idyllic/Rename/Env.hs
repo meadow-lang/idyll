@@ -17,8 +17,9 @@ import Error.Diagnose (Marker (..), Position (..), Report, err)
 import Idyllic.Builtins
 import Idyllic.Utils (LineIndex, Span (..), offsetToLineCol)
 
--- | One lexical scope: surface spelling to the unique it was bound with.
-type Scope = Map Text Int
+-- | One lexical scope: surface spelling to the unique it was bound with, and
+--   where it was bound (so a later duplicate can point back at the original).
+type Scope = Map Text (Int, Span)
 
 data RenameEnv = RenameEnv
   { -- | Active scopes, innermost first.  Always non-empty (the last element
@@ -49,15 +50,15 @@ data RenameError
 emptyRenameEnv :: RenameEnv
 emptyRenameEnv =
   RenameEnv
-    { reScopes = [Map.fromList [(builtinName b, builtinUnique b) | b <- allBuiltins]],
+    { reScopes = [Map.fromList [(builtinName b, (builtinUnique b, Span 0 0)) | b <- allBuiltins]],
       reNextUnique = builtinCount,
       reNextNode = 0,
       reSpans = IntMap.empty,
       reErrors = []
     }
 
-renameErrorReport :: LineIndex -> RenameError -> Report Text
-renameErrorReport li e = case e of
+renameErrorReport :: FilePath -> LineIndex -> RenameError -> Report Text
+renameErrorReport file li e = case e of
   UnboundName name sp ->
     single sp ("name not in scope: " <> name) "used here"
   DuplicateBinding name earlier later ->
@@ -73,4 +74,4 @@ renameErrorReport li e = case e of
     posOf (Span s eoff) =
       let (l1, c1) = offsetToLineCol li s
           (l2, c2) = offsetToLineCol li eoff
-       in Position (l1, c1) (l2, c2) "<input>"
+       in Position (l1, c1) (l2, c2) file

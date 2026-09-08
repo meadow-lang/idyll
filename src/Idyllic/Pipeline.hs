@@ -67,61 +67,54 @@ pipeline = do
   env <- ask
   let src = peSrc env
       li = peLineIndex env
-      debug = cfgDebug (peConfig env)
-      (toks, lexDiags) = tokenize src
+      cfg = peConfig env
+      file = inputName (cfgMode cfg)
+      (toks, lexDiags) = tokenizeNamed file src
       (laidOut, layoutErrs) = layout li toks
   diagsRef <- asks peErrors
   let record ds = liftIO (modifyIORef' diagsRef (<> ds))
-  record (lexDiags <> map (layoutErrorReport li) layoutErrs)
-  body <- case parseInteractive src laidOut of
-    Left e -> pure (prettyParseError e)
+  record (lexDiags <> map (layoutErrorReport file li) layoutErrs)
+  -- A parse failure is reported like any other pass and does not short
+  -- circuit: whatever the lexer and layout already found still gets shown.
+  (body, parseDiag) <- case parseTerm file src laidOut of
+    Left e -> pure ("", parseErrorDiagnostic e)
     Right ast -> do
       -- name resolution -> HIR, then SCC / retopologize, then type check
       let RenameResult {rrModule, rrSpans, rrErrors} = renameModule ast
           hir = sccModule rrModule
           TypeCheckResult {tcrBodyType, tcrErrors} = checkModule hir
-      record (map (renameErrorReport li) rrErrors)
-      record (map (typeErrorReport li rrSpans) tcrErrors)
-      pure $
-        (if debug then TL.unpack (pShow hir) <> "\n" else "")
-          <> ": "
-          <> T.unpack (showCore tcrBodyType)
-  -- render everything the passes reported, against the original source
-  diags <- liftIO (readIORef diagsRef)
-  pure $ case diags of
-    [] -> body
-    _ -> renderDiagnostics src diags <> "\n" <> body
+      record (map (renameErrorReport file li) rrErrors)
+      record (map (typeErrorReport file li rrSpans) tcrErrors)
+      pure
+        ( (if cfgDebug cfg then TL.unpack (pShow hir) <> "\n" else "")
+            <> ": "
+            <> T.unpack (showCore tcrBodyType),
+          def
+        )
+  reports <- liftIO (readIORef diagsRef)
+  -- reports first, then parseDiag: diagnostics come out in pass order
+  pure (render file src (foldl addReport def reports <> parseDiag) body)
 
--- | Pretty-print the accumulated reports, with the source attached so
---   'Error.Diagnose' can show the offending lines.
-renderDiagnostics :: Text -> [Report Text] -> String
-renderDiagnostics src reports =
-  renderString
-    . layoutPretty defaultLayoutOptions
-    . unAnnotate
-    $ prettyDiagnostic False 4 diagnostic
-  where
-    diagnostic =
-      foldl addReport (addFile (def :: Diagnostic Text) "<input>" (T.unpack src)) reports
+-- | The name every pass attributes its diagnostics to.  It has to agree with
+--   the name 'addFile' registers the source under, or 'Error.Diagnose' cannot
+--   find the lines to quote.
+inputName :: InputMode -> FilePath
+inputName (InputModeFile f) = T.unpack f
+inputName InputModeInteractive = "<interactive>"
 
-layoutErrorReport :: LineIndex -> LayoutError -> Report Text
-layoutErrorReport li e = case e of
-  NestedLayoutContextError outer inner sp ->
-    mk sp $
-      "nested layout context: expected indentation greater than "
-        <> tshow outer
-        <> ", but got "
-        <> tshow inner
-  UnexpectedClosingBraceError sp -> mk sp "unexpected closing brace"
-  NotInLayoutContextAtEndOfInputError sp ->
-    mk sp "not inside a layout context at end of input"
+-- | Render every pass's diagnostics through 'Error.Diagnose', with the source
+--   attached so the offending lines can be quoted, then the pass output.
+render :: FilePath -> Text -> Diagnostic Text -> String -> String
+render file src diag body
+  | null rendered = body
+  | null body = rendered
+  | otherwise = rendered <> "\n" <> body
   where
-    tshow :: (Show a) => a -> Text
-    tshow = T.pack . show
-    mk (Span s eoff) msg =
-      let (l1, c1) = offsetToLineCol li s
-          (l2, c2) = offsetToLineCol li eoff
-       in err Nothing msg [(Position (l1, c1) (l2, c2) "<input>", This msg)] []
+    rendered =
+      renderString
+        . layoutPretty defaultLayoutOptions
+        . unAnnotate
+        $ prettyDiagnostic False 4 (addFile diag file (T.unpack src))
 
 runPipelineIO :: Bool -> InputMode -> Text -> IO String
 runPipelineIO debug mode src = do

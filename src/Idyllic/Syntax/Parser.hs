@@ -1,3 +1,5 @@
+{-# OPTIONS_GHC -Wno-orphans #-}
+
 -- | Surface parser for the CoC-style core.
 --
 --   The grammar, loosest to tightest:
@@ -20,13 +22,15 @@ module Idyllic.Syntax.Parser
   ( Parser,
     parseInteractive,
     parseTerm,
-    prettyParseError,
+    parseErrorDiagnostic,
   )
 where
 
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Void (Void)
+import Error.Diagnose (Diagnostic)
+import Error.Diagnose.Compat.Megaparsec (HasHints (..), errorDiagnosticFromBundle)
 import Idyllic.Syntax.AST
 import Idyllic.Syntax.Stream
 import Idyllic.Syntax.Token
@@ -50,8 +54,15 @@ parseTerm :: FilePath -> Text -> [LToken] -> Either (ParseErrorBundle TokenStrea
 parseTerm name src toks =
   parse (topTerm <* eof) name (mkTokenStream src (stripNewlines toks))
 
-prettyParseError :: ParseErrorBundle TokenStream Void -> String
-prettyParseError = errorBundlePretty
+-- | megaparsec's custom-error slot is 'Void' here, so there are never any
+--   component-specific hints to add.
+instance HasHints Void Text where
+  hints _ = []
+
+-- | Render a parse failure as a 'Diagnostic', so parse errors look like — and
+--   are rendered by the same code as — the errors from every other pass.
+parseErrorDiagnostic :: ParseErrorBundle TokenStream Void -> Diagnostic Text
+parseErrorDiagnostic = errorDiagnosticFromBundle Nothing "parse error" Nothing
 
 -- | Post-layout, bare newline tokens carry no meaning (the layout algorithm
 --   has already turned the significant ones into virtual @;@/@{@/@}@), but a

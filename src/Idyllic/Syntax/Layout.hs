@@ -1,14 +1,110 @@
-module Idyllic.Syntax.Layout where
+-- | The layout (offside) pass: turn significant indentation into explicit
+--   block structure, so the parser can ignore whitespace entirely.
+--
+--   It runs in two stages.  'mark' annotates the token stream with the two
+--   facts layout cares about — where a block /opens/ ('OpenBlock', carrying
+--   the column its items will line up at) and where a line /begins/ ('Indent',
+--   carrying that line's column).  'layout' then walks those markers with a
+--   stack of open blocks, emitting the virtual 'TokenVLBrace' \/
+--   'TokenVRBrace' \/ 'TokenVSemi' the parser consumes.
+--
+--   __How this differs from Haskell's rule.__  Haskell closes a layout block
+--   purely by dedentation, plus the celebrated parse-error side condition.
+--   Here, @let@ and @do@ instead record the keyword that closes them — @in@
+--   and @where@ respectively — and that keyword closes the block wherever it
+--   turns up (see 'closes').  It is a much simpler rule to implement, but it
+--   is a genuine restriction: because @in@ closes the /innermost/ block that
+--   is waiting for one, a @let@ cannot appear inside a @case@ alternative
+--   without explicit braces.  The @in@ would be matched against the wrong
+--   block.
+module Idyllic.Syntax.Layout
+  ( -- * Errors
+    LayoutError (..),
+    layoutErrorReport,
 
+    -- * Marking
+    Marked (..),
+    mark,
+
+    -- * Layout
+    layout,
+  )
+where
+
+import Control.Monad.State.Strict
+import Data.Maybe (listToMaybe)
+import Data.Text (Text)
+import Data.Text qualified as T
+import Error.Diagnose (Marker (..), Position (..), Report, err)
 import Idyllic.Syntax.Token
 import Idyllic.Utils
-import Prettyprinter
+
+-- ---------------------------------------------------------------------------
+-- Errors
+-- ---------------------------------------------------------------------------
 
 data LayoutError
-  = NestedLayoutContextError Int Int Span
+  = -- | A block opened at a column that is not further right than the block
+    --   containing it: expected greater than, got.
+    NestedLayoutContextError Int Int Span
   | UnexpectedClosingBraceError Span
   | NotInLayoutContextAtEndOfInputError Span
   deriving (Show, Eq, Ord)
+
+-- | Render a layout error the same way every other pass renders its errors.
+layoutErrorReport :: FilePath -> LineIndex -> LayoutError -> Report Text
+layoutErrorReport file li e = case e of
+  NestedLayoutContextError outer inner sp ->
+    mk sp $
+      "nested layout context: expected indentation greater than "
+        <> tshow outer
+        <> ", but got "
+        <> tshow inner
+  UnexpectedClosingBraceError sp -> mk sp "unexpected closing brace"
+  NotInLayoutContextAtEndOfInputError sp ->
+    mk sp "not inside a layout context at end of input"
+  where
+    tshow :: (Show a) => a -> Text
+    tshow = T.pack . show
+    mk (Span s eoff) msg =
+      let (l1, c1) = offsetToLineCol li s
+          (l2, c2) = offsetToLineCol li eoff
+       in err Nothing msg [(Position (l1, c1) (l2, c2) file, This msg)] []
+
+-- ---------------------------------------------------------------------------
+-- Heralds
+-- ---------------------------------------------------------------------------
+
+-- | What sort of block a keyword opens.
+data Herald
+  = -- | @let@ and @do@: closed by dedenting /or/ by an explicit keyword.
+    ClosedBy Token
+  | -- | @where@ and @of@: closed only by dedenting.
+    OpenEnded
+
+-- | The keywords that open a layout block.
+heraldOf :: Token -> Maybe Herald
+heraldOf = \case
+  TokenLet -> Just (ClosedBy TokenLet)
+  TokenDo -> Just (ClosedBy TokenDo)
+  TokenWhere -> Just OpenEnded
+  TokenOf -> Just OpenEnded
+  _ -> Nothing
+
+heraldCloser :: Herald -> Maybe Token
+heraldCloser (ClosedBy t) = Just t
+heraldCloser OpenEnded = Nothing
+
+-- | @in@ closes a @let@; @where@ closes a @do@.  This is the token-driven
+--   half of the algorithm described at the top of the module.
+closes :: Token -> Token -> Bool
+closes TokenIn TokenLet = True
+closes TokenWhere TokenDo = True
+closes _ _ = False
+
+-- ---------------------------------------------------------------------------
+-- Marking
+-- ---------------------------------------------------------------------------
 
 data Marked
   = Token LToken
@@ -16,105 +112,238 @@ data Marked
   | Indent Int Span
   deriving (Show, Eq, Ord)
 
--- instance Pretty Marked where
---   pretty = \case
---     Token t -> pretty t
---     OpenBlock n h s -> "OpenBlock(" <> pretty n <> ", " <> pretty h <> ") @ " <> pretty s
---     Indent n s -> "Indent(" <> pretty n <> ") @ " <> pretty s
-
 mark :: LineIndex -> [LToken] -> [Marked]
-mark li = markIndents . markBlocks
+mark li = markIndents li . markBlocks li
+
+columnOf :: LineIndex -> LToken -> Int
+columnOf li t = snd (offsetToLineCol li (spanStart (locSpan t)))
+
+isNewline :: LToken -> Bool
+isNewline t = unLoc t == TokenNewline
+
+-- | Drop a leading run of newlines, so a block's column is taken from the
+--   first token that actually carries content.
+skipNewlines :: [LToken] -> [LToken]
+skipNewlines (t : ts) | isNewline t = dropWhile isNewline ts
+skipNewlines ts = ts
+
+-- | Insert an 'OpenBlock' after every layout herald, recording the column of
+--   the first token of the block.
+markBlocks :: LineIndex -> [LToken] -> [Marked]
+markBlocks li = go
   where
-    skipNewlines :: [LToken] -> [LToken]
-    skipNewlines (Located TokenNewline _ : ts) = dropWhile isNewline ts
+    go [] = []
+    go (t : rest) = case heraldOf (unLoc t) of
+      Just herald | opensBlock herald rest -> Token t : openBlock t herald rest
+      _ -> Token t : go rest
+
+    -- An explicit '{' means the block is written out by hand, so layout keeps
+    -- out of it.  At end of input only 'let'/'do' open a (necessarily empty)
+    -- block; a trailing 'where'/'of' opens nothing.
+    opensBlock herald = \case
+      [] -> case herald of ClosedBy _ -> True; OpenEnded -> False
+      (n : _) -> unLoc n /= TokenLBrace
+
+    openBlock t herald rest = case skipNewlines rest of
+      [] -> [OpenBlock 0 closer (locSpan t)]
+      (first : more) -> OpenBlock (columnOf li first) closer (locSpan t) : resume first more
       where
-        isNewline (Located TokenNewline _) = True
-        isNewline _ = False
-    skipNewlines ts = ts
+        closer = heraldCloser herald
+        -- 'let'/'do' re-examine the block's first token, which may itself be a
+        -- herald ("let x = do .."); 'where'/'of' take it as read.
+        resume first more = case herald of
+          ClosedBy _ -> go (first : more)
+          OpenEnded -> Token first : go more
 
-    markIndents :: [Marked] -> [Marked]
-    markIndents (m@(OpenBlock {}) : ms) = m : markIndents ms
-    markIndents [Token n] | unLoc n == TokenNewline = []
-    markIndents (Token n : m@(Token t) : ms)
-      | unLoc n == TokenNewline =
-          let (_, col) = offsetToLineCol li (spanStart $ locSpan t)
-           in Indent col (locSpan n) : m : markIndents ms
-    markIndents (m : ms) = m : markIndents ms
-    markIndents [] = []
+-- | Replace each newline with an 'Indent' carrying the column of the token
+--   that follows it.
+markIndents :: LineIndex -> [Marked] -> [Marked]
+markIndents li = go
+  where
+    go [] = []
+    -- an OpenBlock already knows its column; nothing to do
+    go (m@OpenBlock {} : ms) = m : go ms
+    go (m@(Token n) : ms)
+      | isNewline n = case ms of
+          -- a trailing newline indents nothing
+          [] -> []
+          (next@(Token t) : ms') -> Indent (columnOf li t) (locSpan n) : next : go ms'
+          _ -> m : go ms
+    go (m : ms) = m : go ms
 
-    markBlocks :: [LToken] -> [Marked]
-    markBlocks [t@(hasCloser -> h@(Just _))] = [Token t, OpenBlock 0 h (locSpan t)]
-    markBlocks (t@(hasCloser -> h@(Just _)) : n : ts) | unLoc n /= TokenLBrace = case skipNewlines (n : ts) of
-      [] -> [Token t, OpenBlock 0 h (locSpan t)]
-      (t' : ts') ->
-        let (_, col) = offsetToLineCol li (spanStart $ locSpan t')
-         in Token t : OpenBlock col h (locSpan t) : markBlocks (t' : ts')
-    markBlocks (t : n : ts)
-      | isLayoutHerald (unLoc t) && unLoc n /= TokenLBrace =
-          case skipNewlines (n : ts) of
-            [] -> [Token t, OpenBlock 0 Nothing (locSpan t)]
-            (t' : ts') ->
-              let (_, col) = offsetToLineCol li (spanStart $ locSpan t')
-               in Token t : OpenBlock col Nothing (locSpan t) : Token t' : markBlocks ts'
-    markBlocks (t : ts) = Token t : markBlocks ts
-    markBlocks [] = []
+-- ---------------------------------------------------------------------------
+-- Layout
+-- ---------------------------------------------------------------------------
 
-    hasCloser :: LToken -> Maybe Token
-    hasCloser = go . unLoc
-      where
-        go TokenLet = Just TokenLet
-        go TokenDo = Just TokenDo
-        go _ = Nothing
+-- | An open block.  'ctxColumn' is the column its items line up at, or 0 for
+--   a block written with explicit braces — those are closed by @}@ rather
+--   than by dedenting, which 'isExplicit' is asking about.
+data LayoutCtx = LayoutCtx
+  { ctxColumn :: Int,
+    ctxCloser :: Maybe Token
+  }
 
-    isLayoutHerald :: Token -> Bool
-    isLayoutHerald TokenLet = True
-    isLayoutHerald TokenDo = True
-    isLayoutHerald TokenWhere = True
-    isLayoutHerald TokenOf = True
-    isLayoutHerald _ = False
+isExplicit :: LayoutCtx -> Bool
+isExplicit ctx = ctxColumn ctx == 0
+
+data LayoutState = LayoutState
+  { -- | open blocks, innermost first
+    lsStack :: [LayoutCtx],
+    -- | emitted tokens, reversed
+    lsOut :: [LToken],
+    -- | errors, reversed
+    lsErrors :: [LayoutError]
+  }
+
+type LayoutM = State LayoutState
+
+emit :: LToken -> LayoutM ()
+emit t = modify' $ \st -> st {lsOut = t : lsOut st}
+
+report :: LayoutError -> LayoutM ()
+report e = modify' $ \st -> st {lsErrors = e : lsErrors st}
+
+push :: LayoutCtx -> LayoutM ()
+push c = modify' $ \st -> st {lsStack = c : lsStack st}
+
+pop :: LayoutM ()
+pop = modify' $ \st -> st {lsStack = drop 1 (lsStack st)}
+
+-- | The innermost open block, if any.
+peek :: LayoutM (Maybe LayoutCtx)
+peek = gets (listToMaybe . lsStack)
 
 layout :: LineIndex -> [LToken] -> ([LToken], [LayoutError])
-layout li ts' =
-  let (ts, es) = go (mark li ts') [(1, Nothing)]
-   in (Located TokenVLBrace (Span 0 0) : ts, es)
+layout li input =
+  ( Located TokenVLBrace (Span 0 0) : reverse (lsOut final),
+    reverse (lsErrors final)
+  )
   where
-    go :: [Marked] -> [(Int, Maybe Token)] -> ([LToken], [LayoutError])
-    go (i@(Indent n s) : ts) ((m, h) : ms)
-      | m == n = let (ts'', es) = go ts ((m, h) : ms) in (Located TokenVSemi s : ts'', es)
-      | n < m = case (ts, h) of
-          (Token t : rst, Just h') | closesBlock (unLoc t) h' -> let (ts'', es) = go rst ms in (Located TokenVRBrace s : t : ts'', es)
-          _ -> let (ts'', es) = go (i : ts) ms in (Located TokenVRBrace s : ts'', es)
-    go (Indent {} : ts) ms = go ts ms
-    go (OpenBlock n h s : ts) ((m, h') : ms)
-      | n > m = let (ts'', es) = go ts ((n, h) : (m, h') : ms) in (Located TokenVLBrace s : ts'', es)
-      | otherwise = let (ts'', es) = go ts ms in (ts'', NestedLayoutContextError m n s : es)
-    go (OpenBlock n h s : ts) []
-      | n > 0 = let (ts'', es) = go ts [(n, h)] in (Located TokenVLBrace s : ts'', es)
-    go (OpenBlock n _ s : ts) ms = let (ts'', es) = go (Indent n s : ts) ms in (Located TokenVLBrace s : Located TokenVRBrace s : ts'', es)
-    go (Token t : ts) ((0, Nothing) : ms) | unLoc t == TokenRBrace = let (ts'', es) = go ts ms in (t : ts'', es)
-    go (Token t : Token kw : ts) ((0, Just h) : ms) | unLoc t == TokenRBrace && closesBlock (unLoc kw) h = let (ts'', es) = go ts ms in (t : kw : ts'', es)
-    go (Token t : ts) ms | unLoc t == TokenRBrace = let (ts'', es) = go ts ms in (ts'', UnexpectedClosingBraceError (locSpan t) : es)
-    go (Token kw : Token lb : ts) ms
-      | unLoc lb == TokenLBrace && hasCloser (unLoc kw) =
-          let (ts'', es) = go ts ((0, Just (unLoc kw)) : ms) in (kw : lb : ts'', es)
-      where
-        hasCloser TokenLet = True
-        hasCloser TokenDo = True
-        hasCloser _ = False
-    go (Token t : ts) ms | unLoc t == TokenLBrace = let (ts'', es) = go ts ((0, Nothing) : ms) in (t : ts'', es)
-    go (Token t : ts) ((m, Just kw) : ms)
-      | m /= 0 && closesBlock (unLoc t) kw = let (ts'', es) = go ts ms in (Located TokenVRBrace (locSpan t) : t : ts'', es)
-    go (Token t : ts) ms = let (ts'', es) = go ts ms in (t : ts'', es)
-    go [] [] = ([], [])
-    go [] ((m, _) : ms)
-      | m /= 0 = let (ts'', es) = go [] ms in (Located TokenVRBrace (lastSpan ts') : ts'', es)
-      | otherwise = ([], [NotInLayoutContextAtEndOfInputError (lastSpan ts')])
+    final = execState (run (mark li input)) start
+    start = LayoutState [LayoutCtx 1 Nothing] [] []
+
+    -- Everything still open at end of input is closed at the last token.
+    endSpan = lastSpan input
       where
         lastSpan [] = Span 0 0
         lastSpan [t] = locSpan t
-        lastSpan (_ : rst) = lastSpan rst
+        lastSpan (_ : ts) = lastSpan ts
 
-    closesBlock :: Token -> Token -> Bool
-    closesBlock TokenIn TokenLet = True
-    closesBlock TokenWhere TokenDo = True
-    closesBlock _ _ = False
+    run :: [Marked] -> LayoutM ()
+    run [] = closeAll
+    run (m : ms) = case m of
+      Indent col sp -> indent col sp ms
+      OpenBlock col closer sp -> open col closer sp ms
+      Token t -> token t ms
+
+    -- An 'Indent' is where a line starts.  Against the innermost block's
+    -- column it means: equal, a new item; further right, a continuation line;
+    -- further left, the block has ended.
+    indent :: Int -> Span -> [Marked] -> LayoutM ()
+    indent col sp rest =
+      peek >>= \case
+        Nothing -> run rest
+        Just ctx
+          | col == ctxColumn ctx -> emit (Located TokenVSemi sp) >> run rest
+          | col > ctxColumn ctx -> run rest
+          | otherwise -> dedent ctx col sp rest
+
+    -- Dedenting closes the innermost block.  If the token right after it is
+    -- the keyword that also closes that block, it belongs just after the
+    -- virtual '}' and is consumed here.
+    dedent :: LayoutCtx -> Int -> Span -> [Marked] -> LayoutM ()
+    dedent ctx col sp rest = do
+      emit (Located TokenVRBrace sp)
+      pop
+      case (ctxCloser ctx, rest) of
+        (Just closer, Token t : rest')
+          | closes (unLoc t) closer -> emit t >> run rest'
+        -- one dedent can close several blocks, so re-run this same Indent
+        -- against whatever is now innermost
+        _ -> indent col sp rest
+
+    -- A block may only open further right than the block containing it.
+    open :: Int -> Maybe Token -> Span -> [Marked] -> LayoutM ()
+    open col closer sp rest =
+      peek >>= \case
+        Just ctx
+          | col > ctxColumn ctx -> enter
+          | otherwise -> do
+              report (NestedLayoutContextError (ctxColumn ctx) col sp)
+              pop
+              run rest
+        Nothing
+          | col > 0 -> enter
+          -- a herald with nothing after it: an empty block, '{}' at once
+          | otherwise -> do
+              emit (Located TokenVLBrace sp)
+              emit (Located TokenVRBrace sp)
+              indent col sp rest
+      where
+        enter = do
+          emit (Located TokenVLBrace sp)
+          push (LayoutCtx col closer)
+          run rest
+
+    token :: LToken -> [Marked] -> LayoutM ()
+    token t rest
+      | unLoc t == TokenRBrace = closeExplicit t rest
+      -- 'let {' / 'do {': the user opens the block, but we still record which
+      -- keyword closes it so a later 'in' can be matched up
+      | Just closer <- heraldCloser =<< heraldOf (unLoc t),
+        (lb : rest') <- rest,
+        Token lbTok <- lb,
+        unLoc lbTok == TokenLBrace = do
+          emit t
+          emit lbTok
+          push (LayoutCtx 0 (Just closer))
+          run rest'
+      | unLoc t == TokenLBrace = do
+          emit t
+          push (LayoutCtx 0 Nothing)
+          run rest
+      | otherwise = closeByKeyword t rest
+
+    -- '}' closes an explicit block; if that block was opened by 'let {' its
+    -- closing keyword may follow immediately.
+    closeExplicit :: LToken -> [Marked] -> LayoutM ()
+    closeExplicit t rest =
+      peek >>= \case
+        Just ctx
+          | isExplicit ctx -> case (ctxCloser ctx, rest) of
+              (Nothing, _) -> emit t >> pop >> run rest
+              (Just closer, Token kw : rest')
+                | closes (unLoc kw) closer -> emit t >> emit kw >> pop >> run rest'
+              _ -> unexpected
+        _ -> unexpected
+      where
+        unexpected = do
+          report (UnexpectedClosingBraceError (locSpan t))
+          run rest
+
+    -- 'in' / 'where' closing the block that is waiting for it.
+    closeByKeyword :: LToken -> [Marked] -> LayoutM ()
+    closeByKeyword t rest =
+      peek >>= \case
+        Just ctx
+          | not (isExplicit ctx),
+            Just closer <- ctxCloser ctx,
+            closes (unLoc t) closer -> do
+              emit (Located TokenVRBrace (locSpan t))
+              emit t
+              pop
+              run rest
+        _ -> emit t >> run rest
+
+    -- At end of input every layout block is closed; an explicit block that
+    -- never saw its '}' is an error, and stops the unwinding.
+    closeAll :: LayoutM ()
+    closeAll =
+      peek >>= \case
+        Nothing -> pure ()
+        Just ctx
+          | isExplicit ctx -> report (NotInLayoutContextAtEndOfInputError endSpan)
+          | otherwise -> do
+              emit (Located TokenVRBrace endSpan)
+              pop
+              closeAll

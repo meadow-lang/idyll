@@ -116,14 +116,11 @@ bindName (Located name sp) = do
     [] -> error "Rename: empty scope stack"
     (cur : rest) -> do
       case Map.lookup name cur of
-        Just _prev ->
-          -- We don't track prior spans per scope; report with the same span
-          -- twice rather than growing the env.  Good enough for the demo.
-          logError (DuplicateBinding name sp sp)
+        Just (_, prevSp) -> logError (DuplicateBinding name prevSp sp)
         Nothing -> pure ()
       -- 'modify'' (not 'put' on a stale snapshot) so this doesn't clobber
       -- the error 'logError' may have just recorded.
-      modify' $ \env -> env {reScopes = Map.insert name u cur : rest}
+      modify' $ \env -> env {reScopes = Map.insert name (u, sp) cur : rest}
       pure (H.Ident u name)
 
 -- | Resolve a use of @name@.  On failure, log 'UnboundName' and return an
@@ -141,7 +138,7 @@ useName (Located name sp) = do
 lookupScopes :: Text -> [Scope] -> Maybe Int
 lookupScopes _ [] = Nothing
 lookupScopes name (s : ss) = case Map.lookup name s of
-  Just u -> Just u
+  Just (u, _) -> Just u
   Nothing -> lookupScopes name ss
 
 -- ---------------------------------------------------------------------------

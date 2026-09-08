@@ -236,8 +236,8 @@ typeError nid kind = do
   ref <- asks tcErrors
   liftST $ modifySTRef' ref (TypeError nid kind :)
 
-typeErrorReport :: LineIndex -> H.SpanTable -> TypeError -> Report Text
-typeErrorReport li spans (TypeError nid kind) = case kind of
+typeErrorReport :: FilePath -> LineIndex -> H.SpanTable -> TypeError -> Report Text
+typeErrorReport file li spans (TypeError nid kind) = case kind of
   TypeMismatch expected actual ->
     err
       Nothing
@@ -287,8 +287,8 @@ typeErrorReport li spans (TypeError nid kind) = case kind of
       Just (Span s e) ->
         let (l1, c1) = offsetToLineCol li s
             (l2, c2) = offsetToLineCol li e
-         in Position (l1, c1) (l2, c2) "<input>"
-      Nothing -> Position (1, 1) (1, 1) "<input>"
+         in Position (l1, c1) (l2, c2) file
+      Nothing -> Position (1, 1) (1, 1) file
 
 -- ---------------------------------------------------------------------------
 -- Contexts
