@@ -2,6 +2,8 @@
 
 The official implementation of the Idyll programming language
 
+New to the language? Start with the [tutorial](TUTORIAL.md).
+
 ## Goals
 
 - Pure functional programming

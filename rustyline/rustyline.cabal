@@ -1,0 +1,114 @@
+cabal-version: 3.0
+name: rustyline
+version: 0.1.0.0
+synopsis: A Haskell port of the rustyline line editor
+description:
+  A port of the Rust @rustyline@ crate (version 18.0.1): a readline
+  implementation with Emacs and Vi key bindings, multi-line editing,
+  persistent history, completion, hints, highlighting and validation.
+  Unix only.
+license: MIT
+license-file: LICENSE
+author: Chris McDearman
+maintainer: mcdearmanchris@gmail.com
+category: User Interfaces
+build-type: Simple
+extra-doc-files: README.md
+extra-source-files:
+  cbits/*.c
+  gen/regen.sh
+  gen/gen_tables.py
+  gen/Cargo.toml
+  gen/src/main.rs
+  test/data/unicode-oracle.txt
+
+common shared
+  default-language: GHC2024
+  default-extensions:
+    LambdaCase
+    MultiWayIf
+    OverloadedStrings
+    StrictData
+  ghc-options:
+    -Wall
+    -Wno-name-shadowing
+    -Werror=incomplete-patterns
+    -Werror=incomplete-uni-patterns
+    -Werror=missing-signatures
+  build-depends:
+    base >=4.18 && <5,
+    containers,
+    mtl,
+    text >=2.0,
+
+library
+  import: shared
+  hs-source-dirs: src
+  c-sources: cbits/rustyline.c
+  exposed-modules:
+    System.Console.Rustyline
+    System.Console.Rustyline.Binding
+    System.Console.Rustyline.Command
+    System.Console.Rustyline.Completion
+    System.Console.Rustyline.Config
+    System.Console.Rustyline.Context
+    System.Console.Rustyline.Edit
+    System.Console.Rustyline.Error
+    System.Console.Rustyline.Helper
+    System.Console.Rustyline.Highlight
+    System.Console.Rustyline.Hint
+    System.Console.Rustyline.History
+    System.Console.Rustyline.Keymap
+    System.Console.Rustyline.Keymap.Types
+    System.Console.Rustyline.Keys
+    System.Console.Rustyline.KillRing
+    System.Console.Rustyline.Layout
+    System.Console.Rustyline.LineBuffer
+    System.Console.Rustyline.Prompt
+    System.Console.Rustyline.Tty
+    System.Console.Rustyline.Tty.Test
+    System.Console.Rustyline.Tty.Unix
+    System.Console.Rustyline.Undo
+    System.Console.Rustyline.Validate
+    System.Console.Rustyline.Internal.Text
+    System.Console.Rustyline.Internal.Unicode.CharProps
+    System.Console.Rustyline.Internal.Unicode.Grapheme
+    System.Console.Rustyline.Internal.Unicode.RangeTable
+    System.Console.Rustyline.Internal.Unicode.Tables
+    System.Console.Rustyline.Internal.Unicode.Width
+  build-depends:
+    array,
+    bytestring,
+    directory,
+    filepath,
+    stm,
+    time,
+    unix,
+
+test-suite spec
+  import: shared
+  type: exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is: Spec.hs
+  other-modules:
+    System.Console.Rustyline.Editor.CommonSpec
+    System.Console.Rustyline.Editor.EditorSpec
+    System.Console.Rustyline.Editor.EmacsSpec
+    System.Console.Rustyline.Editor.Harness
+    System.Console.Rustyline.Editor.HistorySpec
+    System.Console.Rustyline.Editor.ViCmdSpec
+    System.Console.Rustyline.Editor.ViInsertSpec
+    System.Console.Rustyline.HelperSpec
+    System.Console.Rustyline.HistorySpec
+    System.Console.Rustyline.KillRingSpec
+    System.Console.Rustyline.LineBufferSpec
+    System.Console.Rustyline.UndoSpec
+    System.Console.Rustyline.UnicodeSpec
+  build-depends:
+    bytestring,
+    directory,
+    hspec,
+    text,
+    rustyline,
+  build-tool-depends:
+    hspec-discover:hspec-discover
