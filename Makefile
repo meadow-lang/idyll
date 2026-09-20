@@ -1,33 +1,25 @@
-# Project Names
-HS_EXE_NAME = idyllic
-RTS_LIB_NAME = rts
-DRV_BIN = driver/target/debug/driver
+.PHONY: all build release test lint run clean
 
-# Dynamic paths
-GET_HS_BIN = $(shell cd compiler && cabal list-bin exe:$(HS_EXE_NAME) 2>/dev/null)
+all: build
 
-.PHONY: all hs_build rts_build drv_build run clean
+# The compiler lives in compiler/ (crate `idyllic`); the workspace is at the root.
+build:
+	cargo build
 
-all: drv_build
+release:
+	cargo build --release
 
-# 1. Build the SKI Reduction Engine (Rust Library)
-rts_build:
-	cd rts && cargo build
+# Includes the parity suite: compiler/tests/fixtures pins behaviour to the
+# original Haskell implementation.
+test:
+	cargo test
 
-# 2. Build the Haskell Compiler (Frontend)
-hs_build:
-	cd compiler && cabal build exe:$(HS_EXE_NAME)
+lint:
+	cargo clippy --all-targets
 
-# 3. Build the Driver (links against rts_build)
-drv_build: rts_build hs_build
-	cd driver && cargo build
-
-# 4. Run the REPL
-run: drv_build
-	@HS_PATH="$(GET_HS_BIN)"; \
-	cd driver && cargo run -- --compiler-path "$$HS_PATH"
+# Start the REPL.  Check a file with: cargo run -- path/to/file.idl
+run:
+	cargo run
 
 clean:
-	cabal clean
-	cd driver && cargo clean
-	cd rts && cargo clean
+	cargo clean

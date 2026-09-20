@@ -1,0 +1,753 @@
+=== 0
+tok { (virtual)@0..0
+tok 42@0..2
+tok } (virtual)@0..2
+layout-errors 0
+type Int
+=== 1
+tok { (virtual)@0..0
+tok 255@0..4
+tok } (virtual)@0..4
+layout-errors 0
+type Int
+=== 2
+tok { (virtual)@0..0
+tok 10@0..6
+tok } (virtual)@0..6
+layout-errors 0
+type Int
+=== 3
+tok { (virtual)@0..0
+tok 493@0..5
+tok } (virtual)@0..5
+layout-errors 0
+type Int
+=== 4
+tok { (virtual)@0..0
+tok 123456789012345678901234567890123456789012345678901234567890@0..60
+tok } (virtual)@0..60
+layout-errors 0
+type Int
+=== 5
+tok { (virtual)@0..0
+tok "hello\tworld\n"@0..16
+tok } (virtual)@0..16
+layout-errors 0
+type String
+=== 6
+tok { (virtual)@0..0
+tok "café A"@0..12
+tok } (virtual)@0..12
+layout-errors 0
+type String
+=== 7
+tok { (virtual)@0..0
+tok True@0..4
+tok } (virtual)@0..4
+layout-errors 0
+type Bool
+=== 8
+tok { (virtual)@0..0
+tok (@0..1
+tok )@1..2
+tok } (virtual)@1..2
+layout-errors 0
+type Unit
+=== 9
+tok { (virtual)@0..0
+tok Int@0..3
+tok } (virtual)@0..3
+layout-errors 0
+type Type
+=== 10
+tok { (virtual)@0..0
+tok Type@0..4
+tok } (virtual)@0..4
+layout-errors 0
+type Type
+=== 11
+tok { (virtual)@0..0
+tok \@0..1
+tok (@1..2
+tok x@2..3
+tok :@4..5
+tok Int@6..9
+tok )@9..10
+tok ->@11..13
+tok x@14..15
+tok } (virtual)@14..15
+layout-errors 0
+type (x : Int) -> Int
+=== 12
+tok { (virtual)@0..0
+tok \@0..1
+tok (@1..2
+tok x@2..3
+tok y@4..5
+tok :@6..7
+tok Int@8..11
+tok )@11..12
+tok ->@13..15
+tok x@16..17
+tok } (virtual)@16..17
+layout-errors 0
+type (x : Int) -> (y : Int) -> Int
+=== 13
+tok { (virtual)@0..0
+tok (@0..1
+tok \@1..2
+tok (@2..3
+tok x@3..4
+tok :@5..6
+tok Int@7..10
+tok )@10..11
+tok ->@12..14
+tok x@15..16
+tok )@16..17
+tok 5@18..19
+tok } (virtual)@18..19
+layout-errors 0
+type Int
+=== 14
+tok { (virtual)@0..0
+tok Int@0..3
+tok ->@4..6
+tok Bool@7..11
+tok } (virtual)@7..11
+layout-errors 0
+type Type
+=== 15
+tok { (virtual)@0..0
+tok 1@0..1
+tok :@2..3
+tok Int@4..7
+tok } (virtual)@4..7
+layout-errors 0
+type Int
+=== 16
+tok { (virtual)@0..0
+tok (@0..1
+tok \@1..2
+tok x@2..3
+tok ->@4..6
+tok x@7..8
+tok )@8..9
+tok :@10..11
+tok Int@12..15
+tok ->@16..18
+tok Int@19..22
+tok } (virtual)@19..22
+layout-errors 0
+type Int -> Int
+=== 17
+tok { (virtual)@0..0
+tok (@0..1
+tok a@1..2
+tok :@3..4
+tok Type@5..9
+tok )@9..10
+tok ->@11..13
+tok a@14..15
+tok ->@16..18
+tok a@19..20
+tok } (virtual)@19..20
+layout-errors 0
+type Type
+=== 18
+tok { (virtual)@0..0
+tok (@0..1
+tok \@1..2
+tok a@2..3
+tok x@4..5
+tok ->@6..8
+tok x@9..10
+tok )@10..11
+tok :@12..13
+tok (@14..15
+tok a@15..16
+tok :@17..18
+tok Type@19..23
+tok )@23..24
+tok ->@25..27
+tok a@28..29
+tok ->@30..32
+tok a@33..34
+tok } (virtual)@33..34
+layout-errors 0
+type (a : Type) -> a -> a
+=== 19
+tok { (virtual)@0..0
+tok let@0..3
+tok { (virtual)@0..3
+tok id@4..6
+tok :@7..8
+tok (@9..10
+tok a@10..11
+tok :@12..13
+tok Type@14..18
+tok )@18..19
+tok ->@20..22
+tok a@23..24
+tok ->@25..27
+tok a@28..29
+tok =@30..31
+tok \@32..33
+tok a@33..34
+tok x@35..36
+tok ->@37..39
+tok x@40..41
+tok } (virtual)@42..44
+tok in@42..44
+tok id@45..47
+tok Int@48..51
+tok 3@52..53
+tok } (virtual)@52..53
+layout-errors 0
+type Int
+=== 20
+tok { (virtual)@0..0
+tok (@0..1
+tok a@1..2
+tok b@3..4
+tok :@5..6
+tok Type@7..11
+tok )@11..12
+tok ->@13..15
+tok a@16..17
+tok ->@18..20
+tok b@21..22
+tok ->@23..25
+tok a@26..27
+tok } (virtual)@26..27
+layout-errors 0
+type Type
+=== 21
+tok { (virtual)@0..0
+tok let@0..3
+tok { (virtual)@0..3
+tok apply@4..9
+tok (@10..11
+tok a@11..12
+tok :@13..14
+tok Type@15..19
+tok )@19..20
+tok (@21..22
+tok b@22..23
+tok :@24..25
+tok a@26..27
+tok ->@28..30
+tok Type@31..35
+tok )@35..36
+tok (@37..38
+tok f@38..39
+tok :@40..41
+tok (@42..43
+tok x@43..44
+tok :@45..46
+tok a@47..48
+tok )@48..49
+tok ->@50..52
+tok b@53..54
+tok x@55..56
+tok )@56..57
+tok (@58..59
+tok y@59..60
+tok :@61..62
+tok a@63..64
+tok )@64..65
+tok :@66..67
+tok b@68..69
+tok y@70..71
+tok =@72..73
+tok f@74..75
+tok y@76..77
+tok ; (virtual)@77..78
+tok } (virtual)@82..84
+tok in@82..84
+tok apply@85..90
+tok Int@91..94
+tok (@95..96
+tok \@96..97
+tok n@97..98
+tok ->@99..101
+tok Bool@102..106
+tok )@106..107
+tok (@108..109
+tok \@109..110
+tok n@110..111
+tok ->@112..114
+tok True@115..119
+tok )@119..120
+tok 3@121..122
+tok } (virtual)@121..122
+layout-errors 0
+type Bool
+=== 22
+tok { (virtual)@0..0
+tok let@0..3
+tok { (virtual)@0..3
+tok x@4..5
+tok =@6..7
+tok 1@8..9
+tok } (virtual)@10..12
+tok in@10..12
+tok x@13..14
+tok } (virtual)@13..14
+layout-errors 0
+type Int
+=== 23
+tok { (virtual)@0..0
+tok let@0..3
+tok { (virtual)@0..3
+tok x@4..5
+tok :@6..7
+tok Int@8..11
+tok =@12..13
+tok 1@14..15
+tok } (virtual)@16..18
+tok in@16..18
+tok x@19..20
+tok } (virtual)@19..20
+layout-errors 0
+type Int
+=== 24
+tok { (virtual)@0..0
+tok let@0..3
+tok { (virtual)@0..3
+tok id@4..6
+tok (@7..8
+tok a@8..9
+tok :@10..11
+tok Type@12..16
+tok )@16..17
+tok (@18..19
+tok x@19..20
+tok :@21..22
+tok a@23..24
+tok )@24..25
+tok :@26..27
+tok a@28..29
+tok =@30..31
+tok x@32..33
+tok } (virtual)@34..36
+tok in@34..36
+tok id@37..39
+tok Bool@40..44
+tok True@45..49
+tok } (virtual)@45..49
+layout-errors 0
+type Bool
+=== 25
+tok { (virtual)@0..0
+tok let@0..3
+tok { (virtual)@0..3
+tok x@4..5
+tok =@6..7
+tok 1@8..9
+tok ;@9..10
+tok y@11..12
+tok =@13..14
+tok True@15..19
+tok } (virtual)@20..22
+tok in@20..22
+tok y@23..24
+tok } (virtual)@23..24
+layout-errors 0
+type Bool
+=== 26
+tok { (virtual)@0..0
+tok let@0..3
+tok { (virtual)@0..3
+tok x@4..5
+tok =@6..7
+tok 1@8..9
+tok ; (virtual)@9..10
+tok y@14..15
+tok =@16..17
+tok 2@18..19
+tok } (virtual)@19..20
+tok in@21..23
+tok y@24..25
+tok } (virtual)@24..25
+layout-errors 0
+type Int
+=== 27
+tok { (virtual)@0..0
+tok let@0..3
+tok { (virtual)@0..3
+tok const@4..9
+tok (@10..11
+tok a@11..12
+tok b@13..14
+tok :@15..16
+tok Type@17..21
+tok )@21..22
+tok (@23..24
+tok x@24..25
+tok :@26..27
+tok a@28..29
+tok )@29..30
+tok (@31..32
+tok y@32..33
+tok :@34..35
+tok b@36..37
+tok )@37..38
+tok :@39..40
+tok a@41..42
+tok =@43..44
+tok x@45..46
+tok } (virtual)@46..47
+tok in@47..49
+tok const@50..55
+tok Int@56..59
+tok String@60..66
+tok 1@67..68
+tok "one"@69..74
+tok } (virtual)@69..74
+layout-errors 0
+type Int
+=== 28
+tok { (virtual)@0..0
+tok let@0..3
+tok { (virtual)@0..3
+tok x@4..5
+tok =@6..7
+tok 1@8..9
+tok } (virtual)@10..12
+tok in@10..12
+tok x@15..16
+tok } (virtual)@15..16
+layout-errors 0
+type Int
+=== 29
+tok { (virtual)@0..0
+tok let@0..3
+tok { (virtual)@0..3
+tok x@4..5
+tok =@6..7
+tok 1@8..9
+tok } (virtual)@10..12
+tok in@10..12
+tok ; (virtual)@12..13
+tok x@13..14
+tok } (virtual)@13..14
+layout-errors 0
+type NONE
+diag [error]: parse error
+=== 30
+tok { (virtual)@0..0
+tok let@0..3
+tok {@4..5
+tok x@6..7
+tok =@8..9
+tok 1@10..11
+tok ;@11..12
+tok y@13..14
+tok =@15..16
+tok 2@17..18
+tok }@19..20
+tok in@21..23
+tok x@24..25
+tok } (virtual)@24..25
+layout-errors 0
+type Int
+=== 31
+tok { (virtual)@0..0
+tok let@0..3
+tok { (virtual)@0..3
+tok loop@4..8
+tok :@9..10
+tok Int@11..14
+tok ->@15..17
+tok Int@18..21
+tok =@22..23
+tok \@24..25
+tok n@25..26
+tok ->@27..29
+tok loop@30..34
+tok n@35..36
+tok } (virtual)@37..39
+tok in@37..39
+tok loop@40..44
+tok 0@45..46
+tok } (virtual)@45..46
+layout-errors 0
+type Int
+=== 32
+tok { (virtual)@0..0
+tok let@0..3
+tok { (virtual)@0..3
+tok even@4..8
+tok :@9..10
+tok Int@11..14
+tok ->@15..17
+tok Bool@18..22
+tok =@23..24
+tok \@25..26
+tok n@26..27
+tok ->@28..30
+tok odd@31..34
+tok n@35..36
+tok ; (virtual)@36..37
+tok odd@41..44
+tok :@45..46
+tok Int@47..50
+tok ->@51..53
+tok Bool@54..58
+tok =@59..60
+tok \@61..62
+tok n@62..63
+tok ->@64..66
+tok even@67..71
+tok n@72..73
+tok } (virtual)@73..74
+tok in@75..77
+tok even@78..82
+tok 10@83..85
+tok } (virtual)@83..85
+layout-errors 0
+type Bool
+=== 33
+tok { (virtual)@0..0
+tok (@0..1
+tok \@1..2
+tok x@2..3
+tok ->@4..6
+tok x@7..8
+tok )@8..9
+tok 5@10..11
+tok } (virtual)@10..11
+layout-errors 0
+type Int
+=== 34
+tok { (virtual)@0..0
+tok \@0..1
+tok x@1..2
+tok ->@3..5
+tok x@6..7
+tok } (virtual)@6..7
+layout-errors 0
+type (x : ?0) -> ?0
+diag [error]: unsolved metavariable
+=== 35
+tok { (virtual)@0..0
+tok let@0..3
+tok { (virtual)@0..3
+tok id@4..6
+tok (@7..8
+tok a@8..9
+tok :@10..11
+tok Type@12..16
+tok )@16..17
+tok (@18..19
+tok x@19..20
+tok :@21..22
+tok a@23..24
+tok )@24..25
+tok :@26..27
+tok a@28..29
+tok =@30..31
+tok x@32..33
+tok } (virtual)@34..36
+tok in@34..36
+tok id@37..39
+tok _@40..41
+tok 3@42..43
+tok } (virtual)@42..43
+layout-errors 0
+type Int
+diag [warning]: found hole
+=== 36
+tok { (virtual)@0..0
+tok let@0..3
+tok { (virtual)@0..3
+tok apply@4..9
+tok (@10..11
+tok a@11..12
+tok :@13..14
+tok Type@15..19
+tok )@19..20
+tok (@21..22
+tok b@22..23
+tok :@24..25
+tok a@26..27
+tok ->@28..30
+tok Type@31..35
+tok )@35..36
+tok (@37..38
+tok f@38..39
+tok :@40..41
+tok (@42..43
+tok x@43..44
+tok :@45..46
+tok a@47..48
+tok )@48..49
+tok ->@50..52
+tok b@53..54
+tok x@55..56
+tok )@56..57
+tok (@58..59
+tok y@59..60
+tok :@61..62
+tok a@63..64
+tok )@64..65
+tok :@66..67
+tok b@68..69
+tok y@70..71
+tok =@72..73
+tok f@74..75
+tok y@76..77
+tok ; (virtual)@77..78
+tok } (virtual)@82..84
+tok in@82..84
+tok apply@85..90
+tok _@91..92
+tok _@93..94
+tok (@95..96
+tok \@96..97
+tok (@97..98
+tok n@98..99
+tok :@100..101
+tok Int@102..105
+tok )@105..106
+tok ->@107..109
+tok n@110..111
+tok )@111..112
+tok 3@113..114
+tok } (virtual)@113..114
+layout-errors 0
+type Int
+diag [warning]: found hole
+diag [warning]: found hole
+=== 37
+tok { (virtual)@0..0
+tok let@0..3
+tok { (virtual)@0..3
+tok n@4..5
+tok :@6..7
+tok Int@8..11
+tok =@12..13
+tok _@14..15
+tok } (virtual)@16..18
+tok in@16..18
+tok n@19..20
+tok } (virtual)@19..20
+layout-errors 0
+type Int
+diag [error]: unsolved hole
+=== 38
+tok { (virtual)@0..0
+tok let@0..3
+tok { (virtual)@0..3
+tok x@4..5
+tok :@6..7
+tok _@8..9
+tok =@10..11
+tok 5@12..13
+tok } (virtual)@14..16
+tok in@14..16
+tok x@17..18
+tok } (virtual)@17..18
+layout-errors 0
+type Int
+diag [warning]: found hole
+=== 39
+tok { (virtual)@0..0
+tok (@0..1
+tok \@1..2
+tok (@2..3
+tok f@3..4
+tok :@5..6
+tok Int@7..10
+tok ->@11..13
+tok Bool@14..18
+tok )@18..19
+tok ->@20..22
+tok f@23..24
+tok 1@25..26
+tok )@26..27
+tok (@28..29
+tok \@29..30
+tok n@30..31
+tok ->@32..34
+tok True@35..39
+tok )@39..40
+tok } (virtual)@39..40
+layout-errors 0
+type Bool
+=== 40
+tok { (virtual)@0..0
+tok (@0..1
+tok \@1..2
+tok f@2..3
+tok ->@4..6
+tok f@7..8
+tok 1@9..10
+tok )@10..11
+tok (@12..13
+tok \@13..14
+tok n@14..15
+tok ->@16..18
+tok True@19..23
+tok )@23..24
+tok } (virtual)@23..24
+layout-errors 0
+type ?!
+diag [error]: this is not a function
+diag [error]: unsolved metavariable
+diag [error]: unsolved metavariable
+diag [error]: unsolved metavariable
+=== 41
+tok { (virtual)@0..0
+tok 42@0..2
+tok } (virtual)@0..2
+layout-errors 0
+type Int
+=== 42
+tok { (virtual)@0..0
+tok ; (virtual)@20..21
+tok 42@21..23
+tok } (virtual)@21..23
+layout-errors 0
+type Int
+=== 43
+tok { (virtual)@0..0
+tok ; (virtual)@0..1
+tok 42@1..3
+tok } (virtual)@1..3
+layout-errors 0
+type Int
+=== 44
+tok { (virtual)@0..0
+tok 'a'@0..3
+tok } (virtual)@0..3
+layout-errors 0
+type NONE
+diag [error]: parse error
+=== 45
+tok { (virtual)@0..0
+tok \@0..1
+tok _@1..2
+tok ->@3..5
+tok 1@6..7
+tok } (virtual)@6..7
+layout-errors 0
+type NONE
+diag [error]: parse error
+=== 46
+tok { (virtual)@0..0
+tok let@0..3
+tok { (virtual)@0..3
+tok x@4..5
+tok =@6..7
+tok 1@8..9
+tok ; (virtual)@9..10
+tok y@14..15
+tok =@16..17
+tok 2@18..19
+tok } (virtual)@19..20
+tok in@21..23
+tok y@24..25
+tok } (virtual)@26..27
+layout-errors 0
+type Int

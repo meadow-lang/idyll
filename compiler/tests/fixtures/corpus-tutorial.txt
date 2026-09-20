@@ -1,0 +1,107 @@
+42
+%%%
+0xFF
+%%%
+0b1010
+%%%
+0o755
+%%%
+123456789012345678901234567890123456789012345678901234567890
+%%%
+"hello\tworld\n"
+%%%
+"café \x41"
+%%%
+True
+%%%
+()
+%%%
+Int
+%%%
+Type
+%%%
+\(x : Int) -> x
+%%%
+\(x y : Int) -> x
+%%%
+(\(x : Int) -> x) 5
+%%%
+Int -> Bool
+%%%
+1 : Int
+%%%
+(\x -> x) : Int -> Int
+%%%
+(a : Type) -> a -> a
+%%%
+(\a x -> x) : (a : Type) -> a -> a
+%%%
+let id : (a : Type) -> a -> a = \a x -> x in id Int 3
+%%%
+(a b : Type) -> a -> b -> a
+%%%
+let apply (a : Type) (b : a -> Type) (f : (x : a) -> b x) (y : a) : b y = f y
+    in apply Int (\n -> Bool) (\n -> True) 3
+%%%
+let x = 1 in x
+%%%
+let x : Int = 1 in x
+%%%
+let id (a : Type) (x : a) : a = x in id Bool True
+%%%
+let x = 1; y = True in y
+%%%
+let x = 1
+    y = 2
+ in y
+%%%
+let const (a b : Type) (x : a) (y : b) : a = x
+in const Int String 1 "one"
+%%%
+let x = 1 in
+  x
+%%%
+let x = 1 in
+x
+%%%
+let { x = 1; y = 2 } in x
+%%%
+let loop : Int -> Int = \n -> loop n in loop 0
+%%%
+let even : Int -> Bool = \n -> odd n
+    odd : Int -> Bool = \n -> even n
+ in even 10
+%%%
+(\x -> x) 5
+%%%
+\x -> x
+%%%
+let id (a : Type) (x : a) : a = x in id _ 3
+%%%
+let apply (a : Type) (b : a -> Type) (f : (x : a) -> b x) (y : a) : b y = f y
+    in apply _ _ (\(n : Int) -> n) 3
+%%%
+let n : Int = _ in n
+%%%
+let x : _ = 5 in x
+%%%
+(\(f : Int -> Bool) -> f 1) (\n -> True)
+%%%
+(\f -> f 1) (\n -> True)
+%%%
+42 -- the answer
+%%%
+-- a leading comment
+42
+%%%
+
+42
+%%%
+'a'
+%%%
+\_ -> 1
+%%%
+let x = 1
+    y = 2
+ in y
+

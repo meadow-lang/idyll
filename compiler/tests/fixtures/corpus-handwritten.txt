@@ -1,0 +1,243 @@
+let x = 1 in x
+%%%
+let x = 1
+    y = 2
+ in y
+%%%
+let x = 1
+    y = let j = 1
+            k = 2
+         in j
+    z = 3
+ in add x y z
+%%%
+let x = 1
+    y = let j = 1 in j
+    z = 3
+ in add x y z
+%%%
+let x = 1
+    y = 2 in y
+%%%
+case xs of
+  x -> 1
+  y -> 2
+%%%
+f x = x + y
+  where
+    y = 1
+%%%
+case x of
+  1 -> 1
+  y -> case y of
+         2 -> 2
+         z -> 3
+%%%
+do
+  let x = 1
+      y = 2
+  pure y
+%%%
+case x of
+  1 -> 1
+  y -> let z = 2
+           g = 3
+        in z
+%%%
+let x = case y of
+      1 -> 1
+      z -> let g = 2
+               b = 3
+            in g
+      f -> 4
+  in x
+%%%
+do
+  let x = 1 in pure x
+  5
+%%%
+let x = do
+      let y = True
+      y
+ in x
+%%%
+foo = do
+  let s = f ", " $ map show $ do
+       x <- [1,2,3,4]
+       return (x, y)
+  putStrLn s
+  return ()
+%%%
+
+%%%
+
+
+
+%%%
+x = let
+%%%
+foo = do
+%%%
+f x = x where
+%%%
+case x of
+%%%
+let { x = 1 } in x
+%%%
+do { x }
+%%%
+let { x = 1; y = 2 } in x
+%%%
+x } y
+%%%
+} x
+%%%
+let { x = 1
+%%%
+{ x = 1 }
+%%%
+{ x = 1
+%%%
+case x of
+  1 -> let y = 2 in y
+  2 -> 3
+%%%
+let x = 1
+in x
+%%%
+do
+  x
+  where y = 1
+%%%
+let a = do
+      let b = 1
+      b
+ in a
+%%%
+let
+  x = 1
+ in x
+%%%
+let a = let b = let c = 1
+                 in c
+         in b
+ in a
+%%%
+f x y z
+%%%
+x
+%%%
+let x = 1 -- hi
+    y = 2
+ in x
+%%%
+do { let { a = 1 } in a }
+%%%
+case x of { 1 -> 2 }
+%%%
+f = x where { y = 1 }
+%%%
+let x = 1
+  in x
+%%%
+do
+a
+b
+%%%
+1
+%%%
+"hi"
+%%%
+True
+%%%
+Type
+%%%
+Int
+%%%
+()
+%%%
+(a : Type) -> a -> a
+%%%
+\(x : Int) -> x
+%%%
+\x -> x
+%%%
+(\x -> x) 3
+%%%
+(\a x -> x) : (a : Type) -> a -> a
+%%%
+let id : (a : Type) -> a -> a = \a x -> x in id Int 3
+%%%
+let id : (a : Type) -> a -> a = \a x -> x in id Int True
+%%%
+let id : (a : Type) -> a -> a = \a x -> x in id _ 3
+%%%
+let id : (a : Type) -> a -> a = \a x -> x in id _ (id _ 3)
+%%%
+let f = \(x : Int) -> x in f 1
+%%%
+let f : Int = \(x : Int) -> x in f
+%%%
+let f : Int -> Int = \x -> _ in f
+%%%
+_
+%%%
+1 1
+%%%
+\x -> y
+%%%
+let a = 1; a = 2 in a
+%%%
+\x -> let y = 1; y = 2 in y
+%%%
+let loop = \(x : Int) -> loop x in loop
+%%%
+let loop : Int -> Int = \(x : Int) -> loop x in loop 1
+%%%
+let even : Int -> Bool = \(n : Int) -> odd n; odd : Int -> Bool = \(n : Int) -> even n in even 2
+%%%
+let f = \n -> g n; g = \n -> f n; h = \(x : Int) -> x in h 1
+%%%
+let const : (a : Type) -> (b : Type) -> a -> b -> a = \a b x y -> x in const Int Bool 1 True
+%%%
+let const : (a : Type) -> (b : Type) -> a -> b -> a = \a b x y -> x in const _ _ 1 True
+%%%
+let k : (a : Type) -> a -> a -> a = \a x y -> x in k _ 1 True
+%%%
+let ap : (a : Type) -> (b : a -> Type) -> (f : (x : a) -> b x) -> (y : a) -> b y = \a b f y -> f y in ap _ _ (\(n : Int) -> n) 3
+%%%
+let apply : (a : Type) -> (b : a -> Type) -> (f : (x : a) -> b x) -> (y : a) -> b y = \a b f y -> f y in apply
+%%%
+let f (x : Int) (y : Bool) : Int = x in f 1 True
+%%%
+let f (x : Int) y = y in f 1 "s"
+%%%
+let id (a : Type) (x : a) : a = x in id Int 3
+%%%
+let x : Int = 1
+    y : Bool = True
+ in x
+%%%
+let twice : (a : Type) -> (a -> a) -> a -> a = \a f x -> f (f x)
+    inc : Int -> Int = \n -> n
+ in twice Int inc 0
+%%%
+let f : (a : Type) -> a -> a = \(b : Type) (x : b) -> x in f Int
+%%%
+let f : Int -> Int = \(x : Bool) -> x in f
+%%%
+(x : Int) -> String
+%%%
+Int -> (Bool -> String) -> Unit
+%%%
+f x : T
+%%%
+@bad )
+%%%
+f x ->
+%%%
+let x = "unterminated in x
+%%%
+'a'
+%%%
+"esc \n \x41 \q"
