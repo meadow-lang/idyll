@@ -1,0 +1,271 @@
+//! Strongly-connected-components pass over renamed bindings.
+//!
+//! Runs after name resolution and before type checking.  The renamer emits
+//! every `let` / top-level group as a single conservative [`BindGroup::Rec`];
+//! this pass rebuilds those groups from the actual dependency graph:
+//!
+//! * bindings that do not (transitively, within the group) refer to
+//!   themselves become [`BindGroup::NonRec`];
+//!
+//! * mutually-recursive bindings are collected into one [`BindGroup::Rec`];
+//!
+//! * the resulting groups are ordered so that each group only refers to
+//!   earlier groups (topological order) — this is the "retopologize" step.
+//!
+//! Node ids are preserved, so the span / type side tables stay valid.
+
+use idyllic_hir::{Alt, Bind, BindGroup, GradeAnn, Module, Term, TermKind};
+use std::collections::{HashMap, HashSet};
+
+/// Retopologize a whole module: its top-level groups, and every nested `let`
+/// — in the trailing body and inside the declarations themselves.
+pub fn scc_module(m: Module) -> Module {
+    Module { datas: m.datas, groups: scc_groups(m.groups), body: m.body.map(scc_term) }
+}
+
+/// Regroup a `let`'s bindings, first doing the same for any `let` nested in
+/// their signatures and right-hand sides.  (Skipping that descent leaves the
+/// renamer's conservative recursive group in place, and a plain nested
+/// `let x = 1` is then wrongly told it needs a signature.)
+fn scc_groups(groups: Vec<BindGroup>) -> Vec<BindGroup> {
+    let binds = groups
+        .into_iter()
+        .flat_map(BindGroup::into_binds)
+        .map(|b| Bind { ty: b.ty.map(scc_term), rhs: scc_term(b.rhs), ..b })
+        .collect();
+    scc_binds(binds)
+}
+
+/// Rewrite every `let` in a term so its groups are dependency-ordered SCCs,
+/// recursing into all subterms.
+pub fn scc_term(t: Term) -> Term {
+    use TermKind::*;
+    let kind = match t.kind {
+        k @ (Type | Hole | Inf | Lit(_) | Var(_)) => k,
+        App(f, a) => App(Box::new(scc_term(*f)), Box::new(scc_term(*a))),
+        Ann(e, a) => Ann(Box::new(scc_term(*e)), Box::new(scc_term(*a))),
+        Range(lo, hi) => Range(Box::new(scc_term(*lo)), Box::new(scc_term(*hi))),
+        Pi(x, icit, g, dom, cod) => {
+            Pi(x, icit, g.map(scc_grades), Box::new(scc_term(*dom)), Box::new(scc_term(*cod)))
+        }
+        Lam(x, g, ty, body) => {
+            Lam(x, g.map(scc_grades), ty.map(|t| Box::new(scc_term(*t))), Box::new(scc_term(*body)))
+        }
+        BoxIntro(e) => BoxIntro(Box::new(scc_term(*e))),
+        LetBox(x, e, body) => LetBox(x, Box::new(scc_term(*e)), Box::new(scc_term(*body))),
+        Let(groups, body) => Let(scc_groups(groups), Box::new(scc_term(*body))),
+        Case(scrutinee, alts) => Case(
+            Box::new(scc_term(*scrutinee)),
+            alts.into_iter().map(|a| Alt { body: scc_term(a.body), ..a }).collect(),
+        ),
+    };
+    Term { id: t.id, kind }
+}
+
+fn scc_grades(g: GradeAnn) -> GradeAnn {
+    GradeAnn {
+        subject: Box::new(scc_term(*g.subject)),
+        in_type: g.in_type.map(|r| Box::new(scc_term(*r))),
+    }
+}
+
+/// Split a mutually-recursive bind list into dependency-ordered groups.
+///
+/// Tarjan's algorithm emits a component only once everything reachable from
+/// it has been emitted, so with edges pointing from a binding to what it
+/// uses, components come out dependencies-first — the order type checking
+/// wants.  Members of a component keep their source order.
+pub fn scc_binds(binds: Vec<Bind>) -> Vec<BindGroup> {
+    let index_of: HashMap<usize, usize> = binds
+        .iter()
+        .enumerate()
+        .filter_map(|(i, b)| b.name.unique.map(|u| (u, i)))
+        .collect();
+    let edges: Vec<Vec<usize>> = binds
+        .iter()
+        .map(|b| {
+            let mut deps: Vec<usize> = free_uniques_bind(b)
+                .into_iter()
+                .filter_map(|u| index_of.get(&u).copied())
+                .collect();
+            deps.sort_unstable();
+            deps
+        })
+        .collect();
+
+    let mut tarjan = Tarjan::new(binds.len());
+    for v in 0..binds.len() {
+        if tarjan.index[v].is_none() {
+            tarjan.visit(v, &edges);
+        }
+    }
+
+    // move the binds out by index, in the order the components were found
+    let mut slots: Vec<Option<Bind>> = binds.into_iter().map(Some).collect();
+    tarjan
+        .components
+        .into_iter()
+        .map(|mut members| {
+            members.sort_unstable();
+            let self_edge = members.len() == 1 && edges[members[0]].contains(&members[0]);
+            let mut bs: Vec<Bind> =
+                members.iter().map(|&i| slots[i].take().expect("each bind is in one component")).collect();
+            if bs.len() == 1 && !self_edge {
+                BindGroup::NonRec(bs.pop().unwrap())
+            } else {
+                BindGroup::Rec(bs)
+            }
+        })
+        .collect()
+}
+
+struct Tarjan {
+    index: Vec<Option<usize>>,
+    lowlink: Vec<usize>,
+    on_stack: Vec<bool>,
+    stack: Vec<usize>,
+    next_index: usize,
+    components: Vec<Vec<usize>>,
+}
+
+impl Tarjan {
+    fn new(n: usize) -> Self {
+        Tarjan {
+            index: vec![None; n],
+            lowlink: vec![0; n],
+            on_stack: vec![false; n],
+            stack: Vec::new(),
+            next_index: 0,
+            components: Vec::new(),
+        }
+    }
+
+    fn visit(&mut self, v: usize, edges: &[Vec<usize>]) {
+        self.index[v] = Some(self.next_index);
+        self.lowlink[v] = self.next_index;
+        self.next_index += 1;
+        self.stack.push(v);
+        self.on_stack[v] = true;
+        for &w in &edges[v] {
+            match self.index[w] {
+                None => {
+                    self.visit(w, edges);
+                    self.lowlink[v] = self.lowlink[v].min(self.lowlink[w]);
+                }
+                Some(wi) if self.on_stack[w] => {
+                    self.lowlink[v] = self.lowlink[v].min(wi);
+                }
+                Some(_) => {}
+            }
+        }
+        if Some(self.lowlink[v]) == self.index[v] {
+            let mut component = Vec::new();
+            loop {
+                let w = self.stack.pop().expect("root is on the stack");
+                self.on_stack[w] = false;
+                component.push(w);
+                if w == v {
+                    break;
+                }
+            }
+            self.components.push(component);
+        }
+    }
+}
+
+/// Free name uniques of a binding: those of its optional type annotation and
+/// its right-hand side.  The binding's own name counts as free if the rhs
+/// mentions it, which is exactly what makes direct recursion a self-edge.
+fn free_uniques_bind(b: &Bind) -> HashSet<usize> {
+    let mut s = free_uniques(&b.rhs);
+    if let Some(ty) = &b.ty {
+        s.extend(free_uniques(ty));
+    }
+    s
+}
+
+/// Free name uniques of a term (uses of names not bound within it).
+pub fn free_uniques(t: &Term) -> HashSet<usize> {
+    fn go(t: &Term, out: &mut HashSet<usize>) {
+        use TermKind::*;
+        match &t.kind {
+            Type | Hole | Inf | Lit(_) => {}
+            Var(i) => {
+                if let Some(u) = i.unique {
+                    out.insert(u);
+                }
+            }
+            App(f, a) | Ann(f, a) | Range(f, a) => {
+                go(f, out);
+                go(a, out);
+            }
+            BoxIntro(a) => go(a, out),
+            LetBox(x, e, body) => {
+                go(e, out);
+                let mut inner = HashSet::new();
+                go(body, &mut inner);
+                if let Some(u) = x.unique {
+                    inner.remove(&u);
+                }
+                out.extend(inner);
+            }
+            Pi(mb, _, g, dom, cod) => {
+                grades(g, out);
+                go(dom, out);
+                let mut inner = HashSet::new();
+                go(cod, &mut inner);
+                if let Some(u) = mb.as_ref().and_then(|x| x.unique) {
+                    inner.remove(&u);
+                }
+                out.extend(inner);
+            }
+            Lam(x, g, ty, body) => {
+                grades(g, out);
+                if let Some(ty) = ty {
+                    go(ty, out);
+                }
+                let mut inner = HashSet::new();
+                go(body, &mut inner);
+                if let Some(u) = x.unique {
+                    inner.remove(&u);
+                }
+                out.extend(inner);
+            }
+            Case(scrutinee, alts) => {
+                go(scrutinee, out);
+                for alt in alts {
+                    // names are unique, so what an alternative binds cannot
+                    // be mistaken for anything outside it
+                    go(&alt.body, out);
+                    if let idyllic_hir::AltHead::Con(c) = &alt.head {
+                        out.extend(c.unique);
+                    }
+                }
+            }
+            Let(groups, body) => {
+                let mut inner = HashSet::new();
+                for b in groups.iter().flat_map(BindGroup::binds) {
+                    inner.extend(free_uniques_bind(b));
+                }
+                go(body, &mut inner);
+                for b in groups.iter().flat_map(BindGroup::binds) {
+                    if let Some(u) = b.name.unique {
+                        inner.remove(&u);
+                    }
+                }
+                out.extend(inner);
+            }
+        }
+    }
+    fn grades(g: &Option<GradeAnn>, out: &mut HashSet<usize>) {
+        if let Some(g) = g {
+            go(&g.subject, out);
+            if let Some(r) = &g.in_type {
+                go(r, out);
+            }
+        }
+    }
+    let mut out = HashSet::new();
+    go(t, &mut out);
+    out
+}

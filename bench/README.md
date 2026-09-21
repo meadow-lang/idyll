@@ -44,7 +44,7 @@ Two things changed. A continuation is linear and only ever handed down or
 returned to, so it can live on the machine stack: a call is `call`, a return
 is `ret`, and what the continuation closed over stays in the caller's frame.
 And once calls are calls, they can be inlined — by us, for functions known
-at compile time (`compiler/src/axcut/inline.rs`), and then by LLVM, which
+at compile time (`compiler/idyllic-seq/src/inline.rs`), and then by LLVM, which
 could do nothing with jumps that never came back.
 
 **Allocation is the strong spot, with an asterisk.** On `list` and `map`
@@ -68,7 +68,7 @@ are going on:
 
 **The stack is a stack again.** Tail calls are guaranteed (`musttail`), so a
 loop runs in constant space however it is written — a hundred million calls
-between two functions, or through a closure (`compiler/tests/llvm.rs`). But
+between two functions, or through a closure (`compiler/idyllic/tests/llvm.rs`). But
 recursion that is *not* in tail position now takes a frame per call, as in C.
 Programs are linked with a 1 GB stack, which is only address space until it
 is used, and enough for some twenty million calls each waiting on the next;

@@ -2,24 +2,32 @@
 
 all: build
 
-# The compiler lives in compiler/ (crate `idyllic`); the workspace is at the root.
+# The compiler is a workspace of its own, in compiler/ (one crate per pass;
+# the command is the crate `idyllic`).  The reference interpreter, idyll-eval/,
+# is a separate package that the compiler is tested against.  Both build into
+# the one target/ at the root (see .cargo/config.toml).
+COMPILER := cd compiler && cargo
+EVAL := cd idyll-eval && cargo
+
 build:
-	cargo build
+	$(COMPILER) build
 
 release:
-	cargo build --release
+	$(COMPILER) build --release
 
-# Includes the parity suite: compiler/tests/fixtures pins behaviour to the
-# original Haskell implementation.
+# The compiler's own tests, then the specification: every program in the
+# corpus and the tutorial must compute what the reference interpreter does.
 test:
-	cargo test
+	$(COMPILER) test
+	$(EVAL) test
 
 lint:
-	cargo clippy --all-targets
+	$(COMPILER) clippy --all-targets
+	$(EVAL) clippy --all-targets
 
-# Start the REPL.  Check a file with: cargo run -- path/to/file.idl
+# Start the REPL.  Check a file with: cd compiler && cargo run -- path/to/file.idl
 run:
-	cargo run
+	$(COMPILER) run
 
 clean:
-	cargo clean
+	$(COMPILER) clean

@@ -1,0 +1,22 @@
+[package]
+name = "idyll-eval"
+description = "The reference interpreter for Idyll: a CEK machine for elaborated Core, and the specification the compiler is tested against"
+version = "0.1.0"
+edition = "2021"
+license = "BSD-3-Clause"
+authors = ["Chris McDearman <mcdearmanchris@gmail.com>"]
+
+# Not part of the compiler's workspace (compiler/): it is what the compiler is
+# checked against, and only borrows the compiler's front end to get Core.
+[workspace]
+
+[dependencies]
+idyllic-ast = { path = "../compiler/idyllic-ast" }
+idyllic-builtins = { path = "../compiler/idyllic-builtins" }
+idyllic-typecheck = { path = "../compiler/idyllic-typecheck" }
+num-bigint = "0.5.1"
+
+[dev-dependencies]
+idyllic = { path = "../compiler/idyllic" }
+idyllic-diagnostics = { path = "../compiler/idyllic-diagnostics" }
+idyllic-seq = { path = "../compiler/idyllic-seq" }

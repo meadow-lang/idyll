@@ -36,9 +36,11 @@ land, and anything not covered here isn't implemented yet (see
 
 ## Running the REPL
 
-Build and start the REPL with cargo:
+Build and start the REPL with cargo, in the `compiler/` directory (the
+compiler's workspace):
 
 ```sh
+cd compiler
 cargo run
 ```
 

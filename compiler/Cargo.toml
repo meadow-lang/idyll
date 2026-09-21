@@ -1,22 +1,33 @@
-[package]
-name = "idyllic"
+[workspace]
+resolver = "2"
+# One crate per pass of the compiler, each in a directory of its own here.
+members = ["*"]
+exclude = ["target"]
+
+[workspace.package]
 version = "0.1.0"
-description = "The official compiler for the Idyll programming language"
-edition.workspace = true
-license.workspace = true
-authors.workspace = true
+edition = "2021"
+license = "BSD-3-Clause"
+authors = ["Chris McDearman <mcdearmanchris@gmail.com>"]
 
-[lib]
-path = "src/lib.rs"
-
-[[bin]]
-name = "idyllic"
-path = "src/main.rs"
-
-[dependencies]
+[workspace.dependencies]
 ariadne = "0.6.0"
 chumsky = "0.13.0"
 clap = { version = "4.6.7", features = ["derive"] }
 logos = "0.16.1"
 num-bigint = "0.5.1"
 rustyline = { version = "18.0.1", features = ["derive"] }
+
+idyllic-ast = { path = "idyllic-ast" }
+idyllic-seq = { path = "idyllic-seq" }
+idyllic-builtins = { path = "idyllic-builtins" }
+idyllic-diagnostics = { path = "idyllic-diagnostics" }
+idyllic-hir = { path = "idyllic-hir" }
+idyllic-layout = { path = "idyllic-layout" }
+idyllic-lexer = { path = "idyllic-lexer" }
+idyllic-llvm = { path = "idyllic-llvm" }
+idyllic-parser = { path = "idyllic-parser" }
+idyllic-rename = { path = "idyllic-rename" }
+idyllic-scc = { path = "idyllic-scc" }
+idyllic-span = { path = "idyllic-span" }
+idyllic-typecheck = { path = "idyllic-typecheck" }
