@@ -29,6 +29,14 @@ Where Meadow's syntax differs (`fun`, `def`, `match … with`), Idyll keeps its
 own. Where a new construct needs syntax, it should look like Haskell (or
 Agda, for anything dependent) before it looks like anything else.
 
+**The REPL tour grows with the language.** Every feature that lands gets a
+step in the tour (`:tour` in `idyll`, in `idyll-driver/src/tour.rs`), in the
+section it belongs to, with a new section for each phase that adds a new
+kind of thing. The tour's tests replay every example through a REPL
+session, so the tour always matches the language; examples meant to be
+rejected are pinned to their error. So each phase's *done when* includes:
+and the tour has steps for it.
+
 **Decisions already made**, which later work has to stay consistent with:
 
 - **Effects are direct style with effect rows**, as in Meadow and Koka:
@@ -244,3 +252,8 @@ Not in Meadow, but they will come up along the way:
   is filled in; today only constant grades erase.
 - **Counting the usage of what a hole or an implicit argument is filled
   with.**
+- **Redefinition in the REPL.** A session is one growing program, so
+  defining a name twice is an error, and retaking the tour needs `:reset`.
+  GHCi's behaviour, where a new definition shadows the old one and earlier
+  definitions keep referring to the old, needs each entry to be a scope of
+  its own.

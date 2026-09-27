@@ -81,11 +81,32 @@ double : Int [2] -> Int
 | Input                | Effect                                           |
 | -------------------- | ------------------------------------------------ |
 | *empty line*         | check the entry typed so far                     |
+| `:tour`              | a guided tour of the language (see below)        |
+| `:help`              | list the commands                                |
 | `:quit` / `:q`       | exit (commands run as soon as you press Enter)   |
 | `:reset`             | forget the declarations made so far              |
 | **Ctrl-C**           | discard the current entry; on an empty one, exit |
 | **Ctrl-\\**, and **Ctrl-Z** on Windows | the same as Ctrl-C              |
 | **Ctrl-D**           | exit (on an empty entry)                         |
+
+### The tour
+
+`:tour` is a guided tour of the language at the prompt, one step at a time.
+Each step explains something and lists examples; `:try` puts the next
+example on the prompt, where you can change it before running it, and the
+prompt in between is the ordinary one, so try anything you like.
+
+| Command                  | Effect                                        |
+| ------------------------ | --------------------------------------------- |
+| `:tour`                  | the list of steps (or the current step)       |
+| `:tour 7`, `:tour grades` | go to a step, or to where a section starts   |
+| `:next` / `:back`        | the next or previous step (`:n`, `:b`)        |
+| `:try`                   | put the step's next example on the prompt     |
+| `:tour off`              | leave the tour; your definitions stay         |
+
+The examples define names, and a name can't be defined twice in one
+session, so `:reset` before taking the tour again. The tour grows as the
+language does: each feature gets a step when it lands.
 
 ### Editing and history
 

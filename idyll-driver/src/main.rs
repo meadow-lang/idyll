@@ -3,6 +3,7 @@
 //! (`idyllic`, in compiler/) only checks and compiles single programs.
 
 mod repl;
+mod tour;
 
 use clap::Parser;
 use idyllic::pipeline::Options;
