@@ -1,0 +1,22 @@
+[package]
+name = "idyll-driver"
+description = "The idyll command: the REPL, and the home of the build system"
+version = "0.1.0"
+edition = "2021"
+license = "BSD-3-Clause"
+authors = ["Chris McDearman <mcdearmanchris@gmail.com>"]
+
+# Not part of the compiler's workspace (compiler/): the driver is a client of
+# the compiler, not a pass of it.  It builds into the shared target/ at the
+# root (see .cargo/config.toml).
+[workspace]
+
+[[bin]]
+name = "idyll"
+path = "src/main.rs"
+
+[dependencies]
+idyllic = { path = "../compiler/idyllic" }
+idyllic-diagnostics = { path = "../compiler/idyllic-diagnostics" }
+clap = { version = "4.6.7", features = ["derive"] }
+rustyline = { version = "18.0.1", features = ["derive"] }

@@ -5,7 +5,8 @@
 //! [`idyllic_parser`] → [`idyllic_rename`] → [`idyllic_scc`] → [`idyllic_typecheck`],
 //! and then, for a program that checks, [`idyllic_seq`] (lowering and the
 //! abstract machine) and [`idyllic_llvm`] (native code).  Every pass reports
-//! through [`idyllic_diagnostics`].  This crate is the driver: [`pipeline`]
-//! strings the passes together, and `main.rs` is the `idyllic` command.
+//! through [`idyllic_diagnostics`].  This crate strings them together: [`pipeline`]
+//! runs the passes, and `main.rs` is the `idyllic` command.  The REPL is not
+//! here: it is the `idyll` command, in idyll-driver/.
 
 pub mod pipeline;

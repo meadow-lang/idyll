@@ -120,6 +120,17 @@ impl Output {
         self.diagnostics.iter().any(Diagnostic::is_error)
     }
 
+    /// The program as it was lowered to AxCut, and what running it did with
+    /// memory, for `--axcut`; `None` if it never got as far as lowering.
+    pub fn axcut_report(&self) -> Option<String> {
+        let program = self.axcut.as_ref()?;
+        let mut out = format!("{program}\n\n");
+        if let Some(memory) = &self.memory {
+            out.push_str(&format!("{memory}\n\n"));
+        }
+        Some(out)
+    }
+
     /// Everything a user should see: rendered diagnostics, then the result —
     /// the value and type of the trailing expression (`3 : Int`; just
     /// `: Int -> Int` when the value is nothing that can be shown), or

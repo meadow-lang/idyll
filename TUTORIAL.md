@@ -36,16 +36,17 @@ land, and anything not covered here isn't implemented yet (see
 
 ## Running the REPL
 
-Build and start the REPL with cargo, in the `compiler/` directory (the
-compiler's workspace):
+The REPL is the `idyll` command, in the `idyll-driver/` directory. Build and
+start it with cargo:
 
 ```sh
-cd compiler
+cd idyll-driver
 cargo run
 ```
 
-To check a file instead, pass it as an argument: `cargo run -- program.idl`.
-The exit status is non-zero if any error was reported.
+To check a file instead, use the compiler, `idyllic`, in the `compiler/`
+directory: `cargo run -- program.idl`. The exit status is non-zero if any
+error was reported.
 
 Input can span several lines. Press **Enter** to start a new line and
 press it again on an **empty line** to submit the whole entry:
@@ -555,7 +556,7 @@ flip : {a : Type} -> {b : Type} -> {c : Type} -> (a -> b -> c) -> b -> a -> c
 3 : Int
 ```
 
-In a file, that looks like this (`cargo run -- program.idl`):
+In a file, that looks like this (`cargo run -- program.idl`, in `compiler/`):
 
 ```
 -- program.idl
@@ -1211,8 +1212,8 @@ count instead of trusting the type.
 
 ### Compiling to native code
 
-With [clang](https://clang.llvm.org) installed, `-o` compiles a program to
-an executable, by way of LLVM:
+With [clang](https://clang.llvm.org) installed, the compiler's `-o` compiles
+a program to an executable, by way of LLVM (in `compiler/`):
 
 ```sh
 cargo run --release -- program.idl -o program.exe
