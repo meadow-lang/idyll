@@ -29,11 +29,14 @@ pub type Idx = usize;
 pub type Lvl = usize;
 /// Identifies an entry in the metacontext.
 pub type MetaVar = usize;
+/// A universe level: `Type n` lives in `Type (n + 1)`.
+pub type Level = usize;
 
 #[derive(Clone, Debug)]
 pub enum Core {
-    /// The sort.  This calculus is `Type : Type`.
-    Type,
+    /// A universe, `Type n`.  `Type` is `Type 0`, `Type n : Type (n + 1)`,
+    /// and a type in one universe is also in every larger one.
+    Type(Level),
     /// A primitive type constant (`Int`, `Bool`, `Grade`, ...).
     LitTy(Builtin),
     Lit(Lit),
@@ -123,7 +126,8 @@ impl PartialEq for Core {
     fn eq(&self, other: &Self) -> bool {
         use Core::*;
         match (self, other) {
-            (Type, Type) | (Error, Error) => true,
+            (Error, Error) => true,
+            (Type(a), Type(b)) => a == b,
             (LitTy(a), LitTy(b)) => a == b,
             (Lit(a), Lit(b)) => a == b,
             (Prim(a), Prim(b)) => a == b,
@@ -210,7 +214,9 @@ impl fmt::Display for Core {
         }
         fn go(c: &Core, prec: u8, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match c {
-                Core::Type => write!(f, "Type"),
+                Core::Type(0) => write!(f, "Type"),
+                // written like an application, which is how it is parsed
+                Core::Type(n) => paren(prec > 10, f, |f| write!(f, "Type {n}")),
                 Core::LitTy(b) => write!(f, "{}", b.name()),
                 Core::Lit(l) => write!(f, "{l}"),
                 Core::Var(_, n) | Core::Opaque(_, n) => write!(f, "{n}"),

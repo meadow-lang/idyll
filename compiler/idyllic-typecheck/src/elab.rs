@@ -19,8 +19,9 @@
 //! never charged for its *types*: signatures, annotations and grades are
 //! elaborated for their meaning and their usage dropped.
 
-use super::core::{lit_builtin, CaseAlt, Core, Head, Note};
+use super::core::{lit_builtin, CaseAlt, Core, Head, Level, Note};
 use super::value::{vvar, Closure, Poly, VTy, Value};
+use super::positivity::{DataShape, Field};
 use super::{Checker, CtorInfo, Ctx, HoleInfo, MetaOrigin, RecDef, TypeErrorKind, Usage};
 use idyllic_ast::{Icit, Lit};
 use idyllic_builtins::{Builtin, Prim};
@@ -87,9 +88,34 @@ impl Checker {
     /// Check a term *as the type of something*: a signature, an annotation.
     /// Its usage is dropped — the something is not charged for its type.
     fn check_type(&mut self, ctx: &Ctx, t: &hir::Term) -> (Rc<Core>, VTy) {
-        let (core, _not_charged) = self.check(ctx, t, Rc::new(Value::Type));
-        let value = self.eval(&ctx.env, &core);
+        let (core, value, _level, _not_charged) = self.infer_type(ctx, t);
         (core, value)
+    }
+
+    /// Elaborate a term that has to be a type, and say which universe it is
+    /// in.  A type whose universe is not known yet (a hole, a variable whose
+    /// type is a meta) is taken to be in `Type`.  Unlike [`Self::check_type`]
+    /// this keeps the usage, for the places where a type is the subject
+    /// rather than a description of one: the domain and codomain of a
+    /// function type being formed.
+    fn infer_type(&mut self, ctx: &Ctx, t: &hir::Term) -> (Rc<Core>, VTy, Level, Usage) {
+        let (core, ty, usage) = self.infer(ctx, t);
+        let (core, ty) = self.insert(ctx, t.id, core, ty);
+        let ty = self.force(ty);
+        let level = match &*ty {
+            Value::Type(n) => Some(*n),
+            Value::Error => Some(0),
+            Value::Flex(..) => self.unify(ctx.lvl, ty.clone(), Rc::new(Value::Type(0))).then_some(0),
+            _ => None,
+        };
+        let Some(level) = level else {
+            let expected = Rc::new(Core::Type(0));
+            let actual = self.quote(ctx.lvl, ty);
+            self.error(t.id, TypeErrorKind::Mismatch { expected, actual });
+            return (Rc::new(Core::Error), Rc::new(Value::Error), 0, Usage::unknown());
+        };
+        let value = self.eval(&ctx.env, &core);
+        (core, value, level, usage)
     }
 
     /// Check a term as a grade.  Grades are erased, so likewise.
@@ -339,9 +365,25 @@ impl Checker {
     pub(super) fn infer(&mut self, ctx: &Ctx, t: &hir::Term) -> (Rc<Core>, VTy, Usage) {
         let nid = t.id;
         let err = || (Rc::new(Core::Error), Rc::new(Value::Error), Usage::unknown());
-        let ty_type = || Rc::new(Value::Type);
+        let universe = |n: Level| Rc::new(Value::Type(n));
         let result: (Rc<Core>, VTy, Usage) = match &t.kind {
-            TermKind::Type => (Rc::new(Core::Type), ty_type(), Usage::none()),
+            TermKind::Type => (Rc::new(Core::Type(0)), universe(1), Usage::none()),
+            // `Type n` is `Type` applied to a level, which is how it parses.
+            // (`Type [r]`, the modality on `Type`, is handled with the other
+            // modalities below.)
+            TermKind::App(f, n) if matches!(f.kind, TermKind::Type) && !matches!(n.kind, TermKind::BoxIntro(_)) => {
+                let level = match &n.kind {
+                    TermKind::Lit(Lit::Int(n)) => Level::try_from(n).ok().filter(|n| *n < Level::MAX),
+                    _ => None,
+                };
+                match level {
+                    Some(level) => (Rc::new(Core::Type(level)), universe(level + 1), Usage::none()),
+                    None => {
+                        self.error(n.id, TypeErrorKind::LevelNotANumber);
+                        err()
+                    }
+                }
+            }
             TermKind::Lit(l) => {
                 (Rc::new(Core::Lit(l.clone())), Rc::new(Value::LitTy(lit_builtin(l))), Usage::none())
             }
@@ -386,9 +428,11 @@ impl Checker {
                     // Juxtaposing brackets to a *type* is the graded modality,
                     // `a [r]`, not an application to a promoted `r`: types
                     // are not functions, so there is nothing to confuse.
-                    (Value::Type, TermKind::BoxIntro(grade)) => {
+                    (Value::Type(n), TermKind::BoxIntro(grade)) => {
+                        let n = *n;
                         let (grade_c, _) = self.check_grade(ctx, grade);
-                        let result = (Rc::new(Core::BoxTy(grade_c, f_c)), ty_type(), f_usage);
+                        // boxing a type leaves it in the universe it was in
+                        let result = (Rc::new(Core::BoxTy(grade_c, f_c)), universe(n), f_usage);
                         return self.recorded(ctx, nid, result);
                     }
                     (Value::Pi { grade, dom, cod, .. }, _) => Some((grade.clone(), dom.clone(), cod.clone())),
@@ -433,19 +477,21 @@ impl Checker {
             }
             // Forming a function type uses what its domain and codomain use,
             // and the codomain must use the binder as its second grade says.
+            // It lives in the larger of their two universes: a function type
+            // quantifying over `Type` is not itself in `Type`, which is what
+            // keeps the hierarchy from collapsing into `Type : Type`.
             TermKind::Pi(mx, icit, ann, dom, cod) => {
                 let default = if *icit == Icit::Implicit { Grade::ZERO } else { Grade::DEFAULT };
                 let ((grade, _), (in_type, in_type_v)) = self.binder_grades(ctx, ann.as_ref(), default);
-                let (dom_c, dom_usage) = self.check(ctx, dom, ty_type());
-                let dom_v = self.eval(&ctx.env, &dom_c);
+                let (dom_c, dom_v, dom_level, dom_usage) = self.infer_type(ctx, dom);
                 let name = mx.as_ref().map_or("_", |x| x.text.as_str()).to_string();
                 let ctx2 = ctx.bind(mx.as_ref(), &name, dom_v);
-                let (cod_c, mut cod_usage) = self.check(&ctx2, cod, ty_type());
+                let (cod_c, _, cod_level, mut cod_usage) = self.infer_type(&ctx2, cod);
                 if let Some(x) = mx {
                     self.leave_binder(&ctx2, nid, x, in_type_v, &mut cod_usage, true);
                 }
                 let pi = Core::Pi { name, icit: *icit, grade, in_type, dom: dom_c, cod: cod_c };
-                (Rc::new(pi), ty_type(), dom_usage + cod_usage)
+                (Rc::new(pi), universe(dom_level.max(cod_level)), dom_usage + cod_usage)
             }
             TermKind::Lam(x, ann, ty_ann, body) => {
                 let name = x.text.clone();
@@ -559,6 +605,13 @@ impl Checker {
     pub(super) fn check(&mut self, ctx: &Ctx, t: &hir::Term, expected: VTy) -> (Rc<Core>, Usage) {
         let nid = t.id;
         let expected = self.force(expected);
+        // Working out what this term should be already failed, and was
+        // reported.  There is nothing to check it against, and elaborating it
+        // anyway only invents metavariables nothing can solve and piles
+        // derivative errors onto the real one.
+        if matches!(*expected, Value::Error) {
+            return (Rc::new(Core::Error), Usage::unknown());
+        }
         let result = match (&t.kind, &*expected) {
             // An implicit function is wanted, and the surface language has no
             // implicit lambda to be one: bind the argument here.  It has no
@@ -678,12 +731,18 @@ impl Checker {
                     Value::Flex(..) => (core, actual),
                     _ => self.insert(ctx, nid, core, actual),
                 };
-                if !self.unify(ctx.lvl, actual.clone(), expected.clone()) {
+                if self.subtype(ctx.lvl, actual.clone(), expected.clone()) {
+                    (core, usage)
+                } else {
                     let e = self.quote(ctx.lvl, expected.clone());
                     let a = self.quote(ctx.lvl, actual);
                     self.error(nid, TypeErrorKind::Mismatch { expected: e, actual: a });
+                    // An ill-typed term is never evaluated.  A definition's
+                    // value is computed eagerly, and one that fails to check
+                    // may not terminate: a universe mismatch is exactly how
+                    // a looping term like Girard's paradox gets stopped.
+                    (Rc::new(Core::Error), usage)
                 }
-                (core, usage)
             }
         };
         // record the *expected* type; it is the more informative one, and it
@@ -714,8 +773,11 @@ impl Checker {
     /// it apart gives each part back once.  (A field to be used otherwise is
     /// a box, `List (a [])`.)
     ///
-    /// Nothing checks that a type is strictly positive.  With `Type : Type`
-    /// the logic is inconsistent already; this is one more way in.
+    /// A data type lives in `Type`, so each field must be a type in `Type`:
+    /// a type with a field of type `Type` would be a set of all sets, which
+    /// is a paradox.  And each type must be strictly positive in its own
+    /// fields (see [`super::positivity`]), which is checked once every
+    /// constructor has been elaborated.
     pub(super) fn declare_datas(&mut self, ctx: &Ctx, datas: &[hir::DataDecl]) -> Ctx {
         let explicit = |name: &str, grade: Grade, icit: Icit, dom: Rc<Core>, cod: Rc<Core>| {
             Rc::new(Core::Pi {
@@ -736,12 +798,12 @@ impl Checker {
             for (x, kind) in &d.params {
                 let (k_c, k_v) = match kind {
                     Some(kind) => self.check_type(&under, kind),
-                    None => (Rc::new(Core::Type), Rc::new(Value::Type)),
+                    None => (Rc::new(Core::Type(0)), Rc::new(Value::Type(0))),
                 };
                 ks.push(k_c);
                 under = under.bind(Some(x), &x.text, k_v);
             }
-            let ty = d.params.iter().zip(&ks).rev().fold(Rc::new(Core::Type), |acc, ((x, _), k)| {
+            let ty = d.params.iter().zip(&ks).rev().fold(Rc::new(Core::Type(0)), |acc, ((x, _), k)| {
                 explicit(&x.text, Grade::DEFAULT, Icit::Explicit, k.clone(), acc)
             });
             self.record(d.id, ty.clone());
@@ -752,6 +814,7 @@ impl Checker {
             }
             kinds.push(ks);
         }
+        let mut shapes = Vec::new();
         for (d, ks) in datas.iter().zip(&kinds) {
             // the parameters again, now that the type itself is in scope
             let mut params = ctx.clone();
@@ -759,13 +822,24 @@ impl Checker {
                 let k_v = self.eval(&params.env, k);
                 params = params.bind(Some(x), &x.text, k_v);
             }
+            let mut shape = DataShape {
+                unique: d.name.unique.unwrap_or(usize::MAX),
+                params_at: ctx.lvl,
+                params: d.params.len(),
+                fields: Vec::new(),
+            };
             for (tag, c) in d.ctors.iter().enumerate() {
                 // each field under the parameters and the (anonymous) fields
                 // before it, which is where it will sit in the type
                 let mut under = params.clone();
                 let mut fields = Vec::new();
                 for f in &c.fields {
-                    let (f_c, f_v) = self.check_type(&under, f);
+                    let (f_c, f_v, level, _not_charged) = self.infer_type(&under, f);
+                    if level > 0 {
+                        self.error(f.id, TypeErrorKind::LargeField { data: d.name.text.clone(), level });
+                    }
+                    let field = Field { node: f.id, ctor: c.name.text.clone(), lvl: under.lvl, ty: f_v.clone() };
+                    shape.fields.push(field);
                     fields.push(f_c);
                     under = under.bind(None, "_", f_v);
                 }
@@ -788,7 +862,9 @@ impl Checker {
                     self.ctors.insert(u, info);
                 }
             }
+            shapes.push(shape);
         }
+        self.check_positivity(&shapes);
         ctx
     }
 

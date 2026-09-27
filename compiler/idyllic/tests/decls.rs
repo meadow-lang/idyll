@@ -96,10 +96,11 @@ fn definitions_may_be_used_before_they_are_made() {
 #[test]
 fn recursion_needs_a_signature() {
     ok("loop : Int -> Int\nloop n = loop (n + 1)\n", &["loop : Int -> Int"], None);
+    // just the one error: with no signature there is nothing to check the
+    // body against, so it is not elaborated into a pile of unsolved metas
     rejects(
         "loop n = loop (n + 1)\n",
-        &["the recursive binding loop needs a type signature: its type cannot be inferred from a recursive definition",
-          "unsolved metavariable: could not infer the type of the binder n"],
+        &["the recursive binding loop needs a type signature: its type cannot be inferred from a recursive definition"],
     );
 }
 
@@ -139,7 +140,8 @@ fn equations_take_annotated_and_graded_patterns() {
 #[test]
 fn an_implicit_binder_is_an_ordinary_binder_in_braces() {
     // braces and parentheses mix in one telescope; several names share a pair
-    ok("{a b : Type} {r : Grade} (f : a [r] -> b) -> a [r] -> b\n", &[], Some("Type"));
+    // (quantifying over types puts it a universe up)
+    ok("{a b : Type} {r : Grade} (f : a [r] -> b) -> a [r] -> b\n", &[], Some("Type 1"));
     ok(
         "(\\f [x] -> f [x]) : {a b : Type} {r : Grade} (f : a [r] -> b) -> a [r] -> b\n",
         &[],
@@ -148,7 +150,7 @@ fn an_implicit_binder_is_an_ordinary_binder_in_braces() {
     // erased unless it says otherwise, and then the grade is shown
     ok("{n : [1] Int} -> Int\n", &[], Some("Type"));
     ok("(\\(x : Int) -> x) : {n : [0..1] Int} -> Int -> Int\n", &[], Some("{n : [0..1] Int} -> Int -> Int"));
-    ok("{a : (0, 2) Type} -> a -> a\n", &[], Some("Type"));
+    ok("{a : (0, 2) Type} -> a -> a\n", &[], Some("Type 1"));
     rejects(
         "{a : (0, 1) Type} -> a -> a\n",
         &["usage mismatch: a has grade 1 in this type, but the type mentions it 2 times"],

@@ -48,10 +48,22 @@
 //! [`NodeId`], mirroring the renamer's span table, so a later pass — or an
 //! editor — can ask for the type at a source position.
 //!
+//! **Universes.**  `Type n : Type (n + 1)`, with `Type` meaning `Type 0`.  A
+//! function type lives in the larger of its sides' universes, so one that
+//! quantifies over `Type` is not in `Type`: that, with strict positivity for
+//! data types (see [`positivity`]), is what stops a term with no recursion
+//! from looping, as Girard's paradox does under `Type : Type`.  Universes
+//! are cumulative, but only at the top: a `Type` is accepted where a
+//! `Type 1` is wanted, not a function returning one where a function
+//! returning the other is.
+//!
 //! Deliberate limitations for now:
 //!
-//! * The sort rule is `Type : Type`, which is convenient and logically
-//!   inconsistent.  Universe levels are the obvious next step.
+//! * Levels are numbers: there is no universe polymorphism, and a data type
+//!   lives in `Type`.  And a metavariable's solution is not checked against
+//!   the metavariable's type, so an implicit argument can be filled with a
+//!   type from too large a universe; until that is closed, the hierarchy
+//!   has a way around it.
 //!
 //! * Members of a recursive group must carry a signature, and are *opaque
 //!   constants* that never unfold during unification.  That is what keeps
@@ -72,6 +84,7 @@ pub mod core;
 pub mod grade;
 mod elab;
 mod eval;
+mod positivity;
 mod unify;
 pub mod value;
 
@@ -254,6 +267,27 @@ pub enum TypeErrorKind {
     WrongFieldCount { ctor: String, expected: usize, given: usize },
     DuplicateAlternative(String),
     MissingAlternatives(Vec<String>),
+    /// `Type n` where `n` is not a number
+    LevelNotANumber,
+    /// a constructor field whose type is in a larger universe than its data
+    /// type: `data U = MkU Type`
+    LargeField { data: String, level: core::Level },
+    /// a data type appearing where it is not strictly positive
+    NotStrictlyPositive { data: String, ctor: String, why: Positivity },
+}
+
+/// Where a data type appears that makes it fail strict positivity.
+#[derive(Clone, Debug)]
+pub enum Positivity {
+    /// in the domain of a function type: `MkBad (Bad -> Int)`
+    LeftOfArrow,
+    /// in an argument of itself: `MkBad (Bad (Bad a))`
+    OwnArgument,
+    /// in an argument of another data type, for a parameter that type does
+    /// not use strictly positively
+    Nested(String),
+    /// somewhere nothing is known about, such as under a type variable
+    Unknown,
 }
 
 /// "never", "once", "3 times", "0..1 times", "r + 1 times".
@@ -347,6 +381,27 @@ impl TypeError {
             }
             TypeErrorKind::MissingAlternatives(ctors) => Diagnostic::error("this case does not cover every constructor")
                 .label(here, format!("missing: {}", ctors.join(", "))),
+            TypeErrorKind::LevelNotANumber => Diagnostic::error("a universe level is a number")
+                .label(here, "level variables are not supported yet"),
+            TypeErrorKind::LargeField { data, level } => Diagnostic::error("field too large for its data type")
+                .label(here, format!("this field's type lives in Type {level}, but {data} lives in Type"))
+                .help("a data type lives in Type, so its fields must be types in Type; larger data types are not supported yet"),
+            TypeErrorKind::NotStrictlyPositive { data, ctor, why } => {
+                let why = match why {
+                    Positivity::LeftOfArrow => "it appears to the left of an arrow".to_string(),
+                    Positivity::OwnArgument => "it appears in an argument of itself".to_string(),
+                    Positivity::Nested(outer) => {
+                        format!("it appears inside {outer}, whose parameter is not strictly positive,")
+                    }
+                    Positivity::Unknown => "it appears under a type it is not known to be positive in,".to_string(),
+                };
+                Diagnostic::error(format!("{data} is not strictly positive"))
+                    .label(here, format!("{why} in this field of {ctor}"))
+                    .help(
+                        "a data type may appear in its own constructors' fields only to the right of every \
+                         arrow; otherwise it can express a term that loops without recursion",
+                    )
+            }
         }
     }
 }
@@ -397,7 +452,7 @@ impl Ctx {
     fn initial(tc: &Checker) -> Ctx {
         let mut ctx = Ctx { lvl: 0, env: Env::empty(), binders: Vec::new(), names: HashMap::new() };
         for b in Builtin::ALL {
-            ctx = ctx.extend(Some(b.unique()), b.name(), Rc::new(Value::Type), BinderInfo::Defined, Rc::new(Value::LitTy(b)));
+            ctx = ctx.extend(Some(b.unique()), b.name(), Rc::new(Value::Type(0)), BinderInfo::Defined, Rc::new(Value::LitTy(b)));
         }
         for p in Prim::ALL {
             // A primitive consumes each argument exactly once, so the default
@@ -500,6 +555,9 @@ pub struct Checker {
     /// every declared data type, by the unique of its name: its
     /// constructors, in order
     datas: HashMap<usize, Vec<usize>>,
+    /// for each data type, which of its parameters it uses strictly
+    /// positively (see [`positivity`])
+    positive_params: HashMap<usize, Vec<bool>>,
 }
 
 /// What is known about a constructor.  At run time it is its `tag` and its
@@ -572,6 +630,7 @@ pub fn check_module(m: &hir::Module, node_count: usize, prelude_datas: usize) ->
         rec_defs: Vec::new(),
         ctors: HashMap::new(),
         datas: HashMap::new(),
+        positive_params: HashMap::new(),
     };
     let ctx = Ctx::initial(&tc);
     let ctx = tc.declare_datas(&ctx, &m.datas);

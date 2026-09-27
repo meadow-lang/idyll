@@ -29,6 +29,20 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 impl Checker {
+    /// Whether something of type `actual` may be used where `expected` is
+    /// wanted: the two are convertible, or both are universes and `actual`
+    /// is the smaller.  That is cumulativity, and it is only this deep: a
+    /// function returning `Type` is not accepted where one returning
+    /// `Type 1` is.
+    pub fn subtype(&mut self, l: Lvl, actual: Rc<Value>, expected: Rc<Value>) -> bool {
+        let actual = self.force(actual);
+        let expected = self.force(expected);
+        match (&*actual, &*expected) {
+            (Value::Type(i), Value::Type(j)) => i <= j,
+            _ => self.unify(l, actual, expected),
+        }
+    }
+
     /// Decide whether two values are convertible, solving metas as needed.
     /// Returns `false` on failure; the caller turns that into a diagnostic,
     /// so one failed unification does not abort the whole module.
@@ -57,7 +71,7 @@ impl Checker {
                 let rhs = self.apply(b, fresh());
                 self.unify(l + 1, lhs, rhs)
             }
-            (Value::Type, Value::Type) => true,
+            (Value::Type(i), Value::Type(j)) => i == j,
             (Value::LitTy(a), Value::LitTy(b)) => a == b,
             (Value::Lit(a), Value::Lit(b)) => a == b,
             (
@@ -192,7 +206,7 @@ impl Checker {
     fn rename(&self, m: MetaVar, pren: &PartialRenaming, v: Rc<Value>) -> Option<Rc<Core>> {
         let v = self.force(v);
         Some(Rc::new(match &*v {
-            Value::Type => Core::Type,
+            Value::Type(n) => Core::Type(*n),
             Value::LitTy(b) => Core::LitTy(*b),
             Value::Lit(l) => Core::Lit(l.clone()),
             Value::Error => Core::Error,

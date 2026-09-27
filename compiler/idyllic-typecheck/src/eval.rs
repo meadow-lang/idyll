@@ -123,7 +123,7 @@ impl Checker {
     /// the checker keeps going after reporting an error.
     pub fn eval(&self, env: &Env, c: &Core) -> Rc<Value> {
         match c {
-            Core::Type => Rc::new(Value::Type),
+            Core::Type(n) => Rc::new(Value::Type(*n)),
             Core::LitTy(b) => Rc::new(Value::LitTy(*b)),
             Core::Lit(l) => Rc::new(Value::Lit(l.clone())),
             Core::Prim(p) => Rc::new(Value::Prim(*p, Vec::new())),
@@ -173,7 +173,7 @@ impl Checker {
     pub fn quote(&self, l: Lvl, v: Rc<Value>) -> Rc<Core> {
         let v = self.force(v);
         Rc::new(match &*v {
-            Value::Type => Core::Type,
+            Value::Type(n) => Core::Type(*n),
             Value::LitTy(b) => Core::LitTy(*b),
             Value::Lit(x) => Core::Lit(x.clone()),
             Value::Error => Core::Error,

@@ -31,7 +31,8 @@ pub struct GradeAnn {
 /// argument per node); the parser desugars the surface telescopes into these.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Term {
-    /// The sort `Type`.  A single universe is enough for the demo.
+    /// The universe `Type`.  A larger one, `Type 1`, is this applied to a
+    /// level, as it parses; the type checker reads it as a universe.
     Type,
     Var(Ident),
     Lit(Lit),

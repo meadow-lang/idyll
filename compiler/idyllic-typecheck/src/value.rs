@@ -11,7 +11,7 @@
 //! eliminations waiting on it — because pattern unification needs to look at
 //! a meta's whole argument list at once.
 
-use super::core::{CaseAlt, Core, Lvl, MetaVar};
+use super::core::{CaseAlt, Core, Level, Lvl, MetaVar};
 use idyllic_ast::{Icit, Lit};
 use idyllic_builtins::{Builtin, Prim};
 use crate::grade::Grade;
@@ -80,7 +80,8 @@ pub struct Closure {
 
 #[derive(Clone, Debug)]
 pub enum Value {
-    Type,
+    /// A universe, `Type n`.
+    Type(Level),
     LitTy(Builtin),
     Lit(Lit),
     /// `(x : (grade, in_type) dom) -> cod`; `cod` is a closure awaiting the
@@ -297,7 +298,7 @@ fn atom_key(v: &Value) -> String {
         Value::Rigid(l, _, sp) => format!("v{l}{}", spine(sp)),
         Value::Flex(m, sp) => format!("?{m}{}", spine(sp)),
         Value::Opaque(u, _, sp) => format!("c{u}{}", spine(sp)),
-        Value::Type => "Type".into(),
+        Value::Type(n) => format!("Type {n}"),
         Value::LitTy(b) => b.name().into(),
         Value::Lit(l) => l.to_string(),
         Value::Error => "!".into(),

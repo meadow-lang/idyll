@@ -543,7 +543,7 @@ impl Lowering {
         match &**c {
             Core::Error => Err(LowerError::ErrorTerm),
             // types and grades are not there at run time
-            Core::Type
+            Core::Type(_)
             | Core::LitTy(_)
             | Core::Pi { .. }
             | Core::BoxTy(..)

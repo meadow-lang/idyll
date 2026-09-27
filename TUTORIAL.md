@@ -221,15 +221,31 @@ True : Bool
 ### Types are values too
 
 Types are ordinary terms, so they have types as well. The built-in types
-`Int`, `String`, `Bool` and `Unit` all have type `Type`, and so does
-`Type` itself:
+`Int`, `String`, `Bool` and `Unit` all have type `Type`. `Type` can't have
+type `Type` itself: that would let a program express Girard's paradox, a
+term that runs forever with no recursion in it. Instead there is a tower
+of *universes*, each one living in the next:
 
 ```
 > Int
 : Type
 > Type
-: Type
+: Type 1
+> Type 1
+: Type 2
 ```
+
+`Type` is short for `Type 0`. A type in one universe is in every larger
+one too, so an `Int` will do wherever a `Type 1` is wanted:
+
+```
+> (Int : Type 1)
+: Type 1
+```
+
+A function type lives in the larger of the universes its two sides live
+in. So a type that quantifies over types is a universe up from them, as
+you'll see when you get to polymorphism.
 
 ## Functions
 
@@ -453,10 +469,12 @@ used in other types, so it gets grade `0`:
 
 ```
 > (a : [0] Type) -> a -> a
-: Type
+: Type 1
 > (\a x -> x) : (a : [0] Type) -> a -> a
 : (a : [0] Type) -> a -> a
 ```
+
+Its type takes a `Type` as an argument, so it lives in `Type 1`.
 
 Applying it to a type specialises the rest of the type:
 
@@ -469,7 +487,7 @@ Several named arguments can share parentheses, and a grade:
 
 ```
 > (a b : [0] Type) -> a -> (y : [0] b) -> a
-: Type
+: Type 1
 ```
 
 ### Implicit arguments
@@ -507,7 +525,7 @@ share a pair, just as with explicit arguments:
 
 ```
 > {a b : Type} {r : Grade} (f : a [r] -> b) -> a [r] -> b
-: Type
+: Type 1
 ```
 
 If nothing determines an implicit argument, that is an error:
@@ -833,6 +851,40 @@ alternative and not the other, so it has to be allowed to go unused —
 - A `case` can't teach the types anything: the result type doesn't depend
   on which constructor it was.
 
+### What a data type may hold
+
+A data type lives in `Type`, so its fields have to be types in `Type` as
+well. A type with a field of type `Type` would be a type of all types —
+the same paradox as `Type : Type`:
+
+```
+> data U = MkU Type
+Error: field too large for its data type
+   │ ╰── this field's type lives in Type 1, but U lives in Type
+```
+
+And a type may appear in its own fields only to the right of every arrow.
+This is called being *strictly positive*:
+
+```
+> data Bad = MkBad (Bad -> Int)
+Error: Bad is not strictly positive
+   │ ╰── it appears to the left of an arrow in this field of MkBad
+```
+
+With that `Bad` you could write a function that takes a `Bad` apart and
+applies what it finds to the `Bad` itself. Hand it itself, wrapped in
+`MkBad`, and it runs forever with no recursion anywhere. To the right of
+an arrow is fine, and so is inside another type that is itself positive
+in its parameter, as `List` is:
+
+```
+> data Rose a = Node a (List (Rose a))
+
+Rose : (a : Type) -> Type
+Node : {a : Type} -> a -> List (Rose a) -> Rose a
+```
+
 ### Lists
 
 Lists are an ordinary data type that is already declared,
@@ -1019,7 +1071,7 @@ is short for `(s, 0..∞)`.
 
 ```
 > (a : (0, 2) Type) -> (x : a) -> a
-: Type
+: Type 1
 > (a : (0, 1) Type) -> (x : a) -> a
 Error: usage mismatch
    │ ╰── a has grade 1 in this type, but the type mentions it 2 times
@@ -1289,7 +1341,7 @@ input can still be checked.
 | `True`, `False` | `Bool` literals |
 | `()` | the `Unit` value |
 | `Int`, `String`, `Bool`, `Unit`, `Grade` | built-in types |
-| `Type` | the type of types |
+| `Type`, `Type 1`, … | universes: `Type` (`Type 0`) is the type of `Int`, `Type : Type 1`, and so on |
 | `x` | a variable |
 | `f x` | application |
 | `a + b`, `a - b`, `a * b` | `Int` arithmetic (`+` and `*` also on grades, where a grade is expected) |
@@ -1357,7 +1409,7 @@ These aren't implemented yet. This section shrinks as they land.
   yet.
 - **Indexed data types.** A `data` declaration's parameters are uniform:
   there are no GADT-style constructors (`Vec n a`), and a `case` doesn't
-  refine types. Nor is a declaration checked for positivity.
+  refine types.
 - **Richer patterns.** Patterns don't nest, there is no catch-all, and
   there are no literal patterns.
 - **`let` inside a `case` alternative** needs braces around one or the
@@ -1391,6 +1443,12 @@ These aren't implemented yet. This section shrinks as they land.
 - **Holes, implicit arguments and usage.** What a `_` or an implicit
   argument ends up being filled with isn't counted towards any variable's
   usage.
-- **Universe levels.** `Type` has type `Type`. This is convenient but
-  logically inconsistent, so Idyll shouldn't yet be used as a proof
-  assistant.
+- **Universe polymorphism.** Levels are numbers; there are no level
+  variables. So a data type always lives in `Type`, and `List`, for one,
+  only holds types in `Type`.
+- **Checking what fills an implicit argument.** What a metavariable is
+  solved with isn't checked against the metavariable's type, so an
+  implicit argument can be filled with a type from too large a universe:
+  with `id : {a : Type} -> a -> a`, `id Type` is accepted. Until that is
+  closed, the universe hierarchy has a way around it, and Idyll shouldn't
+  yet be used as a proof assistant.

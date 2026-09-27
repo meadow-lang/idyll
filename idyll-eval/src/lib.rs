@@ -343,7 +343,7 @@ impl Program<'_> {
         let value = |v: Value| Ok(Control::Return(Rc::new(v)));
         match &**term {
             // types and grades are not there at run time
-            Core::Type
+            Core::Type(_)
             | Core::LitTy(_)
             | Core::Pi { .. }
             | Core::BoxTy(..)
@@ -548,7 +548,7 @@ mod tests {
             list = Rc::new(Value::Con { name: "::".into(), tag: 1, fields: vec![head, list] });
             env = env.push(Rc::new(Value::Box(Rc::new(Value::Unit))));
         }
-        let closure = Value::Closure { env, body: Rc::new(Core::Type) };
+        let closure = Value::Closure { env, body: Rc::new(Core::Type(0)) };
         drop(list);
         drop(closure);
     }

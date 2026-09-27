@@ -42,7 +42,7 @@ pub struct Term {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TermKind {
-    /// The sort `Type`.
+    /// The universe `Type`; applied to a number, a larger one (`Type 1`).
     Type,
     Var(Ident),
     Lit(Lit),
