@@ -58,6 +58,25 @@ and the tour has steps for it.
 - **Traits are auto-implicit records**, as in Idris. Unnamed instances form a
   canonical, coherent set used by instance search; named instances are
   outside the search and are used only by being given explicitly.
+- **Sequence literals start with `#[`**, since bare brackets are the grades'
+  (`a [r]`, `[e]`, `let [x] = e`), and `[x]` could not be both a promotion and
+  a one-element list.
+  - `#[a, b, c]` is **type-directed**: it is built as whatever sequence type is
+    expected. A cons-shaped type -- `List a`, `Vec n a`, anything declared with
+    `@seq(nil = Nil, cons = (::))` -- gets its own constructors,
+    `a :: b :: c :: Nil`, so an indexed family gets its length in its type for
+    free, and the same form is a constructor pattern. A contiguous type, such
+    as the RRB `Vector`, is built through a trait (`FromSeq`) from the elements
+    laid down as an array. With nothing to say which, it is a `List`.
+  - `#[a; b; c]` is **always an array**, so reading one says what it costs. A
+    one-element array is `#[x;]` and the empty one `#[;]`; `#[x]` is the
+    general literal. As a pattern, `#[x; y]` matches an array of exactly two.
+  - Layout is suspended inside `#[ … ]`, so a `;` there is always the array's.
+  - This is the reverse of Meadow's reading, where `;` marks a list
+    (`[a; b]`) and `#[a, b]` is an array.
+- **The back ends are Glade and Silo, and live here.** Meadow's runtimes move
+  into this repository as Idyll's, and Meadow becomes a second front end that
+  compiles to the same AxCut; see *Back ends* below.
 
 ## Phase 0: Groundwork
 
@@ -101,6 +120,10 @@ typed metavariables remain.
   are worth copying.
 - [ ] **The everyday features**: definitions by several equations; nested,
   literal and wildcard patterns; `\_ ->`; guards; as-patterns.
+- [ ] **Sequence literals for cons-shaped types**: `#[a, b, c]` checked
+  against a type declared `@seq`, built from its constructors, and the same as
+  a pattern. The contiguous half waits for traits (phase 4), and arrays for
+  the shared back ends.
 - [ ] **Termination checker**, running on the elaborated case trees, as
   Agda's does. Recursive definitions that pass become transparent at the
   type level; those that do not stay opaque, as they are today.
@@ -128,9 +151,12 @@ user-defined `+`, `head : Vec (S n) a -> a` needs no `Nil` case, and Meadow's
 - [ ] **The purity rule** at dependent application and `let`. A type that
   would escape a `let` whose right-hand side is effectful is rejected until
   phase 4 gives us dependent pairs.
-- [ ] **Graded continuations**, lowered to AxCut consumers. Port Meadow's
-  evidence passing and its fast path for tail-resumptive clauses
-  (`meadow-seq/src/lower.rs`).
+- [ ] **Graded continuations**, lowered to the shared AxCut (see *Back ends*).
+  Port Meadow's evidence passing and its fast path for tail-resumptive
+  clauses (`meadow-seq/src/lower.rs`). `[0]` and `[0..1]` take Meadow's
+  one-shot paths; `[0..∞]` needs a continuation that can be resumed twice,
+  which Silo's stack segments cannot be, so it is a heap-allocated consumer,
+  as Idyll's AxCut machine has them.
 - [ ] **`Div`**, wired to the termination checker.
 - [ ] **`main`'s allowed effects** checked statically, so an unhandled effect
   is a compile-time error rather than Meadow's run-time one.
@@ -148,9 +174,11 @@ user-defined `+`, `head : Vec (S n) a -> a` needs no `Nil` case, and Meadow's
 - [ ] **The build system in `idyll-driver/`**, ported from Meadow's
   `buildtools/meadow`: `Idyll.toml`, `init`, `build`, `run`, `add`, `update`,
   the lockfile, git dependencies, semver, workspaces, incremental builds by
-  fingerprint, and the standard library embedded in the binary. Meadow's
-  `aot.rs`, `linker.rs`, `pgo.rs` and `runtime.rs` are specific to its own
-  runtime; Idyll uses the LLVM path `idyllic -o` already has.
+  fingerprint, and the standard library embedded in the binary. With the
+  back ends shared, Meadow's `aot.rs`, `linker.rs`, `pgo.rs` and `runtime.rs`
+  -- choosing and linking Glade or Silo -- come too. Meadow's build tool is
+  38k lines; making it generic over the language may cost less than porting
+  it.
 
 *Done when:* a workspace with a git dependency builds, a second build reuses
 what it can, and the lockfile pins the dependency.
@@ -221,21 +249,79 @@ shows a type.
 ## Phase 7: Later
 
 - [ ] **Concurrency**: green threads, channels, STM, parallelism. The APIs
-  are effects and handlers, so they port; Meadow's runtime (per-thread heaps
-  and a work-stealing scheduler in Glade) does not. Idyll's
-  reference-counted native model resembles Meadow's *Silo* runtime, so read
-  Meadow's `docs/SILO.md` before designing this.
+  are effects and handlers, so they port, and the shared runtimes already
+  schedule green threads (Glade's per-thread heaps and work stealing, Silo's
+  coroutines); what is left is the language's side of it.
 - [ ] **Macros** (Meadow's `docs/MACROS.md`).
 - [ ] **A debugger** (Meadow's `dap/`).
 - [ ] **An installer**, `idyllup`, after Meadow's `meadowup`, once there is
   something to release.
 
+## Back ends: Glade and Silo, shared with Meadow
+
+Not a phase, since it changes nothing in the language, but phase 2's graded
+continuations lower to what it produces, so it lands first. Meadow's two
+runtimes move here and become Idyll's:
+
+- **Glade**: a register bytecode VM with a generational collector, green
+  threads and STM, and its own JIT and ahead-of-time compiler
+  (`glade/`, `meadow-bytecode`, `meadow-codegen`; about 27k lines).
+- **Silo**: native code through LLVM, reference counting from linearity with
+  cycle collection, effect handlers as coroutine stack segments
+  (`silo/`, `meadow-llvm`; about 13k lines).
+
+Both start from AxCut, which becomes the contract between front ends and
+back ends: Idyll lowers to it, and so does Meadow, which keeps everything
+down to its core language and its evidence-passing effect lowering, and
+depends on this repository for the rest.
+
+Three things tie the runtimes to Meadow today, and each has to go first:
+
+- They depend on `meadow-core` -- for primitives, value descriptors,
+  numbers, hashing and text -- which depends on Meadow's type checker.
+- They know Meadow's standard library by name: they build `Maybe.Just`,
+  `Result.Ok`, `List.Cons` and `Vector` values when a native effect answers
+  one, print by walking those types, and match effect operations by
+  `"Console"`, `"Fs"` and so on. The printing is written out four times.
+- Their tests compile Meadow source.
+
+- [ ] **An `axcut` crate**: Meadow's AxCut (`meadow-seq/src/lib.rs`), which
+  has what Idyll's lacks (value representations, records, arrays,
+  primitives, native effects), with a name type of its own, grades on
+  continuations, and multi-shot consumers. It is versioned and serialised,
+  so a front end in another repository can target it. The AxCut reference
+  machine comes with it.
+- [ ] **A runtime-interface crate**: the primitive table, value descriptors,
+  number, hashing and text helpers, and the native effects -- each
+  operation's name and payload shape. What `meadow-core` lends the runtimes
+  today, without the front end behind it.
+- [ ] **A declaration table in each program**: which constructors play the
+  runtime's roles (option, result, list, vector, tuple) and which effects
+  are native. The runtimes read it rather than names, and one printing module
+  replaces the four.
+- [ ] **Move Glade, `meadow-bytecode`, `meadow-codegen`, Silo and
+  `meadow-llvm` here**, their tests rewritten as AxCut corpora that the
+  reference machine, Glade and Silo must agree on. The tests that start from
+  source stay with each language.
+- [ ] **Retarget Idyll's lowering** at the shared AxCut, and retire
+  `idyllic-llvm` and `rts/idyll_rt.c`. Idyll's benchmarks (`bench/`) are the
+  check that Silo is no slower than what it replaces.
+- [ ] **Arrays**: a primitive `Array n a`, sized in its type since a literal
+  knows its length, with `#[a; b]` literals and patterns.
+- [ ] **One integer semantics.** Idyll's REPL is unbounded and its native code
+  wraps at 64 bits; Meadow separates `Int` from `BigInt`. The shared
+  primitives settle it.
+
+Worth deciding early: whether Meadow and Idyll code can call each other. A
+shared AxCut does not give that by itself; it needs a shared value layout and
+calling convention, which the runtime interface could define.
+
+*Done when:* Idyll's corpus and tutorial run on Glade and on Silo with the
+same answers as its reference interpreter, and Meadow builds and passes its
+tests against the moved back ends.
+
 ## Not porting
 
-- **Glade**: Meadow's bytecode VM, JIT, ahead-of-time compiler and garbage
-  collector, and the crates behind them (`meadow-bytecode`,
-  `meadow-codegen`). Idyll compiles through AxCut to LLVM, with reference
-  counting.
 - **`meadow-infer`**: Idyll's bidirectional elaborator replaces Hindley–Milner
   inference. Only its row unification is worth mining, for phase 2.
 - **Meadow's run-time one-shot check** (the `Once` flag): the grade on the
