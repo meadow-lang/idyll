@@ -192,9 +192,9 @@ let a = 1; a = 2 in a
 %%%
 let loop = \(x : Int) -> loop x in loop
 %%%
-let loop : Int -> Int = \(x : Int) -> loop x in loop 1
+let loop : Int -> Int ! Div = \(x : Int) -> loop x in loop 1
 %%%
-let even : Int -> Bool = \(n : Int) -> odd n; odd : Int -> Bool = \(n : Int) -> even n in even 2
+let even : Int -> Bool ! Div = \(n : Int) -> odd n; odd : Int -> Bool ! Div = \(n : Int) -> even n in even 2
 %%%
 let f = \n -> g n; g = \n -> f n; h = \(x : Int) -> x in h 1
 %%%
@@ -241,3 +241,155 @@ let x = "unterminated in x
 'a'
 %%%
 "esc \n \x41 \q"
+%%%
+effect Ask where
+  ask : Unit -> Int
+
+sum3 : Unit -> Int ! Ask
+sum3 u = ask () + ask () + ask ()
+
+handle sum3 () with
+  ask _ k -> k 10
+%%%
+effect Fail where
+  fail : Unit -> Int
+
+safeDiv : (a : [] Int) -> (b : [] Int) -> Int ! Fail
+safeDiv a b = if b == 0 then fail () else a / b
+
+handle safeDiv 7 0 with
+  return x -> x + 1
+  fail _ k -> 0
+%%%
+effect State (s : Type) where
+  get : Unit -> s
+  put : (x : [] s) -> Unit
+
+counter : Unit -> Int ! State Int
+counter u =
+  let a = get () in
+  let b = put (a + 1) in
+  let c = get () in
+  c * 10
+
+run : (s : [] Int) -> Int
+run = handle counter () with
+  return x -> \(s : [] Int) -> x
+  get _ k -> \(s : [] Int) -> k s s
+  put s2 k -> \(s : [] Int) -> k () s2
+
+run 4
+%%%
+effect Choose where
+  flip : Unit -> Bool
+
+pick : Unit -> Int ! Choose
+pick u = if flip () then 1 else 10
+
+handle pick () with
+  flip _ k -> k True + k False
+%%%
+effect Ask where
+  ask : Unit -> Int
+
+effect Log where
+  log : Int -> Unit
+
+twice : (f : [] (Unit -> Int ! e)) -> Int ! e
+twice f = f () + f ()
+
+logged : Unit -> Int ! {Ask, Log}
+logged u = let x = log 1 in ask ()
+
+inner : Unit -> Int ! Log
+inner u = handle twice logged with
+  ask _ k -> let y = log 100 in k 5
+
+handle inner () with
+  return x -> x
+  log n k -> n + k ()
+%%%
+effect Log where
+  log : Int -> Unit
+
+applyTo : (f : Int -> Unit ! e) -> Unit ! e
+applyTo f = f 3
+
+handle applyTo log with
+  return u -> 0
+  log n k -> n
+%%%
+effect Yield where
+  yield : (x : [] Int) -> Unit
+
+from : (n : [] Int) -> Unit ! {Yield, Div}
+from n = let u = yield n in from (n + 1)
+
+first : Unit -> ((n : [] Int) -> List Int ! Div) ! Div
+first u = handle from 0 with
+  return v -> \(n : [] Int) -> Nil
+  yield x k -> \(n : [] Int) -> if n == 0 then Nil else x :: k () (n - 1)
+
+first () 5
+%%%
+data Nat = Z | S Nat
+use Nat.*
+
+@seq(nil = VNil, cons = VCons)
+data Vec : Nat -> Type -> Type where
+  VNil : Vec Z a
+  VCons : a -> Vec n a -> Vec (S n) a
+use Vec.*
+
+total : Vec n Int -> Int
+total #[] = 0
+total (VCons x xs) = x + total xs
+
+second : (xs : [] List Int) -> Int
+second #[_, y] = y
+second _ = 0
+
+total #[1, 2, 3] + second #[10, 20] + second #[5]
+%%%
+effect Ask where
+  ask : () -> Int
+
+effect Asking = {Ask, Div}
+
+sum3 : () -> Int ! Asking
+sum3 u = ask () + ask () + ask ()
+
+handle sum3 () with
+  ask _ k -> k 7
+%%%
+count : (n : [] Int) -> () ! Eff
+count n = if n == 0 then putStrLn "liftoff" else let u = printInt n in count (n - 1)
+
+main : () -> () ! Eff
+main () = let u = putStr "counting: " in count 3
+%%%
+greet : () -> () ! Console
+greet () = let u = putStrLn "hello" in putStrLn "world"
+
+handle greet () with
+  return _ -> 0
+  putStr s k -> let u = putStr s in k ()
+  putStrLn s k -> let u = putStrLn s in 1 + k ()
+  printInt n k -> let u = printInt n in k ()
+%%%
+roll : (n : [] Int) -> () ! {Random, Console, Div}
+roll n = if n == 0 then () else let u = printInt (intBetween 1 7) in roll (n - 1)
+
+main : () -> () ! Eff
+main () = let u = roll 3 in case readLine () of
+  Just s -> putStrLn s
+  Nothing -> exit 4
+%%%
+store : Int -> Int -> Int ! Calc
+store a b = add2 a b
+
+effect Calc where
+  add2 : Int -> Int -> Int
+
+handle store 40 2 + add2 1 1 with
+  add2 a b k -> k (a + b)

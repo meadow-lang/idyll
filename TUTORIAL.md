@@ -23,14 +23,17 @@ land, and anything not covered here isn't implemented yet (see
 9. [Layout](#layout)
 10. [Recursion](#recursion)
 11. [Data types](#data-types)
-12. [Boxes](#boxes)
-13. [Grade polymorphism](#grade-polymorphism)
-14. [Grades in types](#grades-in-types)
-15. [Inference and holes](#inference-and-holes)
-16. [How programs run](#how-programs-run)
-17. [Reading error messages](#reading-error-messages)
-18. [Syntax reference](#syntax-reference)
-19. [What's missing](#whats-missing)
+12. [Pattern matching](#pattern-matching)
+13. [Effects](#effects)
+14. [Modules and packages](#modules-and-packages)
+15. [Boxes](#boxes)
+16. [Grade polymorphism](#grade-polymorphism)
+17. [Grades in types](#grades-in-types)
+18. [Inference and holes](#inference-and-holes)
+19. [How programs run](#how-programs-run)
+20. [Reading error messages](#reading-error-messages)
+21. [Syntax reference](#syntax-reference)
+22. [What's missing](#whats-missing)
 
 ---
 
@@ -46,7 +49,9 @@ cargo run
 
 To check a file instead, use the compiler, `idyllic`, in the `compiler/`
 directory: `cargo run -- program.idl`. The exit status is non-zero if any
-error was reported.
+error was reported. A program of several files, or with dependencies, is a
+package, which `idyll run` builds and runs (see
+[Building and running](#building-and-running-idyll)).
 
 Input can span several lines. Press **Enter** to start a new line and
 press it again on an **empty line** to submit the whole entry:
@@ -181,6 +186,16 @@ Error: type mismatch
    │ ╰── expected Int, but this has type Bool
 ```
 
+`-` and `*` are the same, and `/` and `%` divide, rounding toward zero.
+Dividing by zero stops the program.
+
+```
+> 17 / 5
+3 : Int
+> 17 % 5
+2 : Int
+```
+
 Addition is *computed* while type checking, which matters because types
 can mention values (see [Dependent types](#dependent-types)). Here `x` is
 accepted at type `f 4` because `f (2 + 2)` is the same type. (The `0`
@@ -236,13 +251,16 @@ kept as-is so checking can continue.
 > True
 True : Bool
 > ()
-() : Unit
+() : ()
 ```
+
+`()` is the unit value, the only one of its type, and as in Haskell the
+type is written the same way: `()`. (It is also called `Unit`.)
 
 ### Types are values too
 
 Types are ordinary terms, so they have types as well. The built-in types
-`Int`, `String`, `Bool` and `Unit` all have type `Type`. `Type` can't have
+`Int`, `String`, `Bool` and `()` all have type `Type`. `Type` can't have
 type `Type` itself: that would let a program express Girard's paradox, a
 term that runs forever with no recursion in it. Instead there is a tower
 of *universes*, each one living in the next:
@@ -528,17 +546,28 @@ function type changes, except that an implicit argument is erased (grade
 
 An implicit argument is only filled in where there is something to fill
 it in *from*. Passed somewhere that doesn't care what it is, a polymorphic
-function stays polymorphic:
+function stays polymorphic. Except where what it is passed to wants a type
+in `Type`: `id id` would need `a` to be `{a : Type} -> a -> a`, and a type
+that quantifies over types is in `Type 1`. So there the inner `id` is
+instantiated after all, at a type nothing determines unless something
+else does (in `id id 1`, the `1` does). And giving `id` an argument of
+too large a type is an error of its own:
 
 ```
 > id : {a : Type} -> a -> a
 id x = x
 
 id : {a : Type} -> a -> a
-> id id
+> (\f -> f) id
 : {a : Type} -> a -> a
 > id id 1
 1 : Int
+> id id
+Error: unsolved metavariable
+   │ ╰── could not infer the implicit argument a
+> id Type
+Error: universe too large
+   │ ╰── the implicit argument a must be a type in Type, but here it would be Type 1, which is in Type 2
 ```
 
 Braces and parentheses mix freely in one telescope, and several names can
@@ -747,21 +776,28 @@ type signature**, because its type can't be worked out from a definition
 that uses it:
 
 ```
-> fib : (n : [] Int) -> Int
+> fib : (n : [] Int) -> Int ! Div
 fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)
 
-fib : (n : [] Int) -> Int
+fib : (n : [] Int) -> Int ! Div
 > fib 20
 6765 : Int
 ```
 
-(`n` is used three times, hence the `[]`.) Nothing checks that a recursion
-ends. The REPL gives up on one that hasn't after a million steps — which
-is also what happens to one that *would* end, but not soon; for those,
+(`n` is used three times, hence the `[]`.) The `! Div` says that `fib`
+might never finish, as far as the checker can see: it recurs on an `Int`,
+and nothing takes an `Int` apart the way matching takes apart a data
+type. A recursion that goes on taking its argument apart is known to
+stop, needs no `Div`, and can even compute inside a type; see
+[Computing in types](#computing-in-types) and [Div](#div).
+
+A recursion doesn't have to end to be run. The REPL gives up on one that
+hasn't ended after a million steps — which is also what happens to one
+that *would* end, but not soon; for those,
 [compile the program](#compiling-to-native-code).
 
 ```
-> let loop : Int -> Int = \n -> loop n in loop 0
+> let loop : Int -> Int ! Div = \n -> loop n in loop 0
 : Int
 (still running after 1000000 steps; stopped)
 ```
@@ -770,8 +806,8 @@ Mutually recursive bindings work too, as long as each one has a
 signature:
 
 ```
-> let even : Int -> Bool = \n -> odd n
-    odd : Int -> Bool = \n -> even n
+> let even : Int -> Bool ! Div = \n -> odd n
+    odd : Int -> Bool ! Div = \n -> even n
  in even 10
 
 : Bool
@@ -797,7 +833,7 @@ definition might run any number of times, so anything it mentions from
 outside is used without restriction:
 
 ```
-> \(x : Int) -> let loop : Int -> Int = \n -> loop (n + x) in loop 1
+> \(x : Int) -> let loop : Int -> Int ! Div = \n -> loop (n + x) in loop 1
 Error: usage mismatch
    │ ╰── x has grade 1, but is used an unrestricted number of times
 ```
@@ -830,13 +866,37 @@ parameters, then its constructors with the types of their fields.
 
 ```
 > data Maybe a = Nothing | Just a
+use Maybe.*
 
 Maybe : (a : Type) -> Type
-Nothing : {a : Type} -> Maybe a
-Just : {a : Type} -> a -> Maybe a
+Maybe.Nothing : {a : Type} -> Maybe a
+Maybe.Just : {a : Type} -> a -> Maybe a
 > Just (Just True)
 Just (Just True) : Maybe (Maybe Bool)
 ```
+
+A constructor lives under its type, as a variant does in Rust: `Maybe.Just`,
+`Maybe.Nothing`. `use Maybe.*` brings them all into scope bare, as here,
+and `use Maybe (Just)` just the ones named; without either, write them in
+full. So two types may have constructors of the same name, and a type may
+have one with its own name, `data Box a = Box a`, written `Box.Box`.
+
+```
+> data Shape = Circle Int | Square Int
+
+Shape : Type
+Shape.Circle : Int -> Shape
+Shape.Square : Int -> Shape
+> Shape.Square 3
+Square 3 : Shape
+> Circle 1
+Error: name not in scope: Circle
+   │ ╰── a constructor lives under its type: Shape.Circle
+```
+
+(The prelude's `List`, `Maybe` and `Result` come with their constructors
+in scope: `Nil` and `::`, `Nothing` and `Just`, `Err` and `Ok`. A program's
+own `use Maybe.*` puts its own `Maybe`'s ahead of them.)
 
 A constructor takes the type's parameters implicitly and its fields
 linearly. Take a value apart with `case`, one alternative per constructor,
@@ -844,10 +904,11 @@ each naming the fields:
 
 ```
 > data Maybe a = Nothing | Just a
+use Maybe.*
 
 Maybe : (a : Type) -> Type
-Nothing : {a : Type} -> Maybe a
-Just : {a : Type} -> a -> Maybe a
+Maybe.Nothing : {a : Type} -> Maybe a
+Maybe.Just : {a : Type} -> a -> Maybe a
 > fromMaybe : {a : Type} -> a [0..1] -> Maybe a -> a
 fromMaybe [d] m = case m of
   Nothing -> d
@@ -865,12 +926,12 @@ alternative and not the other, so it has to be allowed to go unused —
 - The alternatives line up in a column, like the bindings of a `let`. On
   one line, or inside parentheses, write the braces:
   `case m of { Nothing -> 0; Just x -> x }`.
-- A `case` must cover every constructor, once. Patterns don't nest, and
-  there is no catch-all.
-- What comes out of a constructor comes out once: fields are linear. A
-  field to be used otherwise is a box, `Maybe (Int [2])`.
-- A `case` can't teach the types anything: the result type doesn't depend
-  on which constructor it was.
+- A `case` must cover every case. Its patterns can be much more than a
+  constructor and its fields: see [Pattern matching](#pattern-matching).
+- What comes out of a constructor has the grade of what it came out of:
+  a linear value's fields are linear. A field to be used otherwise is a
+  box, `Maybe (Int [2])`, or comes out of a value with a grade that
+  allows it.
 
 ### What a data type may hold
 
@@ -901,9 +962,10 @@ in its parameter, as `List` is:
 
 ```
 > data Rose a = Node a (List (Rose a))
+use Rose.*
 
 Rose : (a : Type) -> Type
-Node : {a : Type} -> a -> List (Rose a) -> Rose a
+Rose.Node : {a : Type} -> a -> List (Rose a) -> Rose a
 ```
 
 ### Lists
@@ -911,7 +973,9 @@ Node : {a : Type} -> a -> List (Rose a) -> Rose a
 Lists are an ordinary data type that is already declared,
 `data List a = Nil | (::) a (List a)`. What is built in is only the
 spelling: `::` is infix, in expressions and patterns, and associates to
-the right.
+the right. Two more types are declared for you, for what the world's
+operations give back (see [The world and `main`](#the-world-and-main)):
+`data Maybe a = Nothing | Just a` and `data Result e a = Err e | Ok a`.
 
 ```
 > 1 :: 2 :: 3 :: Nil
@@ -928,6 +992,976 @@ sum : List Int -> Int
 
 `sum` uses its list exactly once, and that means something at run time:
 each cell is freed as it is matched (see [Memory](#memory)).
+
+A list can also be written out: `#[1, 2, 3]` is `1 :: 2 :: 3 :: Nil`. (The
+`#` is there because bare brackets are the grades'.)
+
+```
+> #[1, 2, 3]
+1 :: 2 :: 3 :: Nil : List Int
+> #[#[1], #[]]
+(1 :: Nil) :: Nil :: Nil : List (List Int)
+```
+
+The same form is a pattern, and it isn't only for lists: see
+[Sequences](#sequences).
+
+## Pattern matching
+
+### Equations
+
+A function can be defined by several equations. Each one's patterns are
+tried in order, and the first to match gives the result. A pattern is a
+variable, `_` for anything, a literal, or a constructor with patterns for
+its fields; an argument pattern with fields of its own is parenthesised,
+as in Haskell.
+
+```
+> fact : (n : [] Int) -> Int ! Div
+fact 0 = 1
+fact n = n * fact (n - 1)
+
+fact : (n : [] Int) -> Int ! Div
+> fact 10
+3628800 : Int
+```
+
+Looking at an argument is a use of it, so `fact` uses `n` once to see
+whether it is `0` and then twice more: hence `[]`. (And it recurs on an
+`Int`, hence `! Div`: see [Div](#div).)
+
+Constructor patterns nest as deep as you like, and `::` works in patterns
+as it does in expressions:
+
+```
+> data Nat = Z | S Nat
+use Nat.*
+
+Nat : Type
+Nat.Z : Nat
+Nat.S : Nat -> Nat
+> half : (n : [] Nat) -> Nat
+half (S (S n)) = S (half n)
+half _ = Z
+
+half : (n : [] Nat) -> Nat
+> half (S (S (S (S (S Z)))))
+S (S Z) : Nat
+> second : (xs : [] List Int) -> Int
+second (_ :: y :: _) = y
+second _ = 0
+
+second : (xs : [] List Int) -> Int
+> second (1 :: 2 :: 3 :: Nil)
+2 : Int
+```
+
+`xs@p` matches `p` and names the whole thing `xs` as well. An operator
+can be defined by equations too, written infix: `Z + m = m`, with its
+signature as `(+) : Nat -> Nat -> Nat`. (Defining `+` hides the `Int` one
+for the rest of the program: there are no type classes yet.)
+
+### Guards
+
+`| condition = result` picks the first condition that holds, and
+`otherwise` always holds. If none does, matching goes on to the next
+equation:
+
+```
+> sign : (n : [] Int) -> Int
+sign n
+  | n < 0 = 0 - 1
+  | n == 0 = 0
+  | otherwise = 1
+
+sign : (n : [] Int) -> Int
+> sign (0 - 5) + 10 * sign 7
+9 : Int
+```
+
+A `case` takes the same patterns, and guards written with `->`:
+
+```
+> classify : (xs : [] List Int) -> Int
+classify xs = case xs of
+  Nil -> 0
+  x :: _ | x < 0 -> 1
+  _ -> 2
+
+classify : (xs : [] List Int) -> Int
+> classify (0 - 1 :: Nil)
+1 : Int
+```
+
+### Coverage
+
+Every case has to be covered. What is missing is said as the patterns you
+would write for it, and an equation that nothing can reach is pointed out
+as well:
+
+```
+> both : Bool -> Bool -> Int
+both True True = 1
+both False _ = 0
+
+Error: the patterns do not cover every case
+   │ ╰── missing: True False
+both : Bool -> Bool -> Int
+```
+
+### Fields keep their grade
+
+What comes out of a value has that value's grade. A linear `Nat` has a
+linear field, and a linear field has to be used:
+
+```
+> data Nat = Z | S Nat
+use Nat.*
+
+Nat : Type
+Nat.Z : Nat
+Nat.S : Nat -> Nat
+> isZero : Nat -> Bool
+isZero Z = True
+isZero (S n) = False
+
+Error: usage mismatch
+   │ ╰── n has grade 1, but is used never
+isZero : Nat -> Bool
+> isZero : (m : [0..1] Nat) -> Bool
+isZero Z = True
+isZero (S n) = False
+
+isZero : (m : [0..1] Nat) -> Bool
+```
+
+Given as `[0..1]`, `m` may go unused, and so may its field. A value of
+grade `0` can't be matched on at all: it isn't there at run time to be
+looked at.
+
+### Indexed families
+
+`data T : kind where` gives each constructor its whole type, so each one
+can say which `T` it builds. A vector's length is part of its type:
+
+```
+> data Nat = Z | S Nat
+use Nat.*
+
+Nat : Type
+Nat.Z : Nat
+Nat.S : Nat -> Nat
+> data Vec : Nat -> Type -> Type where
+  Nil : Vec Z a
+  Cons : a -> Vec n a -> Vec (S n) a
+use Vec.*
+
+Vec : Nat -> Type -> Type
+Vec.Nil : {a : Type} -> Vec Z a
+Vec.Cons : {a : Type} -> {n : Nat} -> a -> Vec n a -> Vec (S n) a
+> Cons 1 (Cons 2 Nil)
+Cons 1 (Cons 2 Nil) : Vec (S (S Z)) Int
+```
+
+(With `use Vec.*`, this `Nil` hides the list's for the rest of the
+program; the list's is still `List.Nil`.) The kind's
+arguments are the type's *indices*; parameters can come before the colon
+as usual, `data Vec (a : Type) : Nat -> Type where`, and are then the same
+in every constructor. A variable that a signature mentions but doesn't
+bind, like `n` and `a` here, is bound for you, as an implicit argument in
+front; this works in every signature, not just a constructor's.
+
+A constructor's implicit arguments come first, and are erased. One of
+them may be a type — too large for a data type in `Type` to hold — only if
+it is *forced*: one of the indices, so that the type says what it is.
+`Nil`'s `a` is; a type hidden in the value would not be.
+
+### Sequences
+
+A literal `#[a, b, c]` is built with the constructors of whatever type is
+wanted, if the type says which. `@seq(nil = .., cons = ..)`, on the line
+before a data type, names the empty one and the one that puts an element
+in front; `List` is declared that way, and with nothing else to go on a
+literal is a `List`. A vector can say so too, and then a literal gets its
+length into its type for nothing:
+
+```
+> data Nat = Z | S Nat
+use Nat.*
+
+Nat : Type
+Nat.Z : Nat
+Nat.S : Nat -> Nat
+> @seq(nil = Nil, cons = Cons)
+data Vec : Nat -> Type -> Type where
+  Nil : Vec Z a
+  Cons : a -> Vec n a -> Vec (S n) a
+use Vec.*
+
+Vec : Nat -> Type -> Type
+Vec.Nil : {a : Type} -> Vec Z a
+Vec.Cons : {a : Type} -> {n : Nat} -> a -> Vec n a -> Vec (S n) a
+> (#[1, 2, 3] : Vec (S (S (S Z))) Int)
+Cons 1 (Cons 2 (Cons 3 Nil)) : Vec (S (S (S Z))) Int
+> total : Vec n Int -> Int
+total #[] = 0
+total (Cons x xs) = x + total xs
+
+total : {n : Nat} -> Vec n Int -> Int
+> total #[4, 5, 6]
+15 : Int
+```
+
+As a pattern, `#[]` is the empty sequence and `#[x, y]` one of exactly two.
+Layout is suspended inside the brackets, so a long literal can run over as
+many lines as it likes. (`#[a; b]`, with semicolons, will be an array; there
+are none yet.)
+
+### Matching teaches the types
+
+Matching on a vector is also learning about its length. In `head` below,
+the vector's length is `S n`, which `Nil` (of length `Z`) can never have:
+so there is no `Nil` case to write, and none is missing.
+
+```
+> data Nat = Z | S Nat
+use Nat.*
+
+Nat : Type
+Nat.Z : Nat
+Nat.S : Nat -> Nat
+> data Vec : Nat -> Type -> Type where
+  Nil : Vec Z a
+  Cons : a -> Vec n a -> Vec (S n) a
+use Vec.*
+
+Vec : Nat -> Type -> Type
+Vec.Nil : {a : Type} -> Vec Z a
+Vec.Cons : {a : Type} -> {n : Nat} -> a -> Vec n a -> Vec (S n) a
+> head : (v : [0..1] Vec (S n) a) -> a
+head (Cons x xs) = x
+
+head : {n : Nat} -> {a : Type} -> (v : [0..1] Vec (S n) a) -> a
+> head (Cons 7 Nil)
+7 : Int
+```
+
+And the other way: in the `Cons` case of a function over `Vec n a`, the
+checker knows that `n` is `S m` for the `m` of the tail, and the result
+type is worked out with that. A `case` on a variable does the same. That
+is *dependent* pattern matching, after Cockx and Abel's elaboration of it
+to case trees.
+
+### Computing in types
+
+For `n` to be learned, the types have to compute. A recursive function
+the checker can see will always finish can run inside a type; `plus`
+takes a smaller `Nat` each time round, so appending two vectors gives one
+as long as both:
+
+```
+> data Nat = Z | S Nat
+use Nat.*
+
+Nat : Type
+Nat.Z : Nat
+Nat.S : Nat -> Nat
+> data Vec : Nat -> Type -> Type where
+  Nil : Vec Z a
+  Cons : a -> Vec n a -> Vec (S n) a
+use Vec.*
+
+Vec : Nat -> Type -> Type
+Vec.Nil : {a : Type} -> Vec Z a
+Vec.Cons : {a : Type} -> {n : Nat} -> a -> Vec n a -> Vec (S n) a
+> plus : Nat -> Nat -> Nat
+plus Z m = m
+plus (S n) m = S (plus n m)
+
+plus : Nat -> Nat -> Nat
+> append : Vec n a -> Vec m a -> Vec (plus n m) a
+append Nil ys = ys
+append (Cons x xs) ys = Cons x (append xs ys)
+
+append : {n : Nat} -> {a : Type} -> {m : Nat} -> Vec n a -> Vec m a -> Vec (plus n m) a
+> append (Cons 1 Nil) (Cons 2 (Cons 3 Nil))
+Cons 1 (Cons 2 (Cons 3 Nil)) : Vec (S (S (S Z))) Int
+```
+
+The check is Agda's: every loop of calls, however roundabout, must make
+some argument smaller, where smaller means taken out of it by matching.
+That covers ordinary structural recursion, mutual recursion, and
+Ackermann's function, which is smaller in one argument or else the same
+in it and smaller in the other. A function it can't see finishing has to
+say so, with the effect `Div`; it still runs, but it can't be used in a
+type at all (see [Effects](#effects)).
+
+### Proofs
+
+An equality is a data type with one constructor, which only fits when
+both sides are the same. Matching on `Refl` teaches the checker that they
+are; a function returning an equality is a proof, and a recursive one is
+a proof by induction:
+
+```
+> data Nat = Z | S Nat
+use Nat.*
+
+Nat : Type
+Nat.Z : Nat
+Nat.S : Nat -> Nat
+> plus : Nat -> Nat -> Nat
+plus Z m = m
+plus (S n) m = S (plus n m)
+
+plus : Nat -> Nat -> Nat
+> data Eq : Nat -> Nat -> Type where
+  Refl : Eq x x
+use Eq.*
+
+Eq : Nat -> Nat -> Type
+Eq.Refl : {x : Nat} -> Eq x x
+> cong : Eq x y -> Eq (S x) (S y)
+cong Refl = Refl
+
+cong : {x : Nat} -> {y : Nat} -> Eq x y -> Eq (S x) (S y)
+> plusZero : (n : Nat) -> Eq (plus n Z) n
+plusZero Z = Refl
+plusZero (S k) = cong (plusZero k)
+
+plusZero : (n : Nat) -> Eq (plus n Z) n
+```
+
+`plusZero` needs both halves of this section: `plus (S k) Z` computes to
+`S (plus k Z)`, which is what `cong` gives.
+
+### Impossible cases and dot patterns
+
+A case that can't happen can be left out, or said with `impossible`,
+which the checker holds you to:
+
+```
+> data Nat = Z | S Nat
+use Nat.*
+
+Nat : Type
+Nat.Z : Nat
+Nat.S : Nat -> Nat
+> data Fin : Nat -> Type where
+  FZ : Fin (S n)
+  FS : Fin n -> Fin (S n)
+use Fin.*
+
+Fin : Nat -> Type
+Fin.FZ : {n : Nat} -> Fin (S n)
+Fin.FS : {n : Nat} -> Fin n -> Fin (S n)
+> noFin : Fin Z -> Int
+noFin i impossible
+
+noFin : Fin Z -> Int
+> nope : Nat -> Int
+nope n impossible
+
+Error: not impossible
+   │ ╰── some values match these patterns
+nope : Nat -> Int
+```
+
+A type with no constructors at all is declared with none, `data Void`.
+
+A *dot pattern*, `.e`, stands where matching has already worked out what
+must be: in `same n .n Refl = n`, once `Refl` is matched the second
+argument is `n`, and the dot says so rather than looking. Being never
+looked at, it is best given grade `0`.
+
+## Effects
+
+### Rows
+
+What a function does besides give its result goes after its type: `a ->
+b ! e` is a function from `a` to `b` that may have the effects in the
+*row* `e`. A row is a set of effects in braces, `{Log, Div}`, or just one,
+`Div`; `{}` is none, and so is leaving it off. A function type with no row
+is a promise that calling it does nothing but compute:
+
+```
+> Int -> Int ! Div
+: Type
+> Int -> Int ! {}
+: Type
+```
+
+A lambda's row is whatever its body does, and a function's signature has
+to allow what its equations do.
+
+### Div
+
+`Div` is the effect of maybe never finishing. A recursive definition the
+termination checker can't see ending (see [Computing in
+types](#computing-in-types)) has to say so, on the arrow its recursion
+goes round:
+
+```
+> count : (n : [] Int) -> Int
+count n = if n == 0 then 0 else count (n - 1)
+
+Error: count may not terminate
+   │ ╰── no argument gets smaller on every round of its recursion, so it has the effect Div
+count : (n : [] Int) -> Int
+> count : (n : [] Int) -> Int ! Div
+count n = if n == 0 then 0 else count (n - 1)
+
+count : (n : [] Int) -> Int ! Div
+> count 3
+0 : Int
+```
+
+(`count` does always stop, but on an `Int`, which no match takes apart,
+the checker can't tell.) Calling a function with `Div` has `Div` too, so
+it spreads to whatever uses one, and a program may have it at the top:
+that is what running it might do.
+
+A definition that isn't a function says it with its type,
+`total : Int ! Div`.
+
+### Types are total
+
+Nothing with effects gets into a type. A type is checked by computing
+it, so a type with `Div` in it might never finish being checked, and a
+type with any other effect would not be the same type twice:
+
+```
+> count : (n : [] Int) -> Int ! Div
+count n = if n == 0 then 0 else count (n - 1)
+
+count : (n : [] Int) -> Int ! Div
+> data IEq : Int -> Int -> Type where
+  IRefl : IEq x x
+use IEq.*
+
+IEq : Int -> Int -> Type
+IEq.IRefl : {x : Int} -> IEq x x
+> (IRefl : IEq (count 1) 0)
+Error: a type must be pure
+   │ ╰── computing this type has the effects Div
+> (\(n : [0] Int) -> 5) (count 1)
+Error: an erased argument must be pure
+   │ ╰── this has the effects Div, but it is never run, so they could not happen
+```
+
+The same goes for an argument a result type depends on, and a `let`
+whose right-hand side has effects gives the types a variable, not its
+value. This is what makes it safe to rely on a proof no one looks at: an
+erased argument of type `Eq n m` is certainly `Refl`, because only total
+code can make one, and so a function can match on it without the proof
+being there at run time:
+
+```
+> data Nat = Z | S Nat
+use Nat.*
+
+Nat : Type
+Nat.Z : Nat
+Nat.S : Nat -> Nat
+> data Eq : Nat -> Nat -> Type where
+  Refl : Eq x x
+use Eq.*
+
+Eq : Nat -> Nat -> Type
+Eq.Refl : {x : Nat} -> Eq x x
+> data Vec : Nat -> Type -> Type where
+  Nil : Vec Z a
+  Cons : a -> Vec n a -> Vec (S n) a
+use Vec.*
+
+Vec : Nat -> Type -> Type
+Vec.Nil : {a : Type} -> Vec Z a
+Vec.Cons : {a : Type} -> {n : Nat} -> a -> Vec n a -> Vec (S n) a
+> cast : (p : [0] Eq n m) -> Vec n a -> Vec m a
+cast Refl v = v
+
+cast : {n : Nat} -> {m : Nat} -> {a : Type} -> (p : [0] Eq n m) -> Vec n a -> Vec m a
+> cast Refl (Cons 1 Nil)
+Cons 1 Nil : Vec (S Z) Int
+```
+
+A value of grade `0` with more than one constructor it could be still
+can't be matched on: choosing between them would mean looking at it.
+
+### Your own effects
+
+`effect` declares an effect and its *operations*, each with the type of
+what it takes and what it gives:
+
+```
+> effect Ask where
+  ask : () -> Int
+
+Ask : Effect
+ask : () -> Int ! Ask
+> sum3 : () -> Int ! Ask
+sum3 u = ask () + ask () + ask ()
+
+sum3 : () -> Int ! Ask
+> sum3 ()
+Error: unhandled effects
+   │ ╰── the program has the effects Ask, and nothing handles them
+```
+
+Calling an operation *performs* it. `handle` says what that does:
+
+```
+> effect Ask where
+  ask : () -> Int
+
+Ask : Effect
+ask : () -> Int ! Ask
+> sum3 : () -> Int ! Ask
+sum3 u = ask () + ask () + ask ()
+
+sum3 : () -> Int ! Ask
+> handle sum3 () with
+  ask _ k -> k 10
+
+30 : Int
+```
+
+In a clause `op x k -> e`, `x` is what the operation was given, and `k`
+is the rest of the handled computation, from the operation on, waiting
+for what the operation gives back. Calling `k 10` answers `ask ()` with
+`10` and goes on; the handler stays in force for the rest, so each `ask`
+comes to it. A handler has a clause for every operation of one effect,
+and takes that effect out of the row: what is left is what the whole
+`handle` has.
+
+An operation takes as many arguments as its type has arrows:
+`store : Int -> Int -> ()` takes two, is performed once it has both, and
+its clause names them both, `store key n k -> ..`.
+
+### Not going on, going on twice
+
+`k` needn't be called at all. Then the clause's value is the whole
+`handle`'s — an exception. A `return` clause says what becomes of the
+value when the computation finishes instead:
+
+```
+> effect Fail where
+  fail : () -> Int
+
+Fail : Effect
+fail : () -> Int ! Fail
+> safeDiv : (a : [] Int) -> (b : [] Int) -> Int ! Fail
+safeDiv a b = if b == 0 then fail () else a / b
+
+safeDiv : (a : [] Int) -> (b : [] Int) -> Int ! Fail
+> handle safeDiv 7 0 with
+  return x -> x
+  fail _ k -> 0
+
+0 : Int
+```
+
+Or it can be called more than once. Here it tries both answers:
+
+```
+> effect Choose where
+  flip : () -> Bool
+
+Choose : Effect
+flip : () -> Bool ! Choose
+> pick : () -> Int ! Choose
+pick u = if flip () then 1 else 10
+
+pick : () -> Int ! Choose
+> handle pick () with
+  flip _ k -> k True + k False
+
+11 : Int
+```
+
+How often a clause resumes is `k`'s grade — `0` for an exception, `1`
+for the usual case, more for backtracking — and like any grade it is
+worked out from the clause, not written.
+
+An effect can have parameters, as a data type can: `effect State (s :
+Type) where get : () -> s; put : s -> ()`. A handler that returns a
+function threads the state through, calling `k` with the state still to
+come.
+
+### Effect polymorphism
+
+A row can end in a variable, which stands for whatever else there is.
+It is bound for you, like any lower-case name a signature doesn't bind,
+so a function can take whatever effects its argument has:
+
+```
+> effect Ask where
+  ask : () -> Int
+
+Ask : Effect
+ask : () -> Int ! Ask
+> sum3 : () -> Int ! Ask
+sum3 u = ask () + ask () + ask ()
+
+sum3 : () -> Int ! Ask
+> twice : (f : [] (() -> Int ! e)) -> Int ! e
+twice f = f () + f ()
+
+twice : {e : Effect} -> (f : [] () -> Int ! e) -> Int ! e
+> handle twice sum3 with
+  ask _ k -> k 1
+
+6 : Int
+```
+
+Handlers run in the REPL; the native back end doesn't compile them yet.
+
+### Naming a row
+
+`effect App = {Log, Ask}` names a row, to write in a signature as any
+effect is: `! App`, or `! {App | e}` with a variable for more. It is an
+ordinary definition of a term of type `Effect`, and what it names is what
+is shown. It may have parameters, `effect Stateful s = {State s, Div}`, as
+a type can.
+
+```
+> effect Ask where
+  ask : () -> Int
+
+Ask : Effect
+ask : () -> Int ! Ask
+> effect Ask2 = {Ask, Div}
+
+Ask2 : Effect
+> sum3 : () -> Int ! Ask2
+sum3 u = ask () + ask () + ask ()
+
+sum3 : () -> Int ! {Div, Ask}
+```
+
+### The world and `main`
+
+The effects a program's top level may still have are the ones the
+runtime handles itself: everything in `Eff`, which the prelude declares as
+
+```
+effect Eff = {Console, Fs, Process, Random, Time, Test, Div}
+```
+
+with these operations (and `Maybe` and `Result` declared alongside,
+`data Maybe a = Nothing | Just a` and `data Result e a = Err e | Ok a`):
+
+| Effect | Operations |
+| --- | --- |
+| `Console` | `putStr`, `putStrLn : String -> ()`, `printInt : Int -> ()`, `readLine : () -> Maybe String` |
+| `Fs` | `readToString : String -> Result String String`; `writeString`, `appendString : String -> String -> Result String ()` (a path, then the text); `removeFile`, `createDir`, `createDirAll`, `removeDir`, `removeDirAll : String -> Result String ()`; `rename : String -> String -> Result String ()`; `copy : String -> String -> Result String Int`; `readDir : String -> Result String (List String)`; `exists`, `isFile`, `isDir : String -> Bool` |
+| `Process` | `exit : Int -> ()`, `currentPid : () -> Int`, `args : () -> List String`, `getEnv : String -> Maybe String`, `setEnv : String -> String -> ()`, `removeEnv : String -> ()`, `isTerminal : Int -> Bool` |
+| `Random` | `nextInt : () -> Int`, `intBetween : Int -> Int -> Int` (from the first, up to but not including the second), `nextSeed : () -> Int` |
+| `Time` | `now : () -> Int` (milliseconds since 1970), `monotonic : () -> Int` (nanoseconds, for measuring), `sleep : Int -> ()` (milliseconds) |
+| `Test` | `fail : String -> ()`, which stops the program |
+
+An operation of one of them that no handler of the program's own takes
+is done by the runtime:
+
+```
+> putStrLn "hello"
+
+hello
+() : ()
+> exists "no/such/file"
+False : Bool
+> let n = intBetween 1 7 in n < 7
+True : Bool
+```
+
+They are effects like any other, so a handler of your own can take one
+instead: to test code that rolls dice, say, with dice that always land
+in the middle.
+
+```
+> dice : () -> Int ! Random
+dice () = intBetween 1 7
+
+dice : () -> Int ! Random
+> handle dice () + dice () with
+  nextInt _ k -> k 4
+  intBetween lo hi k -> k ((lo + hi) / 2)
+  nextSeed _ k -> k 0
+
+8 : Int
+```
+
+A program with a `main` and no expression of its own runs `main ()`.
+`main` takes `()` and gives `()`, and may have at most the effects in
+`Eff`: `main : () -> () ! Eff`. Leave its signature off, and its effects
+are inferred, and then held to that. Anything else is an error, found
+before the program runs:
+
+```
+> effect Ask where
+  ask : () -> Int
+
+Ask : Effect
+ask : () -> Int ! Ask
+> main : () -> () ! Eff
+main () = printInt (ask ())
+
+Error: effects not allowed
+   │ ╰── this has the effects {Console, Ask}, but its type allows {Div, Console, Fs, Process, Random, Time, Test}
+```
+
+A file with a `main` is run with `idyllic hello.idl`; what comes after
+`--` on that command line is what `args ()` gives it, and `exit n`
+becomes its exit code. It compiles the same way as any other program
+(see [Compiling to native code](#compiling-to-native-code)), and the
+compiled program does what `main` does, and prints nothing more.
+
+```
+main : () -> () ! Eff
+main () = case readLine () of
+  Just name -> let u = putStr "hello, " in putStrLn name
+  Nothing -> putStrLn "hello, whoever you are"
+```
+
+In the REPL, defining `main` doesn't run it; `main ()` does. Meadow's
+`Eff` also has `Mut` and `Thread`: Idyll's references will be linear
+values rather than an effect, and threads come later.
+
+## Modules and packages
+
+### A package
+
+A program bigger than one file is a *package*: a directory with a `src/`,
+and optionally an `Idyll.toml` saying what it is called.
+
+```
+App/
+  Idyll.toml
+  src/
+    Main.idl
+    Syntax.idl
+    Geometry/
+      Shapes.idl
+```
+
+```
+[package]
+name = "App"
+version = "0.1.0"
+```
+
+`src/Main.idl` (or `src/Lib.idl`, for a library) is the *root* module, and
+every other file is a module named by its path: `src/Syntax.idl` is
+`Syntax`, and `src/Geometry/Shapes.idl` is `Geometry.Shapes`. Each is a
+name in a `use` path, so module files and directories are PascalCase; a
+lower-case one is an error that says what to rename it to. Without an
+`Idyll.toml`, the package is named after its directory. `idyll run App`
+builds and runs a package (its root's `main`), as `idyll run hello.idl`
+does a single file, which is a package of one module (see
+[Building and running](#building-and-running-idyll)).
+
+### Modules are namespaces
+
+A package is checked as a whole, so its modules may mention each other,
+even one that mentions them back. But each module is a namespace of its
+own: a sibling's names arrive through a `use`, never for free.
+
+```
+-- src/Syntax.idl
+@pub(pkg) data Expr = Lit Int | Add Expr Expr
+```
+
+```
+-- src/Eval.idl
+use App.Syntax (Expr)
+
+@pub(pkg) eval : Expr -> Int
+eval (Expr.Lit n) = n
+eval (Expr.Add a b) = eval a + eval b
+```
+
+```
+-- src/Main.idl
+use App.Syntax (Expr)
+use Eval (eval)
+
+main () = printInt (eval (Expr.Add (Expr.Lit 40) (Expr.Lit 2)))
+```
+
+A path starts with the package's own name, `App.Syntax`, or just as well
+without it, `Syntax`: the root's children are in scope by name. The
+package's name on its own is the root module, for a child that wants
+something the root declares.
+
+### `use`
+
+| Form | What it brings |
+| --- | --- |
+| `use M` | every name `M` gives, unqualified; constructors stay under their types |
+| `use M as C` | `C.x` for each, and nothing unqualified |
+| `use M (a, T)` | just those, unqualified |
+| `use M as C (a)` | both |
+| `use M.T` | the type `T`, its constructors written `T.K` |
+| `use M.T (K)`, `use T (K)` | those constructors of `T`, bare |
+| `use M.T.*`, `use T.*` | every constructor of `T`, bare |
+
+A name can also be written in full with no `use` at all,
+`App.Geometry.Shapes.area`. Naming an effect in a `use` brings its
+operations too. What a `use` brings is for the module it is written in:
+the next module says what it wants for itself.
+
+A constructor lives under its type in every module, including the one
+that declares it (see [Data types](#data-types)), which is why a
+single-file program says `use T.*` after declaring `T`.
+
+### Visibility
+
+Nothing is visible outside its module until it says so:
+
+| Written | Seen by |
+| --- | --- |
+| nothing | its own module, and the modules inside it |
+| `@pub(super)` | and its parent module's subtree |
+| `@pub(pkg)` | and every module of the package |
+| `@pub` | and anyone who depends on the package |
+
+The attribute goes in front of the declaration: a data type, an effect, a
+signature (or the first equation, for a definition without one). A type's
+constructors are exactly as visible as the type, and an effect's
+operations as the effect.
+
+A package that never mentions visibility has none: every module sees all
+of every other, which keeps small programs free of annotations. The
+moment one declaration is marked, the rules apply to all of them.
+
+`@pub use` gives a name on to whoever uses this module, which is how a
+library's root gathers its surface from its modules:
+
+```
+-- src/Lib.idl
+@pub use App.Syntax (Expr)
+@pub use Syntax.Expr.*
+@pub use Eval (eval)
+```
+
+A plain `use` keeps what it brings to itself.
+
+### Building and running: `idyll`
+
+The `idyll` command builds packages the way cargo builds crates (and the
+way Meadow's `meadow` does; Idyll's build system is a port of Meadow's):
+
+```sh
+idyll init hello          # Idyll.toml and src/Main.idl, which runs
+cd hello
+idyll run                 # build it, then run its main
+idyll build               # just build it
+idyll run -- a b          # with arguments, for args ()
+```
+
+```
+   Compiling Hello v0.1.0 (/home/me/hello)
+    Finished `debug` profile [machine] in 0.02s
+     Running `Hello`
+Hello, world!
+```
+
+`idyll run` runs the root module's `main`, or prints the value of its
+trailing expression, as the REPL would. With no command, `idyll` is the
+REPL. A package that compiled with no diagnostics is kept, compiled, under
+`target/`; the next build reads it back instead of compiling it again, as
+long as nothing it was compiled from has changed (its sources, the
+packages it depends on, the compiler). Editing a dependency recompiles it
+and what depends on it, and nothing else. `idyll clean` removes `target/`.
+
+### Profiles: the machine and native code
+
+A build has a *profile*: `--debug` (the default) or `--release`. Debug runs
+the program on the AxCut abstract machine, in the `idyll` process, which
+starts at once. Release compiles it with LLVM into an executable under
+`target/release/native/` (this needs clang and lld), and runs that. A
+program native code cannot compile yet (one with a handler, say) runs on
+the machine instead, with a warning. A package's `Idyll.toml` can change
+what a profile means, and a flag (`--backend machine`, `--native`) wins
+over both:
+
+```toml
+[profile.release]
+backend = "machine"      # or "native"
+```
+
+`idyll build --emit axcut,llvm` writes the program as AxCut, or as LLVM IR,
+under `target/`.
+
+### Dependencies
+
+A package names what it depends on in `[dependencies]`, by the name its
+`use` lines will call it:
+
+```toml
+[dependencies]
+Util = { path = "../util" }
+Json = { git = "https://github.com/someone/idyll-json", version = "1.2.0" }
+Text = { git = "https://github.com/someone/text", tag = "v0.3.0" }
+Edge = { git = "https://github.com/someone/edge", branch = "main" }
+Pin  = { git = "https://github.com/someone/pin", rev = "a1b2c3d4…" }
+```
+
+`version = "1.2.0"` takes the newest release (a tag `v1.2.3` or `1.2.3`)
+that does not break 1.2.0: anything below 2.0.0. Everything in a build that
+can share one release does; only requirements that cannot meet (`1.4.0`
+beside `2.0.0`) give two copies, and two copies of a package declare two
+different types. `idyll add owner/name` (or a URL, or a directory) fetches
+a package and writes the line for you, with `--tag`, `--branch`, `--rev`
+or `--rename`.
+
+```
+use Json (parse)
+use Util as U
+```
+
+A dependency's modules are reached through its name: `use Json (parse)`,
+`Json.Value.Null`, `use Json.Value.*`. Only what it makes `@pub` crosses,
+and the packages a dependency depends on are its own business: to use one,
+depend on it. Packages may not depend on each other in a circle. Each
+package is checked against the *compiled* packages it depends on, never
+their source: including the bodies of their definitions, so that another
+package's function computes in your types as your own would.
+
+### The lockfile
+
+The first build resolves each git dependency to a commit and writes it to
+`idyll.lock`, beside the manifest. Every build after that uses those
+commits, whatever the branch or tag has moved to since, and needs no
+network for them; commit the file, and a build on another machine is the
+build you tested. `idyll update` moves dependencies forward to what their
+references name now (`idyll update Json` just that one, `--dry-run` to see
+what would change). Fetched repositories are kept in `~/.idyll/git`
+(`IDYLL_HOME` moves it). `--offline` never fetches; `--locked` refuses any
+build that would change the lockfile, which is what CI wants.
+
+### Workspaces
+
+Several packages can share one root manifest, one `target/`, one lockfile
+and one set of profiles:
+
+```toml
+[workspace]
+members = ["app", "libs/*"]
+
+[workspace.package]
+version = "0.3.0"
+
+[workspace.dependencies]
+Json = { git = "https://github.com/someone/idyll-json", version = "1.2.0" }
+```
+
+A member takes what the workspace says with `version.workspace = true` and
+`Json = { workspace = true }`. `idyll init --workspace` makes one, and
+`idyll init` inside it adds a member. At the root, `idyll build` builds the
+`default-members` (or every member); `-p App` picks one, `--workspace`
+all, `--exclude` leaves some out. A package compiled for one member is
+reused by the next.
 
 ## Boxes
 
@@ -971,10 +2005,10 @@ lambda or an equation. So a function that ignores its argument, or
 duplicates it, can be written honestly by asking for a box:
 
 ```
-> drop : {a : Type} -> a [0] -> Unit
+> drop : {a : Type} -> a [0] -> ()
 drop [x] = ()
 
-drop : {a : Type} -> a [0] -> Unit
+drop : {a : Type} -> a [0] -> ()
 > copy : Int [2] -> Int
 copy [x] = x + x
 
@@ -1238,14 +2272,11 @@ long as it is allowed to (see [Recursion](#recursion)).
 Whatever has grade `0` is not just unused at run time, it is not
 *computed*. An argument to a grade-`0` parameter — every implicit type
 argument, for one — is never evaluated, and a grade-`0` box is never
-filled. Here the argument would loop forever, and does no harm:
+filled. That is why such an argument has to be pure (see
+[Types are total](#types-are-total)): its effects would never happen.
 
 ```
-> loop : Int -> Int
-loop n = loop (n + 1)
-
-loop : Int -> Int
-> (\(n : [0] Int) -> 5) (loop 0)
+> (\(n : [0] Int) -> 5) (6 * 7)
 5 : Int
 ```
 
@@ -1315,7 +2346,10 @@ Two things are done differently from the interpreter, both for speed:
 
 Two things differ from the REPL. `Int` is 64 bits and wraps, where the
 interpreter's is unbounded. And only an `Int`, `Bool`, `String` or `()`
-answer is printed; anything else prints `<value>`.
+answer is printed; anything else prints `<value>`. A program run for its
+`main` prints what `main` prints and no answer at all. Handlers aren't
+compiled yet, so a program that has one runs only in the REPL; the
+console, which the runtime handles, compiles to calls into it.
 
 `bench/run.sh` compares compiled Idyll with other languages on three small
 programs; `bench/README.md` has the numbers, and what they do and don't
@@ -1329,7 +2363,8 @@ carries on after an error, so one input can report several problems.
 | Message | What it means |
 | --- | --- |
 | `parse error` | the input isn't valid syntax; the message says what was expected |
-| `name not in scope: x` | `x` isn't defined here |
+| `name not in scope: x` | `x` isn't defined here; for a constructor, it says the type it lives under |
+| `x is private to M`, `M has no x`, `no module or type P`, `P is a module` | a name from another module that isn't there, or isn't yours to see; see [Modules and packages](#modules-and-packages) |
 | `duplicate binding of x` | `x` is defined (or given a signature) twice in one block; both places are marked |
 | `the signature for f has no definition` | `f : t` with no equation for `f`; to annotate an expression, parenthesise it |
 | `type mismatch` | a term has a different type from the one needed |
@@ -1344,9 +2379,22 @@ carries on after an error, so one input can report several problems.
 | `a type-level grade needs a function type to check it against` | `\(x : (s, r) t) -> ..` with no signature; see [Grades in types](#grades-in-types) |
 | `empty grade range` | `lo..hi` with `lo` greater than `hi` |
 | `grade is too large` | a grade that doesn't fit a machine word |
-| `this cannot be matched on` | a `case` or `if` on something that isn't a data type or a `Bool` |
-| `this case does not cover every constructor` | the missing ones are listed |
-| `C is matched twice`, `C is not a constructor of this type`, `C has 2 fields, not 1` | an alternative that can't be right |
+| `this cannot be matched on` | a pattern for something that isn't a data type, a `Bool` or an `Int`, or isn't a variable |
+| `the patterns do not cover every case` | the missing cases are listed, as patterns |
+| `unreachable` (warning) | an equation or alternative the ones before it leave nothing for |
+| `C is not a constructor`, `C is not a constructor of this type`, `C has 2 fields, not 1` | a pattern that can't be right |
+| `equations with different numbers of arguments`, `too many patterns` | a definition whose equations disagree, or take more arguments than its type has |
+| `cannot tell whether this pattern applies` | matching needs two indices to be equal, and they neither compute to the same thing nor to different constructors |
+| `not impossible`, `dot pattern does not match` | an `impossible` or `.e` that matching doesn't bear out |
+| `effects not allowed` | something has effects the type it is checked against doesn't allow; with no row, a type allows none |
+| `f may not terminate` | a recursion the termination checker can't see ending, whose type doesn't say `! Div` |
+| `a type must be pure`, `an erased argument must be pure`, `a type cannot depend on this` | something with effects where only total code may go |
+| `unhandled effects` | effects left at the top of the program, where only those in `Eff` are handled |
+| `main has the wrong type` | `main` isn't `() -> ()`, or has effects `Eff` doesn't; see [The world and `main`](#the-world-and-main) |
+| `a sequence literal needs a sequence type`, `T cannot be built with #[..]` | `#[..]` where the type wanted has no `@seq`, or an `@seq` that names the wrong constructors |
+| `the handler does not handle every operation`, `one handler, one effect`, `f is not an operation`, `op is handled twice` | a handler that can't be right |
+| `universe too large` | an implicit argument (or hole) filled with a type from a larger universe than it allows |
+| `C does not build a T`, `unsupported implicit argument of C`, `a data type's kind ends in Type`, `T has indices, so its constructors need types` | a `data .. where` declaration that isn't well-formed |
 | `this is not a box` | `let [x] = e` or a `[x]` pattern where `e` isn't an `a [r]` |
 | `unterminated string literal`, `unknown escape sequence`, `unexpected character` | problems in the text itself |
 
@@ -1360,18 +2408,42 @@ input can still be checked.
 | `42`, `0xFF`, `0b1010`, `0o755` | `Int` literals |
 | `"text"` | `String` literal |
 | `True`, `False` | `Bool` literals |
-| `()` | the `Unit` value |
-| `Int`, `String`, `Bool`, `Unit`, `Grade` | built-in types |
+| `()` | the unit value, and its type (also called `Unit`) |
+| `Int`, `String`, `Bool`, `()`, `Grade` | built-in types |
 | `Type`, `Type 1`, … | universes: `Type` (`Type 0`) is the type of `Int`, `Type : Type 1`, and so on |
 | `x` | a variable |
 | `f x` | application |
 | `a + b`, `a - b`, `a * b` | `Int` arithmetic (`+` and `*` also on grades, where a grade is expected) |
+| `a / b`, `a % b` | `Int` division and remainder, rounding toward zero |
+| `(+)` | an operator on its own, as a function |
 | `a < b`, `a == b` | `Int` comparison, giving a `Bool` |
 | `if c then a else b` | choose on a `Bool` |
 | `data T a = C a | D` | a data type and its constructors |
+| `data T a : k where C : t` | a data type whose constructors give their types, and so can choose its indices |
+| `data Void` | a data type with no constructors |
+| `a -> b ! e`, `a -> b ! {Log, Div}`, `{Log \| e}` | a function with the effects in a row; a row with a variable for more |
+| `Effect`, `Div` | the type of rows, and the effect of maybe not terminating |
+| `x : Int ! Div` | a definition whose computation has effects |
+| `effect E (a : Type) where op : a -> b` | an effect and its operations |
+| `handle e with return x -> r; op x k -> e` | a handler: what the value becomes, and what each operation does |
+| `effect App = {Log, Ask}`, `effect St s = {State s, Div}` | a name for a row |
+| `T.K`, `M.x`, `App.Syntax.Expr.Lit` | a constructor under its type; a name from another module |
+| `use M`, `use M as C`, `use M (a, b)`, `use T.*`, `use T (K)` | names from elsewhere; see [`use`](#use) |
+| `@pub`, `@pub(pkg)`, `@pub(super)` | who outside its module may see a declaration |
+| `main : () -> () ! Eff` | what a program with no expression of its own runs |
+| `Console`, `Fs`, `Process`, `Random`, `Time`, `Test` | the world's effects, which the runtime handles; see [The world and `main`](#the-world-and-main) |
+| `Maybe a`, `Result e a` | `Nothing`, `Just x`; `Err e`, `Ok x` |
 | `case e of C x -> a; D -> b` | take a value apart; alternatives in a column, or in braces |
+| `case e of p \| g -> a` | an alternative with a guard |
+| `f (C x) 0 = e` <br> `f _ n = e` | a definition by equations, tried in order |
+| `f x \| g = e \| otherwise = e` | guards |
+| `C p q`, `x :: xs`, `_`, `3`, `x@p`, `.e` | patterns: constructor, list cell, anything, literal, as-pattern, dot pattern |
+| `f p impossible` | an equation for a case that can't happen |
+| `(+) : t`, `Z + m = m` | defining an operator |
 | `x :: xs`, `Nil` | lists: `::` is an infix constructor, in expressions and patterns |
-| `\x -> e` | lambda |
+| `#[a, b, c]`, `#[]` | a sequence: a `List`, or whatever `@seq` type is wanted; also a pattern |
+| `@seq(nil = Nil, cons = (::))` | before a `data`: the constructors `#[..]` builds it with |
+| `\x -> e`, `\_ -> e` | lambda; `_` for a parameter it doesn't name |
 | `\(x : t) -> e` | lambda with a typed parameter |
 | `\x (y z : t) -> e` | several parameters |
 | `a -> b` | function type |
@@ -1388,7 +2460,7 @@ input can still be checked.
 | `let [x] = e in body` | open a box; `x` gets the box's grade |
 | `\[x] -> e`, `f [x] = e` | open a box parameter on the spot |
 | `2`, `0..1`, `∞`, `r + s`, `r * s` | grades |
-| `f : t` | signature |
+| `f : t` | signature; lower-case names it doesn't bind are bound for it, implicitly |
 | `f x (y : t) [z] = e` | defining equation, with patterns |
 | `e : t` | type annotation |
 | `_` | hole |
@@ -1403,9 +2475,12 @@ input can still be checked.
 letters, digits, `_` or `'` (so `x'` and `go_2` are fine). Names you bind
 must be lower-case.
 
-**Reserved words.** `let`, `in`, `data`, `case`, `of`, `if`, `then`, `else`,
-`inf` and `Type` are used today. `mod`, `use`, `type`, `where` and `do` are
-reserved for features still to come and can't be used as names.
+**Reserved words.** `let`, `in`, `data`, `where`, `case`, `of`, `if`,
+`then`, `else`, `effect`, `handle`, `with`, `use`, `inf` and `Type` are
+used today. `mod`, `type` and `do` are reserved for features still to
+come and can't be used as names.
+`impossible` and `otherwise` mean something only where an equation's
+right-hand side or a guard would be.
 
 ## What's missing
 
@@ -1419,29 +2494,53 @@ These aren't implemented yet. This section shrinks as they land.
   a function passed as an argument is called through a pointer, nothing
   is specialised, and an `Int` still takes two words. `Int` is 64-bit when
   compiled and unbounded in the REPL.
-- **Arithmetic and operators.** `+`, `-`, `*`, `<` and `==` on `Int` are
-  the only built-in operations. There is no division, nothing on `String`
-  or `Bool`, and other operator symbols aren't usable in expressions. Operators can't be used unapplied (there is no `(+)`), and
-  no arithmetic laws are applied when comparing types that mention `Int`s
-  (grades are another matter).
+- **Arithmetic and operators.** `+`, `-`, `*`, `/`, `%`, `<` and `==` on
+  `Int` are the only built-in operations; there is nothing on `String` or
+  `Bool`. Any operator can be defined, but only those can be written
+  infix: there are no fixity declarations, so `xs ++ ys` has to be
+  `(++) xs ys`. And without type classes, defining `+` hides the `Int`
+  one. No arithmetic laws are applied when comparing types that mention
+  `Int`s (grades are another matter).
 - **Character literals.** `'a'` is recognised but can't be used in an
   expression.
-- **`do`, `where`, modules.** The keywords are reserved but have no meaning
-  yet.
-- **Indexed data types.** A `data` declaration's parameters are uniform:
-  there are no GADT-style constructors (`Vec n a`), and a `case` doesn't
-  refine types.
-- **Richer patterns.** Patterns don't nest, there is no catch-all, and
-  there are no literal patterns.
+- **`do`, `where` clauses.** `do` is reserved but has no meaning yet;
+  `where` only introduces constructors.
+- **More of modules.** A package is the unit of reuse: changing one module
+  checks its whole package again. The REPL is one module, and can't load a
+  package. Modules can't be declared inside a file (`module M where`), only
+  one to a file. A type mismatch between two packages' types of one name
+  says `expected Shape, but this has type Shape`, not which package's each
+  is. There is no registry: a dependency is a directory or a git
+  repository.
+- **More of pattern matching.** A definition of several equations can't
+  annotate or grade its patterns, or open a box with `[x]` (a single
+  equation of variables can). Strings can't be matched on. There are no
+  implicit patterns (`f {n} ..`); a signature's implicit variables are in
+  scope in its equations, which covers most uses. A `case` with no
+  annotation to check it against has a result type that doesn't depend on
+  what it matched.
+- **More of sequences.** There are no arrays, `#[a; b]`, and a literal can
+  only build a type with constructors, not a contiguous one (a vector made
+  through a trait). A value is shown with its constructors, `1 :: 2 ::
+  Nil`, not as the literal that built it.
+- **Termination on `Int`s.** A recursion counting an `Int` down is not
+  seen to end, and needs `! Div`. Only top-level definitions compute in
+  types: one defined in a `let` inside a function stays put.
+- **More of effects.** The native back end doesn't compile handlers yet;
+  run such programs in the REPL (a program whose only effects are the
+  runtime's does compile). Of Meadow's world there are no references,
+  threads or subprocesses yet, nor bytes or file metadata, and a `String`
+  can only be printed, written or passed on, not built or taken apart. Rows
+  are sets, so a handler can't handle one `State Int` and leave another,
+  and a function type with a smaller row isn't accepted where one with a
+  larger row is wanted (make the function polymorphic in a row instead).
+  A handler's `return` clause is
+  counted as running once, even where an operation clause aborts.
 - **`let` inside a `case` alternative** needs braces around one or the
   other: `in` closes the nearest open block (see [Layout](#layout)).
 - **Giving an implicit argument by hand.** There is no `f {Int}`, and no
   implicit lambda `\{a} -> ..`; an implicit argument is always inferred.
   Annotate the application if it can't be.
-- **Equations by cases.** A definition is one equation, whose patterns only
-  bind names or open boxes; match with `case` in its body.
-- **Wildcard parameters.** `\_ -> e` isn't allowed; give the parameter a
-  name.
 - **Higher-order inference.** An unannotated parameter that is used as a
   function can't be inferred. Annotate it:
 
@@ -1467,9 +2566,3 @@ These aren't implemented yet. This section shrinks as they land.
 - **Universe polymorphism.** Levels are numbers; there are no level
   variables. So a data type always lives in `Type`, and `List`, for one,
   only holds types in `Type`.
-- **Checking what fills an implicit argument.** What a metavariable is
-  solved with isn't checked against the metavariable's type, so an
-  implicit argument can be filled with a type from too large a universe:
-  with `id : {a : Type} -> a -> a`, `id Type` is accepted. Until that is
-  closed, the universe hierarchy has a way around it, and Idyll shouldn't
-  yet be used as a proof assistant.

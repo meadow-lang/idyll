@@ -5,7 +5,7 @@ use idyllic_diagnostics::OutputStyle;
 use idyllic::pipeline::{self, Evaluation, Options};
 
 fn run(src: &str) -> pipeline::Output {
-    pipeline::run(src, &Options { debug: false, style: OutputStyle::PLAIN })
+    pipeline::run(src, &Options { debug: false, style: OutputStyle::PLAIN, live: false })
 }
 
 fn diags(out: &pipeline::Output) -> Vec<String> {
@@ -61,7 +61,7 @@ fn comparison_computes_in_types() {
 fn if_is_a_case_on_bool() {
     assert_eq!(result("if 1 < 2 then 10 else 20"), "10 : Int");
     assert_eq!(result("case 2 < 1 of { True -> 10; False -> 20 }"), "20 : Int");
-    rejects("if 1 then 2 else 3", &["this cannot be matched on: it has type Int, which is not a data type"]);
+    rejects("if 1 then 2 else 3", &["type mismatch: expected Bool, but this has type Int"]);
 }
 
 #[test]
@@ -88,7 +88,7 @@ fn only_one_alternative_runs_so_usages_join() {
 // Data types
 // ---------------------------------------------------------------------------
 
-const MAYBE: &str = "data Maybe a = Nothing | Just a\n\n";
+const MAYBE: &str = "data Maybe a = Nothing | Just a\n\nuse Maybe.*\n\n";
 
 #[test]
 fn a_declaration_introduces_a_type_and_its_constructors() {
@@ -99,8 +99,8 @@ fn a_declaration_introduces_a_type_and_its_constructors() {
         decls,
         [
             "Maybe : (a : Type) -> Type",
-            "Nothing : {a : Type} -> Maybe a",
-            "Just : {a : Type} -> a -> Maybe a",
+            "Maybe.Nothing : {a : Type} -> Maybe a",
+            "Maybe.Just : {a : Type} -> a -> Maybe a",
         ]
     );
 }
@@ -144,15 +144,15 @@ fn fields_are_linear() {
 fn a_case_must_cover_the_type_and_nothing_else() {
     rejects(
         &format!("{MAYBE}\\(m : Maybe Int) -> case m of {{ Just x -> x }}"),
-        &["this case does not cover every constructor: missing: Nothing"],
+        &["the patterns do not cover every case: missing: Nothing"],
     );
     rejects(
         &format!("{MAYBE}\\(m : Maybe Int) -> case m of {{ Nothing -> 0; Just x -> x; Nothing -> 1 }}"),
-        &["Nothing is matched twice: this alternative can never be taken"],
+        &["unreachable: the cases before this one cover everything it matches"],
     );
     rejects(
         &format!("{MAYBE}\\(m : Maybe Int) -> case m of {{ Nothing -> 0; Just -> 1 }}"),
-        &["Just has 1 fields, not 0: one variable for each field"],
+        &["Just has 1 fields, not 0: one pattern for each field"],
     );
     rejects(
         &format!("{MAYBE}\\(m : Maybe Int) -> case m of {{ Nothing -> 0; Just x -> x; Nil -> 2 }}"),
@@ -162,7 +162,7 @@ fn a_case_must_cover_the_type_and_nothing_else() {
 
 #[test]
 fn types_can_take_several_parameters_and_be_recursive() {
-    let src = "data Pair a b = MkPair a b\ndata Tree a = Leaf | Node (Tree a) a (Tree a)\n\n\
+    let src = "data Pair a b = MkPair a b\nuse Pair.*\ndata Tree a = Leaf | Node (Tree a) a (Tree a)\n\nuse Tree.*\n\n\
                size : {a : Type} -> Tree (a [0]) -> Int\n\
                size t = case t of\n  Leaf -> 0\n  Node l x r -> let [y] = x in size l + 1 + size r\n\n";
     assert_eq!(result(&format!("{src}MkPair 1 True")), "MkPair 1 True : Pair Int Bool");
@@ -184,7 +184,7 @@ fn cons_is_an_infix_constructor_and_associates_to_the_right() {
 #[test]
 fn recursion_over_lists_terminates() {
     let src = "sum : List Int -> Int\nsum xs = case xs of\n  Nil -> 0\n  y :: ys -> y + sum ys\n\n\
-               upto : (n : [] Int) -> List Int\nupto n = if n == 0 then Nil else n :: upto (n - 1)\n\n";
+               upto : (n : [] Int) -> List Int ! Div\nupto n = if n == 0 then Nil else n :: upto (n - 1)\n\n";
     assert_eq!(result(&format!("{src}upto 4")), "4 :: 3 :: 2 :: 1 :: Nil : List Int");
     assert_eq!(result(&format!("{src}sum (upto 100)")), "5050 : Int");
 }
@@ -193,7 +193,7 @@ fn recursion_over_lists_terminates() {
 fn a_long_list_needs_no_stack() {
     // 20 000 nested calls, each waiting on the next: continuations are heap
     // blocks, so there is no stack to overflow
-    let src = "upto : (n : [] Int) -> List Int\nupto n = if n == 0 then Nil else n :: upto (n - 1)\n\n\
+    let src = "upto : (n : [] Int) -> List Int ! Div\nupto n = if n == 0 then Nil else n :: upto (n - 1)\n\n\
                sum : List Int -> Int\nsum xs = case xs of\n  Nil -> 0\n  y :: ys -> y + sum ys\n\n\
                sum (upto 20000)\n";
     assert_eq!(result(src), "200010000 : Int");
@@ -203,7 +203,7 @@ fn a_long_list_needs_no_stack() {
 fn consuming_a_list_frees_it_as_it_goes() {
     // a linear traversal: every cell is unique, released as it is matched and
     // reused by the next allocation
-    let src = "build : (n : [] Int) -> List Int -> List Int\nbuild n acc = if n == 0 then acc else build (n - 1) (n :: acc)\n\n\
+    let src = "build : (n : [] Int) -> List Int -> List Int ! Div\nbuild n acc = if n == 0 then acc else build (n - 1) (n :: acc)\n\n\
                sum : List Int -> Int -> Int\nsum xs acc = case xs of\n  Nil -> acc\n  y :: ys -> sum ys (acc + y)\n\n\
                sum (build 1000 Nil) 0 + sum (build 1000 Nil) 0\n";
     let out = run(src);

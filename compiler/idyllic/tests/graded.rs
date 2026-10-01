@@ -10,7 +10,7 @@ use idyllic::pipeline::{self, Options};
 
 /// The inferred type and the diagnostics as `headline: label`.
 fn run(src: &str) -> (String, Vec<String>) {
-    let out = pipeline::run(src, &Options { debug: false, style: OutputStyle::PLAIN });
+    let out = pipeline::run(src, &Options { debug: false, style: OutputStyle::PLAIN, live: false });
     let diags = out
         .diagnostics
         .iter()
@@ -271,10 +271,10 @@ fn closed_definitions_can_be_used_freely() {
 #[test]
 fn a_recursive_definition_uses_what_it_captures_without_restriction() {
     rejects(
-        "\\(x : Int) -> let loop : Int -> Int = \\n -> loop (n + x) in loop 1",
+        "\\(x : Int) -> let loop : Int -> Int ! Div = \\n -> loop (n + x) in loop 1",
         "usage mismatch: x has grade 1, but is used an unrestricted number of times",
     );
-    ok("\\(x : [] Int) -> let loop : Int -> Int = \\n -> loop (n + x) in loop 1", "(x : [] Int) -> Int");
+    ok("\\(x : [] Int) -> let loop : Int -> Int ! Div = \\n -> loop (n + x) in loop 1", "(x : [] Int) -> Int ! Div");
 }
 
 // ---------------------------------------------------------------------------
@@ -298,7 +298,7 @@ fn brackets_after_a_function_are_still_an_argument() {
 #[test]
 fn paper_drop_and_copy() {
     // drop : t [0] -> ()      copy uses its argument twice
-    ok("(\\[x] -> ()) : {a : Type} -> a [0] -> Unit", "{a : Type} -> a [0] -> Unit");
+    ok("(\\[x] -> ()) : {a : Type} -> a [0] -> Unit", "{a : Type} -> a [0] -> ()");
     ok("\\(b : Int [2]) -> let [x] = b in x + x", "(b : Int [2]) -> Int");
     // the grade is exact
     rejects("\\(b : Int [2]) -> let [x] = b in x", "usage mismatch: x has grade 2, but is used once");

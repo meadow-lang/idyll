@@ -74,6 +74,12 @@ pub enum Symbol {
     Unit,
     /// What is left of a type (or a grade) at run time.
     Erased,
+    /// A handler's `return(x, k)`: what the handled computation's value
+    /// becomes.
+    Return,
+    /// A handler's clause for an operation, `op(x, r, k)`: its name, and its
+    /// position among its effect's operations.
+    Op(Rc<str>, usize),
 }
 
 impl Symbol {
@@ -83,6 +89,8 @@ impl Symbol {
         match self {
             Symbol::Con(_, tag) => *tag,
             Symbol::True => 1,
+            // after a handler's `return`
+            Symbol::Op(_, index) => 1 + index,
             _ => 0,
         }
     }
@@ -99,6 +107,8 @@ impl fmt::Display for Symbol {
             Symbol::False => "false",
             Symbol::Unit => "unit",
             Symbol::Erased => "erased",
+            Symbol::Return => "return",
+            Symbol::Op(name, _) => name,
         })
     }
 }
@@ -114,6 +124,9 @@ pub enum Extern {
     Add,
     Mul,
     Sub,
+    /// division and remainder, rounding toward zero
+    Div,
+    Mod,
     /// `extern lt(a, b) { (v) ⇒ s }`: `v` is `true()` or `false()`, which
     /// have no fields and so are not allocated
     Lt,
@@ -152,6 +165,17 @@ pub enum Stmt {
     Jump(Label, Vec<Var>),
     /// `extern m(args){ (Γ) ⇒ s, ... }`
     Extern(Extern, Vec<Var>, Vec<Branch>),
+    /// `handle h k as ret; s`: run `s` under the handler `h`, a consumer
+    /// with a `return(x, k)` clause and an `op(x, r, k)` clause for each
+    /// operation of its effect.  `s` sends its value to `ret`, which hands it
+    /// to `h`'s `return`; and what the handler gives goes to `k`.  Consumes
+    /// `h` and `k`, as `let` consumes its fields.
+    Handle(Var, Var, Var, Box<Stmt>),
+    /// `perform op(x, ..) k`: the nearest handler with a clause for `op`
+    /// takes over, given the arguments, a resumption that continues with
+    /// `k`, and where its own `handle` goes.  Like `invoke`, it leaves
+    /// nothing behind.
+    Perform(Symbol, Vec<Var>, Var),
 }
 
 /// `define l : (Γ) = s`
@@ -237,6 +261,15 @@ pub fn free_vars_where(s: &Stmt, jump: &dyn Fn(&Label, &[Var]) -> Vec<Var>) -> V
             args.iter().for_each(|a| add(&mut out, a));
             branches.iter().for_each(|b| under(&mut out, &b.params, &b.body));
         }
+        Stmt::Handle(h, k, ret, rest) => {
+            add(&mut out, h);
+            add(&mut out, k);
+            under(&mut out, std::slice::from_ref(ret), rest);
+        }
+        Stmt::Perform(_, xs, k) => {
+            xs.iter().for_each(|x| add(&mut out, x));
+            add(&mut out, k);
+        }
     }
     out
 }
@@ -257,6 +290,8 @@ impl fmt::Display for Extern {
             Extern::Add => write!(f, "add"),
             Extern::Mul => write!(f, "mul"),
             Extern::Sub => write!(f, "sub"),
+            Extern::Div => write!(f, "div"),
+            Extern::Mod => write!(f, "mod"),
             Extern::Lt => write!(f, "lt"),
             Extern::Eq => write!(f, "eq"),
             Extern::Halt => write!(f, "halt"),
@@ -297,6 +332,11 @@ impl Stmt {
             }
             Stmt::Invoke(v, m, _) => out.push_str(&format!("{pad}invoke {v} {m}")),
             Stmt::Jump(l, _) => out.push_str(&format!("{pad}jump {l}")),
+            Stmt::Handle(h, k, ret, rest) => {
+                out.push_str(&format!("{pad}handle {h} {k} as {ret};\n"));
+                rest.render(indent, out);
+            }
+            Stmt::Perform(op, xs, k) => out.push_str(&format!("{pad}perform {op}({}) {k}", commas(xs))),
             Stmt::Extern(op, args, branches) => {
                 let args = if args.is_empty() { String::new() } else { format!("({})", commas(args)) };
                 match branches.as_slice() {

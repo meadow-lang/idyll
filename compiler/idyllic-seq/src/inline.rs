@@ -105,7 +105,8 @@ fn children(s: &Stmt) -> Vec<&Stmt> {
         Stmt::New(_, _, clauses, rest) => clauses.iter().map(|(_, b)| &b.body).chain([&**rest]).collect(),
         Stmt::Switch(_, clauses) => clauses.iter().map(|(_, b)| &b.body).collect(),
         Stmt::Extern(_, _, branches) => branches.iter().map(|b| &b.body).collect(),
-        Stmt::Invoke(..) | Stmt::Jump(..) => Vec::new(),
+        Stmt::Handle(_, _, _, rest) => vec![rest],
+        Stmt::Invoke(..) | Stmt::Jump(..) | Stmt::Perform(..) => Vec::new(),
     }
 }
 
@@ -131,6 +132,8 @@ fn uses(s: &Stmt, v: &Var) -> usize {
         Stmt::New(_, captured, _, _) => among(captured),
         Stmt::Switch(x, _) => usize::from(x == v),
         Stmt::Invoke(x, _, args) => usize::from(x == v) + among(args),
+        Stmt::Handle(h, k, _, _) => usize::from(h == v) + usize::from(k == v),
+        Stmt::Perform(_, xs, k) => among(xs) + usize::from(k == v),
     };
     here + children(s).into_iter().map(|c| uses(c, v)).sum::<usize>()
 }
@@ -149,7 +152,8 @@ fn transform(s: Stmt, f: &mut dyn FnMut(Stmt) -> Stmt) -> Stmt {
         }
         Stmt::Switch(v, cs) => Stmt::Switch(v, clauses(cs, f)),
         Stmt::Extern(op, args, branches) => Stmt::Extern(op, args, branches.into_iter().map(|b| branch(b, f)).collect()),
-        leaf @ (Stmt::Invoke(..) | Stmt::Jump(..)) => leaf,
+        Stmt::Handle(h, k, ret, rest) => Stmt::Handle(h, k, ret, Box::new(transform(*rest, f))),
+        leaf @ (Stmt::Invoke(..) | Stmt::Jump(..) | Stmt::Perform(..)) => leaf,
     };
     f(s)
 }
@@ -170,6 +174,8 @@ fn rename(s: Stmt, map: &HashMap<Var, Var>) -> Stmt {
         Stmt::Invoke(v, m, args) => Stmt::Invoke(var(v), m, vars(args)),
         Stmt::Jump(l, args) => Stmt::Jump(l, vars(args)),
         Stmt::Extern(op, args, branches) => Stmt::Extern(op, vars(args), branches.into_iter().map(params).collect()),
+        Stmt::Handle(h, k, ret, rest) => Stmt::Handle(var(h), var(k), var(ret), rest),
+        Stmt::Perform(op, xs, k) => Stmt::Perform(op, vars(xs), var(k)),
     })
 }
 
@@ -189,7 +195,8 @@ fn binders(s: &Stmt, out: &mut Vec<Var>) {
         }
         Stmt::Switch(_, clauses) => clauses.iter().for_each(|(_, b)| out.extend(b.params.iter().cloned())),
         Stmt::Extern(_, _, branches) => branches.iter().for_each(|b| out.extend(b.params.iter().cloned())),
-        Stmt::Invoke(..) | Stmt::Jump(..) => {}
+        Stmt::Handle(_, _, ret, _) => out.push(ret.clone()),
+        Stmt::Invoke(..) | Stmt::Jump(..) | Stmt::Perform(..) => {}
     }
     children(s).into_iter().for_each(|c| binders(c, out));
 }

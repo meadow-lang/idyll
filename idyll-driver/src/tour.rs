@@ -23,16 +23,32 @@ pub enum Section {
     Grades,
     /// Types as values: universes, polymorphism, implicit arguments.
     Dependent,
+    /// Equations, indexed families, and matching that teaches the types.
+    Matching,
+    /// Rows on arrows, divergence, and the program's own effects.
+    Effects,
+    /// Namespaces: constructors under their types, `use`, packages.
+    Modules,
 }
 
 impl Section {
-    pub const ALL: [Section; 3] = [Section::Basics, Section::Grades, Section::Dependent];
+    pub const ALL: [Section; 6] = [
+        Section::Basics,
+        Section::Grades,
+        Section::Dependent,
+        Section::Matching,
+        Section::Effects,
+        Section::Modules,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
             Section::Basics => "the basics",
             Section::Grades => "linearity and grades",
             Section::Dependent => "dependent types",
+            Section::Matching => "pattern matching",
+            Section::Effects => "effects",
+            Section::Modules => "modules",
         }
     }
 
@@ -42,6 +58,9 @@ impl Section {
             "basics" | "basic" => Some(Section::Basics),
             "grades" | "grade" | "linearity" => Some(Section::Grades),
             "dependent" | "types" => Some(Section::Dependent),
+            "matching" | "patterns" | "match" => Some(Section::Matching),
+            "effects" | "effect" | "handlers" => Some(Section::Effects),
+            "modules" | "module" | "use" | "packages" => Some(Section::Modules),
             _ => None,
         }
     }
@@ -141,9 +160,13 @@ pub const STEPS: &[Step] = &[
             "`data` declares a type and its constructors, and `case` takes a",
             "value apart, one alternative per constructor. The alternatives",
             "line up, like a `let`'s bindings.",
+            "",
+            "A constructor lives under its type, `Op.Add`; `use Op.*` brings",
+            "them all into scope bare.",
         ],
         examples: &[
-            ok("data Op = Add | Sub"),
+            ok("data Op = Add | Sub
+use Op.*"),
             ok("apply : Op -> Int -> Int -> Int\napply op x y = case op of\n  Add -> x + y\n  Sub -> x - y"),
             ok("apply Sub 10 3"),
             ok("if apply Add 1 1 == 2 then \"yes\" else \"no\""),
@@ -214,7 +237,8 @@ pub const STEPS: &[Step] = &[
         examples: &[
             ok("copy : Int [2] -> Int\ncopy [x] = x + x"),
             ok("copy [21]"),
-            ok("data Maybe a = Nothing | Just a"),
+            ok("data Maybe a = Nothing | Just a
+use Maybe.*"),
             ok("fromMaybe : Int [0..1] -> Maybe Int -> Int\nfromMaybe [d] m = case m of\n  Nothing -> d\n  Just x -> x"),
             ok("fromMaybe [0] (Just 42)"),
             ok("fromMaybe [0] Nothing"),
@@ -323,9 +347,448 @@ pub const STEPS: &[Step] = &[
         examples: &[
             rejected("data U = MkU Type", "field too large for its data type"),
             rejected("data Bad = MkBad (Bad -> Int)", "Bad is not strictly positive"),
-            ok("data Rose a = Node a (List (Rose a))"),
+            ok("data Rose a = Node a (List (Rose a))
+use Rose.*"),
             ok("Node 1 (Node 2 Nil :: Nil)"),
         ],
+    },
+    // -----------------------------------------------------------------------
+    // Pattern matching
+    // -----------------------------------------------------------------------
+    Step {
+        title: "Equations",
+        section: Section::Matching,
+        text: &[
+            "A function can be defined by several equations, tried in order.",
+            "A pattern can be a literal, a variable, or `_` for anything.",
+            "",
+            "Matching on `n` looks at it, once for each literal it is tried",
+            "against: `[]` lets `name` do that as often as it likes.",
+        ],
+        examples: &[ok("name : (n : [] Int) -> String
+name 0 = \"none\"
+name 1 = \"one\"
+name _ = \"many\""), ok("name 1")],
+    },
+    Step {
+        title: "Constructors, nested",
+        section: Section::Matching,
+        text: &[
+            "Constructor patterns nest, and take their fields apart as deep",
+            "as you like. An argument pattern with fields is parenthesised,",
+            "as in Haskell.",
+        ],
+        examples: &[
+            ok("data Nat = Z | S Nat
+use Nat.*"),
+            ok("half : (n : [] Nat) -> Nat
+half (S (S n)) = S (half n)
+half _ = Z"),
+            ok("half (S (S (S (S (S Z)))))"),
+        ],
+    },
+    Step {
+        title: "Guards",
+        section: Section::Matching,
+        text: &[
+            "`| condition = result` picks the first condition that holds;",
+            "`otherwise` always does. If none holds, matching goes on to",
+            "the next equation.",
+        ],
+        examples: &[
+            ok("sign : (n : [] Int) -> Int
+sign n
+  | n < 0 = 0 - 1
+  | n == 0 = 0
+  | otherwise = 1"),
+            ok("sign (0 - 5) + 10 * sign 7"),
+        ],
+    },
+    Step {
+        title: "Coverage",
+        section: Section::Matching,
+        text: &[
+            "Every case must be covered. What is missing is said as the",
+            "patterns you would write for it; an equation nothing can reach",
+            "is pointed out too.",
+        ],
+        examples: &[rejected(
+            "both : Bool -> Bool -> Int
+both True True = 1
+both False _ = 0",
+            "the patterns do not cover every case",
+        )],
+    },
+    Step {
+        title: "Fields keep their grade",
+        section: Section::Matching,
+        text: &[
+            "What comes out of a value has its grade. A linear `Nat` gives a",
+            "linear field, which may not be dropped; one you may use at most",
+            "once, `[0..1]`, gives fields you need not use.",
+        ],
+        examples: &[
+            rejected("isZero : Nat -> Bool
+isZero Z = True
+isZero (S n) = False", "usage mismatch"),
+            ok("isZero : (m : [0..1] Nat) -> Bool
+isZero Z = True
+isZero (S n) = False"),
+            ok("isZero (S Z)"),
+        ],
+    },
+    Step {
+        title: "Sequences",
+        section: Section::Matching,
+        text: &[
+            "`#[1, 2, 3]` is a list written out: `1 :: 2 :: 3 :: Nil`. (The",
+            "`#` is because bare brackets are the grades'.) The same form is",
+            "a pattern, of exactly that many elements.",
+        ],
+        examples: &[
+            ok("#[1, 2, 3]"),
+            ok("second : (xs : [] List Int) -> Int
+second #[_, y] = y
+second _ = 0"),
+            ok("second #[10, 20]"),
+        ],
+    },
+    Step {
+        title: "Indexed families",
+        section: Section::Matching,
+        text: &[
+            "`data T : kind where` gives each constructor its whole type, so",
+            "each can say which `T` it builds: a vector's length is in its",
+            "type. A variable a signature mentions but does not bind, like",
+            "`n` and `a`, is bound for you, implicitly.",
+            "",
+            "`@seq` names the constructors a literal `#[..]` of the type is",
+            "built with, so a literal gets its length into its type too.",
+        ],
+        examples: &[
+            ok("@seq(nil = VNil, cons = VCons)
+data Vec : Nat -> Type -> Type where
+  VNil : Vec Z a
+  VCons : a -> Vec n a -> Vec (S n) a
+use Vec.*"),
+            ok("VCons 1 (VCons 2 VNil)"),
+            ok("(#[1, 2, 3] : Vec (S (S (S Z))) Int)"),
+        ],
+    },
+    Step {
+        title: "Matching teaches the types",
+        section: Section::Matching,
+        text: &[
+            "Matching a vector of length `S n` against `VNil` would need",
+            "`S n` to be `Z`, which it cannot be: so there is no `VNil` case",
+            "to write. In the `VCons` case, the checker knows the length.",
+        ],
+        examples: &[
+            ok("vhead : (v : [0..1] Vec (S n) a) -> a
+vhead (VCons x xs) = x"),
+            ok("vhead (VCons 7 VNil)"),
+        ],
+    },
+    Step {
+        title: "Computing in types",
+        section: Section::Matching,
+        text: &[
+            "A recursive function that is sure to finish can compute in a",
+            "type. `plus` recurs on a smaller `Nat` each time, so appending",
+            "gives a vector as long as both.",
+        ],
+        examples: &[
+            ok("plus : Nat -> Nat -> Nat
+plus Z m = m
+plus (S n) m = S (plus n m)"),
+            ok("append : Vec n a -> Vec m a -> Vec (plus n m) a
+append VNil ys = ys
+append (VCons x xs) ys = VCons x (append xs ys)"),
+            ok("append (VCons 1 VNil) (VCons 2 (VCons 3 VNil))"),
+        ],
+    },
+    Step {
+        title: "Proofs",
+        section: Section::Matching,
+        text: &[
+            "An equality is a data type with one constructor, `Refl`, that",
+            "only fits when both sides are the same. Matching on it teaches",
+            "the checker they are, and a recursive function over proofs is",
+            "a proof by induction.",
+        ],
+        examples: &[
+            ok("data Eq : Nat -> Nat -> Type where
+  Refl : Eq x x
+use Eq.*"),
+            ok("cong : Eq x y -> Eq (S x) (S y)
+cong Refl = Refl"),
+            ok("plusZero : (n : Nat) -> Eq (plus n Z) n
+plusZero Z = Refl
+plusZero (S k) = cong (plusZero k)"),
+            ok("(Refl : Eq (plus (S Z) (S Z)) (S (S Z)))"),
+        ],
+    },
+    Step {
+        title: "Erased proofs",
+        section: Section::Matching,
+        text: &[
+            "A proof is usually only there for the checker: given at grade",
+            "`0`, it is erased. It can still be matched on when its type",
+            "leaves it one constructor, since then there is nothing to look",
+            "at. (That it really is `Refl` is safe to assume because erased",
+            "code must be total: see the effects section.)",
+        ],
+        examples: &[
+            ok("cast : (p : [0] Eq n m) -> Vec n a -> Vec m a
+cast Refl v = v"),
+            ok("cast Refl (VCons 1 VNil)"),
+        ],
+    },
+    Step {
+        title: "Impossible",
+        section: Section::Matching,
+        text: &[
+            "`Fin n` is the numbers below `n`, so there is no `Fin Z`. An",
+            "equation can say a case cannot happen with `impossible`, and",
+            "the checker makes sure it is right.",
+        ],
+        examples: &[
+            ok("data Fin : Nat -> Type where
+  FZ : Fin (S n)
+  FS : Fin n -> Fin (S n)
+use Fin.*"),
+            ok("noFin : Fin Z -> Int
+noFin i impossible"),
+            rejected("nope : Nat -> Int
+nope n impossible", "not impossible"),
+        ],
+    },
+    // -----------------------------------------------------------------------
+    // Effects
+    // -----------------------------------------------------------------------
+    Step {
+        title: "Rows",
+        section: Section::Effects,
+        text: &[
+            "What a function does besides give a result goes after its type:",
+            "`a -> b ! e`. The row `e` lists its effects; with none there is",
+            "none, and the function is total.",
+        ],
+        examples: &[ok("Int -> Int ! Div"), ok("{e : Effect} -> (Int -> Int ! e) -> Int ! e")],
+    },
+    Step {
+        title: "Div",
+        section: Section::Effects,
+        text: &[
+            "`Div` is the effect of maybe never finishing. A recursion whose",
+            "argument does not get smaller each time round, as the checker",
+            "sees it, has to say `! Div`. It runs all the same.",
+        ],
+        examples: &[
+            rejected(
+                "count : (n : [] Int) -> Int
+count n = if n == 0 then 0 else count (n - 1)",
+                "count may not terminate",
+            ),
+            ok("count : (n : [] Int) -> Int ! Div
+count n = if n == 0 then 0 else count (n - 1)"),
+            ok("count 3"),
+        ],
+    },
+    Step {
+        title: "Types are total",
+        section: Section::Effects,
+        text: &[
+            "Nothing with effects gets into a type, where it could not keep",
+            "its promise: a `count 1` in a type might never be finished.",
+            "Nor into an erased argument, which is never run.",
+        ],
+        examples: &[
+            ok("data IEq : Int -> Int -> Type where
+  IRefl : IEq x x
+use IEq.*"),
+            rejected("(IRefl : IEq (count 1) 0)", "a type must be pure"),
+            rejected("(\\(n : [0] Int) -> 1) (count 5)", "an erased argument must be pure"),
+        ],
+    },
+    Step {
+        title: "Your own effects",
+        section: Section::Effects,
+        text: &[
+            "`effect` declares an effect and its operations. Calling one",
+            "performs it; `handle` says what that does, and `k` in a clause",
+            "is the rest of the computation, to go on with.",
+        ],
+        examples: &[
+            ok("effect Ask where
+  ask : () -> Int"),
+            ok("sum3 : () -> Int ! Ask
+sum3 u = ask () + ask () + ask ()"),
+            ok("handle sum3 () with
+  ask _ k -> k 10"),
+        ],
+    },
+    Step {
+        title: "Not going on",
+        section: Section::Effects,
+        text: &[
+            "A clause that never uses `k` is an exception: what it gives is",
+            "what the whole `handle` gives. `return` says what becomes of",
+            "the value when there is no exception.",
+        ],
+        examples: &[
+            ok("effect Fail where
+  fail : () -> Int"),
+            ok("safeDiv : (a : [] Int) -> (b : [] Int) -> Int ! Fail
+safeDiv a b = if b == 0 then fail () else a / b"),
+            ok("handle safeDiv 7 0 with
+  return x -> x
+  fail _ k -> 0"),
+        ],
+    },
+    Step {
+        title: "Going on twice",
+        section: Section::Effects,
+        text: &[
+            "`k` can be used more than once: here, to try both answers. How",
+            "often a clause resumes is `k`'s grade, worked out from the",
+            "clause itself.",
+        ],
+        examples: &[
+            ok("effect Choose where
+  flip : () -> Bool"),
+            ok("pick : () -> Int ! Choose
+pick u = if flip () then 1 else 10"),
+            ok("handle pick () with
+  flip _ k -> k True + k False"),
+        ],
+    },
+    Step {
+        title: "Polymorphic effects",
+        section: Section::Effects,
+        text: &[
+            "A row variable, bound for you like any other, lets a function",
+            "take whatever effects the functions it is given have.",
+        ],
+        examples: &[
+            ok("twice : (f : [] (() -> Int ! e)) -> Int ! e
+twice f = f () + f ()"),
+            ok("handle twice sum3 with
+  ask _ k -> k 1"),
+        ],
+    },
+    Step {
+        title: "Naming a row",
+        section: Section::Effects,
+        text: &[
+            "`effect Asking = {Ask, Div}` names a row, to use wherever an",
+            "effect goes. It is a definition like any other, of a term of",
+            "type `Effect`.",
+        ],
+        examples: &[
+            ok("effect Asking = {Ask, Div}"),
+            ok("sum6 : () -> Int ! Asking
+sum6 u = sum3 () + sum3 ()"),
+            ok("handle sum6 () with
+  ask _ k -> k 2"),
+        ],
+    },
+    Step {
+        title: "The world",
+        section: Section::Effects,
+        text: &[
+            "The runtime handles the effects in `Eff`, as Meadow's does:",
+            "`Console`, `Fs`, `Process`, `Random`, `Time`, `Test` and `Div`.",
+            "An operation of theirs nothing else handles, it does. (The",
+            "tutorial lists them all.)",
+        ],
+        examples: &[
+            ok("putStrLn \"hello\""),
+            ok("intBetween 1 7"),
+            ok("exists \"README.md\""),
+        ],
+    },
+    Step {
+        title: "Loaded dice",
+        section: Section::Effects,
+        text: &[
+            "The world's effects are effects like any other, so a handler of",
+            "your own can take one: here, to test code that rolls dice with",
+            "dice that always land in the middle. An operation takes as many",
+            "arguments as its type has arrows, and `intBetween` takes two.",
+        ],
+        examples: &[
+            ok("dice : () -> Int ! Random
+dice () = intBetween 1 7"),
+            ok("handle dice () + dice () with
+  nextInt _ k -> k 4
+  intBetween lo hi k -> k ((lo + hi) / 2)
+  nextSeed _ k -> k 0"),
+        ],
+    },
+    Step {
+        title: "main",
+        section: Section::Effects,
+        text: &[
+            "A program with a `main` runs it: `main : () -> () ! Eff` may do",
+            "what the runtime handles, and nothing else, which is checked",
+            "before it runs. Defining one here doesn't run it; `main ()`",
+            "does.",
+        ],
+        examples: &[
+            ok("main : () -> () ! Eff
+main () = let u = putStrLn \"Hello, Idyll!\" in printInt (6 * 7)"),
+            ok("main ()"),
+        ],
+    },
+    // -----------------------------------------------------------------------
+    // Modules
+    // -----------------------------------------------------------------------
+    Step {
+        title: "Under their types",
+        section: Section::Modules,
+        text: &[
+            "A constructor lives under its type, `Suit.Hearts`, even in the",
+            "module that declares it, so two types may share a constructor's",
+            "name. `use Suit.*` brings them all into scope bare, and",
+            "`use Suit (Spades)` just the ones named.",
+        ],
+        examples: &[
+            ok("data Suit = Hearts | Spades"),
+            rejected("Hearts", "name not in scope: Hearts"),
+            ok("Suit.Hearts"),
+            ok("use Suit (Spades)"),
+            ok("Spades"),
+        ],
+    },
+    Step {
+        title: "Packages",
+        section: Section::Modules,
+        text: &[
+            "A package is a directory with `src/`: `src/Main.idl` is its root,",
+            "and `src/Math.idl` is the module `Math`, which another module",
+            "reaches with `use App.Math (double)`, `use Math as M` (then",
+            "`M.double`), or `App.Math.double` written in full. A name is",
+            "private to its module until it says `@pub(pkg)`, or `@pub` for",
+            "other packages too. The REPL is one module; `idyll run dir`",
+            "builds and runs a package. Here, the prelude's own `List`, in full:",
+        ],
+        examples: &[ok("List.Nil : List Int"), ok("Maybe.Just (List.Nil : List Int)")],
+    },
+    Step {
+        title: "Dependencies",
+        section: Section::Modules,
+        text: &[
+            "`idyll init` makes a package and `idyll run` runs it, as cargo",
+            "does. Its `Idyll.toml` names what it depends on, `Util = { path =",
+            "\"../util\" }` or `Json = { git = \"...\", version = \"1.2.0\" }`,",
+            "and `idyll.lock` pins each git dependency's commit until",
+            "`idyll update`. A package is checked against the compiled ones it",
+            "uses, and only what they make `@pub` crosses, bodies and all: a",
+            "library's function computes in your types as your own would.",
+            "Unchanged packages are not compiled again. A library offers:",
+        ],
+        examples: &[ok("@pub quadruple : Int -> Int\nquadruple n = n * 4"), ok("quadruple 10")],
     },
 ];
 
@@ -346,7 +809,7 @@ mod tests {
     /// broken.
     #[test]
     fn every_example_does_what_the_tour_says() {
-        let opts = Options { debug: false, style: OutputStyle::PLAIN };
+        let opts = Options { debug: false, style: OutputStyle::PLAIN, live: false };
         let mut session = Session::default();
         for (i, step) in STEPS.iter().enumerate() {
             for ex in step.examples {
@@ -373,7 +836,7 @@ mod tests {
     /// a fresh one, so a section may use only what it defines itself.
     #[test]
     fn each_section_stands_alone() {
-        let opts = Options { debug: false, style: OutputStyle::PLAIN };
+        let opts = Options { debug: false, style: OutputStyle::PLAIN, live: false };
         for section in Section::ALL {
             let mut session = Session::default();
             for step in STEPS.iter().filter(|s| s.section == section) {
@@ -396,7 +859,7 @@ mod tests {
     /// there to show.  (An entry of declarations only reports their types.)
     #[test]
     fn every_step_ends_on_something_to_run() {
-        let opts = Options { debug: false, style: OutputStyle::PLAIN };
+        let opts = Options { debug: false, style: OutputStyle::PLAIN, live: false };
         let mut session = Session::default();
         for (i, step) in STEPS.iter().enumerate() {
             assert!(!step.text.is_empty(), "step {} says nothing", i + 1);
@@ -445,6 +908,8 @@ mod tests {
     fn a_section_can_be_asked_for_by_name() {
         assert_eq!(Section::named("grades"), Some(Section::Grades));
         assert_eq!(Section::named("dependent"), Some(Section::Dependent));
+        assert_eq!(Section::named("matching"), Some(Section::Matching));
+        assert_eq!(Section::named("effects"), Some(Section::Effects));
         assert_eq!(Section::named("3"), None, "numbers are steps");
         assert_eq!(Section::Basics.first(), Some(0));
     }

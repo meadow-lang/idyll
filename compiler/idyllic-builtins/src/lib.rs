@@ -6,8 +6,9 @@
 //! same uniques, which is what lets the two passes agree without threading a
 //! table between them.
 
-/// The primitive type constants.  Each is a closed type of sort `Type`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// The primitive constants: closed types of sort `Type`, and `Div`, the one
+/// effect that is built in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum Builtin {
     Unit,
     Int,
@@ -16,10 +17,17 @@ pub enum Builtin {
     /// The type of grades.  Grades are ordinary (erased) terms, which is what
     /// lets a function be polymorphic in one: `{r : Grade} -> ..`.
     Grade,
+    /// The type of effect rows, `{Log, Div | e}`, which are erased terms like
+    /// grades: a function can be polymorphic in its effects, `{e : Effect}`.
+    Effect,
+    /// The effect of a computation that may not terminate.  Not an ordinary
+    /// type: it has type `Effect`.
+    Div,
 }
 
 impl Builtin {
-    pub const ALL: [Builtin; 5] = [Builtin::Unit, Builtin::Int, Builtin::Bool, Builtin::Str, Builtin::Grade];
+    pub const ALL: [Builtin; 7] =
+        [Builtin::Unit, Builtin::Int, Builtin::Bool, Builtin::Str, Builtin::Grade, Builtin::Effect, Builtin::Div];
 
     /// How many there are; primitives take the uniques after these.
     pub const COUNT: usize = Builtin::ALL.len();
@@ -31,6 +39,8 @@ impl Builtin {
             Builtin::Bool => "Bool",
             Builtin::Str => "String",
             Builtin::Grade => "Grade",
+            Builtin::Effect => "Effect",
+            Builtin::Div => "Div",
         }
     }
 
@@ -47,23 +57,30 @@ impl Builtin {
 ///
 /// Where a `Grade` is expected the same operators are grade arithmetic
 /// instead (see `Checker::check`); they are not overloaded anywhere else.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum Prim {
     IntAdd,
     IntMul,
     IntSub,
+    /// division, rounding toward zero
+    IntDiv,
+    /// the remainder of that, with the sign of the dividend
+    IntMod,
     IntLt,
     IntEq,
 }
 
 impl Prim {
-    pub const ALL: [Prim; 5] = [Prim::IntAdd, Prim::IntMul, Prim::IntSub, Prim::IntLt, Prim::IntEq];
+    pub const ALL: [Prim; 7] =
+        [Prim::IntAdd, Prim::IntMul, Prim::IntSub, Prim::IntLt, Prim::IntEq, Prim::IntDiv, Prim::IntMod];
 
     pub fn name(self) -> &'static str {
         match self {
             Prim::IntAdd => "+",
             Prim::IntMul => "*",
             Prim::IntSub => "-",
+            Prim::IntDiv => "/",
+            Prim::IntMod => "%",
             Prim::IntLt => "<",
             Prim::IntEq => "==",
         }
@@ -82,7 +99,9 @@ impl Prim {
     /// Argument types and result type.
     pub fn signature(self) -> (&'static [Builtin], Builtin) {
         match self {
-            Prim::IntAdd | Prim::IntMul | Prim::IntSub => (&[Builtin::Int, Builtin::Int], Builtin::Int),
+            Prim::IntAdd | Prim::IntMul | Prim::IntSub | Prim::IntDiv | Prim::IntMod => {
+                (&[Builtin::Int, Builtin::Int], Builtin::Int)
+            }
             Prim::IntLt | Prim::IntEq => (&[Builtin::Int, Builtin::Int], Builtin::Bool),
         }
     }
@@ -95,7 +114,7 @@ impl Prim {
     pub fn precedence(self) -> u8 {
         match self {
             Prim::IntAdd | Prim::IntSub => 6,
-            Prim::IntMul => 7,
+            Prim::IntMul | Prim::IntDiv | Prim::IntMod => 7,
             // below `::`, which is 5
             Prim::IntLt | Prim::IntEq => 4,
         }

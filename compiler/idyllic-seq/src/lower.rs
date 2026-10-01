@@ -43,13 +43,21 @@
 //! intermediate result — since each is made to be handed on exactly once.
 //! [`super::grades`] then checks that the code keeps to them.
 //!
+//! **Effects.**  `handle` makes the handler a consumer — a `return` clause
+//! and one clause per operation — and runs the body under it
+//! ([`Stmt::Handle`]); applying an operation to its argument is
+//! [`Stmt::Perform`].  What happens then is the machine's business: it keeps
+//! the handlers that are in force, and a resumption is a consumer like any
+//! other, which can be invoked as often as the program likes.
+//!
 //! The output uses variables freely; see [`super::linearize`].
 
 use super::{free_vars_where, Branch, Definition, Extern, Label, Program, Stmt, Symbol, Var};
 use idyllic_ast::Lit;
 use idyllic_builtins::{Builtin, Prim};
 use idyllic_typecheck::grade::Grade;
-use idyllic_typecheck::core::{CaseAlt, Core, Head, Note};
+use idyllic_typecheck::core::{CaseAlt, Core, Head, Note, OpClause};
+use idyllic_typecheck::handlers::OpInfo;
 use idyllic_typecheck::{CtorInfo, RecDef, TypeCheckResult};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
@@ -140,6 +148,8 @@ struct Lowering {
     /// ... and the label that takes their arguments all at once
     direct: HashMap<usize, Option<Direct>>,
     ctors: HashMap<usize, CtorInfo>,
+    /// the program's effects' operations
+    ops: HashMap<usize, OpInfo>,
     type_constructors: HashSet<usize>,
     definitions: Vec<Definition>,
     next_var: usize,
@@ -161,6 +171,7 @@ pub fn lower(checked: &TypeCheckResult) -> Option<Result<Program, LowerError>> {
         labels: HashMap::new(),
         direct: HashMap::new(),
         ctors: checked.ctors.clone(),
+        ops: checked.ops.clone(),
         type_constructors: checked.type_constructors.iter().copied().collect(),
         definitions: Vec::new(),
         next_var: 0,
@@ -251,6 +262,8 @@ impl Lowering {
             Prim::IntAdd => Extern::Add,
             Prim::IntMul => Extern::Mul,
             Prim::IntSub => Extern::Sub,
+            Prim::IntDiv => Extern::Div,
+            Prim::IntMod => Extern::Mod,
             Prim::IntLt => Extern::Lt,
             Prim::IntEq => Extern::Eq,
         }
@@ -443,6 +456,27 @@ impl Lowering {
             if self.type_constructors.contains(unique) {
                 return self.erased(k);
             }
+            // an operation with its argument is performed; what it takes
+            // before that is erased
+            if let Some(info) = self.ops.get(unique).cloned() {
+                if args.len() >= info.erased + info.arity {
+                    let mut rest: VecDeque<Rc<Core>> = args.split_off(info.erased + info.arity);
+                    let taken: VecDeque<Rc<Core>> = args.split_off(info.erased);
+                    let symbol = Symbol::Op(info.name.as_str().into(), info.index);
+                    let env2 = env.clone();
+                    let k = if rest.is_empty() {
+                        k
+                    } else {
+                        Kont::then(move |l, f| l.apply_all(&env2, f, std::mem::take(&mut rest), k))
+                    };
+                    return self.terms(
+                        env,
+                        taken,
+                        Vec::new(),
+                        Box::new(move |l, xs| l.with_continuation(k, |kv| Stmt::Perform(symbol, xs, kv))),
+                    );
+                }
+            }
             // a constructor with everything it needs is a `let`; the type
             // arguments it starts with are erased, and not even computed
             if let Some(info) = self.ctors.get(unique).cloned() {
@@ -513,19 +547,26 @@ impl Lowering {
         };
         let mut clauses = Vec::new();
         for alt in alts {
-            let symbol = match alt.head {
-                Head::Bool(true) => Symbol::True,
-                Head::Bool(false) => Symbol::False,
+            let (symbol, erased) = match alt.head {
+                Head::Bool(true) => (Symbol::True, 0),
+                Head::Bool(false) => (Symbol::False, 0),
                 Head::Con(u) => match self.ctors.get(&u) {
-                    Some(info) => Symbol::Con(info.name.as_str().into(), info.tag),
+                    Some(info) => (Symbol::Con(info.name.as_str().into(), info.tag), info.params),
                     None => return Err(LowerError::UnknownDefinition(alt.name.clone())),
                 },
             };
             let mut inner = env.clone();
             let mut params = Vec::new();
-            for x in &alt.vars {
-                // what comes out of a constructor comes out once
-                let x = self.bound(x, Some(Grade::ONE));
+            // an alternative binds all of a constructor's arguments, and the
+            // first are erased: there is nothing for them at run time
+            for _ in &alt.vars[..erased.min(alt.vars.len())] {
+                inner.push(Binding::Erased);
+            }
+            for x in &alt.vars[erased.min(alt.vars.len())..] {
+                // A field has the grade of what it came out of: once from a
+                // linear value, as often as wanted from an unrestricted one.
+                // The Core does not say which, so no grade is claimed.
+                let x = self.bound(x, None);
                 inner.push(Binding::Var(x.clone()));
                 params.push(x);
             }
@@ -550,7 +591,10 @@ impl Lowering {
             | Core::GradeLit(_)
             | Core::GradeAdd(..)
             | Core::GradeMul(..)
-            | Core::GradeRange(..) => self.erased(k),
+            | Core::GradeRange(..)
+            | Core::Comp(..)
+            | Core::Row(..) => self.erased(k),
+            Core::Handle(body, ret, ops) => self.handle(env, body, ret, ops, k),
             Core::Lit(lit) => {
                 let (v, literal) = match lit {
                     Lit::Int(n) => (self.fresh("n"), Ok(Extern::LitInt(n.clone()))),
@@ -596,6 +640,18 @@ impl Lowering {
                 });
                 self.curried_value(hints, finish, k)
             }
+            // an operation on its own: a function that performs it once it
+            // has its arguments
+            Core::Opaque(unique, _) if self.ops.contains_key(unique) => {
+                let info = self.ops[unique].clone();
+                let symbol = Symbol::Op(info.name.as_str().into(), info.index);
+                let hints = vec!["x".to_string(); info.erased + info.arity];
+                let finish = Box::new(move |_: &mut Lowering, mut args: Vec<Var>, kv: Var| {
+                    let xs = args.split_off(args.len() - info.arity);
+                    Stmt::Perform(symbol, xs, kv)
+                });
+                self.curried_value(hints, finish, k)
+            }
             Core::Opaque(unique, name) => {
                 let (label, mut args) = self.label_of(*unique, name, env)?;
                 self.with_continuation(k, |kv| {
@@ -612,6 +668,23 @@ impl Lowering {
             },
             // never looked at, so never computed
             Core::Runtime(Note::Erased, _) => self.erased(k),
+            // a match on an erased value its type decides: its one
+            // alternative, with nothing for the variables (which are erased
+            // too), and without looking at the value
+            Core::Runtime(Note::Forced, inner) => match &**inner {
+                Core::Case(_, alts) => match alts.first() {
+                    Some(alt) => {
+                        let mut inner = env.clone();
+                        for _ in &alt.vars {
+                            inner.push(Binding::Erased);
+                        }
+                        self.term(&inner, &alt.body, k)
+                    }
+                    // no alternative: this is never reached
+                    None => self.erased(k),
+                },
+                _ => self.term(env, inner, k),
+            },
             Core::Runtime(Note::Binds(grade), inner) => match &**inner {
                 Core::Lam(x, body) => self.lambda(env, x, Some(*grade), body, k),
                 Core::Unbox(e) => self.unbox(env, e, Some(*grade), "x", k),
@@ -637,6 +710,14 @@ impl Lowering {
             }
             // a `let` binds a value that has been computed: a name for a
             // variable, and no statement at all
+            // A type, or a function computing one (an effect alias with
+            // parameters): nothing at run time, and every use of it is in a
+            // type, or erased.
+            Core::Let(_, e, body) if Self::type_former(e) => {
+                let mut inner = env.clone();
+                inner.push(Binding::Erased);
+                self.term(&inner, body, k)
+            }
             Core::Let(name, e, body) => {
                 let (env2, body) = (env.clone(), body.clone());
                 let rest = Kont::then(move |l: &mut Lowering, v| {
@@ -671,6 +752,87 @@ impl Lowering {
             ),
             Core::Unbox(e) => self.unbox(env, e, None, "x", k),
         }
+    }
+
+    /// Whether a term is a type, a grade or a row, or a function giving one.
+    fn type_former(c: &Core) -> bool {
+        match c {
+            Core::Type(_)
+            | Core::LitTy(_)
+            | Core::Pi { .. }
+            | Core::BoxTy(..)
+            | Core::GradeLit(_)
+            | Core::GradeAdd(..)
+            | Core::GradeMul(..)
+            | Core::GradeRange(..)
+            | Core::Comp(..)
+            | Core::Row(..) => true,
+            Core::Lam(_, body) | Core::Runtime(Note::Binds(_), body) => Self::type_former(body),
+            _ => false,
+        }
+    }
+
+    /// `handle body with clauses`: the handler as a consumer, then the body
+    /// under it, sending its value to the handler's `return`.
+    fn handle(&mut self, env: &Env, body: &Rc<Core>, ret: &Rc<Core>, ops: &[OpClause], k: Kont) -> Lowered {
+        let (h, r) = (self.fresh("h"), self.continuation("ret"));
+        let mut clauses = Vec::new();
+        // `return(x, k)`
+        let (inner, params, body_of) = self.open(env, ret, 1)?;
+        let kc = self.continuation("k");
+        let ret_body = self.term(&inner, &body_of, Kont::Return(kc.clone()))?;
+        clauses.push((Symbol::Return, Branch { params: params.into_iter().chain([kc]).collect(), body: ret_body }));
+        // `op(x, .., r, k)`, the erased arguments first bound to nothing
+        for (index, op) in ops.iter().enumerate() {
+            let mut outer = env.clone();
+            let mut clause = op.body.clone();
+            for _ in 0..op.erased {
+                outer.push(Binding::Erased);
+                clause = Self::under_lambda(&clause).ok_or(LowerError::ErrorTerm)?;
+            }
+            let arity = self.ops.get(&op.op).map_or(1, |info| info.arity);
+            let (inner, params, body_of) = self.open(&outer, &clause, arity + 1)?;
+            let kc = self.continuation("k");
+            let op_body = self.term(&inner, &body_of, Kont::Return(kc.clone()))?;
+            let symbol = Symbol::Op(op.name.as_str().into(), index);
+            clauses.push((symbol, Branch { params: params.into_iter().chain([kc]).collect(), body: op_body }));
+        }
+        let body = self.term(env, body, Kont::Return(r.clone()))?;
+        self.with_continuation(k, |kv| {
+            Stmt::New(h.clone(), Vec::new(), clauses, Box::new(Stmt::Handle(h, kv, r, Box::new(body))))
+        })
+    }
+
+    /// What is under a lambda, looking through the note on it.
+    fn under_lambda(c: &Rc<Core>) -> Option<Rc<Core>> {
+        match &**c {
+            Core::Lam(_, body) => Some(body.clone()),
+            Core::Runtime(_, inner) => Self::under_lambda(inner),
+            _ => None,
+        }
+    }
+
+    /// The first `n` lambdas of `c` as parameters: the environment under
+    /// them, the variables they bind, and the body.
+    fn open(&mut self, env: &Env, c: &Rc<Core>, n: usize) -> Result<(Env, Vec<Var>, Rc<Core>), LowerError> {
+        let mut inner = env.clone();
+        let mut params = Vec::new();
+        let mut c = c.clone();
+        for _ in 0..n {
+            let (x, grade, body) = match &*c {
+                Core::Lam(x, body) => (x.clone(), None, body.clone()),
+                Core::Runtime(Note::Binds(g), lam) => match &**lam {
+                    Core::Lam(x, body) => (x.clone(), Some(*g), body.clone()),
+                    _ => return Err(LowerError::ErrorTerm),
+                },
+                _ => return Err(LowerError::ErrorTerm),
+            };
+            let v = self.bound(&x, grade);
+            inner.push(Binding::Var(v.clone()));
+            params.push(v);
+            c = body;
+        }
+        Ok((inner, params, c))
     }
 
     fn lambda(&mut self, env: &Env, x: &str, grade: Option<Grade>, body: &Rc<Core>, k: Kont) -> Lowered {
@@ -786,7 +948,8 @@ fn prune_labels(definitions: &mut [Definition]) {
             }
             Stmt::Switch(_, clauses) => clauses.iter_mut().for_each(|(_, b)| jumps(&mut b.body, needed)),
             Stmt::Extern(_, _, branches) => branches.iter_mut().for_each(|b| jumps(&mut b.body, needed)),
-            Stmt::Invoke(..) => {}
+            Stmt::Handle(_, _, _, rest) => jumps(rest, needed),
+            Stmt::Invoke(..) | Stmt::Perform(..) => {}
         }
     }
     for d in definitions.iter_mut() {

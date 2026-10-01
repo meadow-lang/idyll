@@ -182,6 +182,21 @@ fn stmt(s: &Stmt, env: &[Var], renaming: &Renaming) -> Stmt {
             let args = a.consumed.clone();
             a.before(env, Stmt::Jump(l.clone(), args))
         }
+        // like a `let` of two fields
+        Stmt::Handle(h, k, ret, rest) => {
+            let a = arrange(env, &live_after(rest, ret, renaming), &now(&[h.clone(), k.clone()]));
+            let rest = stmt(rest, &extended(&a.kept, std::slice::from_ref(ret)), renaming);
+            let (h, k) = (a.consumed[0].clone(), a.consumed[1].clone());
+            a.before(env, Stmt::Handle(h, k, ret.clone(), Box::new(rest)))
+        }
+        // like a jump
+        Stmt::Perform(op, xs, k) => {
+            let consumed: Vec<Var> = xs.iter().chain([k]).cloned().collect();
+            let a = arrange(env, &[], &now(&consumed));
+            let mut consumed = a.consumed.clone();
+            let k = consumed.pop().expect("the continuation");
+            a.before(env, Stmt::Perform(op.clone(), consumed, k))
+        }
         Stmt::Extern(op, args, branches) => {
             let branches = branches
                 .iter()

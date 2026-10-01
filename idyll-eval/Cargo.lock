@@ -211,7 +211,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "idyll-eval"
-version = "0.2.0"
+version = "0.1.0-alpha"
 dependencies = [
  "idyllic",
  "idyllic-ast",
@@ -219,17 +219,19 @@ dependencies = [
  "idyllic-diagnostics",
  "idyllic-seq",
  "idyllic-typecheck",
+ "idyllic-world",
  "num-bigint",
 ]
 
 [[package]]
 name = "idyllic"
-version = "0.2.0"
+version = "0.1.0-alpha"
 dependencies = [
  "clap",
  "idyllic-ast",
  "idyllic-builtins",
  "idyllic-diagnostics",
+ "idyllic-hir",
  "idyllic-layout",
  "idyllic-lexer",
  "idyllic-llvm",
@@ -239,23 +241,28 @@ dependencies = [
  "idyllic-seq",
  "idyllic-span",
  "idyllic-typecheck",
+ "idyllic-world",
 ]
 
 [[package]]
 name = "idyllic-ast"
-version = "0.2.0"
+version = "0.1.0-alpha"
 dependencies = [
  "idyllic-span",
  "num-bigint",
+ "serde",
 ]
 
 [[package]]
 name = "idyllic-builtins"
-version = "0.2.0"
+version = "0.1.0-alpha"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "idyllic-diagnostics"
-version = "0.2.0"
+version = "0.1.0-alpha"
 dependencies = [
  "ariadne",
  "idyllic-span",
@@ -263,15 +270,16 @@ dependencies = [
 
 [[package]]
 name = "idyllic-hir"
-version = "0.2.0"
+version = "0.1.0-alpha"
 dependencies = [
  "idyllic-ast",
  "idyllic-span",
+ "serde",
 ]
 
 [[package]]
 name = "idyllic-layout"
-version = "0.2.0"
+version = "0.1.0-alpha"
 dependencies = [
  "idyllic-diagnostics",
  "idyllic-lexer",
@@ -280,7 +288,7 @@ dependencies = [
 
 [[package]]
 name = "idyllic-lexer"
-version = "0.2.0"
+version = "0.1.0-alpha"
 dependencies = [
  "idyllic-diagnostics",
  "idyllic-span",
@@ -290,14 +298,15 @@ dependencies = [
 
 [[package]]
 name = "idyllic-llvm"
-version = "0.2.0"
+version = "0.1.0-alpha"
 dependencies = [
  "idyllic-seq",
+ "idyllic-world",
 ]
 
 [[package]]
 name = "idyllic-parser"
-version = "0.2.0"
+version = "0.1.0-alpha"
 dependencies = [
  "chumsky",
  "idyllic-ast",
@@ -309,7 +318,7 @@ dependencies = [
 
 [[package]]
 name = "idyllic-rename"
-version = "0.2.0"
+version = "0.1.0-alpha"
 dependencies = [
  "idyllic-ast",
  "idyllic-builtins",
@@ -320,34 +329,43 @@ dependencies = [
 
 [[package]]
 name = "idyllic-scc"
-version = "0.2.0"
+version = "0.1.0-alpha"
 dependencies = [
  "idyllic-hir",
 ]
 
 [[package]]
 name = "idyllic-seq"
-version = "0.2.0"
+version = "0.1.0-alpha"
 dependencies = [
  "idyllic-ast",
  "idyllic-builtins",
  "idyllic-typecheck",
+ "idyllic-world",
  "num-bigint",
 ]
 
 [[package]]
 name = "idyllic-span"
-version = "0.2.0"
+version = "0.1.0-alpha"
 
 [[package]]
 name = "idyllic-typecheck"
-version = "0.2.0"
+version = "0.1.0-alpha"
 dependencies = [
  "idyllic-ast",
  "idyllic-builtins",
  "idyllic-diagnostics",
  "idyllic-hir",
  "idyllic-span",
+ "serde",
+]
+
+[[package]]
+name = "idyllic-world"
+version = "0.1.0-alpha"
+dependencies = [
+ "num-bigint",
 ]
 
 [[package]]
@@ -408,6 +426,7 @@ checksum = "93e7820bc0a80a0238e650327316f929ba18d5be054b647490a3a6a339f3e7c0"
 dependencies = [
  "num-integer",
  "num-traits",
+ "serde",
 ]
 
 [[package]]

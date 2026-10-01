@@ -14,13 +14,16 @@
 //!
 //! Node ids are preserved, so the span / type side tables stay valid.
 
-use idyllic_hir::{Alt, Bind, BindGroup, GradeAnn, Module, Term, TermKind};
+use idyllic_hir::{Bind, BindGroup, Clause, GradeAnn, Module, PatKind, Pattern, Rhs, Term, TermKind};
 use std::collections::{HashMap, HashSet};
 
 /// Retopologize a whole module: its top-level groups, and every nested `let`
 /// — in the trailing body and inside the declarations themselves.
 pub fn scc_module(m: Module) -> Module {
-    Module { datas: m.datas, groups: scc_groups(m.groups), body: m.body.map(scc_term) }
+    // (each top-level group apart: the prelude's definitions all come before
+    // the program's)
+    let groups = m.groups.into_iter().flat_map(|g| scc_groups(vec![g])).collect();
+    Module { groups, body: m.body.map(scc_term), ..m }
 }
 
 /// Regroup a `let`'s bindings, first doing the same for any `let` nested in
@@ -41,8 +44,9 @@ fn scc_groups(groups: Vec<BindGroup>) -> Vec<BindGroup> {
 pub fn scc_term(t: Term) -> Term {
     use TermKind::*;
     let kind = match t.kind {
-        k @ (Type | Hole | Inf | Lit(_) | Var(_)) => k,
+        k @ (Type | Hole | Omitted | Inf | Lit(_) | Var(_) | SeqNil) => k,
         App(f, a) => App(Box::new(scc_term(*f)), Box::new(scc_term(*a))),
+        SeqCons(h, t) => SeqCons(Box::new(scc_term(*h)), Box::new(scc_term(*t))),
         Ann(e, a) => Ann(Box::new(scc_term(*e)), Box::new(scc_term(*a))),
         Range(lo, hi) => Range(Box::new(scc_term(*lo)), Box::new(scc_term(*hi))),
         Pi(x, icit, g, dom, cod) => {
@@ -54,12 +58,39 @@ pub fn scc_term(t: Term) -> Term {
         BoxIntro(e) => BoxIntro(Box::new(scc_term(*e))),
         LetBox(x, e, body) => LetBox(x, Box::new(scc_term(*e)), Box::new(scc_term(*body))),
         Let(groups, body) => Let(scc_groups(groups), Box::new(scc_term(*body))),
-        Case(scrutinee, alts) => Case(
-            Box::new(scc_term(*scrutinee)),
-            alts.into_iter().map(|a| Alt { body: scc_term(a.body), ..a }).collect(),
+        Case(scrutinee, clauses) => Case(Box::new(scc_term(*scrutinee)), clauses.into_iter().map(scc_clause).collect()),
+        Match(clauses) => Match(clauses.into_iter().map(scc_clause).collect()),
+        Eff(t, r) => Eff(Box::new(scc_term(*t)), Box::new(scc_term(*r))),
+        Row(labels, tail) => Row(labels.into_iter().map(scc_term).collect(), tail.map(|t| Box::new(scc_term(*t)))),
+        Handle(body, clauses) => Handle(
+            Box::new(scc_term(*body)),
+            clauses
+                .into_iter()
+                .map(|c| idyllic_hir::HandleClause { body: scc_term(c.body), ..c })
+                .collect(),
         ),
     };
     Term { id: t.id, kind }
+}
+
+fn scc_clause(c: Clause) -> Clause {
+    let rhs = match c.rhs {
+        Rhs::Plain(e) => Rhs::Plain(scc_term(e)),
+        Rhs::Guarded(gs) => Rhs::Guarded(gs.into_iter().map(|(g, e)| (scc_term(g), scc_term(e))).collect()),
+        Rhs::Impossible => Rhs::Impossible,
+    };
+    Clause { pats: c.pats.into_iter().map(scc_pattern).collect(), rhs, ..c }
+}
+
+fn scc_pattern(p: Pattern) -> Pattern {
+    let kind = match p.kind {
+        PatKind::Con(c, ps) => PatKind::Con(c, ps.into_iter().map(scc_pattern).collect()),
+        PatKind::SeqCons(ps) => PatKind::SeqCons(ps.into_iter().map(scc_pattern).collect()),
+        PatKind::As(x, q) => PatKind::As(x, Box::new(scc_pattern(*q))),
+        PatKind::Dot(e) => PatKind::Dot(scc_term(e)),
+        k @ (PatKind::Var(_) | PatKind::Wild | PatKind::Lit(_) | PatKind::SeqNil) => k,
+    };
+    Pattern { id: p.id, kind }
 }
 
 fn scc_grades(g: GradeAnn) -> GradeAnn {
@@ -189,13 +220,13 @@ pub fn free_uniques(t: &Term) -> HashSet<usize> {
     fn go(t: &Term, out: &mut HashSet<usize>) {
         use TermKind::*;
         match &t.kind {
-            Type | Hole | Inf | Lit(_) => {}
+            Type | Hole | Omitted | Inf | Lit(_) | SeqNil => {}
             Var(i) => {
                 if let Some(u) = i.unique {
                     out.insert(u);
                 }
             }
-            App(f, a) | Ann(f, a) | Range(f, a) => {
+            App(f, a) | Ann(f, a) | Range(f, a) | Eff(f, a) | SeqCons(f, a) => {
                 go(f, out);
                 go(a, out);
             }
@@ -231,15 +262,24 @@ pub fn free_uniques(t: &Term) -> HashSet<usize> {
                 }
                 out.extend(inner);
             }
-            Case(scrutinee, alts) => {
+            // names are unique, so what a clause binds cannot be mistaken
+            // for anything outside it
+            Case(scrutinee, clauses) => {
                 go(scrutinee, out);
-                for alt in alts {
-                    // names are unique, so what an alternative binds cannot
-                    // be mistaken for anything outside it
-                    go(&alt.body, out);
-                    if let idyllic_hir::AltHead::Con(c) = &alt.head {
-                        out.extend(c.unique);
-                    }
+                clauses.iter().for_each(|c| clause(c, out));
+            }
+            Match(clauses) => clauses.iter().for_each(|c| clause(c, out)),
+            Handle(body, clauses) => {
+                go(body, out);
+                for c in clauses {
+                    out.extend(c.op.as_ref().and_then(|op| op.unique));
+                    go(&c.body, out);
+                }
+            }
+            Row(labels, tail) => {
+                labels.iter().for_each(|l| go(l, out));
+                if let Some(t) = tail {
+                    go(t, out);
                 }
             }
             Let(groups, body) => {
@@ -255,6 +295,29 @@ pub fn free_uniques(t: &Term) -> HashSet<usize> {
                 }
                 out.extend(inner);
             }
+        }
+    }
+    fn clause(c: &Clause, out: &mut HashSet<usize>) {
+        c.pats.iter().for_each(|p| pattern(p, out));
+        match &c.rhs {
+            Rhs::Plain(e) => go(e, out),
+            Rhs::Guarded(gs) => gs.iter().for_each(|(g, e)| {
+                go(g, out);
+                go(e, out);
+            }),
+            Rhs::Impossible => {}
+        }
+    }
+    fn pattern(p: &Pattern, out: &mut HashSet<usize>) {
+        match &p.kind {
+            PatKind::Con(c, ps) => {
+                out.extend(c.unique);
+                ps.iter().for_each(|p| pattern(p, out));
+            }
+            PatKind::SeqCons(ps) => ps.iter().for_each(|p| pattern(p, out)),
+            PatKind::As(_, q) => pattern(q, out),
+            PatKind::Dot(e) => go(e, out),
+            PatKind::Var(_) | PatKind::Wild | PatKind::Lit(_) | PatKind::SeqNil => {}
         }
     }
     fn grades(g: &Option<GradeAnn>, out: &mut HashSet<usize>) {

@@ -5,7 +5,7 @@ use idyllic::pipeline::{self, Options};
 use idyllic_diagnostics::OutputStyle;
 
 fn run(src: &str) -> pipeline::Output {
-    pipeline::run(src, &Options { debug: false, style: OutputStyle::PLAIN })
+    pipeline::run(src, &Options { debug: false, style: OutputStyle::PLAIN, live: false })
 }
 
 /// `headline: label`, one per diagnostic.
@@ -101,8 +101,8 @@ fn a_data_type_cannot_hold_a_type() {
 
 #[test]
 fn small_data_types_are_unaffected() {
-    accepts("data Pair a b = MkPair a b\n\nMkPair 1 True");
-    accepts("data Proxy (a : Type 1) = MkProxy\n\n(MkProxy : Proxy Type)");
+    accepts("data Pair a b = MkPair a b\n\nuse Pair.*\n\nMkPair 1 True");
+    accepts("data Proxy (a : Type 1) = MkProxy\n\nuse Proxy.*\n\n(MkProxy : Proxy Type)");
 }
 
 // ---------------------------------------------------------------------------
@@ -135,17 +135,17 @@ fn a_type_may_not_appear_in_its_own_arguments() {
         &["Bad is not strictly positive: it appears in an argument of itself in this field of MkBad"],
     );
     // a different argument at the recursive occurrence is fine, though
-    accepts("data Nest a = NilN | ConsN a (Nest (Maybe a))\ndata Maybe a = Nothing | Just a");
+    accepts("data Nest a = NilN | ConsN a (Nest (Maybe a))\nuse Nest.*\ndata Maybe a = Nothing | Just a");
 }
 
 #[test]
 fn nested_occurrences_follow_the_parameters_polarity() {
     // List's parameter is strictly positive, so a rose tree is fine
     accepts("data Rose a = Node a (List (Rose a))");
-    accepts("data Box a = MkBox a\ndata T = MkT (Box T)");
+    accepts("data Box a = MkBox a\nuse Box.*\ndata T = MkT (Box T)");
     // but a type whose parameter is used negatively passes the problem on
     rejects(
-        "data Neg a = MkNeg (a -> Int)\ndata Bad = MkBad (Neg Bad)",
+        "data Neg a = MkNeg (a -> Int)\nuse Neg.*\ndata Bad = MkBad (Neg Bad)",
         &["Bad is not strictly positive: it appears inside Neg, whose parameter is not strictly positive, in this field of MkBad"],
     );
     rejects(
@@ -156,15 +156,15 @@ fn nested_occurrences_follow_the_parameters_polarity() {
 
 #[test]
 fn mutually_recursive_types_are_checked_together() {
-    accepts("data Even = Zero | ESucc Odd\ndata Odd = OSucc Even");
+    accepts("data Even = Zero | ESucc Odd\nuse Even.*\ndata Odd = OSucc Even");
     // B is what appears to the left of the arrow, and it is only a problem
     // because B in turn contains an A
     rejects(
-        "data A = MkA (B -> Int)\ndata B = MkB A",
+        "data A = MkA (B -> Int)\nuse A.*\ndata B = MkB A",
         &["B is not strictly positive: it appears to the left of an arrow in this field of MkA"],
     );
     // without that, a type from an earlier group is just a type
-    accepts("data B = MkB Int\ndata A = MkA (B -> Int)");
+    accepts("data B = MkB Int\nuse B.*\ndata A = MkA (B -> Int)");
 }
 
 #[test]
@@ -238,4 +238,40 @@ fn moving_the_paradox_up_a_universe_only_moves_the_error() {
     let out = run(&HURKENS.replace("u : Type\n", "u : Type 1\n"));
     let got = diags(&out);
     assert_eq!(got.first().map(String::as_str), Some("type mismatch: expected Type, but this has type Type 1"), "{got:#?}");
+}
+
+// ---------------------------------------------------------------------------
+// Typed metavariables
+// ---------------------------------------------------------------------------
+
+const ID: &str = "id : {a : Type} -> a -> a\nid x = x\n";
+
+#[test]
+fn an_implicit_argument_must_fit_its_universe() {
+    // `a` would have to be `Type 1`, which is not a type in `Type`
+    rejects(
+        &format!("{ID}id Type"),
+        &["universe too large: the implicit argument a must be a type in Type, but here it would be Type 1, which is in Type 2"],
+    );
+    rejects(
+        &format!("{ID}id (Int -> Type)"),
+        &["universe too large: the implicit argument a must be a type in Type, but here it would be Type 1, which is in Type 2"],
+    );
+}
+
+#[test]
+fn an_implicit_argument_in_its_universe_is_fine() {
+    assert_eq!(ty(&format!("{ID}id 3")), "Int");
+    assert_eq!(ty(&format!("{ID}id (\\(x : Int) -> x)")), "(x : Int) -> Int");
+    // `id Int` needs `a` to be `Type`, which is in `Type 1`
+    rejects(
+        &format!("{ID}id Int"),
+        &["universe too large: the implicit argument a must be a type in Type, but here it would be Type, which is in Type 1"],
+    );
+    // and a larger universe allows it
+    assert_eq!(ty("id1 : {a : Type 1} -> a -> a\nid1 x = x\nid1 Int"), "Type");
+    rejects(
+        "id1 : {a : Type 1} -> a -> a\nid1 x = x\nid1 Type",
+        &["universe too large: the implicit argument a must be a type in Type 1, but here it would be Type 1, which is in Type 2"],
+    );
 }

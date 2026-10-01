@@ -66,6 +66,11 @@ impl<T> Spanned<T> {
     pub fn new(node: T, span: Span) -> Self {
         Spanned { node, span }
     }
+
+    /// The same span, around something made from what was there.
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Spanned<U> {
+        Spanned { node: f(self.node), span: self.span }
+    }
 }
 
 /// Byte offset → (line, column) conversion, both 1-based.
@@ -101,5 +106,65 @@ impl LineIndex {
 
     pub fn column(&self, offset: usize) -> usize {
         self.line_col(offset).1
+    }
+}
+
+/// Which file of a [`SourceMap`] something is in.
+pub type FileId = usize;
+
+/// A file of source, as a [`SourceMap`] holds it: its text starts at offset
+/// `base` of the one address space all the map's spans share.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceFile {
+    pub name: String,
+    pub text: String,
+    pub base: usize,
+}
+
+impl SourceFile {
+    /// Where the file's text ends, in the shared address space.
+    pub fn end(&self) -> usize {
+        self.base + self.text.len()
+    }
+}
+
+/// Every file of a program, in one address space: each file's offsets come
+/// after the last's, so a [`Span`] says which file it is in as well as
+/// where, and nothing downstream of the lexer needs to know there is more
+/// than one file.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SourceMap {
+    files: Vec<SourceFile>,
+}
+
+impl SourceMap {
+    /// Add a file, after the others (with a byte between, so that the end of
+    /// one is never the start of the next).
+    pub fn add(&mut self, name: impl Into<String>, text: impl Into<String>) -> FileId {
+        let base = self.files.last().map_or(0, |f| f.end() + 1);
+        self.files.push(SourceFile { name: name.into(), text: text.into(), base });
+        self.files.len() - 1
+    }
+
+    pub fn file(&self, id: FileId) -> &SourceFile {
+        &self.files[id]
+    }
+
+    pub fn files(&self) -> &[SourceFile] {
+        &self.files
+    }
+
+    /// The file an offset is in, and the offset within it.
+    pub fn locate(&self, offset: usize) -> Option<(FileId, usize)> {
+        let i = self.files.partition_point(|f| f.base <= offset).checked_sub(1)?;
+        let f = &self.files[i];
+        (offset <= f.end()).then(|| (i, offset - f.base))
+    }
+}
+
+impl SourceMap {
+    /// Call a file something else, for showing it.
+    pub fn set_name(&mut self, id: FileId, name: impl Into<String>) {
+        self.files[id].name = name.into();
     }
 }

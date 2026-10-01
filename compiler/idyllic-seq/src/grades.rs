@@ -94,7 +94,8 @@ impl Checker<'_> {
             }
             Stmt::Switch(_, clauses) => clauses.iter().for_each(|(_, b)| self.bound(&b.params, &b.body)),
             Stmt::Extern(_, _, branches) => branches.iter().for_each(|b| self.bound(&b.params, &b.body)),
-            Stmt::Invoke(..) | Stmt::Jump(..) => {}
+            Stmt::Handle(_, _, ret, rest) => self.bound(std::slice::from_ref(ret), rest),
+            Stmt::Invoke(..) | Stmt::Jump(..) | Stmt::Perform(..) => {}
         }
     }
 }
@@ -115,5 +116,7 @@ fn uses(s: &Stmt, v: &Var) -> u64 {
         Stmt::Invoke(x, _, args) => is(x) + among(args),
         Stmt::Jump(_, args) => among(args),
         Stmt::Extern(_, args, branches) => among(args) + branches.iter().map(|b| uses(&b.body, v)).max().unwrap_or(0),
+        Stmt::Handle(h, k, _, rest) => is(h) + is(k) + uses(rest, v),
+        Stmt::Perform(_, xs, k) => among(xs) + is(k),
     }
 }

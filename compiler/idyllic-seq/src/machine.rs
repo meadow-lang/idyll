@@ -94,6 +94,7 @@
 //! runs on fuel: one unit per rule of Figure 5.
 
 use super::{Extern, Program, Stmt, Symbol, Var};
+use idyllic_world::{Answer, Arg, Stop, World};
 use num_bigint::BigInt;
 use std::collections::HashMap;
 use std::fmt;
@@ -128,7 +129,7 @@ enum Instr {
     /// (invoke): jump through the virtual table of the last register, to
     /// the clause for `method`, which is handed the `args` registers
     /// before it.
-    Invoke { method: usize, symbol: Symbol, args: usize },
+    Invoke { symbol: Symbol, args: usize },
     /// (jump): straight to a label, whose parameters are the whole
     /// environment.
     Jump { target: Pc },
@@ -140,6 +141,22 @@ enum Instr {
     /// At the entry of a clause: take the block of the last register, which
     /// the dispatch landed here by, and put its `fields` in its place.
     Load { fields: usize, what: &'static str },
+    /// `handle`: the last two registers, a handler and where its `handle`
+    /// goes, become the newest handler in force; in their place goes the
+    /// consumer the body returns to.
+    Handle,
+    /// `perform op`: from the last two registers, an argument and a
+    /// continuation, to the clause for `op` of the newest handler that has
+    /// one.  The handlers from it on are taken out of force and kept in the
+    /// resumption, with the continuation.
+    Perform { op: Symbol, args: usize },
+    /// The clause of the consumer a handled body returns to: the newest
+    /// handler leaves force, and its `return` gets the value.
+    HandlerReturn,
+    /// The clause of a resumption, invoked as a function: the handlers it
+    /// kept come back into force, the first answering now to the caller,
+    /// and the continuation it kept gets the value.
+    Resume,
 }
 
 /// An entry of a jump table or a virtual table: a clause, and what it is
@@ -156,6 +173,10 @@ struct Entry {
 #[derive(Clone, Debug)]
 pub struct Code {
     instrs: Vec<Instr>,
+    /// the tables of the two consumers the machine makes itself: the one a
+    /// handled body returns to, and a resumption
+    return_table: TableId,
+    resume_table: TableId,
     /// Indexed by a constructor's tag (a jump table) or by a destructor's
     /// position in its signature (a virtual table); `None` where the table
     /// has no clause.
@@ -165,6 +186,12 @@ pub struct Code {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MachineError {
     OutOfFuel,
+    /// `/` or `%` by zero.
+    DivisionByZero,
+    /// The program ended itself: `exit n`.
+    Exited(i32),
+    /// `fail message`: a test failed.
+    TestFailed(String),
     /// The program broke AxCut's rules; a well-typed one cannot.
     Malformed(String),
 }
@@ -173,6 +200,9 @@ impl fmt::Display for MachineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             MachineError::OutOfFuel => write!(f, "out of fuel"),
+            MachineError::DivisionByZero => write!(f, "division by zero"),
+            MachineError::Exited(code) => write!(f, "exited with {code}"),
+            MachineError::TestFailed(why) => write!(f, "test failed: {why}"),
             MachineError::Malformed(why) => write!(f, "malformed program: {why}"),
         }
     }
@@ -222,7 +252,13 @@ pub fn assemble(program: &Program) -> Result<Code, MachineError> {
         let Instr::Jump { target } = &mut asm.instrs[at] else { unreachable!("only jumps are patched") };
         *target = entries[label];
     }
-    Ok(Code { instrs: asm.instrs, tables: asm.tables })
+    let return_table = asm.table();
+    let pc = asm.emit(Instr::HandlerReturn);
+    asm.enter(return_table, 0, Entry { symbol: Symbol::Ret, pc, params: 1 })?;
+    let resume_table = asm.table();
+    let pc = asm.emit(Instr::Resume);
+    asm.enter(resume_table, 0, Entry { symbol: Symbol::Apply, pc, params: 2 })?;
+    Ok(Code { instrs: asm.instrs, tables: asm.tables, return_table, resume_table })
 }
 
 /// Where `v` is, searching from the end, as the environment would be read.
@@ -327,7 +363,7 @@ impl<'p> Assembler<'p> {
                 if !env.is_empty() {
                     return malformed(format!("invoke {v} {m} leaves {} variables behind", env.len()));
                 }
-                self.emit(Instr::Invoke { method: method(m), symbol: m.clone(), args: args.len() });
+                self.emit(Instr::Invoke { symbol: m.clone(), args: args.len() });
                 Ok(())
             }
             Stmt::Jump(l, args) => {
@@ -347,6 +383,21 @@ impl<'p> Assembler<'p> {
                 self.jumps.push((at, l));
                 Ok(())
             }
+            Stmt::Handle(h, k, ret, rest) => {
+                take_tail(&mut env, &[h.clone(), k.clone()], "handle")?;
+                self.emit(Instr::Handle);
+                env.push(ret.clone());
+                self.statement(rest, env)
+            }
+            Stmt::Perform(op, xs, k) => {
+                let taken: Vec<Var> = xs.iter().chain([k]).cloned().collect();
+                take_tail(&mut env, &taken, "perform")?;
+                if !env.is_empty() {
+                    return malformed(format!("perform {op} leaves {} variables behind", env.len()));
+                }
+                self.emit(Instr::Perform { op: op.clone(), args: xs.len() });
+                Ok(())
+            }
             Stmt::Extern(Extern::Halt, args, _) => match args.as_slice() {
                 [answer] => {
                     let answer = position(&env, answer)?;
@@ -358,7 +409,7 @@ impl<'p> Assembler<'p> {
             Stmt::Extern(op, args, branches) => {
                 let arity = match op {
                     Extern::LitInt(_) | Extern::LitStr(_) => 0,
-                    Extern::Add | Extern::Mul | Extern::Sub | Extern::Lt | Extern::Eq => 2,
+                    Extern::Add | Extern::Mul | Extern::Sub | Extern::Div | Extern::Mod | Extern::Lt | Extern::Eq => 2,
                     Extern::Halt => unreachable!("handled above"),
                 };
                 if args.len() != arity {
@@ -660,12 +711,24 @@ pub struct Outcome {
     /// type has nothing worth showing.
     pub answer: Option<String>,
     pub memory: Memory,
+    /// What the program wrote to the console.
+    pub output: String,
 }
 
 /// Assemble a program and run it from its first definition until it halts,
 /// for at most `fuel` steps.
 pub fn run(program: &Program, fuel: u64) -> Result<Outcome, MachineError> {
-    execute(&assemble(program)?, fuel)
+    let mut world = World::captured();
+    let mut outcome = run_in(program, fuel, &mut world)?;
+    outcome.output = world.into_output();
+    Ok(outcome)
+}
+
+/// The same, in `world`, which the world's operations are done in (see
+/// [`idyllic_world`]); what they print is there even if the program stops
+/// early.  The outcome's `output` is left empty.
+pub fn run_in(program: &Program, fuel: u64, world: &mut World) -> Result<Outcome, MachineError> {
+    execute(&assemble(program)?, fuel, world)
 }
 
 fn integer(regs: &[Value], r: Reg) -> Result<BigInt, MachineError> {
@@ -680,6 +743,22 @@ fn truth(b: bool) -> Value {
     Value { block: None, word: Word::Tag(if b { Symbol::True } else { Symbol::False }) }
 }
 
+/// Where `invoke` goes: the clause for `symbol` of the consumer in the last
+/// register, which must bind `args` variables.
+fn dispatch(code: &Code, regs: &[Value], symbol: &Symbol, args: usize) -> Result<Pc, MachineError> {
+    let Some(Value { word: Word::Table(table), .. }) = regs.last() else {
+        return malformed(format!("invoke {symbol} is on something that is not a consumer"));
+    };
+    let clause = entry(code, *table, method(symbol), symbol)?;
+    if clause.symbol != *symbol {
+        return malformed(format!("no clause for {symbol}"));
+    }
+    if clause.params != args {
+        return malformed(format!("an invoked clause binds {} variables, but is given {args}", clause.params));
+    }
+    Ok(clause.pc)
+}
+
 /// The table entry for `index`, or the error of there being none.
 fn entry<'c>(code: &'c Code, table: TableId, index: usize, m: &Symbol) -> Result<&'c Entry, MachineError> {
     match code.tables[table].get(index) {
@@ -688,12 +767,52 @@ fn entry<'c>(code: &'c Code, table: TableId, index: usize, m: &Symbol) -> Result
     }
 }
 
+/// An operation nothing in the program handles is one of the world's, the
+/// runtime's to do (the type checker has seen to it that no other gets this
+/// far): what it gives back, as a value.
+fn world(world: &mut World, heap: &mut Heap, op: &Symbol, xs: &[Value]) -> Result<Value, MachineError> {
+    let unhandled = || malformed(format!("{op} is performed with no handler for it in force"));
+    let Symbol::Op(name, _) = op else { return unhandled() };
+    let mut args = Vec::new();
+    for x in xs {
+        args.push(match &x.word {
+            Word::Int(n) => Arg::Int(n.clone()),
+            Word::Str(s) => Arg::Str(s.clone()),
+            // `()`, and whatever else carries nothing an operation reads
+            _ => Arg::Int(BigInt::ZERO),
+        });
+    }
+    match world.perform(name, &args) {
+        None => unhandled(),
+        Some(Err(Stop::Exit(code))) => Err(MachineError::Exited(code)),
+        Some(Err(Stop::Failed(why))) => Err(MachineError::TestFailed(why)),
+        Some(Ok(answer)) => Ok(answer_value(heap, answer)),
+    }
+}
+
+/// A value of the machine's, for one of the world's answers.
+fn answer_value(heap: &mut Heap, answer: Answer) -> Value {
+    let word = |word| Value { block: None, word };
+    match answer {
+        Answer::Unit => word(Word::Tag(Symbol::Unit)),
+        Answer::Int(n) => word(Word::Int(n)),
+        Answer::Bool(b) => truth(b),
+        Answer::Str(s) => word(Word::Str(s)),
+        Answer::Con(name, tag, fields) => {
+            let fields = fields.into_iter().map(|f| answer_value(heap, f)).collect();
+            Value { block: heap.acquire(fields), word: Word::Tag(Symbol::Con(name.into(), tag)) }
+        }
+    }
+}
+
 /// Run assembled code from address `0` until it halts, for at most `fuel`
 /// steps.
-pub fn execute(code: &Code, mut fuel: u64) -> Result<Outcome, MachineError> {
+pub fn execute(code: &Code, mut fuel: u64, world: &mut World) -> Result<Outcome, MachineError> {
     let mut pc: Pc = 0;
     let mut regs: Vec<Value> = Vec::new();
     let mut heap = Heap::default();
+    // the handlers in force, newest last: each with where its `handle` goes
+    let mut handlers: Vec<(Value, Value)> = Vec::new();
     loop {
         let instr = &code.instrs[pc];
         if !matches!(instr, Instr::Load { .. }) {
@@ -728,18 +847,62 @@ pub fn execute(code: &Code, mut fuel: u64) -> Result<Outcome, MachineError> {
                 };
                 entry(code, *table, m.tag(), m)?.pc
             }
-            Instr::Invoke { method, symbol, args } => {
-                let Some(Value { word: Word::Table(table), .. }) = regs.last() else {
-                    return malformed(format!("invoke {symbol} is on something that is not a consumer"));
+            Instr::Invoke { symbol, args } => dispatch(code, &regs, symbol, *args)?,
+            Instr::Handle => {
+                let k = regs.pop().expect("assembly saw to it");
+                let h = regs.pop().expect("assembly saw to it");
+                handlers.push((h, k));
+                regs.push(Value { block: None, word: Word::Table(code.return_table) });
+                pc + 1
+            }
+            Instr::HandlerReturn => {
+                regs.pop();
+                let Some((h, k)) = handlers.pop() else { return malformed("a handler returned with none in force") };
+                regs.push(k);
+                regs.push(h);
+                dispatch(code, &regs, &Symbol::Return, 2)?
+            }
+            Instr::Perform { op, args } => 'perform: {
+                let k = regs.pop().expect("assembly saw to it");
+                let xs = regs.split_off(regs.len() - args);
+                let handles = |h: &Value| match &h.word {
+                    Word::Table(t) => matches!(code.tables[*t].get(method(op)), Some(Some(e)) if e.symbol == *op),
+                    _ => false,
                 };
-                let clause = entry(code, *table, *method, symbol)?;
-                if clause.symbol != *symbol {
-                    return malformed(format!("no clause for {symbol}"));
+                let Some(at) = handlers.iter().rposition(|(h, _)| handles(h)) else {
+                    // the runtime's, then: done, and the rest goes on with
+                    // what it gave back
+                    let answer = self::world(world, &mut heap, op, &xs)?;
+                    xs.iter().for_each(|x| heap.erase(x));
+                    regs.push(answer);
+                    regs.push(k);
+                    break 'perform dispatch(code, &regs, &Symbol::Ret, 1)?;
+                };
+                let mut taken = handlers.split_off(at).into_iter();
+                let (h, outer) = taken.next().expect("at least the one found");
+                // the handler is kept in the resumption and entered now
+                heap.share(&h, 1);
+                let mut kept = vec![k, h.clone()];
+                for (h, k) in taken {
+                    kept.push(h);
+                    kept.push(k);
                 }
-                if clause.params != *args {
-                    return malformed(format!("an invoked clause binds {} variables, but is given {args}", clause.params));
+                let resumption = Value { block: heap.acquire(kept), word: Word::Table(code.resume_table) };
+                regs.extend(xs);
+                regs.extend([resumption, outer, h]);
+                dispatch(code, &regs, op, args + 2)?
+            }
+            Instr::Resume => {
+                let resumption = regs.pop().expect("a clause is entered by dispatching on a value");
+                let caller = regs.pop().expect("a resumption is given where to go");
+                let mut kept = heap.release(resumption.block)?.into_iter();
+                let (Some(k), Some(h)) = (kept.next(), kept.next()) else { return malformed("a resumption keeps too little") };
+                handlers.push((h, caller));
+                while let (Some(h), Some(k)) = (kept.next(), kept.next()) {
+                    handlers.push((h, k));
                 }
-                clause.pc
+                regs.push(k);
+                dispatch(code, &regs, &Symbol::Ret, 1)?
             }
             Instr::Load { fields, what } => {
                 let dispatched = regs.pop().expect("a clause is entered by dispatching on a value");
@@ -758,6 +921,14 @@ pub fn execute(code: &Code, mut fuel: u64) -> Result<Outcome, MachineError> {
                     (Extern::Add, &[a, b]) => Value { block: None, word: Word::Int(integer(&regs, a)? + integer(&regs, b)?) },
                     (Extern::Mul, &[a, b]) => Value { block: None, word: Word::Int(integer(&regs, a)? * integer(&regs, b)?) },
                     (Extern::Sub, &[a, b]) => Value { block: None, word: Word::Int(integer(&regs, a)? - integer(&regs, b)?) },
+                    (Extern::Div | Extern::Mod, &[a, b]) => {
+                        let (a, b) = (integer(&regs, a)?, integer(&regs, b)?);
+                        if b == BigInt::ZERO {
+                            return Err(MachineError::DivisionByZero);
+                        }
+                        let n = if matches!(op, Extern::Div) { a / b } else { a % b };
+                        Value { block: None, word: Word::Int(n) }
+                    }
                     (Extern::Lt, &[a, b]) => truth(integer(&regs, a)? < integer(&regs, b)?),
                     (Extern::Eq, &[a, b]) => truth(integer(&regs, a)? == integer(&regs, b)?),
                     _ => unreachable!("assembly checked every extern's arity"),
@@ -768,8 +939,9 @@ pub fn execute(code: &Code, mut fuel: u64) -> Result<Outcome, MachineError> {
             Instr::Halt { answer } => {
                 let answer = regs.remove(*answer);
                 let shown = heap.show(&answer);
-                heap.audit(&answer, regs);
-                return Ok(Outcome { answer: shown, memory: heap.memory });
+                let others = regs.into_iter().chain(handlers.into_iter().flat_map(|(h, k)| [h, k])).collect();
+                heap.audit(&answer, others);
+                return Ok(Outcome { answer: shown, memory: heap.memory, output: String::new() });
             }
         };
     }

@@ -30,7 +30,7 @@ use std::ops::{Add, Mul};
 
 /// A natural number or infinity (Granule's `Ext Nat`).  The derived order
 /// puts every finite count below `Inf`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum Ext {
     Fin(u64),
     Inf,
@@ -71,7 +71,7 @@ impl fmt::Display for Ext {
 }
 
 /// An interval of use counts, `lo..hi` with `lo ≤ hi`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct Grade {
     lo: Ext,
     hi: Ext,
@@ -112,6 +112,12 @@ impl Grade {
     /// `case` whose alternatives use it `self` and `other` times.
     pub fn join(self, other: Grade) -> Grade {
         Grade { lo: self.lo.min(other.lo), hi: self.hi.max(other.hi) }
+    }
+
+    /// At least one use: how often something is used that is computed once
+    /// even if its value is used `self` times, which may be none.
+    pub fn at_least_once(self) -> Grade {
+        Grade { lo: self.lo.max(Ext::Fin(1)), hi: self.hi.max(Ext::Fin(1)) }
     }
 
     /// The most uses allowed.

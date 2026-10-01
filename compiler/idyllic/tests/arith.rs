@@ -6,7 +6,7 @@ use idyllic::pipeline::{self, Options};
 
 /// The inferred type and the diagnostic headlines.
 fn run(src: &str) -> (String, Vec<String>) {
-    let out = pipeline::run(src, &Options { debug: false, style: OutputStyle::PLAIN });
+    let out = pipeline::run(src, &Options { debug: false, style: OutputStyle::PLAIN, live: false });
     let diags = out
         .diagnostics
         .iter()
@@ -114,7 +114,7 @@ fn a_hole_solved_later_lets_a_stuck_addition_compute() {
     let src = "\\(f : [0] Int -> Type) (q : f 3) (p : f 4) \
                  (go : (n : Int) -> f n -> f (n + 1) -> Unit) -> go _ q p";
     let (ty, diags) = run(src);
-    assert!(ty.ends_with("-> Unit"), "{ty}");
+    assert!(ty.ends_with("-> ()"), "{ty}");
     assert_eq!(diags, ["found hole: _ : Int  =  3"], "{src}");
 
     // unification does not invert arithmetic: `4 =? ?n + 1` is not solved

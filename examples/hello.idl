@@ -1,0 +1,11 @@
+-- Run with `idyllic examples/hello.idl`, or compile it with `-o hello.exe`.
+-- A program with a `main` runs `main ()`; what it may do is what the runtime
+-- handles, the effects in the prelude's `Eff`: the console, files, the
+-- process, randomness, time, `Test` and `Div`.  Arguments after `--` are what
+-- `args ()` gives it.
+
+countdown : (n : [] Int) -> () ! Eff
+countdown n = if n == 0 then putStrLn "liftoff" else let u = printInt n in countdown (n - 1)
+
+main : () -> () ! Eff
+main () = let u = putStrLn "Hello, Idyll!" in countdown 3

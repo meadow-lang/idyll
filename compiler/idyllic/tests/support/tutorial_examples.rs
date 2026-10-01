@@ -15,6 +15,8 @@ pub struct Example {
     pub value: Option<String>,
     /// `name : type`, for an entry of declarations
     pub decls: Vec<String>,
+    /// what running it printed, line by line
+    pub printed: Vec<String>,
     /// (headline with severity, primary label if shown)
     pub diags: Vec<(String, Option<String>)>,
 }
@@ -38,7 +40,9 @@ fn declares(source: &str) -> bool {
     let first = source.lines().next().unwrap_or("");
     let mut words = first.split_whitespace();
     match (words.next(), words.next()) {
-        (Some("data"), _) => true,
+        (Some("data" | "effect"), _) => true,
+        // an attribute, before a declaration
+        (Some(attribute), _) if attribute.starts_with('@') => true,
         (Some("let" | "if" | "case"), _) => false,
         (Some(name), second) => {
             name.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
@@ -49,13 +53,17 @@ fn declares(source: &str) -> bool {
 }
 
 /// `name : type`, as the REPL reports a definition, a data type or a
-/// constructor (which may be `::`).
+/// constructor (which is reported under its type, `Nat.Z`, and may be an
+/// operator, `List.::`).
 fn is_definition_report(line: &str) -> bool {
     let Some((name, _)) = line.split_once(" : ") else { return false };
-    let mut chars = name.chars();
-    name == "::"
-        || chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+    let (qualifier, last) = name.rsplit_once('.').unwrap_or(("", name));
+    let word = |w: &str| {
+        let mut chars = w.chars();
+        chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
             && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '\'')
+    };
+    (qualifier.is_empty() || qualifier.split('.').all(word)) && (word(last) || last == "::")
 }
 
 pub fn examples(markdown: &str) -> Vec<Example> {
@@ -121,6 +129,10 @@ pub fn examples(markdown: &str) -> Vec<Example> {
             ex.source.push_str(line);
         } else if ex.diags.is_empty() && is_definition_report(line) {
             ex.decls.push(line.to_string());
+        } else if !in_source && ex.diags.is_empty() && ex.decls.is_empty() && ex.ty.is_none() {
+            // after the blank line that ends the entry, and before its
+            // value: what it printed
+            ex.printed.push(line.to_string());
         }
     }
     out

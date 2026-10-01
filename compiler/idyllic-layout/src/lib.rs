@@ -17,6 +17,11 @@
 //! genuine restriction: because `in` closes the *innermost* block that is
 //! waiting for one, a `let` cannot appear inside a `case` alternative without
 //! explicit braces.  The `in` would be matched against the wrong block.
+//!
+//! Layout is suspended inside a sequence literal, `#[ … ]`, as it is inside
+//! explicit braces: its elements may run over several lines, and a `;` there
+//! is always the literal's own.  Its `]` also closes any layout block opened
+//! inside it and still open, as a `)` would in Haskell.
 
 use idyllic_diagnostics::Diagnostic;
 use idyllic_span::{LineIndex, Span, Spanned};
@@ -81,7 +86,7 @@ fn herald_of(t: &Token) -> Option<Herald> {
     match t {
         Token::Let => Some(Herald::ClosedBy(Token::Let)),
         Token::Do => Some(Herald::ClosedBy(Token::Do)),
-        Token::Where | Token::Of => Some(Herald::OpenEnded),
+        Token::Where | Token::Of | Token::With => Some(Herald::OpenEnded),
         _ => None,
     }
 }
@@ -221,6 +226,11 @@ fn mark_indents(li: &LineIndex, ms: Vec<Marked>) -> Vec<Marked> {
 struct LayoutCtx {
     column: usize,
     closer: Option<Token>,
+    /// opened by `#[`, and closed by the `]` that matches it
+    seq: bool,
+    /// the plain `[`s opened in this block and not yet closed, so that the
+    /// `]` of a sequence literal is told from theirs
+    brackets: usize,
 }
 
 impl LayoutCtx {
@@ -246,7 +256,7 @@ struct Layouter {
 pub fn layout(li: &LineIndex, input: &[Spanned<Token>]) -> LayoutOutput {
     let markers = mark(li, input);
     let mut st = Layouter {
-        stack: vec![LayoutCtx { column: 1, closer: None }],
+        stack: vec![LayoutCtx { column: 1, closer: None, seq: false, brackets: 0 }],
         out: vec![Spanned::new(Token::VLBrace, Span::at(0))],
         errors: Vec::new(),
         end_span: input.last().map_or(Span::at(0), |t| t.span),
@@ -261,7 +271,7 @@ impl Layouter {
     }
 
     fn push(&mut self, column: usize, closer: Option<Token>) {
-        self.stack.push(LayoutCtx { column, closer });
+        self.stack.push(LayoutCtx { column, closer, seq: false, brackets: 0 });
     }
 
     fn top(&self) -> Option<LayoutCtx> {
@@ -321,6 +331,15 @@ impl Layouter {
                 self.push(col, closer);
                 i + 1
             }
+            // Nothing further right: the block is empty, as in Haskell, and
+            // what follows is a new line of the enclosing one (`data Void
+            // where` with the next declaration under it).  Except for a
+            // `let` or `do`, whose block must hold something.
+            Some(_) if closer.is_none() => {
+                self.emit(Token::VLBrace, sp);
+                self.emit(Token::VRBrace, sp);
+                self.indent(col, sp, ms, i)
+            }
             Some(ctx) => {
                 self.errors.push(LayoutError::NestedLayoutContext {
                     outer: ctx.column,
@@ -365,6 +384,27 @@ impl Layouter {
             self.push(0, None);
             return i + 1;
         }
+        // `#[`: a sequence literal, with layout suspended until its `]`
+        if t.node == Token::Hash {
+            if let Some(Marked::Token(lb)) = ms.get(i + 1) {
+                if lb.node == Token::LBracket {
+                    self.emit(t.node.clone(), t.span);
+                    self.emit(lb.node.clone(), lb.span);
+                    self.stack.push(LayoutCtx { column: 0, closer: None, seq: true, brackets: 0 });
+                    return i + 2;
+                }
+            }
+        }
+        if t.node == Token::LBracket {
+            if let Some(top) = self.stack.last_mut() {
+                top.brackets += 1;
+            }
+        }
+        if t.node == Token::RBracket {
+            self.close_bracket(t.span);
+            self.emit(t.node.clone(), t.span);
+            return i + 1;
+        }
         // 'in' / 'where' closing the block that is waiting for it
         if let Some(ctx) = self.top() {
             if !ctx.is_explicit() {
@@ -380,6 +420,27 @@ impl Layouter {
         }
         self.emit(t.node.clone(), t.span);
         i + 1
+    }
+
+    /// A `]` closes the innermost `[` still open.  If that is a sequence
+    /// literal's, the layout blocks opened inside the literal close with it.
+    fn close_bracket(&mut self, sp: Span) {
+        if let Some(top) = self.stack.last_mut() {
+            if top.brackets > 0 {
+                top.brackets -= 1;
+                return;
+            }
+        }
+        // the literal is the nearest block that is not a layout block
+        let Some(at) = self.stack.iter().rposition(|c| c.is_explicit()) else { return };
+        if !self.stack[at].seq || self.stack[at].brackets > 0 {
+            return;
+        }
+        while self.stack.len() > at + 1 {
+            self.emit(Token::VRBrace, sp);
+            self.stack.pop();
+        }
+        self.stack.pop();
     }
 
     /// '}' closes an explicit block; if that block was opened by 'let {' its

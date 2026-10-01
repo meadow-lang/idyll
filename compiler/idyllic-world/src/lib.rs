@@ -1,0 +1,373 @@
+//! The world, as a running program meets it: the effects in the prelude's
+//! `Eff` that the runtime handles itself.  An operation of one of them that
+//! no handler of the program's own takes is done here, and the program goes
+//! on with what it gives back.
+//!
+//! The AxCut machine (`idyllic-seq`) and the reference interpreter
+//! (`idyll-eval`) both do the world's operations through this crate, each
+//! turning [`Answer`]s into values of its own, so the two cannot disagree
+//! about what an operation does.  Native code does the same in C
+//! (`rts/idyll_rt.c`).
+//!
+//! A [`World`] is *live*, reading and writing the real standard streams as
+//! the program goes, or *captured*: its output kept to be looked at later,
+//! its input empty, and its randomness seeded the same way every time, which
+//! is what tests want.  Files, the environment and the clock are the real
+//! ones either way.
+
+use num_bigint::BigInt;
+use std::collections::VecDeque;
+use std::io::{BufRead, Write};
+use std::rc::Rc;
+
+/// The world's operations, with how many arguments each takes: what native
+/// code has a function in the runtime for, `idyll_op_NAME`.
+pub const OPERATIONS: &[(&str, usize)] = &[
+    ("putStr", 1),
+    ("putStrLn", 1),
+    ("printInt", 1),
+    ("readLine", 1),
+    ("readToString", 1),
+    ("writeString", 2),
+    ("appendString", 2),
+    ("removeFile", 1),
+    ("createDir", 1),
+    ("createDirAll", 1),
+    ("removeDir", 1),
+    ("removeDirAll", 1),
+    ("rename", 2),
+    ("copy", 2),
+    ("readDir", 1),
+    ("exists", 1),
+    ("isFile", 1),
+    ("isDir", 1),
+    ("exit", 1),
+    ("currentPid", 1),
+    ("args", 1),
+    ("getEnv", 1),
+    ("setEnv", 2),
+    ("removeEnv", 1),
+    ("isTerminal", 1),
+    ("nextInt", 1),
+    ("intBetween", 2),
+    ("nextSeed", 1),
+    ("now", 1),
+    ("monotonic", 1),
+    ("sleep", 1),
+    ("fail", 1),
+];
+
+/// What an operation is given.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Arg {
+    Int(BigInt),
+    Str(Rc<str>),
+}
+
+/// What an operation gives back: a value of one of the prelude's types.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Answer {
+    Unit,
+    Int(BigInt),
+    Bool(bool),
+    Str(Rc<str>),
+    /// A constructor of the prelude's, with its tag among its type's
+    /// constructors: `Maybe`'s `Nothing` (0) and `Just` (1), `Result`'s
+    /// `Err` (0) and `Ok` (1), `List`'s `Nil` (0) and `::` (1).
+    Con(&'static str, usize, Vec<Answer>),
+}
+
+impl Answer {
+    fn nothing() -> Answer {
+        Answer::Con("Nothing", 0, Vec::new())
+    }
+
+    fn just(a: Answer) -> Answer {
+        Answer::Con("Just", 1, vec![a])
+    }
+
+    fn str(s: impl Into<Rc<str>>) -> Answer {
+        Answer::Str(s.into())
+    }
+
+    fn list(items: Vec<Answer>) -> Answer {
+        items.into_iter().rev().fold(Answer::Con("Nil", 0, Vec::new()), |tail, head| Answer::Con("::", 1, vec![head, tail]))
+    }
+
+    /// `Ok a`, or `Err` with what went wrong, as text.
+    fn result<T>(r: std::io::Result<T>, ok: impl FnOnce(T) -> Answer) -> Answer {
+        match r {
+            Ok(v) => Answer::Con("Ok", 1, vec![ok(v)]),
+            Err(e) => Answer::Con("Err", 0, vec![Answer::str(e.to_string())]),
+        }
+    }
+}
+
+/// An operation that does not give back at all: the program ends.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Stop {
+    /// `exit n`
+    Exit(i32),
+    /// `fail message`, the `Test` effect's
+    Failed(String),
+}
+
+/// The world's side of a running program.
+pub struct World {
+    live: bool,
+    /// what a captured world was given to print
+    output: String,
+    /// what a captured world has to read, line by line
+    input: VecDeque<String>,
+    /// the state of the random generator
+    seed: u64,
+    /// the program's command-line arguments
+    args: Vec<String>,
+}
+
+/// The seed a captured world's randomness starts from.
+const TEST_SEED: u64 = 0x5EED_1D71;
+
+impl World {
+    /// The standard streams, as the program goes, and randomness seeded from
+    /// the clock.
+    pub fn live(args: Vec<String>) -> World {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as u64);
+        World { live: true, output: String::new(), input: VecDeque::new(), seed: nanos ^ TEST_SEED, args }
+    }
+
+    /// Output kept, no input, no arguments, and the same random numbers
+    /// every time.
+    pub fn captured() -> World {
+        World { live: false, output: String::new(), input: VecDeque::new(), seed: TEST_SEED, args: Vec::new() }
+    }
+
+    /// A captured world with these lines to read.
+    pub fn with_input(mut self, lines: &[&str]) -> World {
+        self.input = lines.iter().map(|l| l.to_string()).collect();
+        self
+    }
+
+    /// What a captured world printed; nothing, for a live one.
+    pub fn output(&self) -> &str {
+        &self.output
+    }
+
+    pub fn into_output(self) -> String {
+        self.output
+    }
+
+    fn print(&mut self, s: &str) {
+        if self.live {
+            let mut out = std::io::stdout().lock();
+            let _ = out.write_all(s.as_bytes());
+            let _ = out.flush();
+        } else {
+            self.output.push_str(s);
+        }
+    }
+
+    fn read_line(&mut self) -> Option<String> {
+        if !self.live {
+            return self.input.pop_front();
+        }
+        let mut line = String::new();
+        match std::io::stdin().lock().read_line(&mut line) {
+            Ok(0) | Err(_) => None,
+            Ok(_) => {
+                let trimmed = line.trim_end_matches(['\n', '\r']).len();
+                line.truncate(trimmed);
+                Some(line)
+            }
+        }
+    }
+
+    /// SplitMix64, as Meadow's `Random` has it.
+    fn next_random(&mut self) -> u64 {
+        self.seed = self.seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.seed;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Do the operation `op` with `args`, if it is one of the world's.
+    /// `None` if it is not (or is given the wrong arguments), which is a
+    /// compiler bug: the type checker lets no other operation get here.
+    pub fn perform(&mut self, op: &str, args: &[Arg]) -> Option<Result<Answer, Stop>> {
+        use Arg::{Int, Str};
+        let unit = |()| Answer::Unit;
+        let answer = match (op, args) {
+            // Console
+            ("putStr", [Str(s)]) => {
+                self.print(s);
+                Answer::Unit
+            }
+            ("putStrLn", [Str(s)]) => {
+                self.print(&format!("{s}\n"));
+                Answer::Unit
+            }
+            ("printInt", [Int(n)]) => {
+                self.print(&format!("{n}\n"));
+                Answer::Unit
+            }
+            ("readLine", [_]) => self.read_line().map_or_else(Answer::nothing, |l| Answer::just(Answer::str(l))),
+            // Time
+            ("now", [_]) => {
+                let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+                Answer::Int(BigInt::from(since.map_or(0, |d| d.as_millis())))
+            }
+            ("monotonic", [_]) => Answer::Int(BigInt::from(monotonic_nanos())),
+            ("sleep", [Int(ms)]) => {
+                if let Ok(ms) = u64::try_from(ms) {
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                }
+                Answer::Unit
+            }
+            // Random
+            ("nextInt", [_]) | ("nextSeed", [_]) => Answer::Int(BigInt::from(self.next_random() as i64)),
+            ("intBetween", [Int(lo), Int(hi)]) => {
+                if hi <= lo {
+                    Answer::Int(lo.clone())
+                } else {
+                    let span: BigInt = hi - lo;
+                    let r = BigInt::from(self.next_random()) % span;
+                    Answer::Int(lo + r)
+                }
+            }
+            // Process
+            ("exit", [Int(code)]) => {
+                if self.live {
+                    let _ = std::io::stdout().flush();
+                }
+                return Some(Err(Stop::Exit(i32::try_from(code).unwrap_or(1))));
+            }
+            ("currentPid", [_]) => Answer::Int(BigInt::from(std::process::id())),
+            ("args", [_]) => Answer::list(self.args.iter().map(|a| Answer::str(a.as_str())).collect()),
+            ("getEnv", [Str(name)]) => {
+                std::env::var(&**name).map_or_else(|_| Answer::nothing(), |v| Answer::just(Answer::str(v)))
+            }
+            ("setEnv", [Str(name), Str(value)]) => {
+                if !name.is_empty() && !name.contains(['=', '\0']) && !value.contains('\0') {
+                    std::env::set_var(&**name, &**value);
+                }
+                Answer::Unit
+            }
+            ("removeEnv", [Str(name)]) => {
+                if !name.is_empty() && !name.contains(['=', '\0']) {
+                    std::env::remove_var(&**name);
+                }
+                Answer::Unit
+            }
+            ("isTerminal", [Int(fd)]) => {
+                use std::io::IsTerminal;
+                let fd = i64::try_from(fd).unwrap_or(-1);
+                Answer::Bool(self.live && match fd {
+                    0 => std::io::stdin().is_terminal(),
+                    1 => std::io::stdout().is_terminal(),
+                    2 => std::io::stderr().is_terminal(),
+                    _ => false,
+                })
+            }
+            // Fs
+            ("readToString", [Str(path)]) => Answer::result(std::fs::read_to_string(&**path), Answer::str),
+            ("writeString", [Str(path), Str(text)]) => Answer::result(std::fs::write(&**path, text.as_bytes()), unit),
+            ("appendString", [Str(path), Str(text)]) => {
+                let appended = std::fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(&**path)
+                    .and_then(|mut f| f.write_all(text.as_bytes()));
+                Answer::result(appended, unit)
+            }
+            ("removeFile", [Str(path)]) => Answer::result(std::fs::remove_file(&**path), unit),
+            ("createDir", [Str(path)]) => Answer::result(std::fs::create_dir(&**path), unit),
+            ("createDirAll", [Str(path)]) => Answer::result(std::fs::create_dir_all(&**path), unit),
+            ("removeDir", [Str(path)]) => Answer::result(std::fs::remove_dir(&**path), unit),
+            ("removeDirAll", [Str(path)]) => Answer::result(std::fs::remove_dir_all(&**path), unit),
+            ("rename", [Str(from), Str(to)]) => Answer::result(std::fs::rename(&**from, &**to), unit),
+            ("copy", [Str(from), Str(to)]) => {
+                Answer::result(std::fs::copy(&**from, &**to), |n| Answer::Int(BigInt::from(n)))
+            }
+            ("readDir", [Str(path)]) => {
+                let names = std::fs::read_dir(&**path).and_then(|entries| {
+                    let mut names = entries
+                        .map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned()))
+                        .collect::<std::io::Result<Vec<String>>>()?;
+                    names.sort();
+                    Ok(names)
+                });
+                Answer::result(names, |names| Answer::list(names.into_iter().map(Answer::str).collect()))
+            }
+            ("exists", [Str(path)]) => Answer::Bool(std::path::Path::new(&**path).exists()),
+            ("isFile", [Str(path)]) => Answer::Bool(std::path::Path::new(&**path).is_file()),
+            ("isDir", [Str(path)]) => Answer::Bool(std::path::Path::new(&**path).is_dir()),
+            // Test
+            ("fail", [Str(message)]) => return Some(Err(Stop::Failed(message.to_string()))),
+            _ => return None,
+        };
+        Some(Ok(answer))
+    }
+}
+
+/// Nanoseconds since some fixed point in this process's life; only the
+/// differences mean anything.
+fn monotonic_nanos() -> u128 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_nanos()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_captured_world_keeps_what_is_printed_and_reads_what_it_is_given() {
+        let mut w = World::captured().with_input(&["first"]);
+        assert_eq!(w.perform("putStrLn", &[Arg::Str("hi".into())]), Some(Ok(Answer::Unit)));
+        assert_eq!(w.perform("readLine", &[Arg::Int(0.into())]), Some(Ok(Answer::just(Answer::str("first")))));
+        assert_eq!(w.perform("readLine", &[Arg::Int(0.into())]), Some(Ok(Answer::nothing())));
+        assert_eq!(w.output(), "hi\n");
+    }
+
+    #[test]
+    fn a_captured_worlds_randomness_is_the_same_every_time() {
+        let draw = || {
+            let mut w = World::captured();
+            (0..5).map(|_| w.perform("intBetween", &[Arg::Int(10.into()), Arg::Int(20.into())])).collect::<Vec<_>>()
+        };
+        let first = draw();
+        assert_eq!(first, draw());
+        for a in first {
+            let Some(Ok(Answer::Int(n))) = a else { panic!("{a:?}") };
+            assert!((10..20).contains(&i64::try_from(n).unwrap()));
+        }
+    }
+
+    #[test]
+    fn files_can_be_written_read_and_listed() {
+        let dir = std::env::temp_dir().join(format!("idyllic-world-{}", std::process::id()));
+        let d = |p: &str| Arg::Str(dir.join(p).to_string_lossy().into_owned().into());
+        let mut w = World::captured();
+        let ok = |a| Some(Ok(Answer::Con("Ok", 1, vec![a])));
+        assert_eq!(w.perform("createDirAll", &[d("")]), ok(Answer::Unit));
+        assert_eq!(w.perform("writeString", &[d("a.txt"), Arg::Str("one".into())]), ok(Answer::Unit));
+        assert_eq!(w.perform("appendString", &[d("a.txt"), Arg::Str(" two".into())]), ok(Answer::Unit));
+        assert_eq!(w.perform("readToString", &[d("a.txt")]), ok(Answer::str("one two")));
+        assert_eq!(w.perform("readDir", &[d("")]), ok(Answer::list(vec![Answer::str("a.txt")])));
+        assert_eq!(w.perform("isFile", &[d("a.txt")]), Some(Ok(Answer::Bool(true))));
+        assert!(matches!(w.perform("readToString", &[d("missing")]), Some(Ok(Answer::Con("Err", 0, _)))));
+        assert_eq!(w.perform("removeDirAll", &[d("")]), ok(Answer::Unit));
+        assert_eq!(w.perform("exists", &[d("")]), Some(Ok(Answer::Bool(false))));
+    }
+
+    #[test]
+    fn exit_and_fail_stop_the_program() {
+        let mut w = World::captured();
+        assert_eq!(w.perform("exit", &[Arg::Int(3.into())]), Some(Err(Stop::Exit(3))));
+        assert_eq!(w.perform("fail", &[Arg::Str("no".into())]), Some(Err(Stop::Failed("no".into()))));
+        assert_eq!(w.perform("nothing", &[]), None);
+    }
+}

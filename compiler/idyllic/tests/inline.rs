@@ -8,7 +8,7 @@ use idyllic_diagnostics::OutputStyle;
 use idyllic::pipeline::{self, Evaluation, Options};
 
 fn run(src: &str) -> pipeline::Output {
-    pipeline::run(src, &Options { debug: false, style: OutputStyle::PLAIN })
+    pipeline::run(src, &Options { debug: false, style: OutputStyle::PLAIN, live: false })
 }
 
 /// The program as the native compiler gets it.
@@ -47,7 +47,7 @@ fn a_big_function_used_twice_is_not_duplicated() {
 
 #[test]
 fn a_call_of_a_definition_is_a_jump_and_never_a_closure() {
-    let text = inlined("fib : (n : [] Int) -> Int\nfib n = if n < 2 then n else fib (n - 1) + fib (n - 2)\n\nfib 20\n");
+    let text = inlined("fib : (n : [] Int) -> Int ! Div\nfib n = if n < 2 then n else fib (n - 1) + fib (n - 2)\n\nfib 20\n");
     assert!(!text.contains("apply"), "{text}");
     assert_eq!(text.matches("jump fib_").count(), 3, "{text}");
 }
@@ -62,7 +62,7 @@ fn a_definition_that_is_not_recursive_is_inlined_and_gone() {
 
 #[test]
 fn a_constructor_matched_on_at_once_is_never_built() {
-    let text = inlined("data Maybe a = Nothing | Just a\n\ncase Just 3 of\n  Nothing -> 0\n  Just x -> x + 1\n");
+    let text = inlined("data Maybe a = Nothing | Just a\n\nuse Maybe.*\n\ncase Just 3 of\n  Nothing -> 0\n  Just x -> x + 1\n");
     assert!(!text.contains("switch") && !text.contains("Just("), "{text}");
 }
 
@@ -85,15 +85,21 @@ fn inlining_changes_no_answer() {
         for src in corpus.replace("\r\n", "\n").split("\n%%%\n") {
             let out = run(src);
             let (Some(expected), Some(program)) = (&out.evaluation, &out.native) else { continue };
-            let got = match machine::run(program, pipeline::FUEL) {
+            let mut world = idyllic_world::World::captured();
+            let got = match machine::run_in(program, pipeline::FUEL, &mut world) {
                 Ok(o) if o.memory.leaked + o.memory.miscounted > 0 => Evaluation::Failed(o.memory.to_string()),
                 Ok(o) => o.answer.map_or(Evaluation::Opaque, Evaluation::Value),
                 Err(machine::MachineError::OutOfFuel) => Evaluation::OutOfFuel,
+                Err(machine::MachineError::Exited(code)) => Evaluation::Exited(code),
+                Err(e @ machine::MachineError::TestFailed(_)) => Evaluation::Stopped(e.to_string()),
                 Err(e) => Evaluation::Failed(e.to_string()),
             };
+            let printed = world.into_output();
             compared += 1;
             if got != *expected {
                 failures.push(format!("{src}\n  was {expected:?}, inlined {got:?}\n{program}"));
+            } else if printed != out.printed {
+                failures.push(format!("{src}\n  printed {:?}, inlined {printed:?}\n{program}", out.printed));
             }
         }
     }

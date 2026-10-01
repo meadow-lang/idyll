@@ -6,7 +6,7 @@
 //! passes look the same and the terminal-capability decisions live in exactly
 //! one place ([`OutputStyle`]).
 
-use idyllic_span::Span;
+use idyllic_span::{SourceMap, Span};
 use ariadne::{sources, CharSet, Color, Config, IndexType, Label as ALabel, Report, ReportKind};
 use std::io::IsTerminal;
 
@@ -132,4 +132,56 @@ pub fn render(diags: &[Diagnostic], file: &str, src: &str, style: OutputStyle) -
             .expect("writing to an in-memory buffer cannot fail");
     }
     String::from_utf8(buf).expect("ariadne emits UTF-8")
+}
+
+/// Render diagnostics whose spans are in `map`'s one address space: each
+/// label is quoted from the file it points into.
+pub fn render_map(diags: &[Diagnostic], map: &SourceMap, style: OutputStyle) -> String {
+    let mut buf: Vec<u8> = Vec::new();
+    let config = || {
+        Config::new()
+            .with_index_type(IndexType::Byte)
+            .with_char_set(if style.unicode { CharSet::Unicode } else { CharSet::Ascii })
+            .with_color(style.color)
+    };
+    // (a span that is in no file is shown at the start of the first)
+    let place = |span: Span| -> (String, std::ops::Range<usize>) {
+        match (map.locate(span.start), map.files().first()) {
+            (Some((file, start)), _) => {
+                let f = map.file(file);
+                let end = (start + span.len()).min(f.text.len());
+                (f.name.clone(), start..end.max(start))
+            }
+            (None, Some(f)) => (f.name.clone(), 0..0),
+            (None, None) => (String::new(), 0..0),
+        }
+    };
+    for d in diags {
+        let (kind, primary) = match d.severity {
+            Severity::Error => (ReportKind::Error, Color::Red),
+            Severity::Warning => (ReportKind::Warning, Color::Yellow),
+        };
+        let mut report = Report::build(kind, place(d.primary_span())).with_config(config()).with_message(&d.message);
+        for (i, l) in d.labels.iter().enumerate() {
+            let color = if i == 0 { primary } else { Color::Blue };
+            report = report.with_label(ALabel::new(place(l.span)).with_message(&l.message).with_color(color));
+        }
+        for h in &d.help {
+            report = report.with_help(h);
+        }
+        let files = map.files().iter().map(|f| (f.name.clone(), f.text.as_str()));
+        report.finish().write(sources(files), &mut buf).expect("writing to an in-memory buffer cannot fail");
+    }
+    String::from_utf8(buf).expect("ariadne emits UTF-8")
+}
+
+impl Diagnostic {
+    /// The same, every span moved `by` bytes on: what a pass that saw one
+    /// file reports, put where that file is in a [`SourceMap`].
+    pub fn shifted(mut self, by: usize) -> Diagnostic {
+        for l in &mut self.labels {
+            l.span = Span::new(l.span.start + by, l.span.end + by);
+        }
+        self
+    }
 }

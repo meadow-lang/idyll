@@ -146,7 +146,7 @@ impl Checker {
                 }
                 self.positive(l + 1, &self.apply(cod, vvar(l, "_")), target)
             }
-            Value::BoxTy(_, a) => self.positive(l, a, target),
+            Value::BoxTy(_, a) | Value::Comp(a, _) => self.positive(l, a, target),
             Value::Opaque(u, _, sp) if target.is_data(*u) => self.not_in_arguments(l, sp, target),
             Value::Rigid(k, _, sp) if target.is_param(*k) => self.not_in_arguments(l, sp, target),
             Value::Opaque(u, outer, sp) if self.datas.contains_key(u) => {
@@ -190,13 +190,17 @@ impl Checker {
             | Value::Lit(_)
             | Value::Error
             | Value::Grade(_)
-            | Value::GradeRange(..) => None,
+            | Value::GradeRange(..)
+            | Value::Handle(..) => None,
             Value::Prim(_, args) => args.iter().find_map(|a| self.mentions(l, a, target)),
+            Value::Stuck(h, sp) => self.mentions(l, h, target).or_else(|| self.spine_mentions(l, sp, target)),
             Value::Pi { dom, cod, .. } => self
                 .mentions(l, dom, target)
                 .or_else(|| self.mentions(l + 1, &self.apply(cod, vvar(l, "_")), target)),
             Value::Lam(_, body) => self.mentions(l + 1, &self.apply(body, vvar(l, "_")), target),
             Value::BoxTy(_, a) | Value::BoxIntro(a) => self.mentions(l, a, target),
+            Value::Comp(a, e) => self.mentions(l, a, target).or_else(|| self.mentions(l, e, target)),
+            Value::Row(r) => r.labels.iter().chain(&r.tails).find_map(|(_, a)| self.mentions(l, a, target)),
             Value::Rigid(k, name, _) if target.is_param(*k) => Some(name.clone()),
             Value::Opaque(u, name, _) if target.is_data(*u) => Some(name.clone()),
             Value::Flex(_, sp) | Value::Rigid(_, _, sp) | Value::Opaque(_, _, sp) => {

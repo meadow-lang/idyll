@@ -33,6 +33,14 @@ pub enum Token {
 
     #[regex(r"[A-Z][A-Za-z0-9_']*", crate::text, priority = 1)]
     UpperIdent(String),
+    /// A qualified name ending in an upper-case one, written with no spaces:
+    /// `Nat.Z`, `App.Syntax.Expr`.  One token, as in Haskell, so that it is
+    /// never mistaken for a dot pattern, `.e`.
+    #[regex(r"[A-Z][A-Za-z0-9_']*(\.[A-Z][A-Za-z0-9_']*)+", crate::text)]
+    QualUpper(String),
+    /// A qualified name ending in a lower-case one: `M.double`.
+    #[regex(r"[A-Z][A-Za-z0-9_']*(\.[A-Z][A-Za-z0-9_']*)*\.[_a-z][A-Za-z0-9_']*", crate::text)]
+    QualLower(String),
     #[regex(r"[_a-z][A-Za-z0-9_']*", crate::text, priority = 1)]
     LowerIdent(String),
     #[regex(r"[!$%&*+./<=>?@|\\~:^`\-]+", crate::text, priority = 1)]
@@ -119,6 +127,12 @@ pub enum Token {
     In,
     #[token("where")]
     Where,
+    #[token("effect")]
+    Effect,
+    #[token("handle")]
+    Handle,
+    #[token("with")]
+    With,
     #[token("do")]
     Do,
     #[token("case")]
@@ -140,7 +154,7 @@ impl fmt::Display for Token {
         match self {
             Error => write!(f, "<lex-error>"),
             Newline => write!(f, "<newline>"),
-            UpperIdent(s) | LowerIdent(s) | OpIdent(s) | ConOpIdent(s) => write!(f, "{s}"),
+            UpperIdent(s) | LowerIdent(s) | QualUpper(s) | QualLower(s) | OpIdent(s) | ConOpIdent(s) => write!(f, "{s}"),
             Int(n) => write!(f, "{n}"),
             Str(s) => write!(f, "{s:?}"),
             Char(c) => write!(f, "{c:?}"),
@@ -175,6 +189,9 @@ impl fmt::Display for Token {
             Let => write!(f, "let"),
             In => write!(f, "in"),
             Where => write!(f, "where"),
+            Effect => write!(f, "effect"),
+            Handle => write!(f, "handle"),
+            With => write!(f, "with"),
             Do => write!(f, "do"),
             Case => write!(f, "case"),
             Of => write!(f, "of"),

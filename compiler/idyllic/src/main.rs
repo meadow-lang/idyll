@@ -9,7 +9,8 @@ use std::process::ExitCode;
 #[derive(Parser, Debug)]
 #[command(name = "idyllic", version, about)]
 struct Cli {
-    /// Source file to check.
+    /// The program: a source file, or a package's directory (with `src/`,
+    /// and optionally an `Idyll.toml`).
     file: PathBuf,
 
     /// Dump the HIR (after renaming and the SCC pass).
@@ -37,6 +38,10 @@ struct Cli {
     /// Compile the program to a native executable (needs clang and lld).
     #[arg(short, long, value_name = "EXE")]
     output: Option<PathBuf>,
+
+    /// Arguments for the program, after `--`: what its `args ()` gives it.
+    #[arg(last = true)]
+    args: Vec<String>,
 }
 
 fn main() -> ExitCode {
@@ -44,29 +49,39 @@ fn main() -> ExitCode {
     let mut style = OutputStyle::detect();
     style.color &= !cli.no_color;
     style.unicode &= !cli.ascii;
-    let opts = Options { debug: cli.debug, style };
+    let opts = Options { debug: cli.debug, style, live: true };
 
     if cli.emit_llvm.is_some() || cli.output.is_some() {
         compile_file(&cli.file, &opts, &cli)
     } else {
-        check_file(&cli.file, &opts, cli.axcut)
+        check_file(&cli.file, &opts, cli.axcut, cli.args.clone())
     }
 }
 
 /// Check a program and compile it: to LLVM IR, and with `-o`, on through
 /// clang to an executable.  The runtime is compiled along with it, with
 /// link-time optimisation, so that allocation is inlined into the program.
+/// The package at `path`: a directory's, or one file's, which is a package
+/// of one module named after it.
+fn load(path: &Path) -> Result<pipeline::PackageSource, String> {
+    if path.is_dir() {
+        return pipeline::load_package(path);
+    }
+    let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let name = path.file_stem().map_or("Main".into(), |s| s.to_string_lossy().into_owned());
+    Ok(pipeline::PackageSource::single(&name, &path.display().to_string(), &text))
+}
+
 fn compile_file(path: &Path, opts: &Options, cli: &Cli) -> ExitCode {
-    let src = match std::fs::read_to_string(path) {
-        Ok(src) => src,
-        Err(e) => {
-            eprintln!("error: cannot read {}: {e}", path.display());
+    let package = match load(path) {
+        Ok(package) => package,
+        Err(why) => {
+            eprintln!("error: {why}");
             return ExitCode::FAILURE;
         }
     };
-    let out = pipeline::run(&src, opts);
-    let name = path.display().to_string();
-    eprint!("{}", idyllic_diagnostics::render(&out.diagnostics, &name, &src, opts.style));
+    let out = pipeline::compile_package(&package, opts);
+    eprint!("{}", idyllic_diagnostics::render_map(&out.diagnostics, &out.sources, opts.style));
     let fail = |why: String| {
         eprintln!("error: {why}");
         ExitCode::FAILURE
@@ -111,22 +126,29 @@ fn compile_file(path: &Path, opts: &Options, cli: &Cli) -> ExitCode {
     }
 }
 
-fn check_file(path: &Path, opts: &Options, axcut: bool) -> ExitCode {
-    let src = match std::fs::read_to_string(path) {
-        Ok(src) => src,
-        Err(e) => {
-            eprintln!("error: cannot read {}: {e}", path.display());
+fn check_file(path: &Path, opts: &Options, axcut: bool, args: Vec<String>) -> ExitCode {
+    let package = match load(path) {
+        Ok(package) => package,
+        Err(why) => {
+            eprintln!("error: {why}");
             return ExitCode::FAILURE;
         }
     };
-    let out = pipeline::run(&src, opts);
+    let out = pipeline::run_package(&package, opts, args);
     if let Some(report) = out.axcut_report().filter(|_| axcut) {
         print!("{report}");
     }
-    println!("{}", out.display(&path.display().to_string(), &src, opts.style));
-    if out.has_errors() {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
+    // (a `main` that printed nothing shows nothing)
+    let root = &package.modules[0];
+    let shown = out.display(&root.file, &root.text, opts.style);
+    if !shown.is_empty() {
+        println!("{shown}");
+    }
+    match &out.evaluation {
+        _ if out.has_errors() => ExitCode::FAILURE,
+        // what the program asked for
+        Some(pipeline::Evaluation::Exited(code)) => ExitCode::from(*code as u8),
+        Some(pipeline::Evaluation::Stopped(_) | pipeline::Evaluation::Failed(_)) => ExitCode::FAILURE,
+        _ => ExitCode::SUCCESS,
     }
 }

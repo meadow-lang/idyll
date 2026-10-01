@@ -10,6 +10,8 @@
 //! : <type>                    the type of the entry's expression
 //! <value> : <type>            and its value, when that is something to show
 //! <name> : <type>             or of each definition it makes
+//! <line>                      what it printed, after a blank line that ends
+//!                             even a one-line entry, before its value
 //! Error: <headline>           a diagnostic, in order; none may be left out
 //! Warning: <headline>
 //!    │ ╰── <label>            optionally, that diagnostic's primary label
@@ -35,7 +37,7 @@ fn every_tutorial_example_behaves_as_shown() {
     let examples = examples(&markdown);
     assert!(examples.len() > 85, "only found {} examples; has the format changed?", examples.len());
 
-    let opts = Options { debug: false, style: OutputStyle::PLAIN };
+    let opts = Options { debug: false, style: OutputStyle::PLAIN, live: false };
     let mut failures = Vec::new();
     let mut session = Session::default();
     let mut block = 0;
@@ -83,6 +85,10 @@ fn every_tutorial_example_behaves_as_shown() {
         };
         if have != ex.value {
             problems.push(format!("value: tutorial shows {:?}, got {have:?}", ex.value));
+        }
+        let printed: Vec<&str> = out.printed.lines().collect();
+        if printed != ex.printed {
+            problems.push(format!("printed: tutorial shows {:?}, got {printed:?}", ex.printed));
         }
         // an entry with no expression reports its definitions instead
         if out.body_type.is_none() && !out.has_errors() || !ex.decls.is_empty() {

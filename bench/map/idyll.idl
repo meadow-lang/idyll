@@ -1,4 +1,4 @@
-build : (n : [] Int) -> List Int -> List Int
+build : (n : [] Int) -> List Int -> List Int ! Div
 build n acc = if n == 0 then acc else build (n - 1) (n :: acc)
 
 sum : List Int -> Int -> Int
@@ -11,7 +11,7 @@ mapRev f xs acc = case xs of
   Nil -> acc
   y :: ys -> mapRev f ys (f y :: acc)
 
-rounds : (r : [] Int) -> Int -> Int
+rounds : (r : [] Int) -> Int -> Int ! Div
 rounds r total = if r == 0 then total else rounds (r - 1) (total + sum (mapRev (\x -> x + r) (build 1000000 Nil) Nil) 0)
 
 rounds 20 0

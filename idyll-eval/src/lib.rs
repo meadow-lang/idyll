@@ -62,8 +62,10 @@
 
 use idyllic_ast::Lit;
 use idyllic_builtins::{Builtin, Prim};
-use idyllic_typecheck::core::{CaseAlt, Core, Head, Note};
+use idyllic_typecheck::core::{CaseAlt, Core, Head, Note, OpClause};
+use idyllic_typecheck::handlers::OpInfo;
 use idyllic_typecheck::{CtorInfo, RecDef, TypeCheckResult};
+use idyllic_world::{Answer, Arg, Stop, World};
 use num_bigint::BigInt;
 use std::collections::HashMap;
 use std::fmt;
@@ -91,6 +93,13 @@ pub enum Value {
     /// A constructor still waiting for arguments: `seen` of them have come,
     /// the first `info.params` of which are erased type parameters.
     Ctor { info: Rc<CtorInfo>, seen: usize, fields: Vec<Rc<Value>> },
+    /// An operation still waiting for arguments: `seen` of them have come,
+    /// the first `info.erased` of which are erased, and the rest are `args`.
+    /// It is performed once it has `info.arity` of those.
+    Op { op: usize, info: Rc<OpInfo>, seen: usize, args: Vec<Rc<Value>> },
+    /// The rest of a handled computation, from where it performed an
+    /// operation up to and including its handler: frames to put back.
+    Resumption(Rc<Vec<Frame>>),
     /// A type, a grade, or something never used: nothing at run time.
     Erased,
 }
@@ -190,12 +199,13 @@ impl Value {
     /// Move whatever this value holds onto `out`.
     fn hand_over(&mut self, out: &mut Vec<Garbage>) {
         match self {
-            Value::Con { fields, .. } | Value::Prim { args: fields, .. } | Value::Ctor { fields, .. } => {
+            Value::Con { fields, .. } | Value::Prim { args: fields, .. } | Value::Ctor { fields, .. } | Value::Op { args: fields, .. } => {
                 out.extend(fields.drain(..).map(Garbage::Value));
             }
             Value::Box(inner) => out.push(Garbage::Value(std::mem::replace(inner, hollow()))),
             Value::Closure { env, .. } => out.extend(env.0.take().map(Garbage::Cell)),
-            Value::Int(_) | Value::Str(_) | Value::Bool(_) | Value::Unit | Value::Erased => {}
+            // (a resumption's frames are few, and dropped the ordinary way)
+            Value::Int(_) | Value::Str(_) | Value::Bool(_) | Value::Unit | Value::Erased | Value::Resumption(_) => {}
         }
     }
 }
@@ -228,8 +238,11 @@ impl Drop for Cell {
 // ---------------------------------------------------------------------------
 
 /// What to do with a value, once there is one.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Frame {
+    /// A handled computation: what its value becomes, and what its
+    /// operations do.  Performing one takes the frames down to here.
+    Handle { ret: Rc<Core>, ops: Rc<Vec<OpClause>>, env: Env },
     /// The function of an application has been evaluated; the argument is
     /// next.
     Arg { arg: Rc<Core>, env: Env },
@@ -249,6 +262,10 @@ pub enum Frame {
 enum Control {
     Eval(Rc<Core>, Env),
     Return(Rc<Value>),
+    /// An operation, given its argument, looking for its handler.
+    Perform(usize, Vec<Rc<Value>>),
+    /// A resumption, given a value: its frames go back on.
+    Resume(Rc<Vec<Frame>>, Rc<Value>),
 }
 
 /// Why evaluation stopped without an answer.
@@ -258,6 +275,10 @@ pub enum EvalError {
     OutOfFuel,
     /// Nowhere to go: a term that could not have type checked.
     Stuck(String),
+    /// The program ended itself: `exit n`.
+    Exited(i32),
+    /// `fail message`: a test failed.
+    TestFailed(String),
 }
 
 impl fmt::Display for EvalError {
@@ -265,6 +286,8 @@ impl fmt::Display for EvalError {
         match self {
             EvalError::OutOfFuel => write!(f, "out of fuel"),
             EvalError::Stuck(why) => write!(f, "stuck: {why}"),
+            EvalError::Exited(code) => write!(f, "exited with {code}"),
+            EvalError::TestFailed(why) => write!(f, "test failed: {why}"),
         }
     }
 }
@@ -281,6 +304,8 @@ pub struct Outcome {
     pub answer: Option<String>,
     /// How many steps it took.
     pub steps: u64,
+    /// What it wrote to the console.
+    pub output: String,
 }
 
 /// What the machine needs to know about the program besides the term: the
@@ -289,6 +314,7 @@ pub struct Outcome {
 struct Program<'c> {
     rec_defs: HashMap<usize, &'c RecDef>,
     ctors: HashMap<usize, Rc<CtorInfo>>,
+    ops: HashMap<usize, Rc<OpInfo>>,
     type_constructors: Vec<usize>,
     meta_solutions: &'c [Option<Rc<Core>>],
 }
@@ -296,14 +322,25 @@ struct Program<'c> {
 /// Evaluate a checked program's trailing expression, taking at most `fuel`
 /// steps.  `None` if it has no expression, only declarations.
 pub fn evaluate(checked: &TypeCheckResult, fuel: u64) -> Option<Result<Outcome, EvalError>> {
+    let mut world = World::captured();
+    let result = evaluate_in(checked, fuel, &mut world)?;
+    Some(result.map(|outcome| Outcome { output: world.into_output(), ..outcome }))
+}
+
+/// The same, in `world`, which does the operations of the world's effects
+/// that the program does not handle itself (see [`idyllic_world`]).  What
+/// they print is there even if the program stops early; the outcome's
+/// `output` is left empty.
+pub fn evaluate_in(checked: &TypeCheckResult, fuel: u64, world: &mut World) -> Option<Result<Outcome, EvalError>> {
     let term = checked.program.clone()?;
     let program = Program {
         rec_defs: checked.rec_defs.iter().map(|d| (d.unique, d)).collect(),
         ctors: checked.ctors.iter().map(|(u, info)| (*u, Rc::new(info.clone()))).collect(),
+        ops: checked.ops.iter().map(|(u, info)| (*u, Rc::new(info.clone()))).collect(),
         type_constructors: checked.type_constructors.clone(),
         meta_solutions: &checked.meta_solutions,
     };
-    Some(program.run(term, initial_env(), fuel))
+    Some(program.run(term, initial_env(), fuel, world))
 }
 
 /// The context every program is elaborated in: the builtin types, then the
@@ -315,7 +352,7 @@ pub fn initial_env() -> Env {
 }
 
 impl Program<'_> {
-    fn run(&self, term: Rc<Core>, env: Env, fuel: u64) -> Result<Outcome, EvalError> {
+    fn run(&self, term: Rc<Core>, env: Env, fuel: u64, world: &mut World) -> Result<Outcome, EvalError> {
         let mut control = Control::Eval(term, env);
         let mut kont: Vec<Frame> = Vec::new();
         let mut steps = 0;
@@ -329,10 +366,15 @@ impl Program<'_> {
                 Control::Return(value) => match kont.pop() {
                     None => {
                         let answer = show(&value);
-                        return Ok(Outcome { value, answer, steps });
+                        return Ok(Outcome { value, answer, steps, output: String::new() });
                     }
                     Some(frame) => self.ret(value, frame, &mut kont)?,
                 },
+                Control::Perform(op, arg) => self.perform(op, arg, &mut kont, world)?,
+                Control::Resume(frames, value) => {
+                    kont.extend(frames.iter().cloned());
+                    Control::Return(value)
+                }
             };
         }
     }
@@ -350,7 +392,13 @@ impl Program<'_> {
             | Core::GradeLit(_)
             | Core::GradeAdd(..)
             | Core::GradeMul(..)
-            | Core::GradeRange(..) => value(Value::Erased),
+            | Core::GradeRange(..)
+            | Core::Comp(..)
+            | Core::Row(..) => value(Value::Erased),
+            Core::Handle(body, ret, ops) => {
+                kont.push(Frame::Handle { ret: ret.clone(), ops: ops.clone(), env: env.clone() });
+                Ok(Control::Eval(body.clone(), env))
+            }
             Core::Lit(lit) => value(match lit {
                 Lit::Int(n) => Value::Int(n.clone()),
                 Lit::Str(s) => Value::Str(s.as_str().into()),
@@ -369,6 +417,9 @@ impl Program<'_> {
                 if let Some(info) = self.ctors.get(unique) {
                     return value(saturate(info.clone(), 0, Vec::new()));
                 }
+                if let Some(info) = self.ops.get(unique) {
+                    return value(Value::Op { op: *unique, info: info.clone(), seen: 0, args: Vec::new() });
+                }
                 // a recursive definition: its body, where it was defined
                 let Some(def) = self.rec_defs.get(unique) else { return stuck(format!("no definition of {name}")) };
                 match env.at_level(def.lvl) {
@@ -382,6 +433,17 @@ impl Program<'_> {
             },
             // never looked at, so never computed
             Core::Runtime(Note::Erased, _) => value(Value::Erased),
+            // a match its type decides: the one alternative, all erased
+            Core::Runtime(Note::Forced, inner) => match &**inner {
+                Core::Case(_, alts) => match alts.first() {
+                    Some(alt) => {
+                        let env = alt.vars.iter().fold(env, |env, _| env.push(Rc::new(Value::Erased)));
+                        Ok(Control::Eval(alt.body.clone(), env))
+                    }
+                    None => stuck("a case that cannot happen happened"),
+                },
+                _ => Ok(Control::Eval(inner.clone(), env)),
+            },
             Core::Runtime(Note::Binds(_), inner) => Ok(Control::Eval(inner.clone(), env)),
             Core::Lam(_, body) => value(Value::Closure { env, body: body.clone() }),
             Core::App(f, a) => {
@@ -409,8 +471,55 @@ impl Program<'_> {
     }
 
     /// Hand a value to the frame that was waiting for it.
+    /// An operation performed: the frames down to its handler become the
+    /// resumption, and the handler's clause runs where the handler's value
+    /// goes.
+    ///
+    /// With no handler in the program, it is one of the world's (the
+    /// prelude's `Console`), which the runtime handles: it writes to
+    /// `output`, and gives back `()`.
+    fn perform(&self, op: usize, args: Vec<Rc<Value>>, kont: &mut Vec<Frame>, world: &mut World) -> Result<Control, EvalError> {
+        let handles = |f: &Frame| matches!(f, Frame::Handle { ops, .. } if ops.iter().any(|c| c.op == op));
+        let Some(at) = kont.iter().rposition(handles) else {
+            let name = self.ops.get(&op).map_or("", |info| info.name.as_str());
+            let args: Vec<Arg> = args
+                .iter()
+                .map(|a| match &**a {
+                    Value::Int(n) => Arg::Int(n.clone()),
+                    Value::Str(s) => Arg::Str(s.clone()),
+                    // `()`, and whatever else carries nothing an operation reads
+                    _ => Arg::Int(BigInt::ZERO),
+                })
+                .collect();
+            return match world.perform(name, &args) {
+                None => stuck("an operation with no handler for it"),
+                Some(Err(Stop::Exit(code))) => Err(EvalError::Exited(code)),
+                Some(Err(Stop::Failed(why))) => Err(EvalError::TestFailed(why)),
+                Some(Ok(answer)) => Ok(Control::Return(Rc::new(answer_value(answer)))),
+            };
+        };
+        let frames = kont.split_off(at);
+        let Frame::Handle { ops, env, .. } = &frames[0] else { unreachable!("found above") };
+        let clause = ops.iter().find(|c| c.op == op).expect("found above");
+        let mut env = env.clone();
+        let mut body = clause.body.clone();
+        for _ in 0..clause.erased {
+            body = under_lambda(&body)?;
+            env = env.push(Rc::new(Value::Erased));
+        }
+        for arg in args {
+            body = under_lambda(&body)?;
+            env = env.push(arg);
+        }
+        body = under_lambda(&body)?;
+        env = env.push(Rc::new(Value::Resumption(Rc::new(frames))));
+        Ok(Control::Eval(body, env))
+    }
+
     fn ret(&self, v: Rc<Value>, frame: Frame, kont: &mut Vec<Frame>) -> Result<Control, EvalError> {
         match frame {
+            // the handled computation's value, to the `return` clause
+            Frame::Handle { ret, env, .. } => Ok(Control::Eval(under_lambda(&ret)?, env.push(v))),
             Frame::Arg { arg, env } => {
                 if evaluates_argument(&v) {
                     kont.push(Frame::Call { fun: v });
@@ -431,7 +540,11 @@ impl Program<'_> {
                         }
                         _ => continue,
                     };
-                    // the last field is the innermost binder
+                    // the alternative binds the constructor's erased
+                    // arguments first, then its fields; the last field is
+                    // the innermost binder
+                    let erased = alt.vars.len().saturating_sub(fields.len());
+                    let env = (0..erased).fold(env, |env, _| env.push(Rc::new(Value::Erased)));
                     let env = fields.iter().fold(env, |env, f| env.push(f.clone()));
                     return Ok(Control::Eval(alt.body.clone(), env));
                 }
@@ -460,6 +573,19 @@ fn evaluates_argument(fun: &Value) -> bool {
 
 /// A constructor, given `seen` arguments of which these are the `fields`:
 /// the value itself once it has them all.
+/// A value, for one of the world's answers.
+fn answer_value(answer: Answer) -> Value {
+    match answer {
+        Answer::Unit => Value::Unit,
+        Answer::Int(n) => Value::Int(n),
+        Answer::Bool(b) => Value::Bool(b),
+        Answer::Str(s) => Value::Str(s),
+        Answer::Con(name, tag, fields) => {
+            Value::Con { name: name.into(), tag, fields: fields.into_iter().map(|f| Rc::new(answer_value(f))).collect() }
+        }
+    }
+}
+
 fn saturate(info: Rc<CtorInfo>, seen: usize, fields: Vec<Rc<Value>>) -> Value {
     if seen == info.params + info.fields {
         Value::Con { name: info.name.as_str().into(), tag: info.tag, fields }
@@ -485,6 +611,9 @@ fn apply(fun: &Value, arg: Rc<Value>) -> Result<Control, EvalError> {
                 Prim::IntAdd => Value::Int(a + b),
                 Prim::IntMul => Value::Int(a * b),
                 Prim::IntSub => Value::Int(a - b),
+                Prim::IntDiv | Prim::IntMod if *b == 0.into() => return stuck("division by zero"),
+                Prim::IntDiv => Value::Int(a / b),
+                Prim::IntMod => Value::Int(a % b),
                 Prim::IntLt => Value::Bool(a < b),
                 Prim::IntEq => Value::Bool(a == b),
             })
@@ -496,8 +625,29 @@ fn apply(fun: &Value, arg: Rc<Value>) -> Result<Control, EvalError> {
             }
             value(saturate(info.clone(), seen + 1, fields))
         }
+        Value::Op { op, info, seen, args } if *seen < info.erased => {
+            value(Value::Op { op: *op, info: info.clone(), seen: seen + 1, args: args.clone() })
+        }
+        Value::Op { op, info, seen, args } => {
+            let mut args = args.clone();
+            args.push(arg);
+            if args.len() < info.arity {
+                return value(Value::Op { op: *op, info: info.clone(), seen: seen + 1, args });
+            }
+            Ok(Control::Perform(*op, args))
+        }
+        Value::Resumption(frames) => Ok(Control::Resume(frames.clone(), arg)),
         Value::Erased => value(Value::Erased),
         _ => stuck("applying something that is not a function"),
+    }
+}
+
+/// What is under a lambda, looking through the note on it.
+fn under_lambda(c: &Rc<Core>) -> Result<Rc<Core>, EvalError> {
+    match &**c {
+        Core::Lam(_, body) => Ok(body.clone()),
+        Core::Runtime(_, inner) => under_lambda(inner),
+        _ => stuck("a handler clause that is not a function"),
     }
 }
 
@@ -529,7 +679,7 @@ pub fn show(v: &Value) -> Option<String> {
             }
             Some(out)
         }
-        Value::Closure { .. } | Value::Prim { .. } | Value::Ctor { .. } | Value::Erased => None,
+        Value::Closure { .. } | Value::Prim { .. } | Value::Ctor { .. } | Value::Op { .. } | Value::Resumption(_) | Value::Erased => None,
     }
 }
 

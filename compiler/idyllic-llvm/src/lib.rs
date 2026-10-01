@@ -47,7 +47,7 @@
 //! that acquire and release are inlined into the code that uses them.
 
 use idyllic_seq::{Branch, Extern, Program, Stmt, Symbol, Var};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write;
 use std::rc::Rc;
 
@@ -63,6 +63,8 @@ pub enum ResultKind {
     Str,
     /// a function, a type, a structure: nothing is shown
     Other,
+    /// the `()` a run of `main` ends with, which is not printed at all
+    Main,
 }
 
 /// The stack a program runs on.  It is only address space until it is used;
@@ -157,9 +159,30 @@ struct Emitter<'p> {
     pending: Vec<Pending<'p>>,
     next: usize,
     result: ResultKind,
+    /// the world's operations the program performs, and their arities, to
+    /// declare
+    world: BTreeMap<&'static str, usize>,
 }
 
 pub fn emit(program: &Program, result: ResultKind) -> Result<String, String> {
+    // A resumption can be invoked after the stack it would come back to has
+    // gone, which continuations kept on the stack cannot allow.  (With no
+    // handler, an operation is the world's, which the runtime does: see
+    // `Stmt::Perform` below.)
+    fn handles(s: &Stmt) -> bool {
+        match s {
+            Stmt::Handle(..) => true,
+            Stmt::Perform(..) => false,
+            Stmt::Substitute(_, rest) | Stmt::Let(_, _, _, rest) => handles(rest),
+            Stmt::New(_, _, clauses, rest) => clauses.iter().any(|(_, b)| handles(&b.body)) || handles(rest),
+            Stmt::Switch(_, clauses) => clauses.iter().any(|(_, b)| handles(&b.body)),
+            Stmt::Extern(_, _, branches) => branches.iter().any(|b| handles(&b.body)),
+            Stmt::Invoke(..) | Stmt::Jump(..) => false,
+        }
+    }
+    if program.definitions.iter().any(|d| handles(&d.body)) {
+        return Err("effect handlers are not supported by the native back end yet; run the program in the REPL".into());
+    }
     let mut e = Emitter {
         continuations: &program.continuations,
         functions: String::new(),
@@ -168,6 +191,7 @@ pub fn emit(program: &Program, result: ResultKind) -> Result<String, String> {
         pending: Vec::new(),
         next: 0,
         result,
+        world: BTreeMap::new(),
     };
     for d in &program.definitions {
         e.function(&format!("L.{}", d.label), &d.params, None, &d.body)?;
@@ -193,8 +217,13 @@ pub fn emit(program: &Program, result: ResultKind) -> Result<String, String> {
          declare void @idyll_print_unit()\n\
          declare void @idyll_print_string(ptr)\n\
          declare void @idyll_print_opaque()\n\
-         declare void @exit(i32) noreturn\n\n",
+         declare void @exit(i32) noreturn\n",
     );
+    for (name, arity) in &e.world {
+        let words = vec!["i64"; *arity].join(", ");
+        writeln!(out, "declare void @idyll_op_{name}({words}, ptr, ptr)").unwrap();
+    }
+    out.push('\n');
     writeln!(out, "{OVERFLOW} = internal global [{OVERFLOW_VARS} x {{ ptr, i64 }}] zeroinitializer\n").unwrap();
     out.push_str(&e.functions);
     let nothing = Emitter::call_arguments("undef", &[]);
@@ -396,6 +425,38 @@ impl<'p> Emitter<'p> {
 
     fn stmt(&mut self, f: &mut String, s: &'p Stmt, mut env: Env) -> Result<(), String> {
         match s {
+            Stmt::Handle(..) => Err("effect handlers are not supported natively".into()),
+            // A program without handlers performs only the world's
+            // operations, whose handler is the runtime: a call into it,
+            // given the arguments' words and where to put what it gives
+            // back, and then on with that.
+            Stmt::Perform(op, xs, k) => {
+                let taken: Vec<Var> = xs.iter().chain([k]).cloned().collect();
+                let mut values = Self::take(&mut env, &taken)?;
+                if !env.is_empty() {
+                    return Err(format!("perform {op} leaves variables behind"));
+                }
+                let k = values.pop().expect("taken");
+                let name = match op {
+                    Symbol::Op(name, _) => &**name,
+                    _ => "",
+                };
+                let Some(&(name, arity)) = idyllic_world::OPERATIONS.iter().find(|(n, a)| *n == name && *a == values.len())
+                else {
+                    return Err(format!("{op} is performed with no handler for it"));
+                };
+                self.world.insert(name, arity);
+                let words = values.iter().map(|x| Ok(format!("i64 {}", Self::data(x)?.1))).collect::<Result<Vec<_>, String>>()?;
+                self.next += 1;
+                let id = self.next;
+                writeln!(self.allocas, "  %ob{id} = alloca ptr\n  %ow{id} = alloca i64").unwrap();
+                writeln!(f, "  call void @idyll_op_{name}({}, ptr %ob{id}, ptr %ow{id})", words.join(", ")).unwrap();
+                values.iter().for_each(|x| Self::erase(f, x));
+                let (block, word) = (self.fresh("r"), self.fresh("r"));
+                writeln!(f, "  {block} = load ptr, ptr %ob{id}").unwrap();
+                writeln!(f, "  {word} = load i64, ptr %ow{id}").unwrap();
+                self.resume(f, &k, &block, &word)
+            }
             // a renaming, and the reference counts that go with it
             Stmt::Substitute(pairs, rest) => {
                 for (name, v) in &env {
@@ -529,6 +590,9 @@ impl<'p> Emitter<'p> {
                     Extern::Add => binary(self, f, "add"),
                     Extern::Sub => binary(self, f, "sub"),
                     Extern::Mul => binary(self, f, "mul"),
+                    // (by zero, the processor traps)
+                    Extern::Div => binary(self, f, "sdiv"),
+                    Extern::Mod => binary(self, f, "srem"),
                     Extern::Lt => compare(self, f, "slt"),
                     Extern::Eq => compare(self, f, "eq"),
                     // the end of the program, wherever on the stack it is
@@ -544,6 +608,7 @@ impl<'p> Emitter<'p> {
                                 writeln!(f, "  call void @idyll_print_string(ptr {s})").unwrap();
                             }
                             ResultKind::Other => f.push_str("  call void @idyll_print_opaque()\n"),
+                            ResultKind::Main => {}
                         }
                         f.push_str("  call void @exit(i32 0)\n  unreachable\n");
                         return Ok(());

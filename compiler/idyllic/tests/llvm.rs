@@ -19,7 +19,7 @@ fn clang_is_installed() -> bool {
 
 /// Compile `src` and run it; `None` if there is no clang to do it with.
 fn native(name: &str, src: &str) -> Option<String> {
-    let out = pipeline::run(src, &Options { debug: false, style: OutputStyle::PLAIN });
+    let out = pipeline::run(src, &Options { debug: false, style: OutputStyle::PLAIN, live: false });
     assert!(out.diagnostics.is_empty(), "{src}\n{:#?}", out.diagnostics);
     let program = out.native.as_ref().expect("it was lowered");
     // inlining must not change what the program means, or its discipline:
@@ -51,12 +51,13 @@ fn native(name: &str, src: &str) -> Option<String> {
     let ran = Command::new(&exe).output().unwrap();
     assert!(ran.status.success(), "{name} crashed: {:?}", ran.status);
     let _ = std::fs::remove_dir_all(&dir);
-    Some(String::from_utf8_lossy(&ran.stdout).trim().to_string())
+    // (Windows writes a newline as `\r\n`)
+    Some(String::from_utf8_lossy(&ran.stdout).replace("\r\n", "\n").trim().to_string())
 }
 
 /// The machine's answer and the compiled program's must be the same.
 fn agree(name: &str, src: &str) {
-    let out = pipeline::run(src, &Options { debug: false, style: OutputStyle::PLAIN });
+    let out = pipeline::run(src, &Options { debug: false, style: OutputStyle::PLAIN, live: false });
     let Some(Evaluation::Value(expected)) = out.evaluation else { panic!("{src}\nthe machine gave {:?}", out.evaluation) };
     if let Some(got) = native(name, src) {
         assert_eq!(got, expected, "{src}");
@@ -89,13 +90,13 @@ fn sharing_and_dropping() {
 
 #[test]
 fn recursion_data_and_lists() {
-    agree("fib", "fib : (n : [] Int) -> Int\nfib n = if n < 2 then n else fib (n - 1) + fib (n - 2)\n\nfib 20\n");
+    agree("fib", "fib : (n : [] Int) -> Int ! Div\nfib n = if n < 2 then n else fib (n - 1) + fib (n - 2)\n\nfib 20\n");
     let lists = "sum : List Int -> Int\nsum xs = case xs of\n  Nil -> 0\n  y :: ys -> y + sum ys\n\n\
-                 upto : (n : [] Int) -> List Int\nupto n = if n == 0 then Nil else n :: upto (n - 1)\n\n";
+                 upto : (n : [] Int) -> List Int ! Div\nupto n = if n == 0 then Nil else n :: upto (n - 1)\n\n";
     agree("lists", &format!("{lists}sum (upto 1000)\n"));
     agree(
         "maybe",
-        "data Maybe a = Nothing | Just a\n\nfromMaybe : {a : Type} -> a [0..1] -> Maybe a -> a\n\
+        "data Maybe a = Nothing | Just a\n\nuse Maybe.*\n\nfromMaybe : {a : Type} -> a [0..1] -> Maybe a -> a\n\
          fromMaybe [d] m = case m of\n  Nothing -> d\n  Just x -> x\n\nfromMaybe [1] (Just 100) + fromMaybe [7] Nothing\n",
     );
 }
@@ -106,7 +107,7 @@ fn more_variables_than_registers() {
     // the overflow area
     agree(
         "overflow",
-        "six : (a : [] Int) -> Int -> Int -> Int -> Int -> Int -> Int\n\
+        "six : (a : [] Int) -> Int -> Int -> Int -> Int -> Int -> Int ! Div\n\
          six a b c d e f = if a == 0 then b + c + d + e + f else six (a - 1) (b + 1) (c + 2) (d + 3) (e + 4) (f + 5)\n\nsix 10 0 0 0 0 0\n",
     );
 }
@@ -115,7 +116,7 @@ fn more_variables_than_registers() {
 fn deep_recursion_has_the_stack_for_it() {
     // a million calls each waiting on the next: a frame each, on a stack
     // linked big enough for a good many more
-    let src = "upto : (n : [] Int) -> List Int\nupto n = if n == 0 then Nil else n :: upto (n - 1)\n\n\
+    let src = "upto : (n : [] Int) -> List Int ! Div\nupto n = if n == 0 then Nil else n :: upto (n - 1)\n\n\
                sum : List Int -> Int\nsum xs = case xs of\n  Nil -> 0\n  y :: ys -> y + sum ys\n\nsum (upto 1000000)\n";
     if let Some(got) = native("deep", src) {
         assert_eq!(got, "500000500000");
@@ -126,8 +127,8 @@ fn deep_recursion_has_the_stack_for_it() {
 fn a_tail_call_takes_no_stack() {
     // a hundred million calls between two functions: were each a frame, no
     // stack would hold them
-    let src = "ping : (n : [] Int) -> Int -> Int\nping n acc = if n == 0 then acc else pong (n - 1) (acc + 1)\n\
-               pong : (n : [] Int) -> Int -> Int\npong n acc = if n == 0 then acc else ping (n - 1) (acc + 2)\n\nping 100000000 0\n";
+    let src = "ping : (n : [] Int) -> Int -> Int ! Div\nping n acc = if n == 0 then acc else pong (n - 1) (acc + 1)\n\
+               pong : (n : [] Int) -> Int -> Int ! Div\npong n acc = if n == 0 then acc else ping (n - 1) (acc + 2)\n\nping 100000000 0\n";
     if let Some(got) = native("tail", src) {
         assert_eq!(got, "150000000");
     }
@@ -135,9 +136,59 @@ fn a_tail_call_takes_no_stack() {
 
 #[test]
 fn a_tail_call_through_a_closure_takes_no_stack() {
-    let src = "loop : (f : [] (Int -> Int)) -> (n : [] Int) -> Int -> Int\n\
+    let src = "loop : (f : [] (Int -> Int)) -> (n : [] Int) -> Int -> Int ! Div\n\
                loop f n acc = if n == 0 then acc else loop f (n - 1) (f acc)\n\nloop (\\x -> x + 3) 100000000 0\n";
     if let Some(got) = native("closure-tail", src) {
         assert_eq!(got, "300000000");
+    }
+}
+
+#[test]
+fn main_talks_to_the_console_natively() {
+    // the runtime is the console's handler, in native code as in the
+    // machine; and `main`'s `()` is not printed
+    let src = "count : (n : [] Int) -> () ! Eff\n\
+               count n = if n == 0 then putStrLn \"liftoff\" else let u = printInt n in count (n - 1)\n\n\
+               main : () -> () ! Eff\nmain () = let u = putStr \"counting: \" in count 3\n";
+    let out = pipeline::run(src, &Options { debug: false, style: OutputStyle::PLAIN, live: false });
+    assert_eq!(out.printed, "counting: 3\n2\n1\nliftoff\n");
+    if let Some(got) = native("main", src) {
+        assert_eq!(got, out.printed.trim());
+    }
+}
+
+#[test]
+fn the_worlds_effects_natively() {
+    // files, randomness, the environment and exit codes, in native code as
+    // in the machine
+    let dir = std::env::temp_dir().join(format!("idyllic-native-world-{}", std::process::id()));
+    let dir = dir.to_string_lossy().replace('\\', "/");
+    let src = format!(
+        "main : () -> () ! Eff\n\
+         main () =\n  \
+           let a = createDirAll \"{dir}\"\n      \
+               b = writeString \"{dir}/a.txt\" \"from a file\"\n      \
+               c = copy \"{dir}/a.txt\" \"{dir}/b.txt\"\n      \
+               d = case readToString \"{dir}/b.txt\" of\n            \
+                     Ok s -> putStrLn s\n            \
+                     Err e -> putStrLn e\n      \
+               e = case readDir \"{dir}\" of\n            \
+                     Ok names -> printAll names\n            \
+                     Err e -> putStrLn e\n      \
+               f = removeDirAll \"{dir}\"\n      \
+               g = let n = intBetween 10 20 in if n < 20 then putStrLn \"in range\" else putStrLn \"out of range\"\n      \
+               h = setEnv \"IDYLLIC_NATIVE\" \"yes\"\n  \
+           in case getEnv \"IDYLLIC_NATIVE\" of\n       \
+                Just v -> putStrLn v\n       \
+                Nothing -> putStrLn \"unset\"\n\n\
+         printAll : List String -> () ! Console\n\
+         printAll #[] = ()\n\
+         printAll (x :: xs) = let u = putStrLn x in printAll xs\n"
+    );
+    let out = pipeline::run(&src, &Options { debug: false, style: OutputStyle::PLAIN, live: false });
+    assert!(out.diagnostics.is_empty(), "{:#?}", out.diagnostics);
+    assert_eq!(out.printed, "from a file\na.txt\nb.txt\nin range\nyes\n");
+    if let Some(got) = native("world", &src) {
+        assert_eq!(got, out.printed.trim());
     }
 }

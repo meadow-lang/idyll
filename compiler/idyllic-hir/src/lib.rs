@@ -67,42 +67,125 @@ pub enum TermKind {
     LetBox(Ident, Box<Term>, Box<Term>),
     /// `let` with dependency-ordered groups.
     Let(Vec<BindGroup>, Box<Term>),
-    /// `case e of ..`
-    Case(Box<Term>, Vec<Alt>),
+    /// `case e of ..`: clauses of one pattern each.
+    Case(Box<Term>, Vec<Clause>),
+    /// A function defined by pattern matching: the equations of `f`, with
+    /// `f` left off.  Every clause has the same number of patterns.
+    Match(Vec<Clause>),
+    /// A term left for the checker to work out, like `_` but not reported:
+    /// the type of a variable a signature mentions without binding.
+    Omitted,
+    /// `b ! e`: a computation type.
+    Eff(Box<Term>, Box<Term>),
+    /// `{Log, Div | e}`: an effect row.
+    Row(Vec<Term>, Option<Box<Term>>),
+    /// `handle e with clauses`
+    Handle(Box<Term>, Vec<HandleClause>),
+    /// A sequence literal, taken apart: `#[a, b]` is `SeqCons(a, SeqCons(b,
+    /// SeqNil))`.  Which constructors these are is up to the type the literal
+    /// is checked against (see [`DataDecl::seq`]).
+    SeqNil,
+    SeqCons(Box<Term>, Box<Term>),
 }
 
-/// One alternative of a `case`.
+/// `op x k -> body`, or with no operation, `return x -> body`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Alt {
+pub struct HandleClause {
     pub id: NodeId,
-    pub head: AltHead,
-    pub vars: Vec<Ident>,
+    pub op: Option<Ident>,
+    pub params: Vec<Ident>,
     pub body: Term,
 }
 
-/// What an alternative matches.  `True` and `False` are literals rather than
-/// declared constructors, so they are told apart here.
+/// `effect E (a : k) .. where op : t; ..`
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AltHead {
-    Con(Ident),
-    Bool(bool),
+pub struct EffectDecl {
+    pub id: NodeId,
+    pub name: Ident,
+    pub params: Vec<(Ident, Option<Term>)>,
+    pub ops: Vec<OpDecl>,
 }
 
-/// `data T (a : k) .. = C t .. | ..`
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpDecl {
+    pub id: NodeId,
+    pub name: Ident,
+    /// its type under the effect's parameters
+    pub ty: Term,
+}
+
+/// An equation, or an alternative of a `case`: patterns, and what to do if
+/// they match.  The patterns bind the variables the right-hand side sees.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Clause {
+    pub id: NodeId,
+    pub pats: Vec<Pattern>,
+    pub rhs: Rhs,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Rhs {
+    Plain(Term),
+    /// the first guard that holds; if none does, the next clause
+    Guarded(Vec<(Term, Term)>),
+    /// no value can match the patterns
+    Impossible,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pattern {
+    pub id: NodeId,
+    pub kind: PatKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PatKind {
+    Var(Ident),
+    Wild,
+    /// `3`, `"s"`, `()`, and `True` and `False`, which are literals rather
+    /// than declared constructors
+    Lit(Lit),
+    /// a constructor, and patterns for its explicit arguments
+    Con(Ident, Vec<Pattern>),
+    As(Ident, Box<Pattern>),
+    /// `.e`: what must be there, rather than what to look for
+    Dot(Term),
+    /// A sequence pattern, taken apart as a literal is (see
+    /// [`TermKind::SeqNil`]): `#[p, q]` is `SeqCons([p, SeqCons([q,
+    /// SeqNil])])`, the two patterns a head and a tail.
+    SeqNil,
+    SeqCons(Vec<Pattern>),
+}
+
+/// `data T (a : k) .. : kind where ..` or `data T (a : k) .. = C t .. | ..`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DataDecl {
     pub id: NodeId,
     pub name: Ident,
     /// each with its kind, where one was written (otherwise `Type`)
     pub params: Vec<(Ident, Option<Term>)>,
+    /// the kind of the indices, `Nat -> Type`; `None` for none
+    pub kind: Option<Term>,
     pub ctors: Vec<CtorDecl>,
+    /// `@seq(nil = Nil, cons = (::))`: the constructors a sequence literal of
+    /// this type is made of
+    pub seq: Option<(Ident, Ident)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CtorDecl {
     pub id: NodeId,
     pub name: Ident,
-    pub fields: Vec<Term>,
+    pub shape: CtorShape,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CtorShape {
+    /// `C a (List a)`: the types of the fields, under the parameters
+    Fields(Vec<Term>),
+    /// `C : a -> Vec n a -> Vec (S n) a`: the whole type, under the
+    /// parameters, which it does not repeat
+    Sig(Term),
 }
 
 /// The grades written on a binder: how often the function uses it, and how
@@ -115,7 +198,8 @@ pub struct GradeAnn {
 }
 
 /// A single binding, `x [: a] = e`.  Function sugar `f p1 p2 = e` is desugared
-/// by the renamer into `f = \p1 p2 -> e`.
+/// by the renamer into `f = \p1 p2 -> e` when the patterns are variables,
+/// and otherwise into a [`TermKind::Match`] of all of `f`'s equations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Bind {
     pub id: NodeId,
@@ -160,9 +244,43 @@ impl BindGroup {
 pub struct Module {
     /// in source order; a data type may mention those before it, and itself
     pub datas: Vec<DataDecl>,
+    pub effects: Vec<EffectDecl>,
     pub groups: Vec<BindGroup>,
     pub body: Option<Term>,
+    /// Every name the prelude declares, by its spelling.  The prelude's
+    /// declarations come first in the others; the program may shadow these
+    /// names, and these are still the prelude's.
+    pub prelude: std::collections::HashMap<String, usize>,
+    /// the root module's `main`, if it has one: what running the package
+    /// runs
+    pub main: Option<usize>,
+    /// For a top-level name of a module other than the root, that module,
+    /// as written before the name from outside: `Math` for `Math.double`.
+    pub qualifiers: std::collections::HashMap<usize, String>,
+    /// the package's name, and what it gives other packages
+    pub package: String,
+    pub names: PackageNames,
+    /// the uniques the package named its own things with
+    pub uniques: (usize, usize),
 }
+
+/// What a package gives the packages that depend on it, as their renamers
+/// see it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PackageNames {
+    /// its modules' paths, the root's empty
+    pub modules: Vec<Vec<String>>,
+    /// each module's names: module, name, unique, and how visible it is
+    pub exports: Vec<(Vec<String>, String, usize, idyllic_ast::Visibility)>,
+    /// its data types, by unique, with their names and constructors
+    pub types: Vec<(usize, String, Members)>,
+    /// its effects' operations, by the effect's unique
+    pub effect_ops: Vec<(usize, Members)>,
+}
+
+/// A type's constructors, or an effect's operations: each name, with its
+/// unique.
+pub type Members = Vec<(String, usize)>;
 
 /// Side table: node id to source span.  Node ids are dense, so this is just a
 /// vector indexed by them.

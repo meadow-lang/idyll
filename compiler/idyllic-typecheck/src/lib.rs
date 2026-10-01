@@ -57,21 +57,42 @@
 //! `Type 1` is wanted, not a function returning one where a function
 //! returning the other is.
 //!
+//! **Effects.**  A function type's codomain can carry a row, `a -> b ! e`:
+//! a *computation type*, which is what calling the function has.  Each term's
+//! effects travel with its [`Usage`], and where a lambda ends they must fit
+//! the row of its type (see [`elab`]).  Rows are erased terms of type
+//! `Effect`, normalised to sets like grades to polynomials.  `Div`, the
+//! effect of not terminating, is what the termination checker requires of
+//! a recursion it cannot prove; nothing with effects is computed in a type,
+//! passed where a result type depends on it, or passed at grade `0`, so
+//! everything the types see, and everything erased, is total.  The
+//! program's own effects are declared with `effect` and discharged with
+//! `handle` (see [`handlers`]).  What is left at the top of a program must
+//! be among the prelude's `Eff`, the effects the runtime handles, and so
+//! must a `main`'s, which is what running a program with no expression of
+//! its own runs.
+//!
 //! Deliberate limitations for now:
 //!
 //! * Levels are numbers: there is no universe polymorphism, and a data type
-//!   lives in `Type`.  And a metavariable's solution is not checked against
-//!   the metavariable's type, so an implicit argument can be filled with a
-//!   type from too large a universe; until that is closed, the hierarchy
-//!   has a way around it.
+//!   lives in `Type`.  A metavariable's solution is checked against the
+//!   metavariable's type only as far as universes go (see [`MetaTy`]); that
+//!   is the one way two sides of an equation can differ in type, since
+//!   unification only ever compares like with like otherwise.
 //!
 //! * Members of a recursive group must carry a signature, and are *opaque
-//!   constants* that never unfold during unification.  That is what keeps
-//!   unification terminating, and it is exactly why the SCC pass runs first:
-//!   only genuinely recursive definitions pay the price, while non-recursive
-//!   definitions stay transparent.  A recursive definition nested under a
-//!   binder is identified by its binding site, so two instantiations of it
-//!   are not told apart.
+//!   constants* while the group is checked.  Afterwards a group the
+//!   termination checker passes unfolds, where its case tree can choose a
+//!   branch (see [`termination`]); one it does not pass stays a constant
+//!   for good.  That is what keeps unification terminating, and it is why
+//!   the SCC pass runs first: only genuinely recursive definitions pay the
+//!   price, while non-recursive definitions stay transparent.  A recursive
+//!   definition nested under a binder is identified by its binding site,
+//!   so two instantiations of it are not told apart, and it never unfolds.
+//!
+//! * Pattern matching is dependent (see [`matching`]), except that a
+//!   `case` with no expected type has a result type that does not depend
+//!   on what it matched.
 //!
 //! * There is one grade semiring (see [`crate::grade`]), and no approximation
 //!   between function types: `a [0..1] -> b` is not accepted where
@@ -84,7 +105,12 @@ pub mod core;
 pub mod grade;
 mod elab;
 mod eval;
+pub mod handlers;
+mod matching;
+pub mod packages;
 mod positivity;
+mod sequences;
+mod termination;
 mod unify;
 pub mod value;
 
@@ -96,7 +122,7 @@ use idyllic_diagnostics::Diagnostic;
 use crate::grade::Grade;
 use idyllic_hir::{self as hir, NodeId, SpanTable};
 use idyllic_span::Span;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 // ---------------------------------------------------------------------------
@@ -115,6 +141,12 @@ pub struct Usage {
     /// known.  Counts are then a lower bound at best, and holding binders to
     /// them would only pile derivative errors onto the real one.
     unknown: bool,
+    /// What the term does besides compute a value: the rows of the calls it
+    /// makes, as they came, made into one row where it is needed (see
+    /// [`elab`]).  Effects happen once, where the term is evaluated, so they
+    /// are not scaled by a grade: using a result twice does not run the
+    /// computation twice.
+    effects: Vec<Rc<Value>>,
 }
 
 impl Usage {
@@ -124,12 +156,22 @@ impl Usage {
 
     /// One use of one variable.
     pub fn var(unique: usize) -> Usage {
-        Usage { counts: BTreeMap::from([(unique, Poly::constant(Grade::ONE))]), unknown: false }
+        Usage { counts: BTreeMap::from([(unique, Poly::constant(Grade::ONE))]), ..Usage::default() }
     }
 
     /// The usage of a term that failed to elaborate.
     pub fn unknown() -> Usage {
-        Usage { counts: BTreeMap::new(), unknown: true }
+        Usage { unknown: true, ..Usage::default() }
+    }
+
+    /// Having the effects in a row.
+    pub fn effect(row: Rc<Value>) -> Usage {
+        Usage { effects: vec![row], ..Usage::default() }
+    }
+
+    /// Remove the effects, where a lambda (or a definition) ends.
+    pub fn take_effects(&mut self) -> Vec<Rc<Value>> {
+        std::mem::take(&mut self.effects)
     }
 
     pub fn is_unknown(&self) -> bool {
@@ -156,6 +198,8 @@ impl Usage {
             self.counts.insert(k, a.join(b));
         }
         self.unknown |= other.unknown;
+        // either alternative's effects may happen
+        self.effects.extend(other.effects);
         self
     }
 
@@ -175,6 +219,7 @@ impl std::ops::Add for Usage {
             *slot = std::mem::take(slot) + g;
         }
         self.unknown |= other.unknown;
+        self.effects.extend(other.effects);
         self
     }
 }
@@ -199,6 +244,22 @@ pub enum MetaOrigin {
 pub struct MetaInfo {
     pub node: NodeId,
     pub origin: MetaOrigin,
+    /// what the metavariable's solution must be a member of, where that is
+    /// known
+    pub ty: Option<MetaTy>,
+}
+
+/// The type of a metavariable, in the context it was made in.  A meta is
+/// solved as a closed term abstracted over that context's bound variables,
+/// so checking a solution means applying it to them again and asking about
+/// the result there.
+#[derive(Clone, Debug)]
+pub struct MetaTy {
+    /// the name and type of every slot of the context, by level
+    pub types: Rc<Vec<(String, VTy)>>,
+    /// the levels of the bound variables the meta was applied to
+    pub spine: Vec<Lvl>,
+    pub ty: VTy,
 }
 
 #[derive(Clone, Debug)]
@@ -247,6 +308,9 @@ pub enum TypeErrorKind {
     /// a variable used a different number of times than its grade allows;
     /// `in_type` when it is a function type's uses of its own binder
     UsageMismatch { name: String, used: Rc<Core>, allowed: Rc<Core>, in_type: bool },
+    /// a field a pattern bound used a different number of times than the
+    /// grade of what it came out of allows
+    FieldUsage { name: String, used: Rc<Core>, allowed: Rc<Core>, whole: Option<String> },
     /// a lambda binder's written grade disagrees with the expected function
     /// type's
     BinderGradeMismatch { name: String, expected: Rc<Core>, given: Rc<Core> },
@@ -261,12 +325,42 @@ pub enum TypeErrorKind {
     NotABox(Rc<Core>),
     /// `case e of ..` where `e`'s type is not a data type
     NotADataType(Rc<Core>),
-    /// an alternative for a constructor of some other type
+    /// a pattern naming something that is not a constructor
+    NotAConstructor(String),
+    /// a pattern for a constructor of some other type
     NotAConstructorOf { ctor: String, data: Rc<Core> },
-    /// an alternative binding the wrong number of fields
+    /// a constructor pattern with the wrong number of fields
     WrongFieldCount { ctor: String, expected: usize, given: usize },
-    DuplicateAlternative(String),
-    MissingAlternatives(Vec<String>),
+    /// the cases no equation or alternative covers, as patterns
+    MissingCases(Vec<String>),
+    /// an equation or alternative that can never be reached
+    UnreachableClause,
+    /// an equation with a different number of patterns from the first
+    ClauseArity { expected: usize, given: usize },
+    /// more patterns than the type has arguments
+    TooManyPatterns(Rc<Core>),
+    /// a pattern for something matching cannot take apart: not a variable,
+    /// not a constructor
+    CannotSplit(Rc<Core>),
+    /// matching a constructor needs two indices to be equal, and they are
+    /// neither plainly equal nor plainly different
+    IndexUnificationStuck { lhs: Rc<Core>, rhs: Rc<Core> },
+    /// `impossible`, for patterns some value does match
+    NotImpossible,
+    /// a dot pattern that is not what matching worked out
+    DotMismatch { expected: Rc<Core>, given: Rc<Core> },
+    /// a string literal as a pattern
+    StringPattern,
+    /// a data type whose kind does not end in `Type`
+    DataKindNotType(Rc<Core>),
+    /// a constructor whose type does not end in its data type, applied to
+    /// its parameters
+    CtorResult { ctor: String, data: String },
+    /// a constructor with an implicit argument after an explicit one, or
+    /// one that is not erased
+    CtorImplicit(String),
+    /// a data type with indices, declared without constructor types
+    IndexedNeedsSignatures(String),
     /// `Type n` where `n` is not a number
     LevelNotANumber,
     /// a constructor field whose type is in a larger universe than its data
@@ -274,6 +368,49 @@ pub enum TypeErrorKind {
     LargeField { data: String, level: core::Level },
     /// a data type appearing where it is not strictly positive
     NotStrictlyPositive { data: String, ctor: String, why: Positivity },
+    /// a metavariable that must be a type in `Type allowed` solved with one
+    /// in `Type actual`: `id Type`, with `id : {a : Type} -> a -> a`
+    UniverseTooLarge { what: String, solution: Rc<Core>, allowed: core::Level, actual: core::Level },
+    /// a computation with effects its type does not allow
+    EffectNotAllowed { effects: Rc<Core>, allowed: Rc<Core> },
+    /// a type whose computation has effects
+    ImpureType(Rc<Core>),
+    /// an argument with effects, where one has to be pure: erased, or one
+    /// the result type depends on
+    ImpureArgument { effects: Rc<Core>, erased: bool },
+    /// the type of a `let`'s body mentions a variable whose definition has
+    /// effects, and so has no value the type could mean
+    EffectfulLetEscapes(String),
+    /// a recursive definition the termination checker cannot see ending,
+    /// whose type does not say `! Div`
+    MayNotTerminate(String),
+    /// `b ! e` anywhere but after an arrow or as a definition's type
+    EffectOutsideArrow,
+    /// effects left over at the top of the program
+    UnhandledEffects(Rc<Core>),
+    /// an operation's type that is not `a -> b`
+    OpSignature(String),
+    /// a handler clause for something that is not an operation
+    NotAnOperation(String),
+    /// a handler with clauses for two effects' operations
+    HandlerMixesEffects,
+    /// a handler with no operation clause
+    HandlerHandlesNothing,
+    /// a handler without a clause for each of its effect's operations
+    MissingOperations(Vec<String>),
+    DuplicateOperation(String),
+    /// a clause with the wrong number of variables
+    ClauseParams { op: String, expected: usize },
+    /// a handler's effect twice over in the body's row, or a row the
+    /// resumption cannot be given
+    AmbiguousHandler { effect: String, row: Rc<Core> },
+    /// a sequence literal, `#[a, b]`, where a type with no `@seq` is wanted
+    NotASequence(Rc<Core>),
+    /// an `@seq` whose constructors cannot build sequences of its type
+    BadSeq { data: String, why: String },
+    /// a `main` that is not `() -> () ! Eff`, or has effects `Eff` does not
+    /// have
+    MainType(Rc<Core>),
 }
 
 /// Where a data type appears that makes it fail strict positivity.
@@ -288,6 +425,14 @@ pub enum Positivity {
     Nested(String),
     /// somewhere nothing is known about, such as under a type variable
     Unknown,
+}
+
+/// A row as a phrase: `Div`, `{Log, Div}`, or "none".
+fn row_or_none(row: &Core) -> String {
+    match row {
+        Core::Row(labels, tails) if labels.is_empty() && tails.is_empty() => "none".into(),
+        _ => row.to_string(),
+    }
 }
 
 /// "never", "once", "3 times", "0..1 times", "r + 1 times".
@@ -328,6 +473,18 @@ impl TypeError {
             }
             TypeErrorKind::HoleUnsolved(ty) => Diagnostic::error("unsolved hole")
                 .label(here, format!("_ : {ty}, and nothing determines it")),
+            TypeErrorKind::FieldUsage { name, used, allowed, whole } => {
+                let (whole, example) = match whole {
+                    Some(w) => (w.clone(), w.clone()),
+                    None => ("the argument it came out of".to_string(), "x".to_string()),
+                };
+                Diagnostic::error("usage mismatch")
+                    .label(here, format!("{name} has grade {allowed}, but is used {}", times(used)))
+                    .help(format!(
+                        "a field has the grade of what it came out of; to use {name} {}, give {whole} a grade that allows it, as in ({example} : [0..1] ..)",
+                        times(used)
+                    ))
+            }
             TypeErrorKind::UsageMismatch { name, used, allowed, in_type: true } => {
                 Diagnostic::error("usage mismatch").label(
                     here,
@@ -368,24 +525,132 @@ impl TypeError {
                 .label(here, format!("it has type {ty}, so it cannot be unboxed")),
             TypeErrorKind::NotADataType(ty) => Diagnostic::error("this cannot be matched on")
                 .label(here, format!("it has type {ty}, which is not a data type")),
+            TypeErrorKind::NotAConstructor(name) => Diagnostic::error(format!("{name} is not a constructor"))
+                .label(here, "only a constructor can be matched on"),
             TypeErrorKind::NotAConstructorOf { ctor, data } => {
                 Diagnostic::error(format!("{ctor} is not a constructor of this type"))
                     .label(here, format!("what is being matched has type {data}"))
             }
             TypeErrorKind::WrongFieldCount { ctor, expected, given } => {
                 Diagnostic::error(format!("{ctor} has {expected} fields, not {given}"))
-                    .label(here, "one variable for each field")
+                    .label(here, "one pattern for each field")
             }
-            TypeErrorKind::DuplicateAlternative(ctor) => {
-                Diagnostic::error(format!("{ctor} is matched twice")).label(here, "this alternative can never be taken")
+            TypeErrorKind::MissingCases(cases) => Diagnostic::error("the patterns do not cover every case")
+                .label(here, format!("missing: {}", cases.join(", "))),
+            TypeErrorKind::UnreachableClause => {
+                Diagnostic::warning("unreachable").label(here, "the cases before this one cover everything it matches")
             }
-            TypeErrorKind::MissingAlternatives(ctors) => Diagnostic::error("this case does not cover every constructor")
-                .label(here, format!("missing: {}", ctors.join(", "))),
+            TypeErrorKind::ClauseArity { expected, given } => {
+                Diagnostic::error("equations with different numbers of arguments")
+                    .label(here, format!("this one has {given}, but the first has {expected}"))
+            }
+            TypeErrorKind::TooManyPatterns(ty) => Diagnostic::error("too many patterns")
+                .label(here, format!("what is left to match has type {ty}, which is not a function")),
+            TypeErrorKind::CannotSplit(v) => Diagnostic::error("this cannot be matched on")
+                .label(here, format!("it is {v}, which is neither a variable nor a constructor")),
+            TypeErrorKind::IndexUnificationStuck { lhs, rhs } => {
+                Diagnostic::error("cannot tell whether this pattern applies")
+                    .label(here, format!("it needs {lhs} and {rhs} to be equal, and they are neither the same nor different"))
+            }
+            TypeErrorKind::NotImpossible => Diagnostic::error("not impossible")
+                .label(here, "some values match these patterns")
+                .help("give this equation a right-hand side"),
+            TypeErrorKind::DotMismatch { expected, given } => Diagnostic::error("dot pattern does not match")
+                .label(here, format!("matching has worked out that this is {expected}, not {given}")),
+            TypeErrorKind::StringPattern => Diagnostic::error("strings cannot be matched on yet")
+                .label(here, "use a guard with a comparison instead"),
+            TypeErrorKind::DataKindNotType(kind) => Diagnostic::error("a data type's kind ends in Type")
+                .label(here, format!("this is {kind}")),
+            TypeErrorKind::CtorResult { ctor, data } => Diagnostic::error(format!("{ctor} does not build a {data}"))
+                .label(here, format!("a constructor's type ends in {data}, applied to its parameters and then its indices")),
+            TypeErrorKind::CtorImplicit(ctor) => Diagnostic::error(format!("unsupported implicit argument of {ctor}"))
+                .label(here, "a constructor's implicit arguments come first, and are erased"),
+            TypeErrorKind::IndexedNeedsSignatures(data) => {
+                Diagnostic::error(format!("{data} has indices, so its constructors need types"))
+                    .label(here, "declare them with where, as in  C : .. -> T i")
+            }
             TypeErrorKind::LevelNotANumber => Diagnostic::error("a universe level is a number")
                 .label(here, "level variables are not supported yet"),
             TypeErrorKind::LargeField { data, level } => Diagnostic::error("field too large for its data type")
                 .label(here, format!("this field's type lives in Type {level}, but {data} lives in Type"))
                 .help("a data type lives in Type, so its fields must be types in Type; larger data types are not supported yet"),
+            TypeErrorKind::UniverseTooLarge { what, solution, allowed, actual } => {
+                Diagnostic::error("universe too large").label(
+                    here,
+                    format!("{what} must be a type in {}, but here it would be {solution}, which is in {}", Core::Type(*allowed), Core::Type(*actual)),
+                )
+            }
+            TypeErrorKind::EffectNotAllowed { effects, allowed } => {
+                let d = Diagnostic::error("effects not allowed")
+                    .label(here, format!("this has the effects {effects}, but its type allows {}", row_or_none(allowed)));
+                if let Core::Row(labels, tails) = &**allowed {
+                    if labels.is_empty() && tails.is_empty() {
+                        return d.help(format!("a type with no row means none; say so with ! {effects}"));
+                    }
+                }
+                d
+            }
+            TypeErrorKind::ImpureType(effects) => Diagnostic::error("a type must be pure")
+                .label(here, format!("computing this type has the effects {effects}"))
+                .help("only total code runs in types; a function that may not terminate has the effect Div"),
+            TypeErrorKind::ImpureArgument { effects, erased: true } => {
+                Diagnostic::error("an erased argument must be pure").label(
+                    here,
+                    format!("this has the effects {effects}, but it is never run, so they could not happen"),
+                )
+            }
+            TypeErrorKind::ImpureArgument { effects, erased: false } => {
+                Diagnostic::error("a type cannot depend on this").label(
+                    here,
+                    format!("the result type mentions this argument, which has the effects {effects}"),
+                ).help("bind it with let first, so that the types see a variable")
+            }
+            TypeErrorKind::EffectfulLetEscapes(name) => Diagnostic::error("a type cannot depend on this")
+                .label(here, format!("the type of this depends on {name}, whose definition has effects"))
+                .help("give the whole a type annotation that does not mention it"),
+            TypeErrorKind::MayNotTerminate(name) => {
+                Diagnostic::error(format!("{name} may not terminate")).label(
+                    here,
+                    "no argument gets smaller on every round of its recursion, so it has the effect Div",
+                ).help(format!("say so in its type, as in {name} : .. -> .. ! Div"))
+            }
+            TypeErrorKind::EffectOutsideArrow => Diagnostic::error("effects belong to a function type")
+                .label(here, "write this after an arrow, as in a -> b ! e"),
+            TypeErrorKind::OpSignature(op) => Diagnostic::error(format!("{op} is not an operation's type"))
+                .label(here, "an operation takes arguments and gives a result, as in a -> b; use () for none"),
+            TypeErrorKind::NotAnOperation(name) => Diagnostic::error(format!("{name} is not an operation"))
+                .label(here, "a handler's clauses are for the operations of an effect, and return"),
+            TypeErrorKind::HandlerMixesEffects => Diagnostic::error("one handler, one effect")
+                .label(here, "this operation belongs to another effect than the clauses before it"),
+            TypeErrorKind::HandlerHandlesNothing => Diagnostic::error("this handler handles nothing")
+                .label(here, "give it a clause for each operation of the effect it is for"),
+            TypeErrorKind::MissingOperations(ops) => Diagnostic::error("the handler does not handle every operation")
+                .label(here, format!("missing: {}", ops.join(", "))),
+            TypeErrorKind::DuplicateOperation(op) => {
+                Diagnostic::error(format!("{op} is handled twice")).label(here, "this clause can never be taken")
+            }
+            TypeErrorKind::ClauseParams { op, expected: 1 } => Diagnostic::error("a return clause names one thing")
+                .label(here, format!("{op} x -> .., for the value it is given")),
+            TypeErrorKind::ClauseParams { op, expected } => {
+                let args: Vec<&str> = ["x", "y", "z", "w"].into_iter().cycle().take(expected - 1).collect();
+                let what = if args.len() == 1 { "argument" } else { "arguments" };
+                Diagnostic::error(format!("{op}'s clause names {expected} things"))
+                    .label(here, format!("{op} {} k -> .., for its {what} and the resumption", args.join(" ")))
+            }
+            TypeErrorKind::AmbiguousHandler { effect, row } => Diagnostic::error(format!("which {effect}?"))
+                .label(here, format!("the handled computation has the effects {row}")),
+            TypeErrorKind::UnhandledEffects(effects) => Diagnostic::error("unhandled effects")
+                .label(here, format!("the program has the effects {effects}, and nothing handles them"))
+                .help("at the top of a program, only the effects in Eff are handled, by the runtime"),
+            TypeErrorKind::NotASequence(ty) => Diagnostic::error("a sequence literal needs a sequence type")
+                .label(here, format!("the type wanted here is {ty}, which #[..] cannot build"))
+                .help("a type #[..] can build is declared with @seq(nil = .., cons = ..), as List is"),
+            TypeErrorKind::BadSeq { data, why } => {
+                Diagnostic::error(format!("{data} cannot be built with #[..]")).label(here, why.clone())
+            }
+            TypeErrorKind::MainType(ty) => Diagnostic::error("main has the wrong type")
+                .label(here, format!("main is {ty}"))
+                .help("main takes () and gives (), with at most the effects the runtime handles: main : () -> () ! Eff"),
             TypeErrorKind::NotStrictlyPositive { data, ctor, why } => {
                 let why = match why {
                     Positivity::LeftOfArrow => "it appears to the left of an arrow".to_string(),
@@ -418,13 +683,43 @@ impl TypeError {
 enum BinderInfo {
     Bound,
     Defined,
+    /// Defined, but by a computation with effects: at run time it has a
+    /// value like any definition, but the types may not see it, since two
+    /// runs of the same computation need not agree.  To the types it is as
+    /// good as bound.
+    Opaque,
+}
+
+impl BinderInfo {
+    /// Whether the types know nothing of the slot's value.
+    fn unknown(self) -> bool {
+        matches!(self, BinderInfo::Bound | BinderInfo::Opaque)
+    }
+}
+
+/// One slot of the context.
+#[derive(Clone)]
+struct Binder {
+    info: BinderInfo,
+    /// for display
+    name: String,
+    ty: VTy,
+    /// The unique a use of this slot is charged to.  Usually that of the
+    /// name that bound it; a pattern variable standing for a slot the match
+    /// compiler made is charged to that slot's own key instead, so the grade
+    /// is held to all its uses together, whichever name they went by.
+    key: Option<usize>,
+    /// How often it may be used, where that is known: matching takes a
+    /// value apart into fields of the same grade.
+    grade: Option<Rc<Value>>,
 }
 
 /// How a name is referred to.
 #[derive(Clone)]
 enum Entry {
-    /// A context slot: the level it was bound at, and its type.
-    Local(Lvl, VTy),
+    /// A context slot, by level.  Several names can share one: see
+    /// [`Binder::key`].
+    Local(Lvl),
     /// A recursive definition: a constant, with no slot.
     Opaque(VTy),
 }
@@ -433,15 +728,19 @@ enum Entry {
 ///
 /// `env` holds a neutral variable for an opaque binding (a lambda/Pi binder)
 /// and the binding's value for a transparent definition, which then unfolds
-/// during unification.
+/// during unification.  Matching can turn the one into the other: once a
+/// variable is known to be `S n`, it is defined as that (see [`matching`]).
 #[derive(Clone)]
 pub struct Ctx {
     lvl: Lvl,
     env: Env,
     /// outermost first, so the index is the level
-    binders: Vec<(BinderInfo, String)>,
+    binders: Vec<Binder>,
     /// by name unique
     names: HashMap<usize, Entry>,
+    /// The slots matching has split, with the constructor each turned out to
+    /// be and the slots of that constructor's arguments.
+    splits: HashMap<Lvl, (usize, Vec<Lvl>)>,
 }
 
 impl Ctx {
@@ -450,9 +749,15 @@ impl Ctx {
     /// (each a transparent definition at its function type), at the uniques
     /// the renamer reserved for them.
     fn initial(tc: &Checker) -> Ctx {
-        let mut ctx = Ctx { lvl: 0, env: Env::empty(), binders: Vec::new(), names: HashMap::new() };
+        let mut ctx =
+            Ctx { lvl: 0, env: Env::empty(), binders: Vec::new(), names: HashMap::new(), splits: HashMap::new() };
         for b in Builtin::ALL {
-            ctx = ctx.extend(Some(b.unique()), b.name(), Rc::new(Value::Type(0)), BinderInfo::Defined, Rc::new(Value::LitTy(b)));
+            // `Div` is an effect; the rest are types
+            let ty = match b {
+                Builtin::Div => Value::LitTy(Builtin::Effect),
+                _ => Value::Type(0),
+            };
+            ctx = ctx.extend(Some(b.unique()), b.name(), Rc::new(ty), BinderInfo::Defined, Rc::new(Value::LitTy(b)));
         }
         for p in Prim::ALL {
             // A primitive consumes each argument exactly once, so the default
@@ -478,9 +783,9 @@ impl Ctx {
         let mut next = self.clone();
         next.lvl = self.lvl + 1;
         next.env = self.env.push(value);
-        next.binders.push((info, hint.to_string()));
+        next.binders.push(Binder { info, name: hint.to_string(), ty, key: unique, grade: None });
         if let Some(u) = unique {
-            next.names.insert(u, Entry::Local(self.lvl, ty));
+            next.names.insert(u, Entry::Local(self.lvl));
         }
         next
     }
@@ -492,9 +797,31 @@ impl Ctx {
         self.extend(x.and_then(|x| x.unique), hint, ty, BinderInfo::Bound, vvar(self.lvl, hint))
     }
 
+    /// Extend with an opaque binder that no name refers to yet, charged to
+    /// `key`.
+    fn bind_keyed(&self, key: usize, hint: &str, ty: VTy, grade: Option<Rc<Value>>) -> Ctx {
+        let mut next = self.extend(None, hint, ty, BinderInfo::Bound, vvar(self.lvl, hint));
+        next.binders[self.lvl].key = Some(key);
+        next.binders[self.lvl].grade = grade;
+        next
+    }
+
+    /// Record the grade of the innermost slot.
+    fn graded(mut self, grade: &Rc<Value>) -> Ctx {
+        if let Some(b) = self.binders.last_mut() {
+            b.grade = Some(grade.clone());
+        }
+        self
+    }
+
     /// Extend with a transparent definition, which unfolds during unification.
     fn define(&self, x: &hir::Ident, ty: VTy, value: Rc<Value>) -> Ctx {
         self.extend(x.unique, &x.text, ty, BinderInfo::Defined, value)
+    }
+
+    /// Extend with a definition whose value the types may not know.
+    fn define_opaque(&self, x: &hir::Ident, ty: VTy) -> Ctx {
+        self.extend(x.unique, &x.text, ty, BinderInfo::Opaque, vvar(self.lvl, &x.text))
     }
 
     /// Declare a recursive definition: nameable, but with no slot and no
@@ -507,32 +834,53 @@ impl Ctx {
         next
     }
 
-    /// The type a constant was declared with.
-    fn constant_type(&self, unique: usize) -> Option<VTy> {
-        match self.names.get(&unique)? {
-            Entry::Opaque(ty) => Some(ty.clone()),
-            Entry::Local(..) => None,
+    /// Let `x` name the slot at `lvl`.
+    fn alias(&mut self, x: &hir::Ident, lvl: Lvl) {
+        if let Some(u) = x.unique {
+            self.names.insert(u, Entry::Local(lvl));
         }
     }
 
-    /// Look up a name, returning the Core reference to use for it and its type.
-    fn lookup(&self, x: &hir::Ident) -> Option<(Rc<Core>, VTy)> {
+    /// Look up a name, returning the Core reference to use for it, its type,
+    /// and the unique its uses are charged to.
+    fn lookup(&self, x: &hir::Ident) -> Option<(Rc<Core>, VTy, usize)> {
         let unique = x.unique?;
         Some(match self.names.get(&unique)? {
-            Entry::Local(lvl, ty) => (Rc::new(Core::Var(self.lvl - lvl - 1, x.text.clone())), ty.clone()),
-            Entry::Opaque(ty) => (Rc::new(Core::Opaque(unique, x.text.clone())), ty.clone()),
+            Entry::Local(lvl) => {
+                let b = &self.binders[*lvl];
+                (Rc::new(Core::Var(self.lvl - lvl - 1, x.text.clone())), b.ty.clone(), b.key.unwrap_or(unique))
+            }
+            Entry::Opaque(ty) => (Rc::new(Core::Opaque(unique, x.text.clone())), ty.clone(), unique),
         })
     }
 
+    /// The `Bound` slots of the context, by level.  A freshly created meta
+    /// is applied to these, which is what keeps metas closed.
+    fn bound_levels(&self) -> impl Iterator<Item = Lvl> + '_ {
+        self.binders.iter().enumerate().filter(|(_, b)| b.info.unknown()).map(|(lvl, _)| lvl)
+    }
+
     /// The `Bound` slots of the context as Core variables, in level order.
-    /// This is the spine a freshly created meta is applied to, which is what
-    /// keeps metas closed.
     fn bound_var_cores(&self) -> impl Iterator<Item = Rc<Core>> + '_ {
-        self.binders
-            .iter()
-            .enumerate()
-            .filter(|(_, (info, _))| *info == BinderInfo::Bound)
-            .map(|(lvl, (_, name))| Rc::new(Core::Var(self.lvl - lvl - 1, name.clone())))
+        self.bound_levels().map(|lvl| Rc::new(Core::Var(self.lvl - lvl - 1, self.binders[lvl].name.clone())))
+    }
+
+    /// The value in a slot.
+    fn value(&self, lvl: Lvl) -> Rc<Value> {
+        self.env.get(self.lvl - lvl - 1).expect("a slot of this context")
+    }
+
+    /// The slot a name refers to, if it is a variable nothing has defined.
+    fn bound_slot(&self, x: &hir::Ident) -> Option<Lvl> {
+        match self.names.get(&x.unique?)? {
+            Entry::Local(lvl) if self.binders[*lvl].info.unknown() => Some(*lvl),
+            _ => None,
+        }
+    }
+
+    /// The name and type of every slot, by level.
+    fn types(&self) -> Vec<(String, VTy)> {
+        self.binders.iter().map(|b| (b.name.clone(), b.ty.clone())).collect()
     }
 }
 
@@ -558,11 +906,32 @@ pub struct Checker {
     /// for each data type, which of its parameters it uses strictly
     /// positively (see [`positivity`])
     positive_params: HashMap<usize, Vec<bool>>,
+    /// the type of every constant (data type, constructor, recursive
+    /// definition), by its unique
+    constants: HashMap<usize, VTy>,
+    /// the next key for a slot the checker makes itself (see
+    /// [`Binder::key`]); counts down from the top, far from the renamer's
+    /// uniques
+    next_key: usize,
+    /// the recursive definitions that are known to terminate, and so unfold
+    /// (see [`termination`])
+    transparent: HashMap<usize, termination::Unfold>,
+    /// the program's effects and their operations, by unique
+    effects: HashMap<usize, handlers::EffectInfo>,
+    ops: HashMap<usize, handlers::OpInfo>,
+    /// the data types a sequence literal can build, with the constructors
+    /// it builds them with: `nil` and `cons`, by unique
+    seqs: HashMap<usize, (usize, usize)>,
+    /// every name the prelude declares (see [`hir::Module::prelude`])
+    prelude: HashMap<String, usize>,
+    /// what other packages' transparent definitions are, by unique: a
+    /// constant of theirs evaluates to its value (see [`packages`])
+    globals: HashMap<usize, Rc<Value>>,
 }
 
 /// What is known about a constructor.  At run time it is its `tag` and its
 /// `fields`; the type parameters it is also applied to are erased.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CtorInfo {
     pub name: String,
     /// the unique of its data type
@@ -578,7 +947,7 @@ pub struct CtorInfo {
 /// constant ([`Core::Opaque`]) with no binding site, so that unification
 /// never unfolds it; this is where its body is kept for whoever wants to
 /// *run* the program.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RecDef {
     /// the unique of its binder, as in `Core::Opaque`
     pub unique: usize,
@@ -593,8 +962,18 @@ pub struct RecDef {
 pub struct TypeCheckResult {
     /// The type of the module's trailing expression, if it has one.
     pub body_type: Option<Rc<Core>>,
+    /// What compiling the package made, for its dependents, for a build to
+    /// keep, and for linking (see [`packages`]).
+    pub compiled: Option<packages::CompiledPackage>,
+    /// The prelude's own top-level definitions, as `let`s: the outermost of
+    /// any program, linked or not.
+    pub prelude_lets: Vec<(String, Rc<Core>)>,
+    /// Whether the expression is `main ()`, the module having none of its
+    /// own (see [`check_module`]).
+    pub ran_main: bool,
     /// The types of the top-level definitions, in source order.
-    pub decl_types: Vec<(String, Rc<Core>)>,
+    /// With the node each is declared at, which says where in the source.
+    pub decl_types: Vec<(NodeId, String, Rc<Core>)>,
     /// The elaborated program: the trailing expression under the top-level
     /// (non-recursive) definitions as `let`s.  Its context is the initial
     /// one: the builtins, then the primitives.
@@ -605,6 +984,8 @@ pub struct TypeCheckResult {
     pub meta_solutions: Vec<Option<Rc<Core>>>,
     /// The declared constructors, by the unique of their names.
     pub ctors: HashMap<usize, CtorInfo>,
+    /// The declared effects' operations, by the unique of their names.
+    pub ops: HashMap<usize, handlers::OpInfo>,
     /// The uniques of the declared data types.  As terms they are types, and
     /// so are erased.
     pub type_constructors: Vec<usize>,
@@ -619,9 +1000,14 @@ pub struct TypeCheckResult {
 /// becomes a [`TypeError`] and checking continues with an error value
 /// standing in for the offending subterm.  `node_count` sizes the type table
 /// (it is the length of the renamer's span table).
-/// The first `prelude_datas` data declarations are the prelude's, and are not
-/// reported among the program's own.
-pub fn check_module(m: &hir::Module, node_count: usize, prelude_datas: usize) -> TypeCheckResult {
+/// The prelude's declarations are not reported among the program's own.
+///
+/// With `entry`, a module with a `main` and no expression of its own runs
+/// `main ()`, once `main` has been found to be `() -> () ! Eff`.
+///
+/// The module is checked against the compiled packages it depends on, which
+/// come in an order where each follows those it depends on.
+pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&packages::CompiledPackage]) -> TypeCheckResult {
     let mut tc = Checker {
         metas: Vec::new(),
         node_types: vec![None; node_count],
@@ -631,37 +1017,91 @@ pub fn check_module(m: &hir::Module, node_count: usize, prelude_datas: usize) ->
         ctors: HashMap::new(),
         datas: HashMap::new(),
         positive_params: HashMap::new(),
+        constants: HashMap::new(),
+        next_key: usize::MAX,
+        transparent: HashMap::new(),
+        effects: HashMap::new(),
+        ops: HashMap::new(),
+        seqs: HashMap::new(),
+        prelude: m.prelude.clone(),
+        globals: HashMap::new(),
     };
     let ctx = Ctx::initial(&tc);
+    let ctx = tc.import(&ctx, deps);
+    let ctx = tc.declare_effects(&ctx, &m.effects);
     let ctx = tc.declare_datas(&ctx, &m.datas);
+    let ctx = tc.declare_ops(&ctx, &m.effects);
     // Top-level definitions are closed, so whatever they and the entry
     // expression use is only ever a definition or a primitive: there is no
     // binder left to hold the final usage to account.
-    let (ctx, _owed, lets) = tc.enter_groups(&ctx, &m.groups);
-    let body = m.body.as_ref().map(|body| {
-        let (core, ty, _usage) = tc.infer(&ctx, body);
-        (core, tc.quote(ctx.lvl, ty))
-    });
-    let (program, body_type) = match body {
-        Some((core, ty)) => (Some(Checker::wrap_lets(core, lets)), Some(ty)),
-        None => (None, None),
+    let (ctx, owed, lets) = tc.enter_groups(&ctx, &m.groups);
+    // What is left over at the top is run there, where the runtime handles
+    // the effects in the prelude's `Eff`, and nothing else.
+    let world = tc.world(&ctx);
+    for (group, pending) in m.groups.iter().zip(&owed) {
+        if let (hir::BindGroup::NonRec(b), elab::Pending::NonRec { rhs, .. }) = (group, pending) {
+            tc.unhandled(&ctx, b.rhs.id, rhs, &world);
+        }
+    }
+    let prelude: HashSet<usize> = m.prelude.values().copied().collect();
+    let main = m.groups.iter().flat_map(hir::BindGroup::binds).find(|b| b.name.unique.is_some() && b.name.unique == m.main);
+    let main_fits = main.map(|b| tc.check_main(&ctx, b, world.clone()));
+    let body = match (&m.body, main.zip(main_fits)) {
+        (Some(body), _) => {
+            let (core, ty, usage) = tc.infer(&ctx, body);
+            // (a `main` that is wrong has said so already)
+            if main_fits != Some(false) {
+                tc.unhandled(&ctx, body.id, &usage, &world);
+            }
+            Some((core, tc.quote(ctx.lvl, ty)))
+        }
+        // `main ()`
+        (None, Some((main, true))) if entry => ctx.lookup(&main.name).map(|(f, _, _)| {
+            let call = Rc::new(Core::App(f, Rc::new(Core::Lit(idyllic_ast::Lit::Unit))));
+            (call, Rc::new(Core::LitTy(Builtin::Unit)))
+        }),
+        (None, _) => None,
     };
+    let ran_main = m.body.is_none() && body.is_some();
+    let program = body.as_ref().map(|(core, _)| Checker::wrap_lets(core.clone(), lets.clone()));
+    let body_type = body.as_ref().map(|(_, ty)| ty.clone());
     tc.report_holes();
     tc.report_unsolved_metas();
-    // what the program declares, in source order: data types with their
-    // constructors, and definitions
-    let mut declared: Vec<(NodeId, &str)> = Vec::new();
-    for d in m.datas.iter().skip(prelude_datas) {
-        declared.push((d.id, &d.name.text));
-        declared.extend(d.ctors.iter().map(|c| (c.id, c.name.text.as_str())));
+    // the prelude's own definitions, which come first
+    let prelude_lets: Vec<(String, Rc<Core>)> = m
+        .groups
+        .iter()
+        .zip(&lets)
+        .filter(|(g, _)| g.binds().iter().all(|b| b.name.unique.is_some_and(|u| prelude.contains(&u))))
+        .filter_map(|(_, w)| w.clone())
+        .collect();
+    // what the program declares: data types with their constructors, and
+    // definitions (data types are renamed first, so for the order they were
+    // written in, ask the span table)
+    // (a constructor is reported under its type, where it lives, and a name
+    // of a module other than the root under that module)
+    let mut declared: Vec<(NodeId, String, Option<usize>)> = Vec::new();
+    let qualified = |x: &hir::Ident| match x.unique.and_then(|u| m.qualifiers.get(&u)) {
+        Some(q) => format!("{q}.{}", x.text),
+        None => x.text.clone(),
+    };
+    let named = |id: NodeId, x: &hir::Ident| (id, qualified(x), x.unique);
+    for d in &m.datas {
+        declared.push(named(d.id, &d.name));
+        declared.extend(d.ctors.iter().map(|c| (c.id, format!("{}.{}", qualified(&d.name), c.name.text), c.name.unique)));
     }
-    declared.extend(m.groups.iter().flat_map(hir::BindGroup::binds).map(|b| (b.id, b.name.text.as_str())));
-    declared.sort_by_key(|(id, _)| *id);
+    for e in &m.effects {
+        declared.push(named(e.id, &e.name));
+        declared.extend(e.ops.iter().map(|op| named(op.id, &op.name)));
+    }
+    declared.extend(m.groups.iter().flat_map(hir::BindGroup::binds).map(|b| named(b.id, &b.name)));
+    declared.retain(|(_, _, u)| !u.is_some_and(|u| prelude.contains(&u)));
+    declared.sort_by_key(|(id, ..)| *id);
     let decl_types = declared
         .into_iter()
-        .filter_map(|(id, name)| Some((name.to_string(), tc.node_types.get(id.0)?.clone()?)))
+        .filter_map(|(id, name, _)| Some((id, name, tc.node_types.get(id.0)?.clone()?)))
         .collect();
-    let meta_solutions = tc
+    let meta_solutions: Vec<Option<Rc<Core>>> = tc
         .metas
         .iter()
         .map(|e| match e {
@@ -671,9 +1111,28 @@ pub fn check_module(m: &hir::Module, node_count: usize, prelude_datas: usize) ->
         })
         .collect();
     let rec_defs = std::mem::take(&mut tc.rec_defs);
+    let mut compiled = tc.compile_package(m, &ctx, &lets, body, &rec_defs, meta_solutions.clone());
+    compiled.main = ran_main;
+    let compiled = Some(compiled);
     let type_constructors = tc.datas.keys().copied().collect();
     let ctors = std::mem::take(&mut tc.ctors);
-    TypeCheckResult { body_type, decl_types, program, rec_defs, meta_solutions, ctors, type_constructors, node_types: tc.node_types, metas: tc.metas, errors: tc.errors }
+    let ops = std::mem::take(&mut tc.ops);
+    TypeCheckResult {
+        body_type,
+        compiled,
+        prelude_lets,
+        ran_main,
+        decl_types,
+        program,
+        rec_defs,
+        meta_solutions,
+        ctors,
+        ops,
+        type_constructors,
+        node_types: tc.node_types,
+        metas: tc.metas,
+        errors: tc.errors,
+    }
 }
 
 impl Checker {
@@ -687,8 +1146,66 @@ impl Checker {
         }
     }
 
-    fn new_meta(&mut self, node: NodeId, origin: MetaOrigin) -> MetaVar {
-        self.metas.push(MetaEntry::Unsolved(MetaInfo { node, origin }));
+    /// The effects the runtime handles, at the top of a program: the
+    /// prelude's `Eff` (whatever the program means by `Eff`), or failing
+    /// that, `Div`.
+    fn world(&mut self, ctx: &Ctx) -> Rc<Value> {
+        let eff = self.prelude.get("Eff").map(|&u| hir::Ident { unique: Some(u), text: "Eff".into() });
+        match eff.and_then(|x| ctx.lookup(&x)) {
+            Some((core, _, _)) => self.eval(&ctx.env, &core),
+            None => self.row(std::iter::once(Rc::new(Value::LitTy(Builtin::Div)))),
+        }
+    }
+
+    /// Report the effects in `usage` that nothing will handle: all but the
+    /// `world`'s.
+    fn unhandled(&mut self, ctx: &Ctx, node: NodeId, usage: &Usage, world: &Rc<Value>) {
+        let Some(effects) = self.effects_of(usage) else { return };
+        let parts = self.row_parts(&effects);
+        let handled = self.row_parts(world);
+        let left: Vec<Rc<Value>> = parts
+            .labels
+            .iter()
+            .filter(|(k, _)| !handled.labels.iter().any(|(k2, _)| k2 == k))
+            .chain(&parts.tails)
+            .map(|(_, v)| v.clone())
+            .collect();
+        if !left.is_empty() {
+            let row = self.row(left.into_iter());
+            let row = self.quote(ctx.lvl, row);
+            self.error(node, TypeErrorKind::UnhandledEffects(row));
+        }
+    }
+
+    /// `main : () -> () ! e`, where the runtime handles every effect in
+    /// `e`: it is what running the program runs.  Whether it is.
+    fn check_main(&mut self, ctx: &Ctx, main: &hir::Bind, world: Rc<Value>) -> bool {
+        let Some((_, ty, _)) = ctx.lookup(&main.name) else { return false };
+        let unit = || Rc::new(Value::LitTy(Builtin::Unit));
+        let fits = match &*self.force(ty.clone()) {
+            Value::Pi { name, icit: Icit::Explicit, dom, cod, .. } => {
+                let (result, effects) = self.split_comp(self.apply(cod, vvar(ctx.lvl, name.clone())));
+                self.unify(ctx.lvl, dom.clone(), unit())
+                    && self.unify(ctx.lvl + 1, result, unit())
+                    && self.effects_fit(ctx.lvl + 1, effects, world)
+            }
+            Value::Error => true,
+            _ => false,
+        };
+        if !fits {
+            let ty = self.quote(ctx.lvl, ty);
+            self.error(main.id, TypeErrorKind::MainType(ty));
+        }
+        fits
+    }
+
+    fn fresh_key(&mut self) -> usize {
+        self.next_key -= 1;
+        self.next_key
+    }
+
+    fn new_meta(&mut self, node: NodeId, origin: MetaOrigin, ty: Option<MetaTy>) -> MetaVar {
+        self.metas.push(MetaEntry::Unsolved(MetaInfo { node, origin, ty }));
         self.metas.len() - 1
     }
 
@@ -715,7 +1232,7 @@ impl Checker {
             .metas
             .iter()
             .filter_map(|e| match e {
-                MetaEntry::Unsolved(MetaInfo { node, origin: MetaOrigin::Inferred(desc) }) => {
+                MetaEntry::Unsolved(MetaInfo { node, origin: MetaOrigin::Inferred(desc), .. }) => {
                     Some((*node, desc.clone()))
                 }
                 _ => None,

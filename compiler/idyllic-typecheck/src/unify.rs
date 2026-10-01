@@ -22,9 +22,9 @@
 //! in normal form (see [`super::value::Poly`]), which identifies `r + r` with
 //! `2 * r` but does not solve equations: `?m + 1 =? 3` is a mismatch.
 
-use super::core::{CaseAlt, Core, Lvl, MetaVar};
+use super::core::{CaseAlt, Core, Level, Lvl, MetaVar};
 use super::value::{vvar, Elim, Spine, Value};
-use super::{Checker, MetaEntry};
+use super::{Checker, MetaEntry, MetaInfo, MetaOrigin, TypeErrorKind};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -96,6 +96,11 @@ impl Checker {
                 self.unify(l, lo.clone(), lo2.clone()) && self.unify(l, hi.clone(), hi2.clone())
             }
             (Value::BoxIntro(a), Value::BoxIntro(b)) => self.unify(l, a.clone(), b.clone()),
+            // two handles are the same when they read back the same
+            (Value::Handle(..), Value::Handle(..)) => self.quote(l, t.clone()) == self.quote(l, u.clone()),
+            (Value::Comp(a, e), Value::Comp(b, f)) => {
+                self.unify(l, a.clone(), b.clone()) && self.unify(l, e.clone(), f.clone())
+            }
             (Value::Rigid(k, _, sp), Value::Rigid(k2, _, sp2)) if k == k2 => {
                 let (sp, sp2) = (sp.clone(), sp2.clone());
                 self.unify_spine(l, &sp, &sp2)
@@ -111,6 +116,10 @@ impl Checker {
             // Two stuck primitives are equal when their arguments are.  This
             // is purely structural — `n + 1` and `1 + n` are *not* identified —
             // and forcing has already computed anything that could compute.
+            (Value::Stuck(h, sp), Value::Stuck(h2, sp2)) => {
+                let (h, h2, sp, sp2) = (h.clone(), h2.clone(), sp.clone(), sp2.clone());
+                self.unify(l, h, h2) && self.unify_spine(l, &sp, &sp2)
+            }
             (Value::Prim(p, args), Value::Prim(p2, args2)) if p == p2 && args.len() == args2.len() => {
                 let (args, args2) = (args.clone(), args2.clone());
                 args.iter().zip(&args2).all(|(x, y)| self.unify(l, x.clone(), y.clone()))
@@ -123,6 +132,16 @@ impl Checker {
                 let (m, sp) = (*m, sp.clone());
                 self.solve(l, m, &sp, t.clone())
             }
+            // a pure type where one with effects is wanted, or the other way
+            (Value::Comp(a, e), _) => {
+                let (a, e) = (a.clone(), e.clone());
+                self.unify(l, a, u.clone()) && self.unify(l, e, super::value::empty_row())
+            }
+            (_, Value::Comp(b, f)) => {
+                let (b, f) = (b.clone(), f.clone());
+                self.unify(l, t.clone(), b) && self.unify(l, super::value::empty_row(), f)
+            }
+            (Value::Row(_), _) | (_, Value::Row(_)) => self.unify_rows(l, t.clone(), u.clone()),
             // Grade arithmetic: equal when the normal forms are.  (A lone
             // meta never gets here: it is `Flex`, and was solved above.)
             (Value::Grade(_), _) | (_, Value::Grade(_)) => {
@@ -131,6 +150,36 @@ impl Checker {
             }
             _ => false,
         }
+    }
+
+    /// Two rows are equal when they have the same effects and the same row
+    /// variables.  What one has and the other lacks can be made up by a
+    /// row variable that is still a metavariable: `{Ask | ?e} =? {Ask, Log}`
+    /// solves `?e := Log`.
+    fn unify_rows(&mut self, l: Lvl, t: Rc<Value>, u: Rc<Value>) -> bool {
+        let (a, b) = (self.row_parts(&t), self.row_parts(&u));
+        let only = |x: &super::value::Row, y: &super::value::Row| {
+            let labels: Vec<Rc<Value>> =
+                x.labels.iter().filter(|(k, _)| !y.labels.iter().any(|(k2, _)| k2 == k)).map(|(_, v)| v.clone()).collect();
+            let tails: Vec<Rc<Value>> =
+                x.tails.iter().filter(|(k, _)| !y.tails.iter().any(|(k2, _)| k2 == k)).map(|(_, v)| v.clone()).collect();
+            (labels, tails)
+        };
+        let ((la, ta), (lb, tb)) = (only(&a, &b), only(&b, &a));
+        if la.is_empty() && ta.is_empty() && lb.is_empty() && tb.is_empty() {
+            return true;
+        }
+        // one side's extra is one metavariable: it is the other side's extra
+        let lone_meta = |ts: &[Rc<Value>], ls: &[Rc<Value>]| ls.is_empty() && ts.len() == 1 && matches!(*ts[0], Value::Flex(..));
+        if lone_meta(&ta, &la) {
+            let rest = self.row(lb.into_iter().chain(tb));
+            return self.unify(l, ta[0].clone(), rest);
+        }
+        if lone_meta(&tb, &lb) {
+            let rest = self.row(la.into_iter().chain(ta));
+            return self.unify(l, rest, tb[0].clone());
+        }
+        false
     }
 
     fn unify_spine(&mut self, l: Lvl, a: &Spine, b: &Spine) -> bool {
@@ -177,8 +226,77 @@ impl Checker {
         let info = match &self.metas[m] {
             MetaEntry::Unsolved(info) | MetaEntry::Solved(_, info) => info.clone(),
         };
+        // A solution that is too large is reported here, where the reason is
+        // known, and the meta is solved with an error so that nothing else
+        // complains about it.
+        if let Some(kind) = self.universe_violation(&info, &value) {
+            self.error(info.node, kind);
+            self.metas[m] = MetaEntry::Solved(Rc::new(Value::Error), info);
+            return true;
+        }
         self.metas[m] = MetaEntry::Solved(value, info);
         true
+    }
+
+    /// Whether a solution for a meta that must be a type in `Type n` is a
+    /// type in a larger universe.
+    fn universe_violation(&self, info: &MetaInfo, solution: &Rc<Value>) -> Option<TypeErrorKind> {
+        let mt = info.ty.as_ref()?;
+        let Value::Type(allowed) = *self.force(mt.ty.clone()) else { return None };
+        // the solution, back in the context the meta was made in
+        let at = mt.types.len();
+        let inst = mt.spine.iter().fold(solution.clone(), |f, &k| self.vapp(f, vvar(k, mt.types[k].0.clone())));
+        let actual = self.sort_of(&mut mt.types.to_vec(), inst.clone())?;
+        let what = match &info.origin {
+            MetaOrigin::Hole => "this hole".to_string(),
+            MetaOrigin::Inferred(desc) => desc.clone(),
+        };
+        (actual > allowed).then(|| TypeErrorKind::UniverseTooLarge { what, solution: self.quote(at, inst), allowed, actual })
+    }
+
+    /// A lower bound on the universe a type lives in, given the types of the
+    /// variables in scope by level.  `None` if nothing is known, as for a
+    /// type that is still a meta.
+    pub(super) fn sort_of(&self, types: &mut Vec<(String, Rc<Value>)>, v: Rc<Value>) -> Option<Level> {
+        let v = self.force(v);
+        match &*v {
+            Value::Type(n) => Some(n + 1),
+            Value::LitTy(_) => Some(0),
+            Value::BoxTy(_, a) | Value::Comp(a, _) => self.sort_of(types, a.clone()),
+            Value::Pi { name, dom, cod, .. } => {
+                let d = self.sort_of(types, dom.clone());
+                let l = types.len();
+                types.push((name.clone(), dom.clone()));
+                let c = self.sort_of(types, self.apply(cod, vvar(l, name.clone())));
+                types.pop();
+                d.max(c)
+            }
+            Value::Rigid(k, _, sp) => {
+                let ty = types.get(*k)?.1.clone();
+                self.neutral_sort(ty, sp)
+            }
+            Value::Opaque(u, _, sp) => {
+                let ty = self.constants.get(u)?.clone();
+                self.neutral_sort(ty, sp)
+            }
+            _ => None,
+        }
+    }
+
+    /// The universe of a neutral type, from the type of its head.
+    fn neutral_sort(&self, mut ty: Rc<Value>, sp: &Spine) -> Option<Level> {
+        for elim in sp {
+            let forced = self.force(ty);
+            ty = match (elim, &*forced) {
+                (Elim::App(a), Value::Pi { cod, .. }) => self.apply(cod, a.clone()),
+                (Elim::Unbox, Value::BoxTy(_, a)) => a.clone(),
+                _ => return None,
+            };
+        }
+        match *self.force(ty) {
+            Value::Type(n) => Some(n),
+            _ => None,
+        }
     }
 
     /// Invert a meta's spine, if it is in the pattern fragment: every
@@ -227,6 +345,10 @@ impl Checker {
             Value::Opaque(u, n, sp) => {
                 return self.rename_spine(m, pren, Rc::new(Core::Opaque(*u, n.clone())), sp);
             }
+            Value::Stuck(h, sp) => {
+                let head = self.rename(m, pren, h.clone())?;
+                return self.rename_spine(m, pren, head, sp);
+            }
             Value::Prim(p, args) => {
                 return args.iter().try_fold(Rc::new(Core::Prim(*p)), |acc, a| {
                     Some(Rc::new(Core::App(acc, self.rename(m, pren, a.clone())?)))
@@ -253,6 +375,20 @@ impl Checker {
                 Core::GradeRange(self.rename(m, pren, lo.clone())?, self.rename(m, pren, hi.clone())?)
             }
             Value::BoxIntro(e) => Core::BoxIntro(self.rename(m, pren, e.clone())?),
+            Value::Comp(t, e) => Core::Comp(self.rename(m, pren, t.clone())?, self.rename(m, pren, e.clone())?),
+            Value::Handle(env, c) => {
+                let Core::Handle(body, ret, ops) = &**c else { unreachable!("a handle") };
+                let part = |c: &Rc<Core>| self.rename(m, pren, self.eval(env, c));
+                let ops = ops
+                    .iter()
+                    .map(|op| Some(super::core::OpClause { body: part(&op.body)?, ..op.clone() }))
+                    .collect::<Option<_>>()?;
+                Core::Handle(part(body)?, part(ret)?, Rc::new(ops))
+            }
+            Value::Row(r) => Core::Row(
+                r.labels.iter().map(|(_, a)| self.rename(m, pren, a.clone())).collect::<Option<_>>()?,
+                r.tails.iter().map(|(_, a)| self.rename(m, pren, a.clone())).collect::<Option<_>>()?,
+            ),
         }))
     }
 

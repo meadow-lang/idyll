@@ -11,7 +11,7 @@
 //!   somewhere to go at every step.
 //!
 //! Agreement is on the answer as the REPL shows it, and on there being
-//! nothing to show (a function, a type).  Neither implementation can decide
+//! nothing to show (a function, a type), and on what was printed.  Neither implementation can decide
 //! whether a program stops, so both get a generous budget; a program that
 //! exhausts it in both is taken to diverge, which is agreement too.
 //!
@@ -22,12 +22,13 @@
 use idyllic::pipeline::{self, Evaluation, Options, Output, Session};
 use idyllic_diagnostics::OutputStyle;
 use idyllic_seq::machine::{self, MachineError};
+use idyllic_world::World;
 use std::path::Path;
 
 /// Steps the interpreter is given, and statements the machine is.
 const FUEL: u64 = 5_000_000;
 
-const OPTIONS: Options = Options { debug: false, style: OutputStyle::PLAIN };
+const OPTIONS: Options = Options { debug: false, style: OutputStyle::PLAIN, live: false };
 
 /// An answer, as both sides give it.
 #[derive(Debug, PartialEq, Eq)]
@@ -35,23 +36,50 @@ enum Answer {
     Shown(String),
     Opaque,
     Diverges,
+    /// the program ended itself, with `exit` or `fail`: how, as both say it
+    Ended(String),
+    /// what was printed on the way to the answer
+    Printed(String, Box<Answer>),
+}
+
+fn answer(printed: String, shown: Option<String>) -> Answer {
+    printing(printed, shown.map_or(Answer::Opaque, Answer::Shown))
+}
+
+fn printing(printed: String, answer: Answer) -> Answer {
+    if printed.is_empty() {
+        answer
+    } else {
+        Answer::Printed(printed, Box::new(answer))
+    }
 }
 
 fn reference(out: &Output) -> Result<Option<Answer>, String> {
     let Some(checked) = &out.checked else { return Ok(None) };
-    match idyll_eval::evaluate(checked, FUEL) {
+    use idyll_eval::EvalError;
+    let mut world = World::captured();
+    let result = idyll_eval::evaluate_in(checked, FUEL, &mut world);
+    let printed = world.into_output();
+    match result {
         None => Ok(None),
-        Some(Ok(o)) => Ok(Some(o.answer.map_or(Answer::Opaque, Answer::Shown))),
-        Some(Err(idyll_eval::EvalError::OutOfFuel)) => Ok(Some(Answer::Diverges)),
+        Some(Ok(o)) => Ok(Some(answer(printed, o.answer))),
+        Some(Err(EvalError::OutOfFuel)) => Ok(Some(Answer::Diverges)),
+        Some(Err(e @ (EvalError::Exited(_) | EvalError::TestFailed(_)))) => {
+            Ok(Some(printing(printed, Answer::Ended(e.to_string()))))
+        }
         Some(Err(e)) => Err(e.to_string()),
     }
 }
 
 fn machine(program: &idyllic_seq::Program) -> Result<Answer, String> {
-    match machine::run(program, FUEL) {
+    let mut world = World::captured();
+    let result = machine::run_in(program, FUEL, &mut world);
+    let printed = world.into_output();
+    match result {
         Ok(o) if o.memory.leaked + o.memory.miscounted > 0 => Err(o.memory.to_string()),
-        Ok(o) => Ok(o.answer.map_or(Answer::Opaque, Answer::Shown)),
+        Ok(o) => Ok(answer(printed, o.answer)),
         Err(MachineError::OutOfFuel) => Ok(Answer::Diverges),
+        Err(e @ (MachineError::Exited(_) | MachineError::TestFailed(_))) => Ok(printing(printed, Answer::Ended(e.to_string()))),
         Err(e) => Err(e.to_string()),
     }
 }
@@ -85,9 +113,13 @@ fn check(what: &str, src: &str, out: &Output, failures: &mut Vec<String>) -> boo
     }
     // and what the REPL showed
     let shown = match &out.evaluation {
-        Some(Evaluation::Value(v)) => Answer::Shown(v.clone()),
-        Some(Evaluation::Opaque) => Answer::Opaque,
+        Some(Evaluation::Value(v)) => answer(out.printed.clone(), Some(v.clone())),
+        Some(Evaluation::Opaque) => answer(out.printed.clone(), None),
         Some(Evaluation::OutOfFuel) => return true,
+        Some(Evaluation::Exited(code)) => printing(out.printed.clone(), Answer::Ended(format!("exited with {code}"))),
+        Some(Evaluation::Stopped(why)) if why.starts_with("test failed") => {
+            printing(out.printed.clone(), Answer::Ended(why.clone()))
+        }
         other => {
             failures.push(format!("{what}: the pipeline gave {other:?}\n{src}"));
             return true;

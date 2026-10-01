@@ -32,7 +32,7 @@ pub type MetaVar = usize;
 /// A universe level: `Type n` lives in `Type (n + 1)`.
 pub type Level = usize;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Core {
     /// A universe, `Type n`.  `Type` is `Type 0`, `Type n : Type (n + 1)`,
     /// and a type in one universe is also in every larger one.
@@ -78,6 +78,15 @@ pub enum Core {
     /// A note for whoever runs the program, invisible to the type theory:
     /// the term means exactly what it would without it.
     Runtime(Note, Rc<Core>),
+    /// `b ! e`, the type of a computation giving a `b` with effects `e`:
+    /// what a function type's codomain is when calling it has effects.  A
+    /// pure one is just `b`.
+    Comp(Rc<Core>, Rc<Core>),
+    /// An effect row: the effects, then the row variables for the rest.
+    Row(Vec<Rc<Core>>, Vec<Rc<Core>>),
+    /// `handle body with clauses`: the body, the `return` clause (a lambda),
+    /// and a clause for each of the effect's operations, in order.
+    Handle(Rc<Core>, Rc<Core>, Rc<Vec<OpClause>>),
     /// Stands in for a subterm that failed to elaborate, so that one error
     /// does not cascade into a hundred.
     Error,
@@ -85,13 +94,13 @@ pub enum Core {
 
 /// What an alternative matches: a declared constructor, by the unique of its
 /// name, or one of the two `Bool` literals.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Head {
     Con(usize),
     Bool(bool),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CaseAlt {
     pub head: Head,
     /// the constructor's name, for display
@@ -101,14 +110,31 @@ pub struct CaseAlt {
     pub body: Rc<Core>,
 }
 
+/// A handler's clause for an operation: its body is a lambda for each of
+/// the operation's own implicit arguments (`erased` of them, which are
+/// never passed), then for the argument, then for the resumption.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct OpClause {
+    /// the operation, by the unique of its name
+    pub op: usize,
+    pub name: String,
+    pub erased: usize,
+    pub body: Rc<Core>,
+}
+
 /// What the elaborator knew, and erasure would otherwise forget.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Note {
     /// An argument to a grade-`0` parameter, or the contents of a grade-`0`
     /// box: never used at run time, so never computed.
     Erased,
     /// On a lambda or an unboxing: the grade of the variable it binds.
     Binds(Grade),
+    /// On a `case` on an erased value whose constructor its type forces:
+    /// there is nothing to look at, and nothing to choose, so its one
+    /// alternative (or none) is taken without evaluating the scrutinee, its
+    /// variables all erased.
+    Forced,
 }
 
 impl Core {
@@ -147,6 +173,14 @@ impl PartialEq for Core {
             | (GradeRange(f, a), GradeRange(g, b)) => f == g && a == b,
             (BoxIntro(a), BoxIntro(b)) | (Unbox(a), Unbox(b)) => a == b,
             (Runtime(n, a), Runtime(m, b)) => n == m && a == b,
+            (Comp(a, e), Comp(b, f)) => a == b && e == f,
+            (Row(l, t), Row(l2, t2)) => l == l2 && t == t2,
+            (Handle(b, r, ops), Handle(b2, r2, ops2)) => {
+                b == b2
+                    && r == r2
+                    && ops.len() == ops2.len()
+                    && ops.iter().zip(ops2.iter()).all(|(x, y)| x.op == y.op && x.body == y.body)
+            }
             (Case(s, alts), Case(s2, alts2)) => {
                 s == s2
                     && alts.len() == alts2.len()
@@ -217,12 +251,49 @@ impl fmt::Display for Core {
                 Core::Type(0) => write!(f, "Type"),
                 // written like an application, which is how it is parsed
                 Core::Type(n) => paren(prec > 10, f, |f| write!(f, "Type {n}")),
+                // the unit type is written as its value is, as in Haskell
+                Core::LitTy(Builtin::Unit) => write!(f, "()"),
                 Core::LitTy(b) => write!(f, "{}", b.name()),
                 Core::Lit(l) => write!(f, "{l}"),
                 Core::Var(_, n) | Core::Opaque(_, n) => write!(f, "{n}"),
                 Core::Meta(m) => write!(f, "?{m}"),
                 Core::Error => write!(f, "?!"),
                 Core::Runtime(_, inner) => go(inner, prec, f),
+                // looser than application, tighter than an arrow
+                Core::Comp(t, e) => paren(prec > 1, f, |f| {
+                    go(t, 2, f)?;
+                    write!(f, " ! ")?;
+                    // an application needs no parentheses: `! State s`
+                    go(e, 10, f)
+                }),
+                Core::Handle(body, ret, ops) => paren(prec > 0, f, |f| {
+                    write!(f, "handle ")?;
+                    go(body, 0, f)?;
+                    write!(f, " with {{ return ")?;
+                    go(ret, 11, f)?;
+                    for op in ops.iter() {
+                        write!(f, "; {} ", op.name)?;
+                        go(&op.body, 11, f)?;
+                    }
+                    write!(f, " }}")
+                }),
+                Core::Row(labels, tails) if labels.len() + tails.len() == 1 => {
+                    go(labels.first().or(tails.first()).expect("one"), prec, f)
+                }
+                Core::Row(labels, tails) => {
+                    write!(f, "{{")?;
+                    for (i, l) in labels.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        go(l, 0, f)?;
+                    }
+                    for (i, t) in tails.iter().enumerate() {
+                        write!(f, "{}", if i == 0 && !labels.is_empty() { " | " } else if i > 0 { ", " } else { "| " })?;
+                        go(t, 0, f)?;
+                    }
+                    write!(f, "}}")
+                }
                 Core::Case(scrutinee, alts) => paren(prec > 0, f, |f| {
                     write!(f, "case ")?;
                     go(scrutinee, 0, f)?;
@@ -333,5 +404,49 @@ impl fmt::Display for Core {
             }
         }
         go(self, 0, f)
+    }
+}
+
+impl Core {
+    /// The same term with its leaves rewritten: `f` is given each `Var`,
+    /// `Opaque` and `Meta`, with how many binders are around it there, and
+    /// what it returns replaces it (`None` keeps it as it is).
+    pub fn rewrite(self: &Rc<Core>, depth: usize, f: &dyn Fn(&Core, usize) -> Option<Rc<Core>>) -> Rc<Core> {
+        let go = |c: &Rc<Core>, d: usize| c.rewrite(d, f);
+        match &**self {
+            Core::Var(..) | Core::Opaque(..) | Core::Meta(_) => f(self, depth).unwrap_or_else(|| self.clone()),
+            Core::Type(_) | Core::LitTy(_) | Core::Lit(_) | Core::Prim(_) | Core::GradeLit(_) | Core::Error => self.clone(),
+            Core::Pi { name, icit, grade, in_type, dom, cod } => Rc::new(Core::Pi {
+                name: name.clone(),
+                icit: *icit,
+                grade: go(grade, depth),
+                in_type: go(in_type, depth),
+                dom: go(dom, depth),
+                cod: go(cod, depth + 1),
+            }),
+            Core::Lam(x, b) => Rc::new(Core::Lam(x.clone(), go(b, depth + 1))),
+            Core::App(a, b) => Rc::new(Core::App(go(a, depth), go(b, depth))),
+            Core::BoxTy(a, b) => Rc::new(Core::BoxTy(go(a, depth), go(b, depth))),
+            Core::BoxIntro(a) => Rc::new(Core::BoxIntro(go(a, depth))),
+            Core::Unbox(a) => Rc::new(Core::Unbox(go(a, depth))),
+            Core::Let(x, e, b) => Rc::new(Core::Let(x.clone(), go(e, depth), go(b, depth + 1))),
+            Core::GradeAdd(a, b) => Rc::new(Core::GradeAdd(go(a, depth), go(b, depth))),
+            Core::GradeMul(a, b) => Rc::new(Core::GradeMul(go(a, depth), go(b, depth))),
+            Core::GradeRange(a, b) => Rc::new(Core::GradeRange(go(a, depth), go(b, depth))),
+            Core::Case(s, alts) => {
+                let alts = alts.iter().map(|a| CaseAlt { body: go(&a.body, depth + a.vars.len()), ..a.clone() }).collect();
+                Rc::new(Core::Case(go(s, depth), Rc::new(alts)))
+            }
+            Core::Runtime(n, a) => Rc::new(Core::Runtime(*n, go(a, depth))),
+            Core::Comp(a, e) => Rc::new(Core::Comp(go(a, depth), go(e, depth))),
+            Core::Row(labels, tails) => Rc::new(Core::Row(
+                labels.iter().map(|l| go(l, depth)).collect(),
+                tails.iter().map(|t| go(t, depth)).collect(),
+            )),
+            Core::Handle(b, r, ops) => {
+                let ops = ops.iter().map(|op| OpClause { body: go(&op.body, depth), ..op.clone() }).collect();
+                Rc::new(Core::Handle(go(b, depth), go(r, depth), Rc::new(ops)))
+            }
+        }
     }
 }

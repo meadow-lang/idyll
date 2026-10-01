@@ -7,8 +7,8 @@
 //! makes that visible, and every place that inspects a value's head goes
 //! through it first.
 
-use super::core::{CaseAlt, Core, Head, Lvl};
-use super::value::{vvar, Closure, Elim, Env, Poly, Spine, Value};
+use super::core::{CaseAlt, Core, Lvl, OpClause};
+use super::value::{vvar, Closure, Elim, Env, Poly, Row, Spine, Value};
 use super::{Checker, MetaEntry};
 use idyllic_ast::Lit;
 use idyllic_builtins::Prim;
@@ -29,10 +29,31 @@ impl Checker {
                     Some(reduced) => reduced,
                     None => return v,
                 },
+                // and what was waiting on it goes on once it does
+                Value::Stuck(h, sp) => match &*self.force(h.clone()) {
+                    Value::Prim(..) => return v,
+                    _ => self.apply_spine(h.clone(), sp),
+                },
                 // grade arithmetic stuck on a meta likewise; this one cannot
                 // expose a new head to expand, so there is no going round again
                 Value::Grade(p) => return if self.is_stale(p) { self.renormalise(p).into_value() } else { v },
                 Value::GradeRange(lo, hi) => return self.grade_range(lo.clone(), hi.clone()),
+                // a row whose variables have since been solved
+                Value::Row(r) => {
+                    let stale = r.labels.iter().chain(&r.tails).any(|(k, a)| *k != self.effect_key(a));
+                    return if stale { self.row(r.labels.iter().chain(&r.tails).map(|(_, a)| a.clone())) } else { v };
+                }
+                // effects that have turned out to be none
+                Value::Comp(t, e) => match &*self.force(e.clone()) {
+                    Value::Row(r) if r.is_empty() => t.clone(),
+                    _ => return v,
+                },
+                // a recursive definition that terminates, applied to enough
+                // to choose a right-hand side
+                Value::Opaque(u, _, sp) if self.transparent.contains_key(u) => match self.unfold(*u, sp) {
+                    Some(unfolded) => unfolded,
+                    None => return v,
+                },
                 _ => return v,
             };
             v = next;
@@ -58,6 +79,13 @@ impl Checker {
             }
             (Prim::IntSub, [Value::Lit(Lit::Int(a)), Value::Lit(Lit::Int(b))]) => {
                 Some(Rc::new(Value::Lit(Lit::Int(a - b))))
+            }
+            // (by zero it is stuck: an error at run time, not a value)
+            (Prim::IntDiv, [Value::Lit(Lit::Int(a)), Value::Lit(Lit::Int(b))]) if *b != 0.into() => {
+                Some(Rc::new(Value::Lit(Lit::Int(a / b))))
+            }
+            (Prim::IntMod, [Value::Lit(Lit::Int(a)), Value::Lit(Lit::Int(b))]) if *b != 0.into() => {
+                Some(Rc::new(Value::Lit(Lit::Int(a % b))))
             }
             (Prim::IntLt, [Value::Lit(Lit::Int(a)), Value::Lit(Lit::Int(b))]) => {
                 Some(Rc::new(Value::Lit(Lit::Bool(a < b))))
@@ -106,11 +134,13 @@ impl Checker {
             Value::Flex(m, sp) => Value::Flex(*m, push(sp)),
             Value::Rigid(l, n, sp) => Value::Rigid(*l, n.clone(), push(sp)),
             Value::Opaque(u, n, sp) => Value::Opaque(*u, n.clone(), push(sp)),
+            Value::Stuck(h, sp) => Value::Stuck(h.clone(), push(sp)),
+            Value::Prim(..) => Value::Stuck(head.clone(), vec![elim]),
             _ => Value::Error,
         })
     }
 
-    pub fn apply_spine(&self, head: Rc<Value>, sp: &Spine) -> Rc<Value> {
+    pub fn apply_spine(&self, head: Rc<Value>, sp: &[Elim]) -> Rc<Value> {
         sp.iter().fold(head, |acc, elim| match elim {
             Elim::App(a) => self.vapp(acc, a.clone()),
             Elim::Unbox => self.vunbox(acc),
@@ -129,7 +159,11 @@ impl Checker {
             Core::Prim(p) => Rc::new(Value::Prim(*p, Vec::new())),
             Core::Error => Rc::new(Value::Error),
             Core::Var(i, _) => env.get(*i).unwrap_or_else(|| Rc::new(Value::Error)),
-            Core::Opaque(u, n) => Rc::new(Value::Opaque(*u, n.clone(), Vec::new())),
+            // another package's transparent definition is what it is
+            Core::Opaque(u, n) => match self.globals.get(u) {
+                Some(v) => v.clone(),
+                None => Rc::new(Value::Opaque(*u, n.clone(), Vec::new())),
+            },
             Core::Meta(m) => match &self.metas[*m] {
                 MetaEntry::Solved(sol, _) => sol.clone(),
                 MetaEntry::Unsolved(_) => Rc::new(Value::Flex(*m, Vec::new())),
@@ -158,6 +192,9 @@ impl Checker {
             Core::BoxIntro(e) => Rc::new(Value::BoxIntro(self.eval(env, e))),
             Core::Unbox(e) => self.vunbox(self.eval(env, e)),
             Core::Runtime(_, inner) => self.eval(env, inner),
+            Core::Comp(t, e) => self.comp(self.eval(env, t), self.eval(env, e)),
+            Core::Row(labels, tails) => self.row(labels.iter().chain(tails).map(|c| self.eval(env, c))),
+            Core::Handle(..) => Rc::new(Value::Handle(env.clone(), Rc::new(c.clone()))),
             Core::Case(scrutinee, alts) => self.vcase(self.eval(env, scrutinee), env, alts),
             Core::Let(_, e, body) => {
                 let e = self.eval(env, e);
@@ -189,6 +226,7 @@ impl Checker {
                     Rc::new(Core::App(acc, self.quote(l, a.clone())))
                 })
             }
+            Value::Stuck(h, sp) => return self.quote_spine(l, self.quote(l, h.clone()), sp),
             Value::Pi { name, icit, grade, in_type, dom, cod } => Core::Pi {
                 name: name.clone(),
                 icit: *icit,
@@ -207,7 +245,92 @@ impl Checker {
             }
             Value::GradeRange(lo, hi) => Core::GradeRange(self.quote(l, lo.clone()), self.quote(l, hi.clone())),
             Value::BoxIntro(e) => Core::BoxIntro(self.quote(l, e.clone())),
+            Value::Comp(t, e) => Core::Comp(self.quote(l, t.clone()), self.quote(l, e.clone())),
+            Value::Handle(env, c) => {
+                let Core::Handle(body, ret, ops) = &**c else { unreachable!("a handle") };
+                let part = |c: &Rc<Core>| self.quote(l, self.eval(env, c));
+                let ops = ops.iter().map(|op| OpClause { body: part(&op.body), ..op.clone() }).collect();
+                Core::Handle(part(body), part(ret), Rc::new(ops))
+            }
+            Value::Row(r) => Core::Row(
+                r.labels.iter().map(|(_, a)| self.quote(l, a.clone())).collect(),
+                r.tails.iter().map(|(_, a)| self.quote(l, a.clone())).collect(),
+            ),
         })
+    }
+
+    /// An effect row, from effects, row variables and other rows, in any
+    /// order and with any repeats.
+    pub fn row(&self, items: impl Iterator<Item = Rc<Value>>) -> Rc<Value> {
+        let mut row = Row::default();
+        self.row_into(&mut row, items);
+        row.into_value()
+    }
+
+    fn row_into(&self, row: &mut Row, items: impl Iterator<Item = Rc<Value>>) {
+        for item in items {
+            self.row_item(row, item);
+        }
+    }
+
+    fn row_item(&self, row: &mut Row, item: Rc<Value>) {
+        let item = self.force(item);
+        match &*item {
+            Value::Row(r) => {
+                for (_, a) in r.labels.iter().chain(&r.tails) {
+                    self.row_item(row, a.clone());
+                }
+            }
+            // a variable of type `Effect` stands for a whole row
+            Value::Rigid(..) | Value::Flex(..) => row.insert(self.effect_key(&item), item.clone(), true),
+            _ => row.insert(self.effect_key(&item), item.clone(), false),
+        }
+    }
+
+    /// A printed form of an effect, the same for two effects only if they are
+    /// the same, with every solved metavariable in it expanded first: two
+    /// `State ?1`s where `?1` has since been found to be `Int` are both
+    /// `State Int`.
+    pub fn effect_key(&self, v: &Rc<Value>) -> String {
+        let v = self.force(v.clone());
+        let spine = |sp: &[Elim]| -> String {
+            sp.iter()
+                .map(|e| match e {
+                    Elim::App(a) => format!(" ({})", self.effect_key(a)),
+                    other => format!(" {other:?}"),
+                })
+                .collect()
+        };
+        match &*v {
+            Value::Rigid(l, _, sp) => format!("v{l}{}", spine(sp)),
+            Value::Flex(m, sp) => format!("?{m}{}", spine(sp)),
+            Value::Opaque(u, _, sp) => format!("c{u}{}", spine(sp)),
+            _ => super::value::atom_key(&v),
+        }
+    }
+
+    /// The parts of a row: its effects and its variables.
+    pub fn row_parts(&self, v: &Rc<Value>) -> Row {
+        let mut row = Row::default();
+        self.row_into(&mut row, std::iter::once(v.clone()));
+        row
+    }
+
+    /// `b ! e`, which is `b` when `e` is empty.
+    pub fn comp(&self, t: Rc<Value>, e: Rc<Value>) -> Rc<Value> {
+        match &*self.force(e.clone()) {
+            Value::Row(r) if r.is_empty() => t,
+            _ => Rc::new(Value::Comp(t, e)),
+        }
+    }
+
+    /// A type and the effects of computing it: `b ! e` taken apart, and a
+    /// pure `b` with no effects.
+    pub fn split_comp(&self, v: Rc<Value>) -> (Rc<Value>, Rc<Value>) {
+        match &*self.force(v.clone()) {
+            Value::Comp(t, e) => (t.clone(), e.clone()),
+            _ => (v, super::value::empty_row()),
+        }
     }
 
     fn quote_spine(&self, l: Lvl, head: Rc<Core>, sp: &Spine) -> Rc<Core> {
@@ -236,23 +359,8 @@ impl Checker {
     /// `case v of alts`: take the alternative for `v`'s constructor, with its
     /// fields for the variables.  If `v` is not a constructor yet, wait.
     pub fn vcase(&self, v: Rc<Value>, env: &Env, alts: &Rc<Vec<CaseAlt>>) -> Rc<Value> {
-        let chosen = match &*v {
-            Value::Lit(Lit::Bool(b)) => alts.iter().find(|a| a.head == Head::Bool(*b)).map(|a| (a, Vec::new())),
-            Value::Opaque(u, _, sp) => alts.iter().find(|a| a.head == Head::Con(*u)).and_then(|a| {
-                // a constructor's fields are its last arguments (the first
-                // are the type's parameters)
-                let fields: Option<Vec<Rc<Value>>> = sp[sp.len().checked_sub(a.vars.len())?..]
-                    .iter()
-                    .map(|e| match e {
-                        Elim::App(f) => Some(f.clone()),
-                        _ => None,
-                    })
-                    .collect();
-                Some((a, fields?))
-            }),
-            _ => None,
-        };
-        match chosen {
+        let v = self.force(v);
+        match self.choose(&v, alts) {
             Some((alt, fields)) => {
                 let inner = fields.into_iter().fold(env.clone(), |e, f| e.push(f));
                 self.eval(&inner, &alt.body)

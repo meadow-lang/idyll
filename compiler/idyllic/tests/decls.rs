@@ -14,7 +14,7 @@ struct Checked {
 }
 
 fn run(src: &str) -> Checked {
-    let out = pipeline::run(src, &Options { debug: false, style: OutputStyle::PLAIN });
+    let out = pipeline::run(src, &Options { debug: false, style: OutputStyle::PLAIN, live: false });
     let diags = out
         .diagnostics
         .iter()
@@ -95,7 +95,12 @@ fn definitions_may_be_used_before_they_are_made() {
 
 #[test]
 fn recursion_needs_a_signature() {
-    ok("loop : Int -> Int\nloop n = loop (n + 1)\n", &["loop : Int -> Int"], None);
+    ok("loop : Int -> Int ! Div\nloop n = loop (n + 1)\n", &["loop : Int -> Int ! Div"], None);
+    // and a recursion that may not end says so
+    rejects(
+        "loop : Int -> Int\nloop n = loop (n + 1)\n",
+        &["loop may not terminate: no argument gets smaller on every round of its recursion, so it has the effect Div"],
+    );
     // just the one error: with no signature there is nothing to check the
     // body against, so it is not elaborated into a pile of unsolved metas
     rejects(
@@ -107,8 +112,8 @@ fn recursion_needs_a_signature() {
 #[test]
 fn mutual_recursion() {
     ok(
-        "ping : Int -> Int\nping n = pong (n + 1)\npong : Int -> Int\npong n = ping n\n",
-        &["ping : Int -> Int", "pong : Int -> Int"],
+        "ping : Int -> Int ! Div\nping n = pong (n + 1)\npong : Int -> Int ! Div\npong n = ping n\n",
+        &["ping : Int -> Int ! Div", "pong : Int -> Int ! Div"],
         None,
     );
 }
@@ -120,8 +125,8 @@ fn mutual_recursion() {
 #[test]
 fn equations_take_granules_unboxing_patterns() {
     ok(
-        "drop : {a : Type} -> a [0] -> Unit\ndrop [x] = ()\n\ncopy : Int [2] -> Int\ncopy [x] = x + x\n",
-        &["drop : {a : Type} -> a [0] -> Unit", "copy : Int [2] -> Int"],
+        "drop : {a : Type} -> a [0] -> ()\ndrop [x] = ()\n\ncopy : Int [2] -> Int\ncopy [x] = x + x\n",
+        &["drop : {a : Type} -> a [0] -> ()", "copy : Int [2] -> Int"],
         None,
     );
     rejects("copy : Int [2] -> Int\ncopy [x] = x\n", &["usage mismatch: x has grade 2, but is used once"]);
@@ -175,7 +180,7 @@ fn quantified_variables_scope_over_the_equation() {
     ok("id : {a : Type} -> a -> a\nid x = (x : a)\n", &["id : {a : Type} -> a -> a"], None);
     // they are erased, so the equation cannot compute with them
     rejects(
-        "ty : {a : Type} -> Unit [0] -> Type\nty [u] = a\n",
+        "ty : {a : Type} -> () [0] -> Type\nty [u] = a\n",
         &["usage mismatch: a has grade 0, but is used once"],
     );
     // and a pattern may shadow one
@@ -194,12 +199,11 @@ fn implicit_arguments_are_inferred_at_each_use() {
 
 #[test]
 fn a_polymorphic_argument_stays_polymorphic_when_nothing_says_otherwise() {
-    // `id id` used to be `id {?0} (id {?1})` with `?1` unsolved: an implicit
-    // argument was filled in even though the expected type was still unknown
+    // An implicit argument is not filled in while the expected type is still
+    // unknown, so `(\x -> x) id` is `id` itself.
     let prelude = "id : {a : Type} -> a -> a\nid x = x\n\n";
     let id_ty = "{a : Type} -> a -> a";
     let sig = format!("id : {id_ty}");
-    ok(&format!("{prelude}id id\n"), &[&sig], Some(id_ty));
     ok(&format!("{prelude}id id id 2\n"), &[&sig], Some("Int"));
     ok(&format!("{prelude}(\\x -> x) id\n"), &[&sig], Some(id_ty));
     // the result really is polymorphic: here it is used at two types
@@ -210,6 +214,13 @@ fn a_polymorphic_argument_stays_polymorphic_when_nothing_says_otherwise() {
     );
     // and a known expected type still instantiates, as before
     ok(&format!("{prelude}(id id : Int -> Int)\n"), &[&sig], Some("Int -> Int"));
+    // But `id id` cannot give the outer `id` the inner one whole: `a` would
+    // be `{a : Type} -> a -> a`, which is in `Type 1`, not `Type`.  So the
+    // inner one is instantiated, and nothing says at what.
+    rejects(
+        &format!("{prelude}id id\n"),
+        &["unsolved metavariable: could not infer the implicit argument a"],
+    );
 }
 
 #[test]
@@ -251,7 +262,7 @@ fn a_let_block_is_a_block_of_declarations() {
         Some("Int"),
     );
     // nested, they are not the program's declarations
-    ok("\\(u : Unit) -> let one : Int; one = 1 in u\n", &[], Some("(u : Unit) -> Unit"));
+    ok("\\(u : Unit) -> let one : Int; one = 1 in u\n", &[], Some("(u : ()) -> ()"));
 }
 
 // ---------------------------------------------------------------------------

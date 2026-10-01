@@ -13,7 +13,7 @@ use idyllic_diagnostics::OutputStyle;
 use idyllic::pipeline::{self, Evaluation, Options};
 
 fn run(src: &str) -> pipeline::Output {
-    pipeline::run(src, &Options { debug: false, style: OutputStyle::PLAIN })
+    pipeline::run(src, &Options { debug: false, style: OutputStyle::PLAIN, live: false })
 }
 
 /// The program's value, as the REPL shows it.
@@ -127,7 +127,7 @@ fn declarations_alone_are_not_run() {
 #[test]
 fn recursion_becomes_a_label_and_runs_out_of_fuel() {
     // there are no conditionals yet, so a recursive call never ends
-    let src = "loop : Int -> Int\nloop n = loop (n + 1)\n\nloop 0\n";
+    let src = "loop : Int -> Int ! Div\nloop n = loop (n + 1)\n\nloop 0\n";
     let out = run(src);
     assert_eq!(out.evaluation, Some(Evaluation::OutOfFuel));
     let program = out.axcut.expect("it was lowered");
@@ -139,14 +139,14 @@ fn recursion_becomes_a_label_and_runs_out_of_fuel() {
 
 #[test]
 fn a_recursive_definition_that_is_not_called_does_not_run() {
-    assert_eq!(value("loop : Int -> Int\nloop n = loop n\n\n7\n"), "7");
+    assert_eq!(value("loop : Int -> Int ! Div\nloop n = loop n\n\n7\n"), "7");
     // nor one that is only mentioned
-    assert_eq!(value("let loop : Int -> Int = \\n -> loop n in let f = loop in 7"), "7");
+    assert_eq!(value("let loop : Int -> Int ! Div = \\n -> loop n in let f = loop in 7"), "7");
 }
 
 #[test]
 fn a_nested_recursive_definition_is_lifted_over_what_it_captures() {
-    let src = "\\(x : [] Int) -> let loop : Int -> Int = \\n -> loop (n + x) in loop 1";
+    let src = "\\(x : [] Int) -> let loop : Int -> Int ! Div = \\n -> loop (n + x) in loop 1";
     let out = run(src);
     assert_eq!(out.evaluation, Some(Evaluation::Opaque));
     let program = out.axcut.expect("it was lowered").to_string();
@@ -160,7 +160,7 @@ fn a_nested_recursive_definition_is_lifted_over_what_it_captures() {
 
 #[test]
 fn mutual_recursion() {
-    let src = "ping : Int -> Int\nping n = pong (n + 1)\npong : Int -> Int\npong n = ping n\n\nping 0\n";
+    let src = "ping : Int -> Int ! Div\nping n = pong (n + 1)\npong : Int -> Int ! Div\npong n = ping n\n\nping 0\n";
     let out = run(src);
     assert_eq!(out.evaluation, Some(Evaluation::OutOfFuel));
     assert_eq!(out.axcut.unwrap().definitions.len(), 3);
@@ -285,19 +285,30 @@ fn every_well_typed_corpus_program_runs() {
 // Erasure: what has grade 0 is not computed
 // ---------------------------------------------------------------------------
 
-const LOOP: &str = "loop : Int -> Int\nloop n = loop (n + 1)\n\n";
+const LOOP: &str = "loop : Int -> Int ! Div\nloop n = loop (n + 1)\n\n";
 
 #[test]
 fn an_argument_to_an_erased_parameter_is_not_computed() {
-    // `loop 0` never returns, and is never asked to
-    assert_eq!(value(&format!("{LOOP}(\\(n : [0] Int) -> 5) (loop 0)\n")), "5");
-    // at grade 1 it is
+    // an erased argument is not computed, so it must be pure: a `loop 0`
+    // that was never run would be a proof of anything
+    let out = run(&format!("{LOOP}(\\(n : [0] Int) -> 5) (loop 0)\n"));
+    assert_eq!(out.diagnostics.first().map(|d| d.message.as_str()), Some("an erased argument must be pure"));
+    // a pure one is accepted, and not computed: no multiplication is done
+    let out = run("(\\(n : [0] Int) -> 5) (6 * 7)\n");
+    assert_eq!(out.evaluation, Some(Evaluation::Value("5".into())));
+    assert!(!out.axcut.expect("it was lowered").to_string().contains("mul"));
+    // at grade 1 it is computed
     assert_eq!(evaluation(&format!("{LOOP}(\\(n : Int) -> n) (loop 0)\n")), Some(Evaluation::OutOfFuel));
 }
 
 #[test]
 fn a_box_nobody_may_open_is_not_filled() {
-    assert_eq!(value(&format!("{LOOP}let [x] = ([loop 0] : Int [0]) in 5\n")), "5");
+    let out = run("let [x] = ([6 * 7] : Int [0]) in 5\n");
+    assert_eq!(out.evaluation, Some(Evaluation::Value("5".into())));
+    assert!(!out.axcut.expect("it was lowered").to_string().contains("mul"));
+    // and so it may not be filled with something that has effects
+    let out = run(&format!("{LOOP}let [x] = ([loop 0] : Int [0]) in 5\n"));
+    assert_eq!(out.diagnostics.first().map(|d| d.message.as_str()), Some("an erased argument must be pure"));
 }
 
 #[test]
@@ -347,7 +358,7 @@ fn using_a_variable_more_than_its_grade_allows_is_caught() {
 fn a_recursive_definition_captures_only_what_it_uses() {
     // `y` is linear and in scope where `loop` is defined, but `loop` does not
     // mention it: passing it along would copy it at every reference
-    let out = run("\\(y : Int) (x : [] Int) -> let loop : Int -> Int = \\n -> loop (n + x) in loop y");
+    let out = run("\\(y : Int) (x : [] Int) -> let loop : Int -> Int ! Div = \\n -> loop (n + x) in loop y");
     assert_eq!(out.evaluation, Some(Evaluation::Opaque));
     let program = out.axcut.unwrap().to_string();
     let header = program.lines().find(|l| l.starts_with("define loop_")).unwrap();

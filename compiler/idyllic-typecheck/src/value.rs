@@ -60,6 +60,20 @@ impl Env {
         Env(Some(Rc::new(EnvNode { head: v, tail: self.clone() })))
     }
 
+    /// The values, innermost first.
+    pub fn iter(&self) -> impl Iterator<Item = Rc<Value>> + '_ {
+        std::iter::successors(self.0.as_deref(), |n| n.tail.0.as_deref()).map(|n| n.head.clone())
+    }
+
+    /// How many values it holds: the level of whatever is pushed next.
+    pub fn len(&self) -> usize {
+        self.iter().count()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_none()
+    }
+
     pub fn get(&self, idx: usize) -> Option<Rc<Value>> {
         let mut cur = self.0.as_ref();
         for _ in 0..idx {
@@ -108,15 +122,68 @@ pub enum Value {
     /// become reducible later — when a meta among its arguments is solved —
     /// so forcing retries the reduction.
     Prim(Prim, Vec<Rc<Value>>),
+    /// A saturated primitive that is stuck (`n < 2`, with `n` a variable),
+    /// and eliminations waiting on it: a `case` on it, above all.  Like
+    /// `Prim`, it computes once its arguments are known.
+    Stuck(Rc<Value>, Spine),
     /// A grade in normal form.  Never a lone variable: that is just the
     /// variable (see [`Poly::into_value`]).
     Grade(Poly),
     /// `lo..hi` whose ends are not both constants, so it cannot be a
     /// coefficient yet.  Opaque to grade arithmetic.
     GradeRange(Rc<Value>, Rc<Value>),
+    /// `b ! e`, with `e` not empty (an empty one is just `b`).
+    Comp(VTy, Rc<Value>),
+    /// An effect row in normal form (see [`Row`]).  Never a lone variable,
+    /// which is just that variable, as with grades.
+    Row(Row),
+    /// A `handle`, and the environment it was found in.  It cannot compute
+    /// here: a handled computation runs only at run time.  (A computation
+    /// with effects never gets into a type; this is what one that handles
+    /// its own is, if it is evaluated for all that.)
+    Handle(Env, Rc<Core>),
     /// The result of an ill-typed subterm.  Absorbing during unification,
     /// which stops one type error from cascading.
     Error,
+}
+
+/// An effect row in normal form: a set of effects (`Div`, `Log`,
+/// `State Int`) and a set of row variables standing for more.  Rows are sets,
+/// so `{Log, Log}` is `{Log}` and order does not matter: each part is kept
+/// sorted by a printed key, and two rows are the same when their keys are.
+/// A key is made with every solved metavariable in it expanded (see
+/// `Checker::effect_key`), and so can go stale; whoever compares rows makes
+/// them afresh (`Checker::row_parts`).
+#[derive(Clone, Debug, Default)]
+pub struct Row {
+    pub labels: Vec<(String, Rc<Value>)>,
+    pub tails: Vec<(String, Rc<Value>)>,
+}
+
+impl Row {
+    pub fn is_empty(&self) -> bool {
+        self.labels.is_empty() && self.tails.is_empty()
+    }
+
+    /// Add an effect or a row variable under its key, keeping the set sorted
+    /// and without duplicates.
+    pub fn insert(&mut self, key: String, v: Rc<Value>, tail: bool) {
+        let part = if tail { &mut self.tails } else { &mut self.labels };
+        if let Err(at) = part.binary_search_by(|(k, _)| k.cmp(&key)) {
+            part.insert(at, (key, v));
+        }
+    }
+
+    pub fn into_value(self) -> Rc<Value> {
+        if self.labels.is_empty() && self.tails.len() == 1 {
+            return self.tails.into_iter().next().expect("one").1;
+        }
+        Rc::new(Value::Row(self))
+    }
+}
+
+pub fn empty_row() -> Rc<Value> {
+    Rc::new(Value::Row(Row::default()))
 }
 
 pub fn vvar(l: Lvl, name: impl Into<String>) -> Rc<Value> {
@@ -281,7 +348,7 @@ impl Mul for &Poly {
 /// the same.  It is sound but incomplete — values under binders are keyed by
 /// address — which is fine for what reaches it: variables and metas applied
 /// to variables.
-fn atom_key(v: &Value) -> String {
+pub fn atom_key(v: &Value) -> String {
     let spine = |sp: &Spine| {
         sp.iter()
             .map(|e| match e {
@@ -298,6 +365,7 @@ fn atom_key(v: &Value) -> String {
         Value::Rigid(l, _, sp) => format!("v{l}{}", spine(sp)),
         Value::Flex(m, sp) => format!("?{m}{}", spine(sp)),
         Value::Opaque(u, _, sp) => format!("c{u}{}", spine(sp)),
+        Value::Stuck(h, sp) => format!("({}){}", atom_key(h), spine(sp)),
         Value::Type(n) => format!("Type {n}"),
         Value::LitTy(b) => b.name().into(),
         Value::Lit(l) => l.to_string(),
@@ -313,6 +381,11 @@ fn atom_key(v: &Value) -> String {
             let args: Vec<String> = args.iter().map(|a| format!(" ({})", atom_key(a))).collect();
             format!("{}{}", p.name(), args.concat())
         }
-        Value::Pi { .. } | Value::Lam(..) => format!("@{:p}", v as *const Value),
+        Value::Comp(t, e) => format!("({} ! {})", atom_key(t), atom_key(e)),
+        Value::Row(r) => {
+            let keys: Vec<&str> = r.labels.iter().chain(&r.tails).map(|(k, _)| k.as_str()).collect();
+            format!("{{{}}}", keys.join(","))
+        }
+        Value::Pi { .. } | Value::Lam(..) | Value::Handle(..) => format!("@{:p}", v as *const Value),
     }
 }
