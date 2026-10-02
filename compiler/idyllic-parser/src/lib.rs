@@ -95,9 +95,6 @@ fn span_of(s: SimpleSpan) -> Span {
 enum Item {
     Data(LData),
     Effect(LEffect),
-    /// `effect App = {Log, Ask}`: a signature and a definition,
-    /// `App : Effect; App = {Log, Ask}`
-    Alias(Box<(LDecl, LDecl)>),
     Decl(LDecl),
     Use(Spanned<Use>),
     Expr(LTerm),
@@ -192,10 +189,6 @@ pub fn parse(src_len: usize, tokens: &[Spanned<Token>]) -> Result<Program, Vec<D
         match item {
             Item::Data(d) => program.datas.push(d),
             Item::Effect(e) => program.effects.push(e),
-            Item::Alias(decls) => {
-                program.visibility.extend(vis.map(|v| (defined(&decls.0), v)));
-                program.decls.extend(<[LDecl; 2]>::from(*decls));
-            }
             Item::Decl(d) => {
                 program.visibility.extend(vis.map(|v| (defined(&d), v)));
                 program.decls.push(d);
@@ -256,9 +249,16 @@ fn literal<'t, I>() -> impl Parser<'t, I, Lit, Extra<'t>> + Clone
 where
     I: ValueInput<'t, Token = Token, Span = SimpleSpan>,
 {
+    // the lexer reads any number; an `Int` holds 64 bits of it
+    let int = select! { Token::Int(n) => n }.validate(|n: BigInt, e, emitter| {
+        Lit::Int(i64::try_from(&n).unwrap_or_else(|_| {
+            emitter.emit(Rich::custom(e.span(), format!("{n} does not fit in an Int, which is 64 bits")));
+            0
+        }))
+    });
     choice((
+        int,
         select! {
-            Token::Int(n) => Lit::Int(n),
             Token::Str(s) => Lit::Str(s),
             Token::UpperIdent(s) if s == "True" => Lit::Bool(true),
             Token::UpperIdent(s) if s == "False" => Lit::Bool(false),
@@ -500,7 +500,13 @@ where
             .map(|(x, kind)| (x, Some(kind))),
     ));
     let semi = just(Token::VSemi).or(just(Token::Semi));
-    let op = lower().then_ignore(just(Token::Colon)).then(term.clone());
+    let many = just(Token::At).ignore_then(select! { Token::LowerIdent(s) if s == "many" => () }).labelled("@many");
+    let op = many
+        .or_not()
+        .then(lower())
+        .then_ignore(just(Token::Colon))
+        .then(term.clone())
+        .map(|((many, name), ty)| OpSig { name, ty, many: many.is_some() });
     let ops = semi.clone().repeated().ignore_then(op.separated_by(semi).allow_trailing().collect::<Vec<_>>());
     let block = choice((
         ops.clone().delimited_by(just(Token::LBrace), just(Token::RBrace)),
@@ -521,27 +527,22 @@ where
                 }
                 Err(row) => row,
             };
-            let effect = Spanned::new(Term::Var(Spanned::new("Effect".to_string(), name.span)), name.span);
-            // a parameter is used as often as the row mentions it: `[]`
+            // a definition whose type is worked out from it: each parameter,
+            // used as often as the row mentions it (`[]`), and then the row,
+            // whose kind is `Effect`, or `Effect []` if it has an operation
+            // declared `@many`
             let any = |at: Span| {
-                let zero = Spanned::new(Term::Lit(Lit::Int(BigInt::from(0))), at);
+                let zero = Spanned::new(Term::Lit(Lit::Int(0)), at);
                 let any = Term::Range(Box::new(zero), Box::new(Spanned::new(Term::Inf, at)));
                 GradeAnn { subject: Box::new(Spanned::new(any, at)), in_type: None }
             };
-            let ty = params.iter().rev().fold(effect, |acc, (x, kind)| {
-                let kind = kind.clone().unwrap_or_else(|| Spanned::new(Term::Type, x.span));
-                let pi = Term::Pi(Some(x.clone()), Icit::Explicit, Some(any(x.span)), Box::new(kind), Box::new(acc));
-                Spanned::new(pi, span)
+            let body = params.into_iter().rev().fold(row, |acc, (x, kind)| {
+                let at = x.span;
+                let kind = kind.unwrap_or_else(|| Spanned::new(Term::Type, at));
+                let param = Param { name: x, unbox: false, grade: Some(any(at)), ty: Some(kind) };
+                Spanned::new(Term::Lam(Box::new(Spanned::new(param, at)), Box::new(acc)), span)
             });
-            let pats = params
-                .into_iter()
-                .map(|(x, _)| {
-                    let at = x.span;
-                    Spanned::new(Pat::Bind(Param { name: x, unbox: false, grade: None, ty: None }), at)
-                })
-                .collect();
-            let sig = Spanned::new(Decl::Sig(name.clone(), ty), span);
-            Item::Alias(Box::new((sig, Spanned::new(Decl::Def(name, pats, None, Rhs::Plain(row)), span))))
+            Item::Decl(Spanned::new(Decl::Def(name, Vec::new(), None, Rhs::Plain(body)), span))
         })
         .labelled("effect declaration")
         .boxed()
@@ -575,7 +576,7 @@ where
         // `[]`, any number of uses; as an atom it already means `[0..∞]`
         just(Token::LBracket).then(just(Token::RBracket)).map_with(|_, e| {
             let span = span_of(e.span());
-            let zero = Spanned::new(Term::Lit(Lit::Int(BigInt::from(0))), span);
+            let zero = Spanned::new(Term::Lit(Lit::Int(0)), span);
             let any = Term::Range(Box::new(zero), Box::new(Spanned::new(Term::Inf, span)));
             GradeAnn { subject: Box::new(Spanned::new(any, span)), in_type: None }
         }),
@@ -856,7 +857,7 @@ where
             // `[]` is Granule's shorthand for `[0..∞]`
             just(Token::LBracket).then(just(Token::RBracket)).map_with(|_, e| {
                 let span = span_of(e.span());
-                let zero = Spanned::new(Term::Lit(Lit::Int(BigInt::from(0))), span);
+                let zero = Spanned::new(Term::Lit(Lit::Int(0)), span);
                 let any = Term::Range(Box::new(zero), Box::new(Spanned::new(Term::Inf, span)));
                 Spanned::new(Term::BoxIntro(Box::new(Spanned::new(any, span))), span)
             }),
@@ -891,10 +892,13 @@ where
         let mul = app.clone().foldl(mul_op.then(app).repeated(), binary).boxed();
         let add = mul.clone().foldl(operator("+").or(operator("-")).then(mul).repeated(), binary).boxed();
 
-        // `x :: xs` applies the constructor named `::`, and associates to the
-        // right: `1 :: 2 :: Nil`
-        let cons_op = select! { Token::ConOpIdent(s) = e if s == "::" => Spanned::new(s, span_of(e.span())) }
-            .labelled("operator");
+        // `x :: xs` applies the constructor named `::`, and `a ++ b` the
+        // primitive; both associate to the right: `1 :: 2 :: Nil`
+        let cons_op = select! {
+            Token::ConOpIdent(s) = e if s == "::" => Spanned::new(s, span_of(e.span())),
+            Token::OpIdent(s) = e if s == "++" => Spanned::new(s, span_of(e.span())),
+        }
+        .labelled("operator");
         let cons = add
             .clone()
             .then(cons_op.then(add).repeated().collect::<Vec<(Ident, LTerm)>>())

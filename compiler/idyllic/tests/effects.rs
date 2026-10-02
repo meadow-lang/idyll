@@ -237,10 +237,68 @@ fn a_handler_need_not_resume() {
 
 #[test]
 fn a_handler_can_resume_more_than_once() {
-    let src = "effect Choose where\n  flip : () -> Bool\n\n\
+    let src = "effect Choose where\n  @many flip : () -> Bool\n\n\
                pick : () -> Int ! Choose\npick u = if flip () then 1 else 10\n\n\
                handle pick () with\n  flip _ k -> k True + k False\n";
     assert_eq!(value(src), "11 : Int");
+}
+
+#[test]
+fn only_an_operation_marked_many_is_resumed_more_than_once() {
+    // unmarked, an operation is resumed at most once: once, or never
+    let coin = "effect Coin where\n  toss : () -> Bool\n\n";
+    rejects(
+        &format!("{coin}handle (if toss () then 1 else 2) with\n  toss _ k -> k True + k False\n"),
+        &["toss is resumed more than once: this clause may resume toss more than once, and Coin declares it to be resumed at most once"],
+    );
+    assert_eq!(value(&format!("{coin}handle (if toss () then 1 else 2) with\n  toss _ k -> k True\n")), "1 : Int");
+    assert_eq!(value(&format!("{coin}handle (if toss () then 1 else 2) with\n  toss _ k -> 0\n")), "0 : Int");
+    // a resumption whose use depends on the argument is at most once too
+    assert_eq!(
+        value(&format!("{coin}handle (if toss () then 1 else 2) with\n  toss _ k -> if False then 0 else k False\n")),
+        "2 : Int"
+    );
+    // the mark is part of what a compiled package says of its operations
+    let out = accepts("effect Choose where\n  @many flip : () -> Bool\n  pick : () -> Int\n\n");
+    let ops = &out.checked.as_ref().expect("checked").ops;
+    let many: Vec<(&str, bool)> = {
+        let mut v: Vec<(&str, bool)> =
+            ops.values().map(|o| (o.name.as_str(), o.many)).filter(|(n, _)| ["flip", "pick"].contains(n)).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(many, [("flip", true), ("pick", false)]);
+}
+
+#[test]
+fn a_row_variable_takes_effects_resumed_at_most_once_unless_it_says_otherwise() {
+    let choose = "effect Choose where\n  @many flip : () -> Bool\n\n";
+    let ask = "effect Ask where\n  ask : () -> Int\n\n";
+    // an effect with an operation resumed more than once has the other kind
+    let out = accepts(&format!("{choose}{ask}"));
+    assert!(out.decls.contains(&("Choose".into(), "Effect []".into())), "{:?}", out.decls);
+    assert!(out.decls.contains(&("Ask".into(), "Effect".into())), "{:?}", out.decls);
+    // a row variable a signature binds for you is `Effect`
+    let twice = "twice : (f : [] (() -> Int ! e)) -> Int ! e\ntwice f = f () + f ()\n\n";
+    let out = accepts(twice);
+    assert!(out.decls.contains(&("twice".into(), "{e : Effect} -> (f : [] () -> Int ! e) -> Int ! e".into())), "{:?}", out.decls);
+    // so it takes `Ask`, and not `Choose`
+    let pick_ask = "pickA : () -> Int ! Ask\npickA u = ask ()\n\n";
+    assert_eq!(value(&format!("{ask}{twice}{pick_ask}handle twice pickA with\n  ask _ k -> k 5\n")), "10 : Int");
+    let pick = "pick : () -> Int ! Choose\npick u = if flip () then 1 else 10\n\n";
+    rejects(
+        &format!("{choose}{twice}{pick}handle twice pick with\n  flip _ k -> k True + k False\n"),
+        &["these effects may be resumed more than once: the implicit argument e stands for effects resumed at most once, and Choose has an operation declared @many"],
+    );
+    // unless it says it takes them
+    let twice_many = "twiceM : {e : Effect []} -> (f : [] (() -> Int ! e)) -> Int ! e\ntwiceM f = f () + f ()\n\n";
+    assert_eq!(value(&format!("{choose}{twice_many}{pick}handle twiceM pick with\n  flip _ k -> k True + k False\n")), "44 : Int");
+    // and one that takes them takes the others too
+    assert_eq!(value(&format!("{ask}{twice_many}{pick_ask}handle twiceM pickA with\n  ask _ k -> k 5\n")), "10 : Int");
+    // an alias has its row's kind
+    let out = accepts(&format!("{choose}{ask}effect Both = {{Choose, Ask}}\neffect JustAsk = {{Ask}}\n"));
+    assert!(out.decls.contains(&("Both".into(), "Effect []".into())), "{:?}", out.decls);
+    assert!(out.decls.contains(&("JustAsk".into(), "Effect".into())), "{:?}", out.decls);
 }
 
 #[test]
@@ -323,11 +381,18 @@ fn an_operation_takes_arguments() {
 }
 
 #[test]
-fn the_native_back_end_does_not_run_handlers_yet() {
+fn the_native_back_end_compiles_handlers() {
+    // with its continuations on the heap, and the runtime keeping the
+    // handlers in force (run natively in tests/llvm.rs)
     let out = run(&format!("{ASK}{SUM3}handle sum3 () with\n  ask _ k -> k 10\n"));
     let program = out.native.expect("lowered");
-    let err = idyllic_llvm::emit(&program, idyllic_llvm::ResultKind::Int).unwrap_err();
-    assert!(err.contains("not supported by the native back end"), "{err}");
+    let ir = idyllic_llvm::emit(&program, idyllic_llvm::ResultKind::Int).expect("compiled");
+    assert!(ir.contains("call void @idyll_handle("), "{ir}");
+    assert!(ir.contains("call ptr @idyll_capture("), "{ir}");
+    // and a program without a handler keeps its continuations on the stack
+    let out = run("(\\(x : Int) -> x + 1) 41");
+    let ir = idyllic_llvm::emit(&out.native.expect("lowered"), idyllic_llvm::ResultKind::Int).expect("compiled");
+    assert!(!ir.contains("@idyll_handle"), "{ir}");
 }
 
 #[test]
@@ -411,6 +476,26 @@ fn a_program_with_a_main_runs_it() {
 }
 
 #[test]
+fn a_program_gives_up_with_abort() {
+    // unhandled, `abort` writes its message as an error and exits with 1,
+    // after whatever was printed before
+    let src = "main : () -> () ! Eff\nmain () = let u = putStrLn \"before\" in abort \"gave up\"\n";
+    let out = accepts(src);
+    assert_eq!(out.evaluation, Some(Evaluation::Exited(1)));
+    assert_eq!((out.printed.as_str(), out.errors.as_str()), ("before\n", "gave up\n"));
+    // it gives any type, and a function that may give up says so
+    let half = "half : (n : [] Int) -> Int ! Abort\nhalf n = if n % 2 == 0 then n / 2 else abort \"odd\"\n\n";
+    let out = accepts(half);
+    assert!(out.decls.contains(&("half".into(), "(n : [] Int) -> Int ! Abort".into())), "{:?}", out.decls);
+    // and like any effect it can be handled
+    assert_eq!(value(&format!("{half}handle half 7 with\n  abort m k -> let u = putErr m in 0 - 1\n")), "-1 : Int");
+    assert_eq!(value(&format!("{half}handle half 8 with\n  abort m k -> let u = putErr m in 0 - 1\n")), "4 : Int");
+    // `putErr` writes to standard error
+    let out = accepts("main () = putErr \"careful\\n\"\n");
+    assert_eq!((out.printed.as_str(), out.errors.as_str()), ("", "careful\n"));
+}
+
+#[test]
 fn main_is_a_function_of_unit_with_the_runtimes_effects() {
     let wrong = |ty: &str| format!("main has the wrong type: main is {ty}");
     rejects("main : Int\nmain = 3\n", &[&wrong("Int")]);
@@ -420,13 +505,13 @@ fn main_is_a_function_of_unit_with_the_runtimes_effects() {
 
 #[test]
 fn a_handler_of_ones_own_can_take_the_console() {
-    // counting the lines, and passing each on to the runtime
+    // counting what is written (`putStrLn` is the prelude's, over
+    // `putStr`), and passing each on to the runtime
     let src = "greet : () -> () ! Console\ngreet () = let u = putStrLn \"hello\" in putStrLn \"world\"\n\n\
                handle greet () with\n  \
                  return _ -> 0\n  \
-                 putStr s k -> let u = putStr s in k ()\n  \
-                 putStrLn s k -> let u = putStrLn s in 1 + k ()\n  \
-                 printInt n k -> let u = printInt n in k ()\n  \
+                 putStr s k -> let u = putStr s in 1 + k ()\n  \
+                 putErr s k -> let u = putErr s in k ()\n  \
                  readLine _ k -> k Nothing\n";
     let out = accepts(src);
     assert_eq!(out.printed, "hello\nworld\n");

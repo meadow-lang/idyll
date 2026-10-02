@@ -424,7 +424,7 @@ impl Renamer {
             .iter()
             .map(|e| {
                 let name = self.bind_name(&e.node.name);
-                let ops: Vec<Ident> = e.node.ops.iter().map(|(op, _)| self.bind_name(op)).collect();
+                let ops: Vec<Ident> = e.node.ops.iter().map(|op| self.bind_name(&op.name)).collect();
                 if let Some(u) = name.unique {
                     self.effect_ops.insert(u, ops.iter().filter_map(|o| Some((o.text.clone(), o.unique?))).collect());
                 }
@@ -677,8 +677,9 @@ impl Renamer {
             .ctors
             .iter()
             .filter(|(_, cs)| cs.iter().any(|(c, _)| c == name))
-            .filter_map(|(d, _)| self.type_names.get(d).cloned())
-            .filter(|t| self.lookup(t).is_some())
+            // a type in scope under its name: that name, and not another
+            // type of the same name (a dependency's), is how to write it
+            .filter_map(|(d, _)| self.type_names.get(d).filter(|t| self.lookup(t) == Some(*d)).cloned())
             .collect();
         types.sort();
         types
@@ -1121,7 +1122,12 @@ impl Renamer {
                 .ops
                 .iter()
                 .zip(op_names)
-                .map(|((op, ty), name)| hir::OpDecl { id: r.fresh_node(op.span), name, ty: r.rename_sig(ty) })
+                .map(|(op, name)| hir::OpDecl {
+                    id: r.fresh_node(op.name.span),
+                    name,
+                    ty: r.rename_sig(&op.ty),
+                    many: op.many,
+                })
                 .collect();
             hir::EffectDecl { id, name, params, ops }
         })

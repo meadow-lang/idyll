@@ -108,9 +108,11 @@ mod eval;
 pub mod handlers;
 mod matching;
 pub mod packages;
+pub mod prune;
 mod positivity;
 mod sequences;
 mod termination;
+pub mod typer;
 mod unify;
 pub mod value;
 
@@ -404,6 +406,11 @@ pub enum TypeErrorKind {
     /// a handler's effect twice over in the body's row, or a row the
     /// resumption cannot be given
     AmbiguousHandler { effect: String, row: Rc<Core> },
+    /// a clause resumes more than once an operation not declared `@many`
+    ResumesTooOften { op: String, effect: String },
+    /// a row variable of kind `Effect` given effects that may be resumed
+    /// more than once
+    ManyEffectsInRow { what: String, row: Rc<Core> },
     /// a sequence literal, `#[a, b]`, where a type with no `@seq` is wanted
     NotASequence(Rc<Core>),
     /// an `@seq` whose constructors cannot build sequences of its type
@@ -639,6 +646,12 @@ impl TypeError {
             }
             TypeErrorKind::AmbiguousHandler { effect, row } => Diagnostic::error(format!("which {effect}?"))
                 .label(here, format!("the handled computation has the effects {row}")),
+            TypeErrorKind::ManyEffectsInRow { what, row } => Diagnostic::error("these effects may be resumed more than once")
+                .label(here, format!("{what} stands for effects resumed at most once, and {row} has an operation declared @many"))
+                .help("a row variable takes effects resumed at most once unless it says otherwise: bind it as {e : Effect []}"),
+            TypeErrorKind::ResumesTooOften { op, effect } => Diagnostic::error(format!("{op} is resumed more than once"))
+                .label(here, format!("this clause may resume {op} more than once, and {effect} declares it to be resumed at most once"))
+                .help(format!("to let a handler resume it more than once, declare it `@many {op} : ..` in `effect {effect}`")),
             TypeErrorKind::UnhandledEffects(effects) => Diagnostic::error("unhandled effects")
                 .label(here, format!("the program has the effects {effects}, and nothing handles them"))
                 .help("at the top of a program, only the effects in Eff are handled, by the runtime"),
@@ -744,6 +757,18 @@ pub struct Ctx {
 }
 
 impl Ctx {
+    /// The context as it was when it had `lvl` variables: the outermost
+    /// `lvl` of these.
+    pub(crate) fn prefix(&self, lvl: Lvl) -> Ctx {
+        if lvl >= self.lvl {
+            return self.clone();
+        }
+        let mut binders = self.binders.clone();
+        binders.truncate(lvl);
+        let splits = self.splits.iter().filter(|(l, _)| **l < lvl).map(|(l, s)| (*l, s.clone())).collect();
+        Ctx { lvl, env: self.env.outer(self.lvl - lvl), binders, names: self.names.clone(), splits }
+    }
+
     /// The context every module starts in: the primitive type constants (each
     /// a transparent definition of sort `Type`) and the primitive operations
     /// (each a transparent definition at its function type), at the uniques
@@ -927,6 +952,13 @@ pub struct Checker {
     /// what other packages' transparent definitions are, by unique: a
     /// constant of theirs evaluates to its value (see [`packages`])
     globals: HashMap<usize, Rc<Value>>,
+    /// how many `let`s in the checker is, which makes a recursive group
+    /// defined there local (see [`RecDef::local`])
+    lets: usize,
+    /// What a term had to fit but could not yet, its expected type stuck on
+    /// a meta nothing had solved (see [`Checker::postpone`]): tried again
+    /// once the definition it is in has been checked.
+    postponed: Vec<Postponed>,
 }
 
 /// What is known about a constructor.  At run time it is its `tag` and its
@@ -957,6 +989,49 @@ pub struct RecDef {
     /// same ones at the same levels.
     pub lvl: Lvl,
     pub core: Rc<Core>,
+    /// Whether it is defined inside another definition, in a `let`, rather
+    /// than at the top level.  Its level alone cannot say: a definition
+    /// inside the top-level one with two parameters before it is at the
+    /// level of the top-level definition two after.
+    pub local: bool,
+}
+
+/// A term's type, and the type it was to have, that could not be unified
+/// yet: at `lvl`, for the term at `node`.
+struct Postponed {
+    lvl: Lvl,
+    actual: Rc<Value>,
+    expected: Rc<Value>,
+    node: NodeId,
+}
+
+/// One name a program can use, for whoever lists or searches them.
+#[derive(Clone, Debug)]
+pub struct Declared {
+    /// where it is declared
+    pub node: NodeId,
+    pub unique: Option<usize>,
+    /// as a program writes it: `double`, `Nat.Z` (a constructor lives under
+    /// its type), `Math.double` (a name of a module other than the root)
+    pub name: String,
+    pub kind: DeclKind,
+    /// its type; for a data type or an effect, its kind
+    pub ty: Rc<Core>,
+    /// whether the prelude declares it
+    pub prelude: bool,
+}
+
+/// What a [`Declared`] name is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DeclKind {
+    /// a definition: a function, a value, a type alias, an effect alias
+    Value,
+    Constructor,
+    /// a data type
+    Type,
+    Effect,
+    /// an effect's operation
+    Operation,
 }
 
 pub struct TypeCheckResult {
@@ -994,6 +1069,21 @@ pub struct TypeCheckResult {
     /// The final metacontext, so callers can inspect what was solved.
     pub metas: Vec<MetaEntry>,
     pub errors: Vec<TypeError>,
+    /// Every name the program, the prelude and (once linked) the packages it
+    /// uses declare, by unique: the package it is in, and its path there
+    /// (`Math.double`, `Nat.Z`).
+    pub symbols: HashMap<usize, (String, String)>,
+    /// The unique of each top-level `let` of `program`, outermost first.
+    pub toplevel: Vec<usize>,
+    /// Every name the program and the prelude declare, with its type, in
+    /// the order they were declared: what the REPL lists and searches.
+    pub catalog: Vec<Declared>,
+    /// Definitions every back end keeps, used or not (see [`prune`]): none,
+    /// unless whoever lowers the program says otherwise.
+    pub roots: HashSet<usize>,
+    /// The checker, kept to work out the types of the program's terms
+    /// again for whoever lowers it (see [`typer`]).
+    pub typer: typer::Typer,
 }
 
 /// Type check a renamed, SCC-ordered module.  Never fails: every problem
@@ -1025,6 +1115,8 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         seqs: HashMap::new(),
         prelude: m.prelude.clone(),
         globals: HashMap::new(),
+        lets: 0,
+        postponed: Vec::new(),
     };
     let ctx = Ctx::initial(&tc);
     let ctx = tc.import(&ctx, deps);
@@ -1066,6 +1158,8 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
     let program = body.as_ref().map(|(core, _)| Checker::wrap_lets(core.clone(), lets.clone()));
     let body_type = body.as_ref().map(|(_, ty)| ty.clone());
     tc.report_holes();
+    tc.retry_postponed(true);
+    tc.close_rows();
     tc.report_unsolved_metas();
     // the prelude's own definitions, which come first
     let prelude_lets: Vec<(String, Rc<Core>)> = m
@@ -1080,27 +1174,75 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
     // written in, ask the span table)
     // (a constructor is reported under its type, where it lives, and a name
     // of a module other than the root under that module)
-    let mut declared: Vec<(NodeId, String, Option<usize>)> = Vec::new();
+    // (the prelude's are kept apart, for the catalog: a prelude type's
+    // constructors are the prelude's, `use`d or not)
+    let mut declared: Vec<(NodeId, String, Option<usize>, DeclKind, bool)> = Vec::new();
     let qualified = |x: &hir::Ident| match x.unique.and_then(|u| m.qualifiers.get(&u)) {
         Some(q) => format!("{q}.{}", x.text),
         None => x.text.clone(),
     };
-    let named = |id: NodeId, x: &hir::Ident| (id, qualified(x), x.unique);
+    let in_prelude = |x: &hir::Ident| x.unique.is_some_and(|u| prelude.contains(&u));
+    let named = |id: NodeId, x: &hir::Ident, kind| (id, qualified(x), x.unique, kind, in_prelude(x));
     for d in &m.datas {
-        declared.push(named(d.id, &d.name));
-        declared.extend(d.ctors.iter().map(|c| (c.id, format!("{}.{}", qualified(&d.name), c.name.text), c.name.unique)));
+        declared.push(named(d.id, &d.name, DeclKind::Type));
+        let ctor = |c: &hir::CtorDecl| {
+            (c.id, format!("{}.{}", qualified(&d.name), c.name.text), c.name.unique, DeclKind::Constructor, in_prelude(&d.name))
+        };
+        declared.extend(d.ctors.iter().map(ctor));
     }
     for e in &m.effects {
-        declared.push(named(e.id, &e.name));
-        declared.extend(e.ops.iter().map(|op| named(op.id, &op.name)));
+        declared.push(named(e.id, &e.name, DeclKind::Effect));
+        declared.extend(e.ops.iter().map(|op| named(op.id, &op.name, DeclKind::Operation)));
     }
-    declared.extend(m.groups.iter().flat_map(hir::BindGroup::binds).map(|b| named(b.id, &b.name)));
-    declared.retain(|(_, _, u)| !u.is_some_and(|u| prelude.contains(&u)));
+    declared.extend(m.groups.iter().flat_map(hir::BindGroup::binds).map(|b| named(b.id, &b.name, DeclKind::Value)));
     declared.sort_by_key(|(id, ..)| *id);
-    let decl_types = declared
-        .into_iter()
-        .filter_map(|(id, name, _)| Some((id, name, tc.node_types.get(id.0)?.clone()?)))
+    let catalog: Vec<Declared> = declared
+        .iter()
+        .filter_map(|(id, name, unique, kind, prelude)| {
+            let ty = tc.node_types.get(id.0)?.clone()?;
+            Some(Declared { node: *id, unique: *unique, name: name.clone(), kind: *kind, ty, prelude: *prelude })
+        })
         .collect();
+    // every name the program and the prelude declare, by unique, with the
+    // package it is in and its path there, for the symbols a back end names
+    // things by: `Math.double`, `Nat.Z`, `Console.putStr`
+    let mut symbols: HashMap<usize, (String, String)> = HashMap::new();
+    {
+        let own = |u: usize| (m.uniques.0..m.uniques.1).contains(&u);
+        let mut add = |x: &hir::Ident, path: String| {
+            if let Some(u) = x.unique {
+                let package = if own(u) { m.package.clone() } else { "Prelude".to_string() };
+                symbols.insert(u, (package, path));
+            }
+        };
+        for d in &m.datas {
+            add(&d.name, qualified(&d.name));
+            for c in &d.ctors {
+                add(&c.name, format!("{}.{}", qualified(&d.name), c.name.text));
+            }
+        }
+        for e in &m.effects {
+            add(&e.name, qualified(&e.name));
+            for op in &e.ops {
+                add(&op.name, format!("{}.{}", qualified(&e.name), op.name.text));
+            }
+        }
+        for b in m.groups.iter().flat_map(hir::BindGroup::binds) {
+            add(&b.name, qualified(&b.name));
+        }
+    }
+    // the unique of each top-level `let` of the program, in order
+    let toplevel: Vec<usize> = m
+        .groups
+        .iter()
+        .zip(&lets)
+        .filter(|(_, w)| w.is_some())
+        .filter_map(|(g, _)| match g {
+            hir::BindGroup::NonRec(b) => b.name.unique,
+            hir::BindGroup::Rec(_) => None,
+        })
+        .collect();
+    let decl_types = catalog.iter().filter(|d| !d.prelude).map(|d| (d.node, d.name.clone(), d.ty.clone())).collect();
     let meta_solutions: Vec<Option<Rc<Core>>> = tc
         .metas
         .iter()
@@ -1113,10 +1255,19 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
     let rec_defs = std::mem::take(&mut tc.rec_defs);
     let mut compiled = tc.compile_package(m, &ctx, &lets, body, &rec_defs, meta_solutions.clone());
     compiled.main = ran_main;
+    compiled.symbols = symbols
+        .iter()
+        .filter(|(u, _)| (m.uniques.0..m.uniques.1).contains(*u))
+        .map(|(u, (p, path))| (*u, p.clone(), path.clone()))
+        .collect();
+    compiled.symbols.sort();
     let compiled = Some(compiled);
     let type_constructors = tc.datas.keys().copied().collect();
-    let ctors = std::mem::take(&mut tc.ctors);
-    let ops = std::mem::take(&mut tc.ops);
+    let ctors = tc.ctors.clone();
+    let ops = tc.ops.clone();
+    let node_types = std::mem::take(&mut tc.node_types);
+    let metas = tc.metas.clone();
+    let errors = std::mem::take(&mut tc.errors);
     TypeCheckResult {
         body_type,
         compiled,
@@ -1129,9 +1280,14 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         ctors,
         ops,
         type_constructors,
-        node_types: tc.node_types,
-        metas: tc.metas,
-        errors: tc.errors,
+        node_types,
+        metas,
+        errors,
+        symbols,
+        toplevel,
+        roots: HashSet::new(),
+        catalog,
+        typer: typer::Typer::new(tc),
     }
 }
 
@@ -1163,6 +1319,16 @@ impl Checker {
         let Some(effects) = self.effects_of(usage) else { return };
         let parts = self.row_parts(&effects);
         let handled = self.row_parts(world);
+        // a row variable nothing has said anything about, at the top, where
+        // nothing more will: no more effects (an effect-polymorphic function
+        // given one with none, say)
+        let open: Vec<Rc<Value>> =
+            parts.tails.iter().filter(|(_, v)| matches!(*self.force(v.clone()), Value::Flex(..))).map(|(_, v)| v.clone()).collect();
+        for tail in open {
+            let none = value::empty_row();
+            self.unify(ctx.lvl, tail, none);
+        }
+        let parts = self.row_parts(&effects);
         let left: Vec<Rc<Value>> = parts
             .labels
             .iter()
@@ -1170,6 +1336,10 @@ impl Checker {
             .chain(&parts.tails)
             .map(|(_, v)| v.clone())
             .collect();
+        // (an effect that is an error has been reported already)
+        if left.iter().any(|v| matches!(*self.force(v.clone()), Value::Error)) {
+            return;
+        }
         if !left.is_empty() {
             let row = self.row(left.into_iter());
             let row = self.quote(ctx.lvl, row);
@@ -1221,6 +1391,24 @@ impl Checker {
                 _ => TypeErrorKind::HoleSolved { ty, solution: self.quote(h.lvl, v.clone()) },
             };
             self.error(h.node, kind);
+        }
+    }
+
+    /// A row variable nothing ever constrained stands for no more effects:
+    /// there is nothing else it could be found to be.  Solved so, rather
+    /// than reported unsolved.
+    fn close_rows(&mut self) {
+        for m in 0..self.metas.len() {
+            let MetaEntry::Unsolved(info) = &self.metas[m] else { continue };
+            let Some(mt) = &info.ty else { continue };
+            if self.row_kind(&mt.ty).is_none() {
+                continue;
+            }
+            let info = info.clone();
+            let n = info.ty.as_ref().map_or(0, |mt| mt.spine.len());
+            let none = (0..n).fold(Rc::new(Core::Row(Vec::new(), Vec::new())), |body, _| Rc::new(Core::Lam("_".into(), body)));
+            let solution = self.eval(&Default::default(), &none);
+            self.metas[m] = MetaEntry::Solved(solution, info);
         }
     }
 

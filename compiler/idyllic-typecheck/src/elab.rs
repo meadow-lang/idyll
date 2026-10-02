@@ -61,7 +61,7 @@ fn arithmetic(t: &hir::Term) -> Option<(Prim, &hir::Term, &hir::Term)> {
     let TermKind::Var(op) = &op.kind else { return None };
     match Prim::from_unique(op.unique?)? {
         p @ (Prim::IntAdd | Prim::IntMul) => Some((p, a, b)),
-        Prim::IntSub | Prim::IntDiv | Prim::IntMod | Prim::IntLt | Prim::IntEq => None,
+        Prim::IntSub | Prim::IntDiv | Prim::IntMod | Prim::IntLt | Prim::IntEq | Prim::StrAppend => None,
     }
 }
 
@@ -154,6 +154,24 @@ impl Checker {
             return self.unify(l, allowed, effects);
         }
         let (e, a) = (self.row_parts(&effects), self.row_parts(&allowed));
+        // an effect with parameters is the allowed one of the same head,
+        // if there is just one (`Throw String` is the `Throw ?e` allowed):
+        // a row has one of each
+        let mut paired = false;
+        for (k, v) in &e.labels {
+            if a.labels.iter().any(|(k2, _)| k2 == k) {
+                continue;
+            }
+            let Some(head) = self.effect_head(v) else { continue };
+            let same: Vec<Rc<Value>> =
+                a.labels.iter().filter(|(_, w)| self.effect_head(w) == Some(head)).map(|(_, w)| w.clone()).collect();
+            if let [w] = same.as_slice() {
+                if self.unify(l, v.clone(), w.clone()) {
+                    paired = true;
+                }
+            }
+        }
+        let (e, a) = if paired { (self.row_parts(&effects), self.row_parts(&allowed)) } else { (e, a) };
         let missing: Vec<Rc<Value>> = e
             .labels
             .iter()
@@ -179,9 +197,31 @@ impl Checker {
         }
     }
 
-    /// A row, checked to be one.
+    /// A row, checked to be one, of either kind.
     fn check_row(&mut self, ctx: &Ctx, t: &hir::Term) -> Rc<Core> {
-        self.check(ctx, t, Rc::new(Value::LitTy(Builtin::Effect))).0
+        self.row_part(ctx, t).0
+    }
+
+    /// An effect, a row variable or a row, in a row: whether it may hold
+    /// operations resumed more than once.  One whose kind is not known yet
+    /// (a row variable a signature binds for you) is taken to be `Effect`,
+    /// resumed at most once, which is the default.
+    fn row_part(&mut self, ctx: &Ctx, t: &hir::Term) -> (Rc<Core>, bool) {
+        let effect = Rc::new(Value::LitTy(Builtin::Effect));
+        let (c, ty, _) = self.infer(ctx, t);
+        if matches!(*self.force(ty.clone()), Value::Flex(..)) {
+            self.unify(ctx.lvl, ty, effect);
+            return (c, false);
+        }
+        match self.row_kind(&ty) {
+            Some(many) => (c, many),
+            None if matches!(*self.force(ty.clone()), Value::Error) => (c, false),
+            None => {
+                let actual = self.quote(ctx.lvl, ty);
+                self.error(t.id, TypeErrorKind::Mismatch { expected: Rc::new(Core::LitTy(Builtin::Effect)), actual });
+                (Rc::new(Core::Error), false)
+            }
+        }
     }
 
     /// Whether a function type's codomain mentions its argument.
@@ -253,12 +293,12 @@ impl Checker {
     }
 
     /// A lambda, noting for the backend how often `x` may be used.
-    pub(super) fn lam(&self, name: String, grade: &Rc<Value>, body: Rc<Core>) -> Rc<Core> {
+    /// `\name -> body`, where the binder has type `dom` in `ctx` and is used
+    /// `grade` times: both noted for the lowering.
+    pub(super) fn lam(&self, ctx: &Ctx, name: String, grade: &Rc<Value>, dom: &Rc<Value>, body: Rc<Core>) -> Rc<Core> {
         let lam = Rc::new(Core::Lam(name, body));
-        match self.constant(grade) {
-            Some(g) => Rc::new(Core::Runtime(Note::Binds(g), lam)),
-            None => lam,
-        }
+        let ty = Some(self.quote(ctx.lvl, dom.clone()));
+        Rc::new(Core::Runtime(Note::Binds { grade: self.constant(grade), ty }, lam))
     }
 
     /// Something supplied `grade` times.  Zero times means it is never looked
@@ -388,7 +428,7 @@ impl Checker {
             let (body, mut usage) = self.check_against_sig(&ctx2, rhs, sig_cod, cod_v);
             self.close_effects(&ctx2, rhs.id, &mut usage, allowed);
             self.leave_binder(&ctx2, rhs.id, x, grade.clone(), &mut usage, false);
-            return (self.lam(name.clone(), grade, body), usage);
+            return (self.lam(ctx, name.clone(), grade, dom, body), usage);
         }
         self.check(ctx, rhs, vsig)
     }
@@ -462,7 +502,8 @@ impl Checker {
                     if let Some(unique) = b.name.unique {
                         let name = b.name.text.clone();
                         members.push((unique, core.clone()));
-                        self.rec_defs.push(RecDef { unique, name, lvl: ctx_rec.lvl, core });
+                        let local = self.lets > 0;
+                        self.rec_defs.push(RecDef { unique, name, lvl: ctx_rec.lvl, core, local });
                     }
                     rhs = rhs + usage;
                     let quoted = self.quote(ctx_rec.lvl, ty.clone());
@@ -501,16 +542,68 @@ impl Checker {
         arity > 0 && self.row_parts(&row).labels.iter().any(|(_, l)| matches!(**l, Value::LitTy(Builtin::Div)))
     }
 
+    /// The groups of a `let` block: what is defined there is local.
+    fn enter_let(&mut self, ctx: &Ctx, groups: &[hir::BindGroup]) -> (Ctx, Vec<Pending>, Vec<LetWrap>) {
+        self.lets += 1;
+        let entered = self.enter_groups(ctx, groups);
+        self.lets -= 1;
+        entered
+    }
+
     pub(super) fn enter_groups(&mut self, ctx: &Ctx, groups: &[hir::BindGroup]) -> (Ctx, Vec<Pending>, Vec<LetWrap>) {
         let mut ctx = ctx.clone();
         let (mut pending, mut wraps) = (Vec::new(), Vec::new());
         for g in groups {
             let (next, p, w) = self.check_group(&ctx, g);
+            // what had to wait for the rest of the definition to be known
+            self.retry_postponed(false);
             ctx = next;
             pending.push(p);
             wraps.push(w);
         }
         (ctx, pending, wraps)
+    }
+
+    /// A term of type `actual` was to have type `expected`, and they do not
+    /// unify yet: keep the question for later if either is stuck on a meta
+    /// applied to something (`?b Z` against `Vec Z a`), which only what is
+    /// checked after it may solve.  An argument is checked before the
+    /// application's result meets the type it is to have, and that result is
+    /// often what says what such a meta is: in `MkSigma Z Nil`, checked
+    /// against `Sigma Nat (\n -> Vec n a)`, it is the result that solves
+    /// `?b := \n -> Vec n a`, after `Nil` has been checked against `?b Z`.
+    /// Whether the question was kept.
+    pub(super) fn postpone(&mut self, lvl: Lvl, actual: &Rc<Value>, expected: &Rc<Value>, node: NodeId) -> bool {
+        let stuck = |v: &Rc<Value>| matches!(&*self.force(v.clone()), Value::Flex(_, spine) if !spine.is_empty());
+        if !(stuck(expected) || stuck(actual)) {
+            return false;
+        }
+        self.postponed.push(super::Postponed { lvl, actual: actual.clone(), expected: expected.clone(), node });
+        true
+    }
+
+    /// Ask the postponed questions again, until none can be answered; with
+    /// `last`, what is still unanswered is a mismatch.
+    pub(super) fn retry_postponed(&mut self, last: bool) {
+        loop {
+            let waiting = std::mem::take(&mut self.postponed);
+            let before = waiting.len();
+            for p in waiting {
+                if !self.subtype(p.lvl, p.actual.clone(), p.expected.clone()) {
+                    self.postponed.push(p);
+                }
+            }
+            if self.postponed.len() == before {
+                break;
+            }
+        }
+        if last {
+            for p in std::mem::take(&mut self.postponed) {
+                let expected = self.quote(p.lvl, p.expected);
+                let actual = self.quote(p.lvl, p.actual);
+                self.error(p.node, TypeErrorKind::Mismatch { expected, actual });
+            }
+        }
     }
 
     /// Charge each definition's right-hand side for the uses its scope made
@@ -564,7 +657,7 @@ impl Checker {
             // modalities below.)
             TermKind::App(f, n) if matches!(f.kind, TermKind::Type) && !matches!(n.kind, TermKind::BoxIntro(_)) => {
                 let level = match &n.kind {
-                    TermKind::Lit(Lit::Int(n)) => Level::try_from(n).ok().filter(|n| *n < Level::MAX),
+                    TermKind::Lit(Lit::Int(n)) => Level::try_from(*n).ok().filter(|n| *n < Level::MAX),
                     _ => None,
                 };
                 match level {
@@ -709,7 +802,7 @@ impl Checker {
                 // the codomain may mention the binder, so quote it one level
                 // in and close it over the *outer* environment
                 let cod = Closure { env: ctx.env.clone(), body: self.quote(ctx2.lvl, body_ty) };
-                let lam = self.lam(name.clone(), &grade, body_c);
+                let lam = self.lam(ctx, name.clone(), &grade, &dom, body_c);
                 let pi = Value::Pi { name, icit: Icit::Explicit, grade, in_type, dom, cod };
                 (lam, Rc::new(pi), usage)
             }
@@ -732,7 +825,7 @@ impl Checker {
                 None => err(),
             },
             TermKind::Let(groups, body) => {
-                let (ctx2, pending, wraps) = self.enter_groups(ctx, groups);
+                let (ctx2, pending, wraps) = self.enter_let(ctx, groups);
                 let (body_c, ty, usage) = self.infer(&ctx2, body);
                 // the type may not mention what only has a value at run time
                 let quoted = self.quote(ctx2.lvl, ty.clone());
@@ -750,10 +843,20 @@ impl Checker {
             TermKind::Case(scrutinee, clauses) => self.case_of(ctx, nid, scrutinee, clauses, None),
             // a row: effects and row variables
             TermKind::Row(labels, tail) => {
-                let effect = || Rc::new(Value::LitTy(Builtin::Effect));
-                let labels = labels.iter().map(|l| self.check(ctx, l, effect()).0).collect();
-                let tails = tail.iter().map(|t| self.check(ctx, t, effect()).0).collect();
-                (Rc::new(Core::Row(labels, tails)), effect(), Usage::none())
+                let mut many = false;
+                let mut parts = |this: &mut Self, ts: &mut dyn Iterator<Item = &hir::Term>| {
+                    let mut out = Vec::new();
+                    for t in ts {
+                        let (c, m) = this.row_part(ctx, t);
+                        many |= m;
+                        out.push(c);
+                    }
+                    out
+                };
+                let labels = parts(self, &mut labels.iter());
+                let tails = parts(self, &mut tail.iter().map(|t| &**t));
+                let kind = if many { super::handlers::many_effect_kind() } else { Rc::new(Core::LitTy(Builtin::Effect)) };
+                (Rc::new(Core::Row(labels, tails)), self.eval(&ctx.env, &kind), Usage::none())
             }
             TermKind::Eff(..) => {
                 self.error(nid, TypeErrorKind::EffectOutsideArrow);
@@ -882,10 +985,8 @@ impl Checker {
             return None;
         };
         let unboxed = Rc::new(Core::Unbox(boxed_c));
-        let unboxed = match self.constant(&grade) {
-            Some(g) => Rc::new(Core::Runtime(Note::Binds(g), unboxed)),
-            None => unboxed,
-        };
+        let ty = Some(self.quote(ctx.lvl, a.clone()));
+        let unboxed = Rc::new(Core::Runtime(Note::Binds { grade: self.constant(&grade), ty }, unboxed));
         let value = self.eval(&ctx.env, &unboxed);
         Some((ctx.define(x, a, value), grade, unboxed, boxed_usage))
     }
@@ -914,7 +1015,7 @@ impl Checker {
                 let (cod_v, allowed) = self.split_comp(self.apply(cod, vvar(ctx.lvl, name.clone())));
                 let (body_c, mut usage) = self.check(&ctx2, t, cod_v);
                 self.close_effects(&ctx2, nid, &mut usage, allowed);
-                (self.lam(name.clone(), grade, body_c), usage)
+                (self.lam(ctx, name.clone(), grade, dom, body_c), usage)
             }
             // a lambda gets its binder's type and grade from the expected Pi
             (TermKind::Lam(x, ann, ty_ann, body), Value::Pi { grade: pi_grade, in_type: pi_in_type, dom, cod, .. }) => {
@@ -957,7 +1058,7 @@ impl Checker {
                 let (cod_v, effects) = self.split_comp(self.apply(cod, vvar(ctx.lvl, name.clone())));
                 let (body_c, mut usage) = self.check(&ctx2, body, cod_v);
                 self.close_effects(&ctx2, nid, &mut usage, effects);
-                let lam = self.lam(name, &allowed, body_c);
+                let lam = self.lam(ctx, name, &allowed, dom, body_c);
                 self.leave_binder(&ctx2, nid, x, allowed, &mut usage, false);
                 (lam, usage)
             }
@@ -980,7 +1081,7 @@ impl Checker {
             // Nothing else is overloaded: a grade *variable* is an ordinary
             // variable, and gets here by the fallback.
             (TermKind::Lit(Lit::Unit), Value::Type(_)) => (Rc::new(Core::LitTy(Builtin::Unit)), Usage::none()),
-            (TermKind::Lit(Lit::Int(n)), Value::LitTy(Builtin::Grade)) => match u64::try_from(n) {
+            (TermKind::Lit(Lit::Int(n)), Value::LitTy(Builtin::Grade)) => match u64::try_from(*n) {
                 Ok(n) => (Core::grade(Grade::exact(n)), Usage::none()),
                 Err(_) => {
                     self.error(nid, TypeErrorKind::GradeTooLarge);
@@ -994,7 +1095,7 @@ impl Checker {
                 let core = match op {
                     Prim::IntAdd => Core::GradeAdd(a_c, b_c),
                     Prim::IntMul => Core::GradeMul(a_c, b_c),
-                    Prim::IntSub | Prim::IntDiv | Prim::IntMod | Prim::IntLt | Prim::IntEq => {
+                    Prim::IntSub | Prim::IntDiv | Prim::IntMod | Prim::IntLt | Prim::IntEq | Prim::StrAppend => {
                         unreachable!("not grade arithmetic")
                     }
                 };
@@ -1030,7 +1131,7 @@ impl Checker {
                 None => (Rc::new(Core::Error), Usage::unknown()),
             },
             (TermKind::Let(groups, body), _) => {
-                let (ctx2, pending, wraps) = self.enter_groups(ctx, groups);
+                let (ctx2, pending, wraps) = self.enter_let(ctx, groups);
                 let (body_c, usage) = self.check(&ctx2, body, expected.clone());
                 (Self::wrap_lets(body_c, wraps), Self::leave_groups(usage, pending))
             }
@@ -1050,11 +1151,15 @@ impl Checker {
             // instantiated after all.
             _ => {
                 let (core, actual, usage) = self.infer(ctx, t);
-                let (core, actual) = match &*expected {
-                    Value::Flex(m, _) if self.fits_meta(ctx, *m, &actual) => (core, actual),
+                // (a meta applied to something is a type to be worked out
+                // from what it is applied to, not a bare unknown)
+                let (core, actual) = match &*self.force(expected.clone()) {
+                    Value::Flex(m, spine) if spine.is_empty() && self.fits_meta(ctx, *m, &actual) => (core, actual),
                     _ => self.insert(ctx, nid, core, actual),
                 };
                 if self.subtype(ctx.lvl, actual.clone(), expected.clone()) {
+                    (core, usage)
+                } else if self.postpone(ctx.lvl, &actual, &expected, nid) {
                     (core, usage)
                 } else {
                     let e = self.quote(ctx.lvl, expected.clone());

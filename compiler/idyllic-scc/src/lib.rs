@@ -13,8 +13,13 @@
 //!   earlier groups (topological order) — this is the "retopologize" step.
 //!
 //! Node ids are preserved, so the span / type side tables stay valid.
+//!
+//! Data types are put in order too: the checker declares their kinds one
+//! after another, so a kind may only mention the types before it (`Fin :
+//! Nat -> Type` wants `Nat`), and the modules of a package come in no
+//! particular order.
 
-use idyllic_hir::{Bind, BindGroup, Clause, GradeAnn, Module, PatKind, Pattern, Rhs, Term, TermKind};
+use idyllic_hir::{Bind, BindGroup, Clause, DataDecl, GradeAnn, Module, PatKind, Pattern, Rhs, Term, TermKind};
 use std::collections::{HashMap, HashSet};
 
 /// Retopologize a whole module: its top-level groups, and every nested `let`
@@ -23,7 +28,46 @@ pub fn scc_module(m: Module) -> Module {
     // (each top-level group apart: the prelude's definitions all come before
     // the program's)
     let groups = m.groups.into_iter().flat_map(|g| scc_groups(vec![g])).collect();
-    Module { groups, body: m.body.map(scc_term), ..m }
+    let datas = order_datas(m.datas);
+    Module { groups, datas, body: m.body.map(scc_term), ..m }
+}
+
+/// Data types, each after the ones its parameters' kinds and its own kind
+/// mention, and otherwise in the order they came.  (Its constructors may
+/// mention any of them, itself included: every kind is declared before any
+/// constructor is checked.)
+fn order_datas(datas: Vec<DataDecl>) -> Vec<DataDecl> {
+    let index: HashMap<usize, usize> = datas.iter().enumerate().filter_map(|(i, d)| Some((d.name.unique?, i))).collect();
+    let needs: Vec<Vec<usize>> = datas
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let mut mentioned = HashSet::new();
+            for kind in d.params.iter().filter_map(|(_, k)| k.as_ref()).chain(d.kind.as_ref()) {
+                mentioned.extend(free_uniques(kind));
+            }
+            let mut before: Vec<usize> = mentioned.iter().filter_map(|u| index.get(u).copied()).filter(|&j| j != i).collect();
+            before.sort_unstable();
+            before
+        })
+        .collect();
+    fn visit(i: usize, needs: &[Vec<usize>], seen: &mut [bool], order: &mut Vec<usize>) {
+        if seen[i] {
+            return;
+        }
+        seen[i] = true;
+        for &j in &needs[i] {
+            visit(j, needs, seen, order);
+        }
+        order.push(i);
+    }
+    let mut seen = vec![false; datas.len()];
+    let mut order = Vec::new();
+    for i in 0..datas.len() {
+        visit(i, &needs, &mut seen, &mut order);
+    }
+    let mut slots: Vec<Option<DataDecl>> = datas.into_iter().map(Some).collect();
+    order.into_iter().filter_map(|i| slots[i].take()).collect()
 }
 
 /// Regroup a `let`'s bindings, first doing the same for any `let` nested in

@@ -1,0 +1,25 @@
+-- Exceptions, as an effect: `throw` gives up with an error of type `e`,
+-- and `catch` turns a computation that may throw into a `Result`. Nothing
+-- after a `throw` runs: its handler never resumes it.
+
+@pub effect Throw (e : Type) where
+  throw : {a : Type} -> e -> a
+
+-- Run `body`: `Ok` what it gives, or `Err` what it threw.
+@pub catch : {e a : Type} -> (body : () -> a ! {Throw e | r}) -> Result e a ! r
+catch body = handle body () with
+  return x -> Ok x
+  throw err k -> Err err
+
+-- What `body` gives, or `fallback` of what it threw. (A handler's clause
+-- may run any number of times, as far as the checker can see, so what it
+-- uses from outside is taken with [].)
+@pub recover : {e a : Type} -> (fallback : [] (e -> a ! r)) -> (body : () -> a ! {Throw e | r}) -> a ! r
+recover fallback body = handle body () with
+  return x -> x
+  throw err k -> fallback err
+
+-- Throw the error of a `Result`, or give its value.
+@pub orThrow : {e a : Type} -> Result e a -> a ! Throw e
+orThrow (Err err) = throw err
+orThrow (Ok x) = x

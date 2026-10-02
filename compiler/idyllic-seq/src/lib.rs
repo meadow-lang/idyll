@@ -46,7 +46,6 @@ pub mod lower;
 pub mod machine;
 
 use idyllic_typecheck::grade::Grade;
-use num_bigint::BigInt;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
@@ -118,7 +117,7 @@ impl fmt::Display for Symbol {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Extern {
     /// `extern lit n { (v) ⇒ s }`
-    LitInt(BigInt),
+    LitInt(i64),
     LitStr(String),
     /// `extern add(a, b) { (v) ⇒ s }`
     Add,
@@ -131,9 +130,29 @@ pub enum Extern {
     /// have no fields and so are not allocated
     Lt,
     Eq,
+    /// `extern append(a, b) { (v) ⇒ s }`: two strings, one after the other
+    Append,
     /// `extern halt(v) {}`: no clauses, so nothing follows.  The program's
     /// answer is `v`.
     Halt,
+}
+
+impl Extern {
+    /// The primitive an arithmetic or comparison extern computes.
+    pub fn prim(&self) -> Option<idyllic_builtins::Prim> {
+        use idyllic_builtins::Prim;
+        Some(match self {
+            Extern::Add => Prim::IntAdd,
+            Extern::Mul => Prim::IntMul,
+            Extern::Sub => Prim::IntSub,
+            Extern::Div => Prim::IntDiv,
+            Extern::Mod => Prim::IntMod,
+            Extern::Lt => Prim::IntLt,
+            Extern::Eq => Prim::IntEq,
+            Extern::Append => Prim::StrAppend,
+            Extern::LitInt(_) | Extern::LitStr(_) | Extern::Halt => return None,
+        })
+    }
 }
 
 /// The parameters a clause binds, and what it does with them.
@@ -294,6 +313,7 @@ impl fmt::Display for Extern {
             Extern::Mod => write!(f, "mod"),
             Extern::Lt => write!(f, "lt"),
             Extern::Eq => write!(f, "eq"),
+            Extern::Append => write!(f, "append"),
             Extern::Halt => write!(f, "halt"),
         }
     }

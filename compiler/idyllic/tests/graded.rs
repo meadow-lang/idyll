@@ -482,7 +482,8 @@ fn a_let_under_a_lambda_survives_being_applied() {
 fn an_oversized_grade_is_rejected() {
     rejects(
         "\\(x : [99999999999999999999999] Int) -> x",
-        "grade is too large: grades are counts that fit a machine word",
+        // (a grade is written as an `Int` is, and caught as one)
+        "parse error: 99999999999999999999999 does not fit in an Int, which is 64 bits",
     );
 }
 

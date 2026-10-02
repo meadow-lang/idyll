@@ -55,7 +55,15 @@ fn native(name: &str, src: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&ran.stdout).replace("\r\n", "\n").trim().to_string())
 }
 
+#[test]
+fn std_compiles_natively() {
+    // what a program uses of the standard library is compiled with it
+    agree("std", "use Std.List (sum, map, reverse)\n\nsum (map (\\(x : Int) -> x * 2) (reverse #[1, 2, 3]))");
+    agree("stdnat", "use Std.Nat (fromInt, toInt, times)\n\ntoInt (times (fromInt 6) (fromInt 7))");
+}
+
 /// The machine's answer and the compiled program's must be the same.
+
 fn agree(name: &str, src: &str) {
     let out = pipeline::run(src, &Options { debug: false, style: OutputStyle::PLAIN, live: false });
     let Some(Evaluation::Value(expected)) = out.evaluation else { panic!("{src}\nthe machine gave {:?}", out.evaluation) };
@@ -191,4 +199,114 @@ fn the_worlds_effects_natively() {
     if let Some(got) = native("world", &src) {
         assert_eq!(got, out.printed.trim());
     }
+}
+
+// ---------------------------------------------------------------------------
+// Handlers: a program with one keeps its continuations on the heap, and the
+// runtime keeps the handlers in force
+// ---------------------------------------------------------------------------
+
+const ASK: &str = "effect Ask where\n  ask : () -> Int\n\n";
+
+#[test]
+fn a_handler_answers_its_operations_natively() {
+    let sum3 = "sum3 : () -> Int ! Ask\nsum3 u = ask () + ask () + ask ()\n\n";
+    agree("handler-ask", &format!("{ASK}{sum3}handle sum3 () with\n  ask _ k -> k 10\n"));
+}
+
+#[test]
+fn a_handler_that_never_resumes_natively() {
+    // an exception: the continuation's grade is 0
+    let fail = "effect Fail where\n  fail : () -> Int\n\n\
+                safeDiv : (a : [] Int) -> (b : [] Int) -> Int ! Fail\n\
+                safeDiv a b = if b == 0 then fail () else a / b\n\n";
+    agree("handler-fail", &format!("{fail}handle safeDiv 7 0 with\n  return x -> x + 1\n  fail _ k -> 0\n"));
+    agree("handler-ok", &format!("{fail}handle safeDiv 7 2 with\n  return x -> x + 1\n  fail _ k -> 0\n"));
+}
+
+#[test]
+fn a_handler_resumes_more_than_once_natively() {
+    let src = "effect Choose where\n  @many flip : () -> Bool\n\n\
+               pick : () -> Int ! Choose\npick u = if flip () then 1 else 10\n\n\
+               handle pick () with\n  flip _ k -> k True + k False\n";
+    agree("handler-multi", src);
+}
+
+#[test]
+fn state_as_a_handler_natively() {
+    let src = "effect State (s : Type) where\n  get : () -> s\n  put : (x : [] s) -> ()\n\n\
+               counter : () -> Int ! State Int\n\
+               counter u =\n  let a = get () in\n  let b = put (a + 1) in\n  let c = get () in\n  c * 10\n\n\
+               run : (s : [] Int) -> Int\n\
+               run = handle counter () with\n  return x -> \\(s : [] Int) -> x\n  \
+               get _ k -> \\(s : [] Int) -> k s s\n  put s2 k -> \\(s : [] Int) -> k () s2\n\n\
+               run 4\n";
+    agree("handler-state", src);
+}
+
+#[test]
+fn handlers_nest_natively() {
+    // an operation passes over a handler that does not take it, which goes
+    // into the resumption and comes back when it is resumed
+    let src = "effect Log where\n  log : Int -> ()\n\n\
+               twice : (f : [] (() -> Int ! e)) -> Int ! e\ntwice f = f () + f ()\n\n\
+               logged : () -> Int ! {Ask, Log}\nlogged u = let x = log 1 in ask ()\n\n\
+               inner : () -> Int ! Log\ninner u = handle twice logged with\n  ask _ k -> let y = log 100 in k 5\n\n\
+               handle inner () with\n  return x -> x\n  log n k -> n + k ()\n";
+    agree("handler-nested", &format!("{ASK}{src}"));
+}
+
+#[test]
+fn a_handler_beside_the_worlds_effects_natively() {
+    // the program's own handler, and the console's, which is the runtime
+    let src = format!(
+        "{ASK}greet : () -> () ! {{Ask, Console}}\ngreet u = let n = ask () in printInt n\n\n\
+         main : () -> () ! Eff\nmain () = handle greet () with\n  ask _ k -> let u = putStrLn \"asked\" in k 42\n"
+    );
+    let out = pipeline::run(&src, &Options { debug: false, style: OutputStyle::PLAIN, live: false });
+    assert!(out.diagnostics.is_empty(), "{:#?}", out.diagnostics);
+    assert_eq!(out.printed, "asked\n42\n");
+    if let Some(got) = native("handler-world", &src) {
+        assert_eq!(got, out.printed.trim());
+    }
+}
+
+#[test]
+fn a_long_run_under_a_handler_takes_no_stack() {
+    // every call is a tail call once continuations are on the heap, and a
+    // resumption's blocks are reused
+    let src = format!(
+        "{ASK}total : (n : [] Int) -> (acc : [] Int) -> Int ! {{Ask, Div}}\n\
+         total n acc = if n == 0 then acc else total (n - 1) (acc + ask ())\n\n\
+         handle total 1000000 0 with\n  ask _ k -> k 2\n"
+    );
+    // (longer than the machine's fuel lasts)
+    if let Some(got) = native("handler-long", &src) {
+        assert_eq!(got, "2000000");
+    }
+}
+
+#[test]
+fn abort_natively() {
+    // the message on standard error, and exit status 1, after what was printed
+    let src = "main : () -> () ! Eff\nmain () = let u = putStrLn \"before\" in let v = putErr \"note\\n\" in abort \"gave up\"\n";
+    let out = pipeline::run(src, &Options { debug: false, style: OutputStyle::PLAIN, live: false });
+    assert!(out.diagnostics.is_empty(), "{:#?}", out.diagnostics);
+    assert_eq!((out.printed.as_str(), out.errors.as_str()), ("before\n", "note\ngave up\n"));
+    if !clang_is_installed() {
+        return;
+    }
+    let ir = llvm::emit(out.native.as_ref().expect("lowered"), out.result_kind).expect("it can be compiled");
+    let dir: PathBuf = std::env::temp_dir().join(format!("idyllic-test-{}-abort", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (ll, rt, exe) = (dir.join("p.ll"), dir.join("rt.c"), dir.join("p.exe"));
+    std::fs::write(&ll, ir).unwrap();
+    std::fs::write(&rt, llvm::RUNTIME).unwrap();
+    let built = Command::new("clang").args(llvm::clang_arguments()).args([&ll, &rt]).arg("-o").arg(&exe).output().unwrap();
+    assert!(built.status.success(), "clang failed:\n{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&exe).output().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(ran.status.code(), Some(1));
+    let text = |b: &[u8]| String::from_utf8_lossy(b).replace("\r\n", "\n");
+    assert_eq!((text(&ran.stdout), text(&ran.stderr)), ("before\n".to_string(), "note\ngave up\n".to_string()));
 }

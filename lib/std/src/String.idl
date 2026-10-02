@@ -1,0 +1,58 @@
+-- Building strings. A `String` can be joined (`++`) and printed, but not
+-- yet taken apart: there are no characters to look at.
+
+use Std.Nat (Nat)
+use Std.Nat.Nat.*
+
+-- The strings, one after another.
+@pub concat : List String -> String
+concat Nil = ""
+concat (s :: rest) = s ++ concat rest
+
+-- The strings, with `sep` between each two: `join ", " #["a", "b"]` is
+-- `"a, b"`.
+@pub join : (sep : [] String) -> List String -> String
+join sep Nil = ""
+join sep (s :: rest) = s ++ joined sep rest
+
+-- `sep` in front of each.
+joined : (sep : [] String) -> List String -> String
+joined sep Nil = ""
+joined sep (s :: rest) = sep ++ s ++ joined sep rest
+
+-- Each followed by a newline.
+@pub unlines : List String -> String
+unlines Nil = ""
+unlines (s :: rest) = s ++ "\n" ++ unlines rest
+
+-- With a space between each two.
+@pub unwords : List String -> String
+unwords ss = join " " ss
+
+-- `n` copies of `s`, one after another.
+@pub replicate : Nat -> (s : [] String) -> String
+replicate Z s = ""
+replicate (S n) s = s ++ replicate n s
+
+-- In double quotes. (Nothing inside is escaped.)
+@pub quote : String -> String
+quote s = "\"" ++ s ++ "\""
+
+@pub parens : String -> String
+parens s = "(" ++ s ++ ")"
+
+-- A list, written the way Idyll writes one, `#[1, 2, 3]`, each element as
+-- `show` writes it. (A show function looks at what it shows as often as it
+-- likes, as `Int.show` does, so takes it with [].)
+@pub fromList : {a : Type} -> (show : [] ((x : [] a) -> String ! e)) -> (xs : [] List a) -> String ! e
+fromList show xs = "#[" ++ join ", " (shown show xs) ++ "]"
+
+shown : {a : Type} -> (show : [] ((x : [] a) -> String ! e)) -> (xs : [] List a) -> List String ! e
+shown show Nil = Nil
+shown show (x :: rest) = show x :: shown show rest
+
+@pub fromInt : (n : [] Int) -> String
+fromInt n = showInt n
+
+@pub fromBool : Bool -> String
+fromBool b = if b then "True" else "False"

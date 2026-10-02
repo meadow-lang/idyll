@@ -164,7 +164,9 @@ struct Lowering {
 
 /// Lower a checked program.  `None` if it has no expression to run.
 pub fn lower(checked: &TypeCheckResult) -> Option<Result<Program, LowerError>> {
-    let program = checked.program.as_ref()?;
+    // what the program never uses (most of the prelude, say) is left out
+    let (pruned, _) = idyllic_typecheck::prune::prune(checked)?;
+    let program = &pruned;
     let mut l = Lowering {
         rec_defs: checked.rec_defs.iter().map(|d| (d.unique, d.clone())).collect(),
         meta_solutions: checked.meta_solutions.clone(),
@@ -266,6 +268,7 @@ impl Lowering {
             Prim::IntMod => Extern::Mod,
             Prim::IntLt => Extern::Lt,
             Prim::IntEq => Extern::Eq,
+            Prim::StrAppend => Extern::Append,
         }
     }
 
@@ -354,8 +357,8 @@ impl Lowering {
         loop {
             let next = match &*body {
                 Core::Lam(x, b) => (x.clone(), None, b.clone()),
-                Core::Runtime(Note::Binds(g), inner) => match &**inner {
-                    Core::Lam(x, b) => (x.clone(), Some(*g), b.clone()),
+                Core::Runtime(Note::Binds { grade, .. }, inner) => match &**inner {
+                    Core::Lam(x, b) => (x.clone(), *grade, b.clone()),
                     _ => break,
                 },
                 _ => break,
@@ -597,7 +600,7 @@ impl Lowering {
             Core::Handle(body, ret, ops) => self.handle(env, body, ret, ops, k),
             Core::Lit(lit) => {
                 let (v, literal) = match lit {
-                    Lit::Int(n) => (self.fresh("n"), Ok(Extern::LitInt(n.clone()))),
+                    Lit::Int(n) => (self.fresh("n"), Ok(Extern::LitInt(*n))),
                     Lit::Str(s) => (self.fresh("s"), Ok(Extern::LitStr(s.clone()))),
                     Lit::Bool(true) => (self.fresh("b"), Err(Symbol::True)),
                     Lit::Bool(false) => (self.fresh("b"), Err(Symbol::False)),
@@ -685,9 +688,9 @@ impl Lowering {
                 },
                 _ => self.term(env, inner, k),
             },
-            Core::Runtime(Note::Binds(grade), inner) => match &**inner {
-                Core::Lam(x, body) => self.lambda(env, x, Some(*grade), body, k),
-                Core::Unbox(e) => self.unbox(env, e, Some(*grade), "x", k),
+            Core::Runtime(Note::Binds { grade, .. }, inner) => match &**inner {
+                Core::Lam(x, body) => self.lambda(env, x, *grade, body, k),
+                Core::Unbox(e) => self.unbox(env, e, *grade, "x", k),
                 _ => self.term(env, inner, k),
             },
             Core::Lam(x, body) => self.lambda(env, x, None, body, k),
@@ -734,9 +737,9 @@ impl Lowering {
                 // `let [x] = b in ..`: what comes out of the box is `x`
                 match &**e {
                     Core::Unbox(b) => self.unbox(env, b, None, name, rest),
-                    Core::Runtime(Note::Binds(g), inner) if matches!(**inner, Core::Unbox(_)) => {
+                    Core::Runtime(Note::Binds { grade, .. }, inner) if matches!(**inner, Core::Unbox(_)) => {
                         let Core::Unbox(b) = &**inner else { unreachable!() };
-                        self.unbox(env, b, Some(*g), name, rest)
+                        self.unbox(env, b, *grade, name, rest)
                     }
                     _ => self.term(env, e, rest),
                 }
@@ -767,7 +770,7 @@ impl Lowering {
             | Core::GradeRange(..)
             | Core::Comp(..)
             | Core::Row(..) => true,
-            Core::Lam(_, body) | Core::Runtime(Note::Binds(_), body) => Self::type_former(body),
+            Core::Lam(_, body) | Core::Runtime(Note::Binds { .. }, body) => Self::type_former(body),
             _ => false,
         }
     }
@@ -821,8 +824,8 @@ impl Lowering {
         for _ in 0..n {
             let (x, grade, body) = match &*c {
                 Core::Lam(x, body) => (x.clone(), None, body.clone()),
-                Core::Runtime(Note::Binds(g), lam) => match &**lam {
-                    Core::Lam(x, body) => (x.clone(), Some(*g), body.clone()),
+                Core::Runtime(Note::Binds { grade, .. }, lam) => match &**lam {
+                    Core::Lam(x, body) => (x.clone(), *grade, body.clone()),
                     _ => return Err(LowerError::ErrorTerm),
                 },
                 _ => return Err(LowerError::ErrorTerm),

@@ -39,6 +39,8 @@ impl Checker {
         let expected = self.force(expected);
         match (&*actual, &*expected) {
             (Value::Type(i), Value::Type(j)) => i <= j,
+            // a row resumed at most once is one that may be resumed more
+            (Value::LitTy(idyllic_builtins::Builtin::Effect), _) if self.row_kind(&expected) == Some(true) => true,
             _ => self.unify(l, actual, expected),
         }
     }
@@ -157,6 +159,49 @@ impl Checker {
     /// row variable that is still a metavariable: `{Ask | ?e} =? {Ask, Log}`
     /// solves `?e := Log`.
     fn unify_rows(&mut self, l: Lvl, t: Rc<Value>, u: Rc<Value>) -> bool {
+        self.unify_rows_pairing(l, t, u, true)
+    }
+
+    /// The head of an effect with parameters, `State` of `State s`: a row
+    /// has at most one effect of each, so two rows' effects with the same
+    /// head are the same effect, their parameters to be unified.
+    pub(super) fn effect_head(&self, v: &Rc<Value>) -> Option<(bool, usize)> {
+        match &*self.force(v.clone()) {
+            Value::Opaque(u, _, spine) if !spine.is_empty() => Some((false, *u)),
+            Value::Rigid(lvl, _, spine) if !spine.is_empty() => Some((true, *lvl)),
+            _ => None,
+        }
+    }
+
+    /// [`Checker::unify_rows`]; with `pair`, effects with parameters that
+    /// differ only in those (`State ?s` and `State s`) are first unified
+    /// with each other, and the rows compared again.
+    fn unify_rows_pairing(&mut self, l: Lvl, t: Rc<Value>, u: Rc<Value>, pair: bool) -> bool {
+        if pair {
+            let (a, b) = (self.row_parts(&t), self.row_parts(&u));
+            let extra = |x: &super::value::Row, y: &super::value::Row| -> Vec<Rc<Value>> {
+                x.labels.iter().filter(|(k, _)| !y.labels.iter().any(|(k2, _)| k2 == k)).map(|(_, v)| v.clone()).collect()
+            };
+            let (la, lb) = (extra(&a, &b), extra(&b, &a));
+            let heads_a: Vec<Option<(bool, usize)>> = la.iter().map(|x| self.effect_head(x)).collect();
+            let heads_b: Vec<Option<(bool, usize)>> = lb.iter().map(|y| self.effect_head(y)).collect();
+            let mut paired = false;
+            for (x, h) in la.iter().zip(&heads_a) {
+                let Some(h) = h else { continue };
+                let once = |hs: &[Option<(bool, usize)>]| hs.iter().filter(|g| g.as_ref() == Some(h)).count() == 1;
+                if !(once(&heads_a) && once(&heads_b)) {
+                    continue;
+                }
+                let y = lb.iter().zip(&heads_b).find(|(_, g)| g.as_ref() == Some(h)).map(|(y, _)| y.clone()).expect("once");
+                if !self.unify(l, x.clone(), y) {
+                    return false;
+                }
+                paired = true;
+            }
+            if paired {
+                return self.unify_rows_pairing(l, t, u, false);
+            }
+        }
         let (a, b) = (self.row_parts(&t), self.row_parts(&u));
         let only = |x: &super::value::Row, y: &super::value::Row| {
             let labels: Vec<Rc<Value>> =
@@ -229,7 +274,7 @@ impl Checker {
         // A solution that is too large is reported here, where the reason is
         // known, and the meta is solved with an error so that nothing else
         // complains about it.
-        if let Some(kind) = self.universe_violation(&info, &value) {
+        if let Some(kind) = self.universe_violation(&info, &value).or_else(|| self.row_kind_violation(&info, &value)) {
             self.error(info.node, kind);
             self.metas[m] = MetaEntry::Solved(Rc::new(Value::Error), info);
             return true;
@@ -252,6 +297,26 @@ impl Checker {
             MetaOrigin::Inferred(desc) => desc.clone(),
         };
         (actual > allowed).then(|| TypeErrorKind::UniverseTooLarge { what, solution: self.quote(at, inst), allowed, actual })
+    }
+
+    /// Whether a solution for a row variable of kind `Effect` holds an
+    /// operation that may be resumed more than once, which such a row may
+    /// not: code polymorphic in it keeps its continuations on a stack.
+    fn row_kind_violation(&self, info: &MetaInfo, solution: &Rc<Value>) -> Option<TypeErrorKind> {
+        let mt = info.ty.as_ref()?;
+        if self.row_kind(&mt.ty) != Some(false) {
+            return None;
+        }
+        let at = mt.types.len();
+        let inst = mt.spine.iter().fold(solution.clone(), |f, &k| self.vapp(f, vvar(k, mt.types[k].0.clone())));
+        if !self.row_is_many(&mt.types, &inst) {
+            return None;
+        }
+        let what = match &info.origin {
+            MetaOrigin::Hole => "this hole".to_string(),
+            MetaOrigin::Inferred(desc) => desc.clone(),
+        };
+        Some(TypeErrorKind::ManyEffectsInRow { what, row: self.quote(at, inst) })
     }
 
     /// A lower bound on the universe a type lives in, given the types of the

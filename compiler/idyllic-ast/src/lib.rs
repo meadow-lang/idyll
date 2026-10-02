@@ -94,9 +94,19 @@ pub struct HandleClause {
 pub struct EffectDecl {
     pub name: Ident,
     pub params: Vec<(Ident, Option<LTerm>)>,
-    pub ops: Vec<(Ident, LTerm)>,
+    pub ops: Vec<OpSig>,
     /// its operations', too
     pub visibility: Visibility,
+}
+
+/// An operation of an effect: `get : () -> s`, or `@many flip : () -> Bool`
+/// for one a handler may resume more than once.  Unmarked, a handler
+/// resumes it at most once, which is what lets it run on a stack.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpSig {
+    pub name: Ident,
+    pub ty: LTerm,
+    pub many: bool,
 }
 
 /// One alternative of a `case`: a pattern, and what to do if it matches.
@@ -212,8 +222,8 @@ pub struct Use {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Lit {
     Unit,
-    /// Arbitrary precision.
-    Int(num_bigint::BigInt),
+    /// 64 bits, wrapping: the runtime's primitive integer.
+    Int(i64),
     Bool(bool),
     Str(String),
 }

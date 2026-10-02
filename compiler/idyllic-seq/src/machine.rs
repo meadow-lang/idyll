@@ -94,8 +94,8 @@
 //! runs on fuel: one unit per rule of Figure 5.
 
 use super::{Extern, Program, Stmt, Symbol, Var};
+use idyllic_builtins::IntResult;
 use idyllic_world::{Answer, Arg, Stop, World};
-use num_bigint::BigInt;
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
@@ -409,7 +409,14 @@ impl<'p> Assembler<'p> {
             Stmt::Extern(op, args, branches) => {
                 let arity = match op {
                     Extern::LitInt(_) | Extern::LitStr(_) => 0,
-                    Extern::Add | Extern::Mul | Extern::Sub | Extern::Div | Extern::Mod | Extern::Lt | Extern::Eq => 2,
+                    Extern::Add
+                    | Extern::Mul
+                    | Extern::Sub
+                    | Extern::Div
+                    | Extern::Mod
+                    | Extern::Lt
+                    | Extern::Eq
+                    | Extern::Append => 2,
                     Extern::Halt => unreachable!("handled above"),
                 };
                 if args.len() != arity {
@@ -448,7 +455,8 @@ enum Word {
     Tag(Symbol),
     /// A consumer's virtual table.
     Table(TableId),
-    Int(BigInt),
+    /// 64 bits, wrapping, as native code has it
+    Int(i64),
     Str(Rc<str>),
 }
 
@@ -731,9 +739,9 @@ pub fn run_in(program: &Program, fuel: u64, world: &mut World) -> Result<Outcome
     execute(&assemble(program)?, fuel, world)
 }
 
-fn integer(regs: &[Value], r: Reg) -> Result<BigInt, MachineError> {
+fn integer(regs: &[Value], r: Reg) -> Result<i64, MachineError> {
     match &regs[r].word {
-        Word::Int(n) => Ok(n.clone()),
+        Word::Int(n) => Ok(*n),
         _ => malformed(format!("register {r} is not an integer")),
     }
 }
@@ -776,10 +784,10 @@ fn world(world: &mut World, heap: &mut Heap, op: &Symbol, xs: &[Value]) -> Resul
     let mut args = Vec::new();
     for x in xs {
         args.push(match &x.word {
-            Word::Int(n) => Arg::Int(n.clone()),
+            Word::Int(n) => Arg::Int(*n),
             Word::Str(s) => Arg::Str(s.clone()),
             // `()`, and whatever else carries nothing an operation reads
-            _ => Arg::Int(BigInt::ZERO),
+            _ => Arg::Int(0),
         });
     }
     match world.perform(name, &args) {
@@ -916,21 +924,20 @@ pub fn execute(code: &Code, mut fuel: u64, world: &mut World) -> Result<Outcome,
             Instr::Jump { target } => *target,
             Instr::Extern { op, args } => {
                 let result = match (op, args.as_slice()) {
-                    (Extern::LitInt(n), []) => Value { block: None, word: Word::Int(n.clone()) },
+                    (Extern::LitInt(n), []) => Value { block: None, word: Word::Int(*n) },
                     (Extern::LitStr(s), []) => Value { block: None, word: Word::Str(s.as_str().into()) },
-                    (Extern::Add, &[a, b]) => Value { block: None, word: Word::Int(integer(&regs, a)? + integer(&regs, b)?) },
-                    (Extern::Mul, &[a, b]) => Value { block: None, word: Word::Int(integer(&regs, a)? * integer(&regs, b)?) },
-                    (Extern::Sub, &[a, b]) => Value { block: None, word: Word::Int(integer(&regs, a)? - integer(&regs, b)?) },
-                    (Extern::Div | Extern::Mod, &[a, b]) => {
-                        let (a, b) = (integer(&regs, a)?, integer(&regs, b)?);
-                        if b == BigInt::ZERO {
-                            return Err(MachineError::DivisionByZero);
+                    (Extern::Append, &[a, b]) => match (&regs[a].word, &regs[b].word) {
+                        (Word::Str(x), Word::Str(y)) => Value { block: None, word: Word::Str(format!("{x}{y}").into()) },
+                        _ => return malformed("append is given something that is not a string"),
+                    },
+                    (op, &[a, b]) => {
+                        let prim = op.prim().expect("assembly checked every extern's arity");
+                        match prim.on_ints(integer(&regs, a)?, integer(&regs, b)?) {
+                            Some(IntResult::Int(n)) => Value { block: None, word: Word::Int(n) },
+                            Some(IntResult::Bool(t)) => truth(t),
+                            None => return Err(MachineError::DivisionByZero),
                         }
-                        let n = if matches!(op, Extern::Div) { a / b } else { a % b };
-                        Value { block: None, word: Word::Int(n) }
                     }
-                    (Extern::Lt, &[a, b]) => truth(integer(&regs, a)? < integer(&regs, b)?),
-                    (Extern::Eq, &[a, b]) => truth(integer(&regs, a)? == integer(&regs, b)?),
                     _ => unreachable!("assembly checked every extern's arity"),
                 };
                 regs.push(result);

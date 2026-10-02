@@ -191,18 +191,22 @@ static const char *text(int64_t word) { return (const char *)(intptr_t)word; }
 
 /* --- Console --------------------------------------------------------------- */
 
+/* `a ++ b`: a new string, which is never freed, as no string is yet */
+int64_t idyll_str_append(int64_t a, int64_t b) {
+    const char *x = text(a), *y = text(b);
+    size_t n = strlen(x), m = strlen(y);
+    char *s = malloc(n + m + 1);
+    if (!s) {
+        fputs("idyll: out of memory\n", stderr);
+        exit(1);
+    }
+    memcpy(s, x, n);
+    memcpy(s + n, y, m + 1);
+    return (int64_t)(intptr_t)s;
+}
+
 void idyll_op_putStr(int64_t s, block **b, int64_t *w) {
     fputs(text(s), stdout);
-    give_unit(b, w);
-}
-
-void idyll_op_putStrLn(int64_t s, block **b, int64_t *w) {
-    puts(text(s));
-    give_unit(b, w);
-}
-
-void idyll_op_printInt(int64_t n, block **b, int64_t *w) {
-    printf("%lld\n", (long long)n);
     give_unit(b, w);
 }
 
@@ -558,11 +562,154 @@ void idyll_op_isDir(int64_t path, block **b, int64_t *w) { give(b, w, NULL, is_d
 
 /* --- Test ------------------------------------------------------------------ */
 
+void idyll_op_putErr(int64_t s, block **b, int64_t *w) {
+    fflush(stdout);
+    fputs(text(s), stderr);
+    give_unit(b, w);
+}
+
+/* what the prelude's `Abort` does unhandled */
+void idyll_op_abort(int64_t message, block **b, int64_t *w) {
+    (void)b;
+    (void)w;
+    fflush(stdout);
+    fprintf(stderr, "%s\n", text(message));
+    exit(1);
+}
+
 void idyll_op_fail(int64_t message, block **b, int64_t *w) {
     (void)b;
     (void)w;
     fflush(stdout);
     fprintf(stderr, "test failed: %s\n", text(message));
+    exit(1);
+}
+
+/* Handlers, for a program that has them: what the AxCut machine does with
+ * its `handlers` (compiler/idyllic-seq/src/machine.rs), here.  The handlers
+ * in force are a stack of pairs: a handler, and where its `handle` goes once
+ * the handler is done.  A handler is a block (its closure environment) and
+ * a word that points to a table of its clauses, keyed by the number the
+ * compiler gave each operation (`0` is `return`). */
+
+typedef struct {
+    int64_t op;
+    void *code;
+} clause;
+
+typedef struct {
+    int64_t n;
+    clause clauses[];
+} clause_table;
+
+typedef struct {
+    value h, k;
+} in_force;
+
+static in_force *handlers;
+static size_t handlers_len, handlers_cap;
+
+static void push_handler(value h, value k) {
+    if (handlers_len == handlers_cap) {
+        handlers_cap = handlers_cap ? 2 * handlers_cap : 64;
+        handlers = realloc(handlers, handlers_cap * sizeof(in_force));
+        if (!handlers) {
+            fputs("idyll: out of memory\n", stderr);
+            exit(1);
+        }
+    }
+    handlers[handlers_len].h = h;
+    handlers[handlers_len].k = k;
+    handlers_len++;
+}
+
+/* `handle h k`: `h` is in force until the computation under it returns */
+void idyll_handle(block *hb, int64_t hw, block *kb, int64_t kw) {
+    value h = {hb, hw}, k = {kb, kw};
+    push_handler(h, k);
+}
+
+/* the computation under the newest handler has returned */
+void idyll_unhandle(value *h, value *k) {
+    if (!handlers_len) {
+        fputs("idyll: a handled computation returned with no handler in force\n", stderr);
+        exit(1);
+    }
+    handlers_len--;
+    *h = handlers[handlers_len].h;
+    *k = handlers[handlers_len].k;
+}
+
+/* the code of a handler's clause for `op`, or NULL if it has none */
+void *idyll_clause(int64_t table, int64_t op) {
+    const clause_table *t = (const clause_table *)(intptr_t)table;
+    for (int64_t i = 0; i < t->n; i++)
+        if (t->clauses[i].op == op) return t->clauses[i].code;
+    return NULL;
+}
+
+/* where the nearest handler with a clause for `op` is, or -1 */
+int64_t idyll_find_handler(int64_t op) {
+    for (size_t i = handlers_len; i-- > 0;)
+        if (idyll_clause(handlers[i].h.word, op)) return (int64_t)i;
+    return -1;
+}
+
+static void store(block *b, int64_t i, value v) { b->fields[i] = v; }
+
+/* `perform`, with the handler found at `at`: it and the handlers above it
+ * are taken out of force and kept in a resumption, a block of
+ *
+ *     the continuation of the perform, the handler, the rest
+ *
+ * where the rest is a chain of blocks (handler, where its handle goes,
+ * next), oldest first.  The handler is also entered now, so it is shared;
+ * where its `handle` goes is given to the clause.  Answers the resumption. */
+block *idyll_capture(int64_t at, block *kb, int64_t kw, value *h, value *outer) {
+    *h = handlers[at].h;
+    *outer = handlers[at].k;
+    idyll_share(h->block, 1);
+    block *rest = NULL;
+    for (size_t i = handlers_len; i-- > (size_t)at + 1;) {
+        block *cell = idyll_acquire(3);
+        store(cell, 0, handlers[i].h);
+        store(cell, 1, handlers[i].k);
+        value next = {rest, 0};
+        store(cell, 2, next);
+        rest = cell;
+    }
+    handlers_len = (size_t)at;
+    block *r = idyll_acquire(3);
+    value k = {kb, kw}, chain = {rest, 0};
+    store(r, 0, k);
+    store(r, 1, *h);
+    store(r, 2, chain);
+    return r;
+}
+
+/* A resumption, invoked from `caller`'s handler clause: its handlers are put
+ * back in force, the first now going back to the caller, and the
+ * continuation of the perform is answered. */
+void idyll_reinstate(block *r, block *caller_b, int64_t caller_w, value *k) {
+    *k = r->fields[0];
+    value h = r->fields[1];
+    block *rest = r->fields[2].block;
+    idyll_release(r);
+    value caller = {caller_b, caller_w};
+    push_handler(h, caller);
+    while (rest) {
+        block *cell = rest;
+        value hi = cell->fields[0], ki = cell->fields[1];
+        rest = cell->fields[2].block;
+        idyll_release(cell);
+        push_handler(hi, ki);
+    }
+}
+
+/* an operation performed with no handler for it, which the types rule out */
+void idyll_unhandled(const char *op) {
+    fflush(stdout);
+    fprintf(stderr, "idyll: %s was performed with no handler for it\n", op);
     exit(1);
 }
 

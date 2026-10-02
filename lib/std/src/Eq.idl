@@ -1,0 +1,32 @@
+-- Propositional equality: `Eq x y` has a value, `Refl`, only when `x` and
+-- `y` are the same. Matching on `Refl` teaches the checker that they are,
+-- and a function giving back an `Eq` is a proof.
+--
+-- (Values in `Type` only: there are no universe variables, so two types
+-- cannot be said equal.)
+
+@pub data Eq : {a : Type} -> a -> a -> Type where
+  Refl : {a : Type} -> {x : a} -> Eq x x
+
+use Eq.*
+
+-- Equality the other way round.
+@pub sym : {a : Type} -> {x y : a} -> Eq x y -> Eq y x
+sym Refl = Refl
+
+-- Two equalities, end to end.
+@pub trans : {a : Type} -> {x y z : a} -> Eq x y -> Eq y z -> Eq x z
+trans Refl Refl = Refl
+
+-- Equal things, given to the same function, give equal things. The
+-- function is only needed by the types.
+@pub cong : {a b : Type} -> {x y : a} -> (f : [0] a -> b) -> Eq x y -> Eq (f x) (f y)
+cong f Refl = Refl
+
+-- The same, for a function of two arguments.
+@pub cong2 : {a b c : Type} -> {x y : a} -> {u v : b} -> (f : [0] a -> b -> c) -> Eq x y -> Eq u v -> Eq (f x u) (f y v)
+cong2 f Refl Refl = Refl
+
+-- What holds of `x` holds of anything equal to it: `p` is the property.
+@pub subst : {a : Type} -> {x y : a} -> (p : [0] a -> Type) -> Eq x y -> p x -> p y
+subst p Refl px = px

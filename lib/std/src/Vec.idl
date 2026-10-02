@@ -1,0 +1,116 @@
+-- Vectors: lists whose length is in their type. `Vec n a` has exactly `n`
+-- elements, so `head` needs no `Maybe`, `zip` no leftovers, and `index`,
+-- given a `Fin n`, cannot be out of range. A literal knows its length:
+-- `(#[1, 2, 3] : Vec (S (S (S Z))) Int)`.
+
+use Std.Nat (Nat, plus)
+use Std.Nat.Nat.*
+use Std.Fin (Fin)
+use Std.Fin.Fin.*
+use Std.Pair (Pair)
+use Std.Pair.Pair.*
+use Std.Sigma (Sigma)
+use Std.Sigma.Sigma.*
+use Std.Eq (Eq, cong)
+use Std.Eq.Eq.*
+
+@seq(nil = Nil, cons = Cons)
+@pub data Vec : Nat -> Type -> Type where
+  Nil : Vec Z a
+  Cons : a -> Vec n a -> Vec (S n) a
+
+use Vec.*
+
+-- The first element of a vector that has one, which the type says.
+@pub head : {n : Nat} -> {a : Type} -> (v : [0..1] Vec (S n) a) -> a
+head (Cons x xs) = x
+
+-- All but the first.
+@pub tail : {n : Nat} -> {a : Type} -> (v : [0..1] Vec (S n) a) -> Vec n a
+tail (Cons x xs) = xs
+
+-- The element at an index below the length: always there.
+@pub index : {n : Nat} -> {a : Type} -> Fin n -> (v : [0..1] Vec n a) -> a
+index FZ (Cons x xs) = x
+index (FS i) (Cons x xs) = index i xs
+
+-- How many elements: `n`, counted (see `lengthIsIndex`).
+@pub length : {n : Nat} -> {a : Type} -> (v : [0..1] Vec n a) -> Nat
+length Nil = Z
+length (Cons x xs) = S (length xs)
+
+-- `length` counts what the type says: a proof.
+@pub lengthIsIndex : {n : Nat} -> {a : Type} -> (v : [] Vec n a) -> Eq (length v) n
+lengthIsIndex Nil = Refl
+lengthIsIndex (Cons x xs) = cong S (lengthIsIndex xs)
+
+@pub map : {n : Nat} -> {a b : Type} -> (f : [] (a -> b ! e)) -> Vec n a -> Vec n b ! e
+map f Nil = Nil
+map f (Cons x xs) = Cons (f x) (map f xs)
+
+@pub foldr : {n : Nat} -> {a b : Type} -> (f : [] (a -> b -> b ! e)) -> b -> Vec n a -> b ! e
+foldr f z Nil = z
+foldr f z (Cons x xs) = f x (foldr f z xs)
+
+@pub foldl : {n : Nat} -> {a b : Type} -> (f : [] (b -> a -> b ! e)) -> b -> Vec n a -> b ! e
+foldl f z Nil = z
+foldl f z (Cons x xs) = foldl f (f z x) xs
+
+-- Two vectors, one after the other: as long as both.
+@pub append : {n m : Nat} -> {a : Type} -> Vec n a -> Vec m a -> Vec (plus n m) a
+append Nil ys = ys
+append (Cons x xs) ys = Cons x (append xs ys)
+
+-- One more, at the end.
+@pub snoc : {n : Nat} -> {a : Type} -> Vec n a -> a -> Vec (S n) a
+snoc Nil y = Cons y Nil
+snoc (Cons x xs) y = Cons x (snoc xs y)
+
+@pub reverse : {n : Nat} -> {a : Type} -> Vec n a -> Vec n a
+reverse Nil = Nil
+reverse (Cons x xs) = snoc (reverse xs) x
+
+-- `n` copies of `x`: the length is the argument.
+@pub replicate : {a : Type} -> (n : Nat) -> (x : [] a) -> Vec n a
+replicate Z x = Nil
+replicate (S n) x = Cons x (replicate n x)
+
+-- Pairs, one from each: the lengths are the same, so nothing is left over.
+@pub zip : {n : Nat} -> {a b : Type} -> Vec n a -> Vec n b -> Vec n (Pair a b)
+zip Nil Nil = Nil
+zip (Cons x xs) (Cons y ys) = Cons (MkPair x y) (zip xs ys)
+
+@pub zipWith : {n : Nat} -> {a b c : Type} -> (f : [] (a -> b -> c ! e)) -> Vec n a -> Vec n b -> Vec n c ! e
+zipWith f Nil Nil = Nil
+zipWith f (Cons x xs) (Cons y ys) = Cons (f x y) (zipWith f xs ys)
+
+@pub unzip : {n : Nat} -> {a b : Type} -> Vec n (Pair a b) -> Pair (Vec n a) (Vec n b)
+unzip Nil = MkPair Nil Nil
+unzip (Cons (MkPair x y) rest) = case unzip rest of
+  MkPair xs ys -> MkPair (Cons x xs) (Cons y ys)
+
+-- The first `n` elements and the rest, of a vector the type says is long
+-- enough to have them.
+@pub splitAt : {m : Nat} -> {a : Type} -> (n : Nat) -> Vec (plus n m) a -> Pair (Vec n a) (Vec m a)
+splitAt Z v = MkPair Nil v
+splitAt (S k) (Cons x xs) = case splitAt k xs of
+  MkPair front back -> MkPair (Cons x front) back
+
+@pub sum : {n : Nat} -> Vec n Int -> Int
+sum Nil = 0
+sum (Cons x xs) = x + sum xs
+
+@pub toList : {n : Nat} -> {a : Type} -> Vec n a -> List a
+toList Nil = List.Nil
+toList (Cons x xs) = x :: toList xs
+
+-- A list as a vector, whose length is the list's: the type says which.
+@pub fromList : {a : Type} -> (xs : List a) -> Vec (Std.List.size xs) a
+fromList List.Nil = Nil
+fromList (x :: xs) = Cons x (fromList xs)
+
+-- A list as a vector of some length, with the length.
+@pub fromListSome : {a : Type} -> List a -> Sigma Nat (\n -> Vec n a)
+fromListSome List.Nil = MkSigma Z Nil
+fromListSome (x :: xs) = case fromListSome xs of
+  MkSigma n v -> MkSigma (S n) (Cons x v)

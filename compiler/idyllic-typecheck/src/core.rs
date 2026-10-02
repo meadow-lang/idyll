@@ -123,13 +123,17 @@ pub struct OpClause {
 }
 
 /// What the elaborator knew, and erasure would otherwise forget.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Note {
     /// An argument to a grade-`0` parameter, or the contents of a grade-`0`
     /// box: never used at run time, so never computed.
     Erased,
-    /// On a lambda or an unboxing: the grade of the variable it binds.
-    Binds(Grade),
+    /// On a lambda or an unboxing: the variable it binds, as the elaborator
+    /// knew it.  Its grade, if it is a constant, which says how often the
+    /// program uses it; and its type (in the context the note is in, outside
+    /// the binder), from which the lowering works out how the variable is
+    /// represented at run time.
+    Binds { grade: Option<Grade>, ty: Option<Rc<Core>> },
     /// On a `case` on an erased value whose constructor its type forces:
     /// there is nothing to look at, and nothing to choose, so its one
     /// alternative (or none) is taken without evaluating the scrutinee, its
@@ -138,6 +142,33 @@ pub enum Note {
 }
 
 impl Core {
+    /// Whether the term mentions the variable with de Bruijn index `i`.
+    pub fn mentions(&self, i: usize) -> bool {
+        crate::matching::mentions(self, i)
+    }
+
+    /// Whether a definition of this term, unused, can be left out: whether
+    /// computing it does nothing but make a value.  A function, a literal, a
+    /// variable, and a constructor applied to such terms; `ctor` says which
+    /// constants are constructors.
+    pub fn is_pure_value(&self, ctor: &dyn Fn(usize) -> bool) -> bool {
+        match self {
+            Core::Lam(..) | Core::Lit(_) | Core::Var(..) | Core::Prim(_) | Core::Opaque(..) => true,
+            Core::Runtime(Note::Erased, _) => true,
+            Core::Runtime(_, inner) | Core::BoxIntro(inner) => inner.is_pure_value(ctor),
+            Core::App(..) => {
+                let mut head = self;
+                let mut args = Vec::new();
+                while let Core::App(f, a) = head {
+                    args.push(a);
+                    head = f;
+                }
+                matches!(head, Core::Opaque(u, _) if ctor(*u)) && args.iter().all(|a| a.is_pure_value(ctor))
+            }
+            _ => false,
+        }
+    }
+
     pub fn grade(g: Grade) -> Rc<Core> {
         Rc::new(Core::GradeLit(g))
     }
@@ -437,7 +468,13 @@ impl Core {
                 let alts = alts.iter().map(|a| CaseAlt { body: go(&a.body, depth + a.vars.len()), ..a.clone() }).collect();
                 Rc::new(Core::Case(go(s, depth), Rc::new(alts)))
             }
-            Core::Runtime(n, a) => Rc::new(Core::Runtime(*n, go(a, depth))),
+            Core::Runtime(n, a) => {
+                let n = match n {
+                    Note::Binds { grade, ty: Some(t) } => Note::Binds { grade: *grade, ty: Some(go(t, depth)) },
+                    other => other.clone(),
+                };
+                Rc::new(Core::Runtime(n, go(a, depth)))
+            }
             Core::Comp(a, e) => Rc::new(Core::Comp(go(a, depth), go(e, depth))),
             Core::Row(labels, tails) => Rc::new(Core::Row(
                 labels.iter().map(|l| go(l, depth)).collect(),

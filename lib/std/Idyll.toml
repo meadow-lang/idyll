@@ -1,0 +1,15 @@
+[package]
+name = "Std"
+version = "0.1.0"
+
+# Idyll's standard library. It is embedded in the compiler (see
+# `compiler/idyllic/src/stdlib.rs`) and given to every package as an implicit
+# dependency called `Std`, so it never needs to appear under `[dependencies]`.
+# Nothing of it is in scope unqualified until a `use` says so:
+#
+#   use Std.List (map, foldr)
+#   use Std.Vec (Vec)
+#   use Std.Vec.Vec.*
+#
+# Only `src/` is the library; the other files under `lib/std/` are older
+# drafts, in a syntax Idyll no longer has.

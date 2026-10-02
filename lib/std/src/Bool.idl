@@ -1,0 +1,22 @@
+-- Booleans. There are no `&&` and `||`: only the built-in operators are
+-- written infix. Each of these uses both its arguments, and computes both:
+-- neither short-circuits, since an argument is computed before the call.
+
+@pub not : Bool -> Bool
+not b = if b then False else True
+
+-- (A Bool not needed is still taken apart, which uses it.)
+@pub and : Bool -> Bool -> Bool
+and a b = if a then b else (if b then False else False)
+
+@pub or : Bool -> Bool -> Bool
+or a b = if a then (if b then True else True) else b
+
+@pub xor : Bool -> Bool -> Bool
+xor a b = if a then not b else b
+
+@pub implies : Bool -> Bool -> Bool
+implies a b = or (not a) b
+
+@pub show : Bool -> String
+show b = if b then "True" else "False"

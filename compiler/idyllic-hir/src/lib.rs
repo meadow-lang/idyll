@@ -112,6 +112,8 @@ pub struct OpDecl {
     pub name: Ident,
     /// its type under the effect's parameters
     pub ty: Term,
+    /// whether a handler may resume it more than once (`@many`)
+    pub many: bool,
 }
 
 /// An equation, or an alternative of a `case`: patterns, and what to do if

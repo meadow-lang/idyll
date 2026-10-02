@@ -68,11 +68,13 @@ pub enum Prim {
     IntMod,
     IntLt,
     IntEq,
+    /// two strings, one after the other: `++`
+    StrAppend,
 }
 
 impl Prim {
-    pub const ALL: [Prim; 7] =
-        [Prim::IntAdd, Prim::IntMul, Prim::IntSub, Prim::IntLt, Prim::IntEq, Prim::IntDiv, Prim::IntMod];
+    pub const ALL: [Prim; 8] =
+        [Prim::IntAdd, Prim::IntMul, Prim::IntSub, Prim::IntLt, Prim::IntEq, Prim::IntDiv, Prim::IntMod, Prim::StrAppend];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -83,6 +85,7 @@ impl Prim {
             Prim::IntMod => "%",
             Prim::IntLt => "<",
             Prim::IntEq => "==",
+            Prim::StrAppend => "++",
         }
     }
 
@@ -103,6 +106,7 @@ impl Prim {
                 (&[Builtin::Int, Builtin::Int], Builtin::Int)
             }
             Prim::IntLt | Prim::IntEq => (&[Builtin::Int, Builtin::Int], Builtin::Bool),
+            Prim::StrAppend => (&[Builtin::Str, Builtin::Str], Builtin::Str),
         }
     }
 
@@ -110,15 +114,43 @@ impl Prim {
         self.signature().0.len()
     }
 
+    /// The primitive on two `Int`s.  An `Int` is 64 bits and wraps, the same
+    /// in types, in the REPL and in native code, as it is the runtime's
+    /// primitive integer.  `None` for a division by zero, which is an error
+    /// at run time and stuck in a type.
+    pub fn on_ints(self, a: i64, b: i64) -> Option<IntResult> {
+        Some(match self {
+            Prim::IntAdd => IntResult::Int(a.wrapping_add(b)),
+            Prim::IntMul => IntResult::Int(a.wrapping_mul(b)),
+            Prim::IntSub => IntResult::Int(a.wrapping_sub(b)),
+            Prim::IntDiv | Prim::IntMod if b == 0 => return None,
+            Prim::IntDiv => IntResult::Int(a.wrapping_div(b)),
+            Prim::IntMod => IntResult::Int(a.wrapping_rem(b)),
+            Prim::IntLt => IntResult::Bool(a < b),
+            Prim::IntEq => IntResult::Bool(a == b),
+            // (not on integers)
+            Prim::StrAppend => return None,
+        })
+    }
+
     /// Binding strength when printed infix; all are left-associative.
     pub fn precedence(self) -> u8 {
         match self {
             Prim::IntAdd | Prim::IntSub => 6,
             Prim::IntMul | Prim::IntDiv | Prim::IntMod => 7,
+            // as `::`, Haskell's `infixr 5`
+            Prim::StrAppend => 5,
             // below `::`, which is 5
             Prim::IntLt | Prim::IntEq => 4,
         }
     }
+}
+
+/// What a primitive on `Int`s gives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntResult {
+    Int(i64),
+    Bool(bool),
 }
 
 /// The first unique available for user-defined names.

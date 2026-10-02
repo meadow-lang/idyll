@@ -26,14 +26,15 @@ land, and anything not covered here isn't implemented yet (see
 12. [Pattern matching](#pattern-matching)
 13. [Effects](#effects)
 14. [Modules and packages](#modules-and-packages)
-15. [Boxes](#boxes)
-16. [Grade polymorphism](#grade-polymorphism)
-17. [Grades in types](#grades-in-types)
-18. [Inference and holes](#inference-and-holes)
-19. [How programs run](#how-programs-run)
-20. [Reading error messages](#reading-error-messages)
-21. [Syntax reference](#syntax-reference)
-22. [What's missing](#whats-missing)
+15. [The standard library](#the-standard-library)
+16. [Boxes](#boxes)
+17. [Grade polymorphism](#grade-polymorphism)
+18. [Grades in types](#grades-in-types)
+19. [Inference and holes](#inference-and-holes)
+20. [How programs run](#how-programs-run)
+21. [Reading error messages](#reading-error-messages)
+22. [Syntax reference](#syntax-reference)
+23. [What's missing](#whats-missing)
 
 ---
 
@@ -53,8 +54,16 @@ error was reported. A program of several files, or with dependencies, is a
 package, which `idyll run` builds and runs (see
 [Building and running](#building-and-running-idyll)).
 
-Input can span several lines. Press **Enter** to start a new line and
-press it again on an **empty line** to submit the whole entry:
+An entry of one line is submitted by **Enter** as soon as it is whole, so
+`1 + 2` needs one Enter. One that isn't whole yet keeps reading: a
+signature, which is only half a declaration, a line ending in something
+that wants more after it (`where`, `of`, `=`, `->`, an open bracket, a
+trailing `\`), or one that doesn't parse yet. The new line comes already
+indented, two further in after a `where` or an `=`. An entry of several
+lines is submitted by an **empty line**. **Alt-Enter**, **Shift-Enter** (on
+terminals that report it) and **Ctrl-J** always start a new line: that is
+how to begin a definition of several equations without a signature, since
+its first equation is whole on its own.
 
 ```
 > let x = 1
@@ -86,13 +95,98 @@ double : Int [2] -> Int
 | Input                | Effect                                           |
 | -------------------- | ------------------------------------------------ |
 | *empty line*         | check the entry typed so far                     |
+| `:t <expr>`          | check an entry without running it (`:type`)      |
+| `:module`            | list what is defined so far (`:browse`)          |
+| `:find <query>`      | search, by name or by type (see below)           |
+| `:prove <type>`      | look for a term of a type (see below)            |
+| `:ir [stages] <code>` | the code at each stage of the compiler (see below) |
+| `:machine` / `:eval` / `:native` | choose what runs entries (see below) |
+| `:time` / `:time <expr>` | time every entry from now on, or just this one |
 | `:tour`              | a guided tour of the language (see below)        |
 | `:help`              | list the commands                                |
 | `:quit` / `:q`       | exit (commands run as soon as you press Enter)   |
 | `:reset`             | forget the declarations made so far              |
+| **Tab**              | complete a name, a command, or an `:ir` stage    |
+| **Ctrl-F**           | find a declaration (see below)                   |
 | **Ctrl-C**           | discard the current entry; on an empty one, exit |
 | **Ctrl-\\**, and **Ctrl-Z** on Windows | the same as Ctrl-C              |
 | **Ctrl-D**           | exit (on an empty entry)                         |
+
+### Finding things, and proving them
+
+**Ctrl-F** opens a finder over the prompt, in the manner of Helix's
+pickers: type to narrow the list, **Up**/**Down** to move, **Enter** to put
+the name on the prompt where the cursor was, **Esc** to close it. On the
+right is everything known about the one selected: its type, where it was
+written, and the `--` comment above it. `:find` prints the same answers.
+
+A query is a name, matched fuzzily (`shwint` finds `showInt`), or, if it
+has an arrow in it or starts with `:`, a type, matched the way
+[Hoogle](https://hoogle.haskell.org) matches one. The result has to fit;
+arguments in another order, an argument more, or a type more general than
+asked for still match, just further down:
+
+```
+:find Int -> String
+fun    showInt : (n : [] Int) -> String  (prelude)
+```
+
+Grades, implicit binders and effects are left out of the comparison, so
+`Int -> String` finds `showInt`, whose argument is graded `[]`.
+
+A query starting with `?` is a type to find a *term* of, which is a
+proof, if you read the type as a proposition. **Enter** searches, and
+**Enter** again puts the term selected on the prompt; `:prove` prints what
+it finds:
+
+```
+:prove {a : Type} -> a -> a
+\x -> x
+```
+
+The search builds terms from the goal's shape, smallest first: lambdas for
+a function's arguments, variables and literals, and functions and
+constructors applied to terms of what they take, three deep. Each one is
+then checked by the type checker, and only what it accepts is shown, so
+grades count: `{a : Type} -> {b : Type} -> a -> b -> a` has no proof,
+since `\x y -> x` doesn't use `y`, which is linear. A goal that needs a
+`case` is beyond the search.
+
+### Looking inside: `:ir`
+
+`:ir` shows what a block of code is at each stage of the compiler, in a
+pop-up with a tab for each: **Left**/**Right** (or a tab's number) move
+between them, **Up**/**Down**, **PgUp**/**PgDn** and **Home**/**End**
+scroll, and **Esc** closes it. The stages are:
+
+| Stage     | What it is                                                     |
+| --------- | -------------------------------------------------------------- |
+| `tokens`  | the lexer's tokens, after layout: `«{» «;» «}»` are what it inserts |
+| `ast`     | the parser's syntax tree                                       |
+| `hir`     | names resolved (`n#91`), definitions grouped by what they use  |
+| `core`    | the checker's elaborated Core: implicit arguments, boxes and grades explicit |
+| `axcut`   | AxCut, the sequent-calculus IR the machine runs                |
+| `inlined` | the same, inlined: what the native compiler is given           |
+| `llvm`    | LLVM IR                                                        |
+| `cut`     | Cut, the shared back end's IR (see [How programs run](#how-programs-run)) |
+
+`:ir <code>` shows every stage, `:ir core,cut <code>` just those, and `:ir`
+alone the last entry. The code can take several lines: start them with
+**Alt-Enter**, and end with an empty line. The declarations made so far
+are in scope, and the stages from AxCut on show what the block makes
+together with whatever of the session and the prelude it uses. A block of
+declarations alone is shown lowered with its definitions kept, though
+nothing calls them yet. When the output isn't a terminal, the stages are
+printed one after another instead.
+
+### Machines
+
+Entries run on the AxCut machine, which also checks that a program leaves
+no memory behind. `:eval` runs them on the reference interpreter, the
+specification the compiler is tested against, and `:native` compiles each
+with LLVM and runs it (this needs `clang`, and what native code can't do yet
+runs on the machine, which it says). `:machine` goes back. `:time` reports
+how long each entry took, from checking to answer.
 
 ### The tour
 
@@ -159,7 +253,10 @@ keep it on when piping output (for example into `less -R`). Pass
 ### Numbers
 
 Integers can be written in decimal, hexadecimal, binary or octal. They
-all have type `Int`, and they are arbitrary precision.
+all have type `Int`, which is 64 bits: from `-9223372036854775808` to
+`9223372036854775807`. Arithmetic wraps around at the ends, the same in
+the REPL, in types and in compiled code, because an `Int` is the runtime's
+own machine integer. A literal too big for one is an error.
 
 ```
 > 42
@@ -244,6 +341,17 @@ Supported escapes:
 
 An unknown escape is reported, and the character after the backslash is
 kept as-is so checking can continue.
+
+`++` joins two strings. Like `::`, it groups to the right and binds more
+loosely than arithmetic. The prelude's `showInt` writes an `Int` in
+decimal, which is how a number becomes something to print:
+
+```
+> "forty" ++ "-" ++ "two"
+"forty-two" : String
+> "n = " ++ showInt (40 + 2)
+"n = 42" : String
+```
 
 ### Booleans and unit
 
@@ -1561,13 +1669,14 @@ safeDiv : (a : [] Int) -> (b : [] Int) -> Int ! Fail
 0 : Int
 ```
 
-Or it can be called more than once. Here it tries both answers:
+Or it can be called more than once, if the operation allows it. Here it
+tries both answers:
 
 ```
 > effect Choose where
-  flip : () -> Bool
+  @many flip : () -> Bool
 
-Choose : Effect
+Choose : Effect []
 flip : () -> Bool ! Choose
 > pick : () -> Int ! Choose
 pick u = if flip () then 1 else 10
@@ -1581,7 +1690,32 @@ pick : () -> Int ! Choose
 
 How often a clause resumes is `k`'s grade — `0` for an exception, `1`
 for the usual case, more for backtracking — and like any grade it is
-worked out from the clause, not written.
+worked out from the clause, not written. An operation says how often its
+handlers may resume it: unmarked, at most once, and `@many` for more. A
+clause that resumes an unmarked operation twice is an error:
+
+```
+> effect Coin where
+  toss : () -> Bool
+
+Coin : Effect
+toss : () -> Bool ! Coin
+> handle (if toss () then 1 else 2) with
+  toss _ k -> k True + k False
+Error: toss is resumed more than once
+   ╭─[ <input>:7:3 ]
+   │
+ 7 │   toss _ k -> k True + k False
+   │   ──────────────┬─────────────
+   │                 ╰─────────────── this clause may resume toss more than once, and Coin declares it to be resumed at most once
+───╯
+```
+
+The declaration is on the operation rather than the handler because
+compiled code needs it where the operation is performed, which knows
+nothing of the handler that will take it. Resumed at most once, a
+continuation can live on the stack; resumed more, it has to live on the
+heap.
 
 An effect can have parameters, as a data type can: `effect State (s :
 Type) where get : () -> s; put : s -> ()`. A handler that returns a
@@ -1614,14 +1748,49 @@ twice : {e : Effect} -> (f : [] () -> Int ! e) -> Int ! e
 6 : Int
 ```
 
-Handlers run in the REPL; the native back end doesn't compile them yet.
+A row variable stands for effects whose operations are resumed at most
+once, which is what lets code polymorphic in it keep its continuations on
+a stack: its kind is `Effect`. An effect with an `@many` operation, like
+`Choose` above, has kind `Effect []`, effects resumed any number of times,
+and is not taken by such a variable. A function that takes them says so,
+and binds its row variable at `Effect []`, which takes the others too:
+
+```
+> effect Choose where
+  @many flip : () -> Bool
+
+Choose : Effect []
+flip : () -> Bool ! Choose
+> pick : () -> Int ! Choose
+pick u = if flip () then 1 else 10
+
+pick : () -> Int ! Choose
+> twice : (f : [] (() -> Int ! e)) -> Int ! e
+twice f = f () + f ()
+
+twice : {e : Effect} -> (f : [] () -> Int ! e) -> Int ! e
+> handle twice pick with
+  flip _ k -> k True + k False
+Error: these effects may be resumed more than once
+> twiceM : {e : Effect []} -> (f : [] (() -> Int ! e)) -> Int ! e
+twiceM f = f () + f ()
+
+twiceM : {e : Effect []} -> (f : [] () -> Int ! e) -> Int ! e
+> handle twiceM pick with
+  flip _ k -> k True + k False
+
+44 : Int
+```
+
+(Handlers are deep, so each `flip` in `twiceM` tries both answers.)
 
 ### Naming a row
 
 `effect App = {Log, Ask}` names a row, to write in a signature as any
 effect is: `! App`, or `! {App | e}` with a variable for more. It is an
-ordinary definition of a term of type `Effect`, and what it names is what
-is shown. It may have parameters, `effect Stateful s = {State s, Div}`, as
+ordinary definition of a term of type `Effect` (or `Effect []`, if what it
+names has an operation declared `@many`), and what it names is what is
+shown. It may have parameters, `effect Stateful s = {State s, Div}`, as
 a type can.
 
 ```
@@ -1645,7 +1814,7 @@ The effects a program's top level may still have are the ones the
 runtime handles itself: everything in `Eff`, which the prelude declares as
 
 ```
-effect Eff = {Console, Fs, Process, Random, Time, Test, Div}
+effect Eff = {Console, Fs, Process, Random, Time, Test, Abort, Div}
 ```
 
 with these operations (and `Maybe` and `Result` declared alongside,
@@ -1653,12 +1822,29 @@ with these operations (and `Maybe` and `Result` declared alongside,
 
 | Effect | Operations |
 | --- | --- |
-| `Console` | `putStr`, `putStrLn : String -> ()`, `printInt : Int -> ()`, `readLine : () -> Maybe String` |
+| `Console` | `putStr : String -> ()`, `putErr : String -> ()` (to standard error), `readLine : () -> Maybe String` |
 | `Fs` | `readToString : String -> Result String String`; `writeString`, `appendString : String -> String -> Result String ()` (a path, then the text); `removeFile`, `createDir`, `createDirAll`, `removeDir`, `removeDirAll : String -> Result String ()`; `rename : String -> String -> Result String ()`; `copy : String -> String -> Result String Int`; `readDir : String -> Result String (List String)`; `exists`, `isFile`, `isDir : String -> Bool` |
 | `Process` | `exit : Int -> ()`, `currentPid : () -> Int`, `args : () -> List String`, `getEnv : String -> Maybe String`, `setEnv : String -> String -> ()`, `removeEnv : String -> ()`, `isTerminal : Int -> Bool` |
 | `Random` | `nextInt : () -> Int`, `intBetween : Int -> Int -> Int` (from the first, up to but not including the second), `nextSeed : () -> Int` |
 | `Time` | `now : () -> Int` (milliseconds since 1970), `monotonic : () -> Int` (nanoseconds, for measuring), `sleep : Int -> ()` (milliseconds) |
 | `Test` | `fail : String -> ()`, which stops the program |
+| `Abort` | `abort : {a : Type} -> String -> a`, which gives up: unhandled, it writes its message to standard error and exits with status 1 |
+
+The runtime prints only strings. `putStrLn` and `printInt` are ordinary
+prelude functions over `putStr`, not operations, so a handler of
+`Console` sees what they write as `putStr`:
+
+```
+putStrLn : String -> () ! Console
+putStrLn s = putStr (s ++ "\n")
+
+printInt : (n : [] Int) -> () ! Console
+printInt n = putStrLn (showInt n)
+```
+
+`printInt`'s argument has the grade `[]`, because writing a number out
+looks at it more than once. An `Int` you pass it has to be one you can
+use that freely: a literal, or a variable graded `[]` itself.
 
 An operation of one of them that no handler of the program's own takes
 is done by the runtime:
@@ -1691,6 +1877,26 @@ dice : () -> Int ! Random
 8 : Int
 ```
 
+`abort` is how a program gives up, with a message. It is an effect, so a
+function that may give up says so in its type, and code that would rather
+carry on can handle it. Its message is a `String`, and so linear: a
+handler does something with it.
+
+```
+> half : (n : [] Int) -> Int ! Abort
+half n = if n % 2 == 0 then n / 2 else abort "odd"
+
+half : (n : [] Int) -> Int ! Abort
+> handle half 7 with
+  abort m k -> let u = putErr m in 0
+
+0 : Int
+```
+
+Unhandled, it writes its message to standard error and exits with status
+1. (On the shared back end the runtime has no such operation: Idyll handles
+`Abort` itself there, with `putErr` and `exit`.)
+
 A program with a `main` and no expression of its own runs `main ()`.
 `main` takes `()` and gives `()`, and may have at most the effects in
 `Eff`: `main : () -> () ! Eff`. Leave its signature off, and its effects
@@ -1707,7 +1913,7 @@ ask : () -> Int ! Ask
 main () = printInt (ask ())
 
 Error: effects not allowed
-   │ ╰── this has the effects {Console, Ask}, but its type allows {Div, Console, Fs, Process, Random, Time, Test}
+   │ ╰── this has the effects {Console, Ask}, but its type allows {Div, Console, Fs, Process, Random, Time, Test, Abort}
 ```
 
 A file with a `main` is run with `idyllic hello.idl`; what comes after
@@ -1880,8 +2086,9 @@ A build has a *profile*: `--debug` (the default) or `--release`. Debug runs
 the program on the AxCut abstract machine, in the `idyll` process, which
 starts at once. Release compiles it with LLVM into an executable under
 `target/release/native/` (this needs clang and lld), and runs that. A
-program native code cannot compile yet (one with a handler, say) runs on
-the machine instead, with a warning. A package's `Idyll.toml` can change
+program native code cannot compile (or a lone file, which has no
+`target/` to put an executable in) runs on the machine instead, with a
+warning. A package's `Idyll.toml` can change
 what a profile means, and a flag (`--backend machine`, `--native`) wins
 over both:
 
@@ -1962,6 +2169,113 @@ A member takes what the workspace says with `version.workspace = true` and
 `default-members` (or every member); `-p App` picks one, `--workspace`
 all, `--exclude` leaves some out. A package compiled for one member is
 reused by the next.
+
+## The standard library
+
+Every package has Idyll's standard library, `Std`, with no
+`[dependencies]` line, and so do a lone file and the REPL. None of it is
+in scope until a `use` brings it, so a program's own `map` or `Nat` never
+clashes with its; or a name can be written in full, `Std.List.map`. Its
+source is in `lib/std/src/`, one module to a file, and the compiler
+carries it, so there is nothing to install.
+
+| Module | What it has |
+| --- | --- |
+| `Std.Function` | `id`, `const`, `flip`, `compose`, `apply`, `twice`, `iterate` |
+| `Std.Bool` | `not`, `and`, `or`, `xor`, `implies`, `show` |
+| `Std.Ordering` | `Ordering` (`Less`, `Equal`, `Greater`), `invert`, `andThen` |
+| `Std.Int` | `abs`, `max`, `min`, `compare`, `pow`, `gcd`, `isEven`, `show`, ... |
+| `Std.Nat` | `Nat` (`Z`, `S`), arithmetic, `fromInt`, `toInt`, and proofs: `plusZero`, `plusSucc`, `plusComm`, `plusAssoc`, `decEq` |
+| `Std.Eq` | `Eq x y` with its one proof `Refl`; `sym`, `trans`, `cong`, `cong2`, `subst` |
+| `Std.Void` | `Void`, `absurd`, and `neg p`, which is `p -> Void` |
+| `Std.Dec` | `Dec p`: `Yes` with a proof of `p`, or `No` with a proof there is none |
+| `Std.Fin` | `Fin n`, the naturals below `n` (`FZ`, `FS`), `toNat`, `weaken`, `last`, `fromNat` |
+| `Std.Maybe`, `Std.Result` | `map`, `andThen`, `withDefault`, `orElse`, `toList`, `toResult`, `toMaybe`, ... |
+| `Std.Pair` | `Pair a b` (`MkPair`), `fst`, `snd`, `swap`, `curry`, `uncurry`, ... |
+| `Std.Sigma` | `Sigma a b`, a dependent pair: an `x : a` and a `b x` (`MkSigma`); `first`, `second` |
+| `Std.List` | `map`, `foldr`, `foldl`, `filter`, `filterMap`, `reverse`, `append`, `zip`, `take`, `drop`, `range`, `sortBy`, `lookup`, `nth`, ... |
+| `Std.Vec` | `Vec n a`, a list of length `n` (`Nil`, `Cons`, and `#[..]` literals): `head`, `tail`, `index`, `append`, `zip`, `splitAt`, `fromList`, ... |
+| `Std.String` | `concat`, `join`, `unlines`, `unwords`, `replicate`, `fromList` |
+| `Std.Console` | `printLines`, `printList`, `printBool`, `readLines` |
+| `Std.Throw` | an effect: `throw`, and `catch` into a `Result` |
+| `Std.State` | an effect: `get`, `put`, `modify`, and `runState` from a first state |
+| `Std.Yield` | an effect: `yield`, `each`, and `collect` into a list |
+
+A module and its type share a name, so its constructors are
+`Std.Nat.Nat.Z`, or bare after `use Std.Nat.Nat.*`.
+
+```
+> use Std.List (map, sum, reverse, length)
+> sum (map (\(x : Int) -> x * 2) (reverse #[1, 2, 3]))
+12 : Int
+> length #[1, 2, 3]
+3 : Int
+```
+
+Linearity runs through it all. A function takes what it uses once as it
+is, what it may drop or only looks at with `[0..1]`, and what it uses many
+times with `[]`. `map` calls its function for each element, so takes it
+with `[]`, and uses each element once, so takes the list as it is: the
+list's cells are freed as `map` goes. `length` drops the elements, so
+takes the list with `[0..1]`. `filter` looks at an element and then keeps
+it, which is twice, so it is given a test of a `[]` argument and a list
+whose elements can be used so; `filterMap`, whose function gives the
+element back if it is kept, is the one for a list used once.
+
+Where a type can say more, it does. A vector's length is in its type, so
+indexing it with a `Fin` of that length cannot fail, and two vectors
+zipped must be as long as each other:
+
+```
+> use Std.Vec (Vec, zip, fromList, index)
+use Std.Vec.Vec.*
+use Std.Fin.Fin.*
+> index (FS FZ) (fromList #[10, 20, 30])
+20 : Int
+> zip (Cons 1 Nil) (Cons 2 (Cons 3 Nil))
+Error: type mismatch
+   │ ╰── expected Vec (S Z) ?2, but this has type Vec (S (S Z)) Int
+Error: unsolved metavariable
+```
+
+(`fromList` takes a list to a vector of the list's length, which its type
+computes: `Vec (Std.List.size xs) a`.) The proofs about `Nat` are
+functions to an equality, and a decision says why, either way:
+
+```
+> use Std.Nat (Nat, plus, plusComm, decEq, fromInt)
+use Std.Nat.Nat.*
+use Std.Eq (Eq)
+use Std.Dec (isYes)
+> plusComm
+: (n : [] Nat) -> (m : [] Nat) -> Eq Nat (plus n m) (plus m n)
+> three : Eq (plus (S Z) (S (S Z))) (plus (S (S Z)) (S Z))
+three = plusComm (S Z) (S (S Z))
+
+three : Eq Nat (S (S (S Z))) (S (S (S Z)))
+> isYes (decEq (fromInt 3) (fromInt 3))
+True : Bool
+```
+
+(An equality's type is shown with the type it is an equality in, `Eq Nat
+x y`, which is how it is applied underneath; it is written `Eq x y`.)
+
+Exceptions, state and generators are effects with handlers, as in
+[Effects](#effects), and the handlers are ordinary functions:
+
+```
+> use Std.Throw (Throw, throw, catch)
+> safeDiv : (a : [] Int) -> (b : [] Int) -> Int ! Throw String
+safeDiv a b = if b == 0 then throw "divide by zero" else a / b
+
+safeDiv : (a : [] Int) -> (b : [] Int) -> Int ! Throw String
+> catch (\(u : ()) -> safeDiv 7 0)
+Err "divide by zero" : Result String Int
+```
+
+`:find` and the `Ctrl-F` finder search the standard library too (see
+[Finding things](#finding-things-and-proving-them)), and `:prove` uses
+what it has.
 
 ## Boxes
 
@@ -2344,12 +2658,22 @@ Two things are done differently from the interpreter, both for speed:
   takes a frame per call, from a stack of 1 GB (on Windows and macOS, where
   the linker decides; elsewhere it is `ulimit -s`'s).
 
-Two things differ from the REPL. `Int` is 64 bits and wraps, where the
-interpreter's is unbounded. And only an `Int`, `Bool`, `String` or `()`
+  Except in a program with a handler. A handler's clause is given the
+  rest of the computation as a resumption, `k`, which it may call later,
+  more than once, or never — after the stack it would come back to has
+  gone. So a program with a handler is compiled as the interpreter runs
+  it: every continuation is on the heap, every call is a tail call, and the
+  handlers in force are a stack the runtime keeps. An operation finds the
+  nearest handler with a clause for it, and takes that handler and the
+  ones above it out of force into the resumption, which puts them back
+  when it is called. That costs an allocation per call that isn't a tail
+  call, which is why only programs with handlers pay it.
+
+One thing differs from the REPL: only an `Int`, `Bool`, `String` or `()`
 answer is printed; anything else prints `<value>`. A program run for its
-`main` prints what `main` prints and no answer at all. Handlers aren't
-compiled yet, so a program that has one runs only in the REPL; the
-console, which the runtime handles, compiles to calls into it.
+`main` prints what `main` prints and no answer at all. The world's
+operations, which the runtime handles, compile to calls into it, unless a
+handler of the program's own takes them first.
 
 `bench/run.sh` compares compiled Idyll with other languages on three small
 programs; `bench/README.md` has the numbers, and what they do and don't
@@ -2431,7 +2755,7 @@ input can still be checked.
 | `use M`, `use M as C`, `use M (a, b)`, `use T.*`, `use T (K)` | names from elsewhere; see [`use`](#use) |
 | `@pub`, `@pub(pkg)`, `@pub(super)` | who outside its module may see a declaration |
 | `main : () -> () ! Eff` | what a program with no expression of its own runs |
-| `Console`, `Fs`, `Process`, `Random`, `Time`, `Test` | the world's effects, which the runtime handles; see [The world and `main`](#the-world-and-main) |
+| `Console`, `Fs`, `Process`, `Random`, `Time`, `Test`, `Abort` | the world's effects, which the runtime handles; see [The world and `main`](#the-world-and-main) |
 | `Maybe a`, `Result e a` | `Nothing`, `Just x`; `Err e`, `Ok x` |
 | `case e of C x -> a; D -> b` | take a value apart; alternatives in a column, or in braces |
 | `case e of p \| g -> a` | an alternative with a guard |
@@ -2492,13 +2816,13 @@ These aren't implemented yet. This section shrinks as they land.
   other holders, even in code the types show to be entirely linear.
 - **Much of an optimiser.** Known functions are inlined, and that is all:
   a function passed as an argument is called through a pointer, nothing
-  is specialised, and an `Int` still takes two words. `Int` is 64-bit when
-  compiled and unbounded in the REPL.
+  is specialised, and an `Int` still takes two words. There is no `BigInt`
+  yet, for integers bigger than 64 bits.
 - **Arithmetic and operators.** `+`, `-`, `*`, `/`, `%`, `<` and `==` on
-  `Int` are the only built-in operations; there is nothing on `String` or
-  `Bool`. Any operator can be defined, but only those can be written
-  infix: there are no fixity declarations, so `xs ++ ys` has to be
-  `(++) xs ys`. And without type classes, defining `+` hides the `Int`
+  `Int`, and `++` on `String`, are the only built-in operations; there is
+  nothing on `Bool`. Any operator can be defined, but only those can be
+  written infix: there are no fixity declarations, so `xs <> ys` has to be
+  `(<>) xs ys`. And without type classes, defining `+` hides the `Int`
   one. No arithmetic laws are applied when comparing types that mention
   `Int`s (grades are another matter).
 - **Character literals.** `'a'` is recognised but can't be used in an
@@ -2526,9 +2850,10 @@ These aren't implemented yet. This section shrinks as they land.
 - **Termination on `Int`s.** A recursion counting an `Int` down is not
   seen to end, and needs `! Div`. Only top-level definitions compute in
   types: one defined in a `let` inside a function stays put.
-- **More of effects.** The native back end doesn't compile handlers yet;
-  run such programs in the REPL (a program whose only effects are the
-  runtime's does compile). Of Meadow's world there are no references,
+- **More of effects.** Natively, a program with a handler keeps every
+  continuation on the heap, even where its grade says it is resumed once
+  or not at all (Meadow's fast paths for those, and for tail-resumptive
+  clauses, aren't here yet). Of Meadow's world there are no references,
   threads or subprocesses yet, nor bytes or file metadata, and a `String`
   can only be printed, written or passed on, not built or taken apart. Rows
   are sets, so a handler can't handle one `State Int` and leave another,
@@ -2563,6 +2888,12 @@ These aren't implemented yet. This section shrinks as they land.
 - **Holes, implicit arguments and usage.** What a `_` or an implicit
   argument ends up being filled with isn't counted towards any variable's
   usage.
+- **More of the standard library.** Meadow's has maps, sets, sorting
+  by trait, string operations and records; `Std` waits for traits, records
+  and characters. Its equality is for values in `Type` only (two types can't
+  be said equal), and a function from it given a function must match its
+  grades exactly: `List.map` takes a function of a linear argument, so a
+  function written to use its argument twice is not accepted.
 - **Universe polymorphism.** Levels are numbers; there are no level
   variables. So a data type always lives in `Type`, and `List`, for one,
   only holds types in `Type`.

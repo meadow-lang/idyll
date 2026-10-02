@@ -38,6 +38,22 @@ fn builds_app_against_a_path_dependency() {
 }
 
 #[test]
+fn every_package_has_std_without_asking_for_it() {
+    // no `[dependencies]` line names it, and the package builds and runs
+    // against it, on the machine as compiled from what the build kept
+    let dir = scratch("std");
+    let app = common::fixture(&dir, "App");
+    common::write(&app.join("src/Main.idl"), "use Std.List (sum, reverse)
+use Std.Nat (fromInt)
+
+sum (reverse (Std.List.range 1 (fromInt 4)))
+");
+    let out = pipeline::build(&app, Profile::Debug, &common::OPTS);
+    assert!(said(&out).is_empty(), "{:?}", said(&out));
+    assert_eq!(common::value(&out), "10");
+}
+
+#[test]
 fn private_names_do_not_cross_package_boundaries() {
     // `Util` exports `double`, `map`, `scale` and `sum` (all `@pub`) but not
     // `secret`.

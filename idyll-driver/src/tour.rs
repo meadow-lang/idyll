@@ -115,6 +115,32 @@ pub const STEPS: &[Step] = &[
         examples: &[ok("1 + 2 * 3"), ok("\"hello\""), ok("10 - 3 < 5")],
     },
     Step {
+        title: "Asking the REPL",
+        section: Section::Basics,
+        text: &[
+            "`:t` checks an entry without running it. `:find` looks for a",
+            "declaration by name, or by a type as Hoogle does: `:find Int -> String`",
+            "finds `showInt`. Ctrl-F opens the same search over the prompt.",
+            "",
+            "`:prove` looks for a term of a type, and shows only what the checker",
+            "accepts: `:prove {a : Type} -> a -> a` finds `\\x -> x`.",
+            "",
+            "`:ir` shows what a block of code is at every stage of the compiler,",
+            "from tokens to LLVM and Cut. Run one of these, then `:ir`.",
+        ],
+        examples: &[ok("showInt (6 * 7)"), ok("\\(x : Int) -> x + 1")],
+    },
+    Step {
+        title: "Strings",
+        section: Section::Basics,
+        text: &[
+            "`++` joins strings, and `showInt` writes an `Int` as one: the",
+            "runtime prints only strings, so a number is shown by the",
+            "program before it is printed.",
+        ],
+        examples: &[ok("\"forty\" ++ \"-\" ++ \"two\""), ok("\"n = \" ++ showInt (40 + 2)")],
+    },
+    Step {
         title: "Functions",
         section: Section::Basics,
         text: &[
@@ -652,11 +678,13 @@ safeDiv a b = if b == 0 then fail () else a / b"),
         text: &[
             "`k` can be used more than once: here, to try both answers. How",
             "often a clause resumes is `k`'s grade, worked out from the",
-            "clause itself.",
+            "clause itself. More than once needs the operation to allow it,",
+            "with `@many`. Unmarked, an operation is resumed at most once,",
+            "which is what lets it run on a stack.",
         ],
         examples: &[
             ok("effect Choose where
-  flip : () -> Bool"),
+  @many flip : () -> Bool"),
             ok("pick : () -> Int ! Choose
 pick u = if flip () then 1 else 10"),
             ok("handle pick () with
@@ -675,6 +703,28 @@ pick u = if flip () then 1 else 10"),
 twice f = f () + f ()"),
             ok("handle twice sum3 with
   ask _ k -> k 1"),
+        ],
+    },
+    Step {
+        title: "Resumed more than once",
+        section: Section::Effects,
+        text: &[
+            "A row variable's kind is `Effect`: effects resumed at most once,",
+            "which lets code polymorphic in it keep its continuations on a",
+            "stack. `Choose`, with an `@many` operation, is `Effect []`, so",
+            "`twice` refuses it. A function that takes such effects binds",
+            "its row variable at `Effect []`, and takes the others too.",
+        ],
+        examples: &[
+            rejected(
+                "handle twice pick with
+  flip _ k -> k True + k False",
+                "these effects may be resumed more than once",
+            ),
+            ok("twiceM : {e : Effect []} -> (f : [] (() -> Int ! e)) -> Int ! e
+twiceM f = f () + f ()"),
+            ok("handle twiceM pick with
+  flip _ k -> k True + k False"),
         ],
     },
     Step {
@@ -701,6 +751,9 @@ sum6 u = sum3 () + sum3 ()"),
             "`Console`, `Fs`, `Process`, `Random`, `Time`, `Test` and `Div`.",
             "An operation of theirs nothing else handles, it does. (The",
             "tutorial lists them all.)",
+            "",
+            "`Console` only writes strings, with `putStr`; `putStrLn` and",
+            "`printInt` are prelude functions over it.",
         ],
         examples: &[
             ok("putStrLn \"hello\""),
@@ -724,6 +777,22 @@ dice () = intBetween 1 7"),
   nextInt _ k -> k 4
   intBetween lo hi k -> k ((lo + hi) / 2)
   nextSeed _ k -> k 0"),
+        ],
+    },
+    Step {
+        title: "Giving up",
+        section: Section::Effects,
+        text: &[
+            "`abort` gives up, with a message. It is an effect, `Abort`, so",
+            "a function that may give up says so, and a handler can carry",
+            "on instead. Unhandled, it writes the message to standard error",
+            "and exits with status 1.",
+        ],
+        examples: &[
+            ok("halve : (n : [] Int) -> Int ! Abort
+halve n = if n % 2 == 0 then n / 2 else abort \"odd\""),
+            ok("handle halve 7 with
+  abort m k -> let u = putErr m in 0"),
         ],
     },
     Step {
@@ -789,6 +858,24 @@ main () = let u = putStrLn \"Hello, Idyll!\" in printInt (6 * 7)"),
             "Unchanged packages are not compiled again. A library offers:",
         ],
         examples: &[ok("@pub quadruple : Int -> Int\nquadruple n = n * 4"), ok("quadruple 10")],
+    },
+    Step {
+        title: "The standard library",
+        section: Section::Modules,
+        text: &[
+            "Every package has `Std`, the standard library, and needs no line in",
+            "`Idyll.toml` for it; nothing of it is in scope until a `use` brings",
+            "it. Lists, vectors whose length is in their type, `Fin` indices,",
+            "naturals with proofs about them, equality, `Maybe`, `Result`, pairs",
+            "and dependent pairs, strings, and effects for exceptions, state and",
+            "generators. `:find Std.` lists it all.",
+        ],
+        examples: &[
+            ok("use Std.List (map, sum)"),
+            ok("sum (map (\\(x : Int) -> x * 2) #[1, 2, 3])"),
+            ok("use Std.Vec (Vec, fromList, index)\nuse Std.Fin.Fin.*"),
+            ok("index (FS FZ) (fromList #[10, 20, 30])"),
+        ],
     },
 ];
 

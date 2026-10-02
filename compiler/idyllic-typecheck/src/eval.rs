@@ -11,7 +11,7 @@ use super::core::{CaseAlt, Core, Lvl, OpClause};
 use super::value::{vvar, Closure, Elim, Env, Poly, Row, Spine, Value};
 use super::{Checker, MetaEntry};
 use idyllic_ast::Lit;
-use idyllic_builtins::Prim;
+use idyllic_builtins::{IntResult, Prim};
 use crate::grade::Grade;
 use std::rc::Rc;
 
@@ -71,28 +71,14 @@ impl Checker {
         let args: Vec<Rc<Value>> = args.iter().map(|a| self.force(a.clone())).collect();
         let args: Vec<&Value> = args.iter().map(|a| &**a).collect();
         match (p, args.as_slice()) {
-            (Prim::IntAdd, [Value::Lit(Lit::Int(a)), Value::Lit(Lit::Int(b))]) => {
-                Some(Rc::new(Value::Lit(Lit::Int(a + b))))
-            }
-            (Prim::IntMul, [Value::Lit(Lit::Int(a)), Value::Lit(Lit::Int(b))]) => {
-                Some(Rc::new(Value::Lit(Lit::Int(a * b))))
-            }
-            (Prim::IntSub, [Value::Lit(Lit::Int(a)), Value::Lit(Lit::Int(b))]) => {
-                Some(Rc::new(Value::Lit(Lit::Int(a - b))))
+            (Prim::StrAppend, [Value::Lit(Lit::Str(a)), Value::Lit(Lit::Str(b))]) => {
+                Some(Rc::new(Value::Lit(Lit::Str(format!("{a}{b}")))))
             }
             // (by zero it is stuck: an error at run time, not a value)
-            (Prim::IntDiv, [Value::Lit(Lit::Int(a)), Value::Lit(Lit::Int(b))]) if *b != 0.into() => {
-                Some(Rc::new(Value::Lit(Lit::Int(a / b))))
-            }
-            (Prim::IntMod, [Value::Lit(Lit::Int(a)), Value::Lit(Lit::Int(b))]) if *b != 0.into() => {
-                Some(Rc::new(Value::Lit(Lit::Int(a % b))))
-            }
-            (Prim::IntLt, [Value::Lit(Lit::Int(a)), Value::Lit(Lit::Int(b))]) => {
-                Some(Rc::new(Value::Lit(Lit::Bool(a < b))))
-            }
-            (Prim::IntEq, [Value::Lit(Lit::Int(a)), Value::Lit(Lit::Int(b))]) => {
-                Some(Rc::new(Value::Lit(Lit::Bool(a == b))))
-            }
+            (p, [Value::Lit(Lit::Int(a)), Value::Lit(Lit::Int(b))]) => Some(Rc::new(Value::Lit(match p.on_ints(*a, *b)? {
+                IntResult::Int(n) => Lit::Int(n),
+                IntResult::Bool(t) => Lit::Bool(t),
+            }))),
             _ => None,
         }
     }
@@ -301,10 +287,12 @@ impl Checker {
                 })
                 .collect()
         };
+        // (numbers padded, so that the order of the keys, which is the
+        // order a row's effects are shown in, is the numbers')
         match &*v {
-            Value::Rigid(l, _, sp) => format!("v{l}{}", spine(sp)),
-            Value::Flex(m, sp) => format!("?{m}{}", spine(sp)),
-            Value::Opaque(u, _, sp) => format!("c{u}{}", spine(sp)),
+            Value::Rigid(l, _, sp) => format!("v{l:020}{}", spine(sp)),
+            Value::Flex(m, sp) => format!("?{m:020}{}", spine(sp)),
+            Value::Opaque(u, _, sp) => format!("c{u:020}{}", spine(sp)),
             _ => super::value::atom_key(&v),
         }
     }

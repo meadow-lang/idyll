@@ -1,0 +1,33 @@
+-- Pairs. (There are no tuples in the syntax: a pair is `MkPair x y`.)
+
+@pub data Pair a b = MkPair a b
+
+use Pair.*
+
+-- The first; the second is dropped.
+@pub fst : {a b : Type} -> (p : [0..1] Pair a b) -> a
+fst (MkPair x y) = x
+
+-- The second; the first is dropped.
+@pub snd : {a b : Type} -> (p : [0..1] Pair a b) -> b
+snd (MkPair x y) = y
+
+@pub swap : {a b : Type} -> Pair a b -> Pair b a
+swap (MkPair x y) = MkPair y x
+
+@pub mapFst : {a b c : Type} -> (f : a -> c ! e) -> Pair a b -> Pair c b ! e
+mapFst f (MkPair x y) = MkPair (f x) y
+
+@pub mapSnd : {a b c : Type} -> (f : b -> c ! e) -> Pair a b -> Pair a c ! e
+mapSnd f (MkPair x y) = MkPair x (f y)
+
+@pub mapBoth : {a b c d : Type} -> (f : a -> c ! e) -> (g : b -> d ! e) -> Pair a b -> Pair c d ! e
+mapBoth f g (MkPair x y) = MkPair (f x) (g y)
+
+-- A function of a pair, as a function of two arguments.
+@pub curry : {a b c : Type} -> (f : Pair a b -> c ! e) -> a -> b -> c ! e
+curry f x y = f (MkPair x y)
+
+-- A function of two arguments, as a function of a pair.
+@pub uncurry : {a b c : Type} -> (f : a -> b -> c ! e) -> Pair a b -> c ! e
+uncurry f (MkPair x y) = f x y

@@ -1,0 +1,17 @@
+-- Dependent pairs: `Sigma a b` is a value `x` of type `a`, and a value of
+-- type `b x`, whose type depends on which `x` it is. A vector of some
+-- length, with the length, is `Sigma Nat (\n -> Vec n a)`; a number with a
+-- proof about it is `Sigma Nat (\n -> Eq (plus n n) m)`.
+
+@pub data Sigma : (a : Type) -> (a -> Type) -> Type where
+  MkSigma : {a : Type} -> {b : a -> Type} -> (x : a) -> b x -> Sigma a b
+
+use Sigma.*
+
+-- The value; what depends on it is dropped.
+@pub first : {a : Type} -> {b : a -> Type} -> (p : [0..1] Sigma a b) -> a
+first (MkSigma x y) = x
+
+-- What depends on the value, whose type says which value that was.
+@pub second : {a : Type} -> {b : a -> Type} -> (p : [0..1] Sigma a b) -> b (first p)
+second (MkSigma x y) = y

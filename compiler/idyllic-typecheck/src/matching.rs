@@ -357,7 +357,7 @@ impl Checker {
                 // what the equations do is what calling the function does
                 self.close_effects(&ctx2, m.node, &mut usage, effects);
                 self.leave_key(&ctx2, m.node, (Some(key), &hint), grade.clone(), &mut usage, false);
-                (self.lam(hint, grade, body), usage)
+                (self.lam(ctx, hint, grade, dom, body), usage)
             }
             // not known to be a function yet: make it one
             Value::Flex(..) => {

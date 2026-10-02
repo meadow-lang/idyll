@@ -225,6 +225,11 @@ impl Inliner {
         rename(body.clone(), &map)
     }
 
+    /// Whether a clause mentions a continuation it does not bind.
+    fn closes_over_continuation(&self, b: &Branch) -> bool {
+        super::free_vars(&b.body).iter().any(|v| self.continuations.contains(v) && !b.params.contains(v))
+    }
+
     /// Replace the jumps to `inlinable` labels by their bodies.
     fn jumps(&mut self, s: Stmt, done: &HashMap<Label, Definition>, inlinable: &HashSet<Label>) -> Stmt {
         transform(s, &mut |s| match s {
@@ -253,8 +258,10 @@ impl Inliner {
                         })
                     }
                     // used more, but small: each call gets a copy, and the
-                    // function stays for whoever else wants it
-                    _ if clauses.iter().all(|(_, b)| size(&b.body) <= SMALL) => {
+                    // function stays for whoever else wants it; unless a
+                    // copy would share a continuation it closes over, which
+                    // native code keeps on the stack and cannot share
+                    _ if clauses.iter().all(|(_, b)| size(&b.body) <= SMALL && !self.closes_over_continuation(b)) => {
                         changed = true;
                         let rest = transform(*rest, &mut |s| match s {
                             Stmt::Invoke(x, m, args) if x == v => {

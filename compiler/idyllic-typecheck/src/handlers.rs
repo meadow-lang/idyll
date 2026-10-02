@@ -35,8 +35,11 @@
 //!
 //! How often a clause resumes is its resumption's grade, and it is not
 //! written: it is inferred from the clause's use of `k`, as `[0]` (an
-//! exception), `1`, `0..1`, or more.  The grade says what the resumption has
-//! to be at run time; the machine that runs these takes any.
+//! exception), `1`, `0..1`, or more.  More than once is allowed only for an
+//! operation declared `@many`: unmarked, an operation is resumed at most
+//! once, which is what lets the back end keep the continuation on a stack.
+//! The declaration is on the operation because the back end needs it where
+//! the operation is performed, which knows nothing of the handler.
 
 use super::core::{Core, OpClause};
 use super::value::{vvar, VTy, Value};
@@ -70,10 +73,63 @@ pub struct OpInfo {
     pub erased: usize,
     /// how many arguments it takes, after those
     pub arity: usize,
+    /// whether a handler may resume it more than once (`@many`); unmarked,
+    /// at most once, which is what lets the back end keep its continuation
+    /// on a stack
+    pub many: bool,
+}
+
+/// The kind of a row that may hold operations resumed more than once,
+/// `Effect []`: an effect with an `@many` operation has it, and a row
+/// variable has it only if it says so.  `Effect` is the kind of a row whose
+/// operations are resumed at most once, and is accepted wherever `Effect []`
+/// is.  (The shared back end's IR calls it `ManyEffect`.)
+pub(super) fn many_effect_kind() -> Rc<Core> {
+    Rc::new(Core::BoxTy(Core::grade(Grade::ANY), Rc::new(Core::LitTy(Builtin::Effect))))
 }
 
 impl Checker {
-    /// Declare each effect: `E : (a : k) -> .. -> Effect`.
+    /// Which kind of row a type is: `Some(false)` for `Effect`, `Some(true)`
+    /// for `Effect []`, and `None` for neither.
+    pub(super) fn row_kind(&self, ty: &Rc<Value>) -> Option<bool> {
+        match &*self.force(ty.clone()) {
+            Value::LitTy(Builtin::Effect) => Some(false),
+            Value::BoxTy(g, a) if matches!(*self.force(a.clone()), Value::LitTy(Builtin::Effect)) => {
+                (self.to_poly(self.force(g.clone())).as_constant() == Some(Grade::ANY)).then_some(true)
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether a row, as a value, holds an operation that may be resumed
+    /// more than once: an effect of kind `Effect []`, or a row variable of
+    /// that kind.  `types` are the types of the variables in scope.
+    pub(super) fn row_is_many(&self, types: &[(String, Rc<Value>)], row: &Rc<Value>) -> bool {
+        let neutral = |this: &Self, mut ty: Rc<Value>, sp: &super::value::Spine| {
+            for elim in sp {
+                let forced = this.force(ty);
+                ty = match (elim, &*forced) {
+                    (super::value::Elim::App(a), Value::Pi { cod, .. }) => this.apply(cod, a.clone()),
+                    _ => return false,
+                };
+            }
+            this.row_kind(&ty) == Some(true)
+        };
+        match &*self.force(row.clone()) {
+            Value::Row(r) => r.labels.iter().chain(&r.tails).any(|(_, v)| self.row_is_many(types, v)),
+            Value::Opaque(u, _, sp) => self.constants.get(u).is_some_and(|ty| neutral(self, ty.clone(), sp)),
+            Value::Rigid(k, _, sp) => types.get(*k).is_some_and(|(_, ty)| neutral(self, ty.clone(), sp)),
+            Value::Flex(m, _) => match &self.metas[*m] {
+                super::MetaEntry::Unsolved(info) | super::MetaEntry::Solved(_, info) => {
+                    info.ty.as_ref().is_some_and(|t| self.row_kind(&t.ty) == Some(true))
+                }
+            },
+            _ => false,
+        }
+    }
+
+    /// Declare each effect: `E : (a : k) -> .. -> Effect`, or `Effect []`
+    /// if a handler may resume one of its operations more than once.
     pub(super) fn declare_effects(&mut self, ctx: &Ctx, effects: &[hir::EffectDecl]) -> Ctx {
         let mut ctx = ctx.clone();
         for e in effects {
@@ -87,7 +143,8 @@ impl Checker {
                 kinds.push(k_c);
                 under = under.bind(Some(x), &x.text, k_v);
             }
-            let ty = e.params.iter().zip(&kinds).rev().fold(Rc::new(Core::LitTy(Builtin::Effect)), |acc, ((x, _), k)| {
+            let kind = if e.ops.iter().any(|op| op.many) { many_effect_kind() } else { Rc::new(Core::LitTy(Builtin::Effect)) };
+            let ty = e.params.iter().zip(&kinds).rev().fold(kind, |acc, ((x, _), k)| {
                 pi(&x.text, Grade::DEFAULT, Icit::Explicit, k.clone(), acc)
             });
             self.record(e.id, ty.clone());
@@ -142,7 +199,7 @@ impl Checker {
                 self.record(op.id, shown);
                 ctx = self.declare_constant(&ctx, &op.name, ty);
                 if let (Some(u), Some(effect)) = (op.name.unique, e.name.unique) {
-                    let info = OpInfo { name: op.name.text.clone(), effect, index, erased: n + implicit, arity };
+                    let info = OpInfo { name: op.name.text.clone(), effect, index, erased: n + implicit, arity, many: op.many };
                     self.ops.insert(u, info);
                 }
             }
@@ -275,14 +332,15 @@ impl Checker {
                 let inner = ctx.bind(Some(x), &x.text, body_ty.clone()).graded(&one);
                 let (c_body, mut usage) = self.check(&inner, &c.body, result.clone());
                 self.leave_binder(&inner, c.id, x, one.clone(), &mut usage, false);
-                (self.lam(x.text.clone(), &one, c_body), usage)
+                (self.lam(ctx, x.text.clone(), &one, &body_ty, c_body), usage)
             }
             None => {
                 if !self.subtype(ctx.lvl, body_ty.clone(), result.clone()) {
                     let (expected, actual) = (self.quote(ctx.lvl, result.clone()), self.quote(ctx.lvl, body_ty.clone()));
                     self.error(body.id, TypeErrorKind::Mismatch { expected, actual });
                 }
-                (Rc::new(Core::Lam("x".into(), Rc::new(Core::Var(0, "x".into())))), Usage::none())
+                let one = super::value::Poly::constant(Grade::ONE).into_value();
+                (self.lam(ctx, "x".into(), &one, &body_ty, Rc::new(Core::Var(0, "x".into()))), Usage::none())
             }
         };
 
@@ -304,23 +362,27 @@ impl Checker {
                 ty = self.apply(cod, a.clone());
             }
             let mut inner = ctx.clone();
+            // each binder of the clause, with the context it is bound in and
+            // its type, for the lambdas it becomes
             let mut erased = Vec::new();
             loop {
                 let forced = self.force(ty.clone());
                 let Value::Pi { name, icit: Icit::Implicit, dom, cod, .. } = &*forced else { break };
                 let lvl = inner.lvl;
+                erased.push((name.clone(), inner.clone(), dom.clone()));
                 inner = inner.bind(None, name, dom.clone());
-                erased.push(name.clone());
                 ty = self.apply(cod, vvar(lvl, name.clone()));
             }
             // each argument, of the type the operation gives it (which may
             // mention the ones before)
             let mut inner_x = inner;
             let mut x_grades = Vec::new();
+            let mut x_binders = Vec::new();
             for x in xs {
                 let forced = self.force(ty);
                 let Value::Pi { grade, dom, cod, .. } = &*forced else { return err() };
                 let lvl = inner_x.lvl;
+                x_binders.push((inner_x.clone(), dom.clone()));
                 inner_x = inner_x.bind(Some(x), &x.text, dom.clone()).graded(grade);
                 x_grades.push(grade.clone());
                 ty = self.apply(cod, vvar(lvl, x.text.clone()));
@@ -338,18 +400,31 @@ impl Checker {
                 let m = self.fresh_meta(&inner_x, c.id, format!("how often {} resumes", op_info.name));
                 self.eval(&inner_x.env, &m)
             };
-            let inner_k = inner_x.bind(Some(k), &k.text, k_ty).graded(&k_grade);
+            let inner_k = inner_x.bind(Some(k), &k.text, k_ty.clone()).graded(&k_grade);
             let (c_body, mut usage) = self.check(&inner_k, &c.body, result.clone());
-            // how often it resumes is how often it uses `k`
+            // how often it resumes is how often it uses `k`, which is at
+            // most once unless the operation says otherwise
+            let unknown = usage.is_unknown();
             self.leave_binder(&inner_k, c.id, k, k_grade.clone(), &mut usage, false);
+            if !op_info.many && !unknown {
+                let resumes = self.to_poly(self.force(k_grade.clone())).as_constant();
+                if !resumes.is_some_and(|g| g.fits(Grade::range(Grade::ZERO, Grade::ONE).expect("0 <= 1"))) {
+                    let effect = info.name.clone();
+                    self.error(c.id, TypeErrorKind::ResumesTooOften { op: op_info.name.clone(), effect });
+                }
+            }
             for (x, grade) in xs.iter().zip(&x_grades) {
                 self.leave_binder(&inner_x, c.id, x, grade.clone(), &mut usage, false);
             }
-            let body = self.lam(k.text.clone(), &k_grade, c_body);
-            let body = xs.iter().zip(&x_grades).rev().fold(body, |acc, (x, grade)| self.lam(x.text.clone(), grade, acc));
-            let body = erased.iter().rev().fold(body, |acc, name| {
-                self.lam(name.clone(), &super::value::Poly::constant(Grade::ZERO).into_value(), acc)
-            });
+            let body = self.lam(&inner_x, k.text.clone(), &k_grade, &k_ty, c_body);
+            let body = xs
+                .iter()
+                .zip(&x_grades)
+                .zip(&x_binders)
+                .rev()
+                .fold(body, |acc, ((x, grade), (at, dom))| self.lam(at, x.text.clone(), grade, dom, acc));
+            let zero = super::value::Poly::constant(Grade::ZERO).into_value();
+            let body = erased.iter().rev().fold(body, |acc, (name, at, dom)| self.lam(at, name.clone(), &zero, dom, acc));
             ops.push(OpClause { op, name: op_info.name.clone(), erased: erased.len(), body });
             // a clause runs as often as its operation is performed
             ops_usage = ops_usage + usage.scale(&super::value::Poly::constant(Grade::ANY));

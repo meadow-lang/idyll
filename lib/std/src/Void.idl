@@ -1,0 +1,12 @@
+-- The empty type: no value has it, so a function from it is never called,
+-- and a function to it says that its argument cannot be had.
+
+@pub data Void
+
+-- Anything, from what cannot be: a `Void` never arrives.
+@pub absurd : {a : Type} -> Void -> a
+absurd v impossible
+
+-- `p` cannot be had: the type of a proof that it is false, `neg p`.
+@pub neg : Type -> Type
+neg p = p -> Void

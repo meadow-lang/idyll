@@ -1,0 +1,65 @@
+-- Integers: the runtime's 64-bit `Int`, which wraps around. The operators
+-- `+`, `-`, `*`, `/`, `%`, `<` and `==` are built in; these are made of
+-- them. Most look at an argument more than once, so take it with `[]`.
+
+use Std.Nat (Nat)
+use Std.Nat.Nat.*
+use Std.Ordering (Ordering)
+use Std.Ordering.Ordering.*
+
+@pub negate : Int -> Int
+negate n = 0 - n
+
+@pub abs : (n : [] Int) -> Int
+abs n = if n < 0 then 0 - n else n
+
+@pub signum : (n : [] Int) -> Int
+signum n = if n < 0 then 0 - 1 else if n == 0 then 0 else 1
+
+@pub max : (a : [] Int) -> (b : [] Int) -> Int
+max a b = if a < b then b else a
+
+@pub min : (a : [] Int) -> (b : [] Int) -> Int
+min a b = if a < b then a else b
+
+@pub compare : (a : [] Int) -> (b : [] Int) -> Ordering
+compare a b = if a < b then Less else if a == b then Equal else Greater
+
+@pub lessOrEqual : (a : [] Int) -> (b : [] Int) -> Bool
+lessOrEqual a b = if a < b then True else a == b
+
+@pub greaterThan : Int -> Int -> Bool
+greaterThan a b = b < a
+
+@pub isEven : Int -> Bool
+isEven n = n % 2 == 0
+
+@pub isOdd : Int -> Bool
+isOdd n = if n % 2 == 0 then False else True
+
+-- `base` multiplied by itself `e` times: `pow 2 (Std.Nat.fromInt 10)` is 1024.
+@pub pow : (base : [] Int) -> Nat -> Int
+pow base Z = 1
+pow base (S e) = base * pow base e
+
+-- The greatest common divisor, by Euclid's algorithm. It takes fewer than
+-- a hundred steps for any two 64-bit integers (the worst case is a pair of
+-- Fibonacci numbers), which is the bound it counts down, so that it is
+-- seen to end.
+@pub gcd : (a : [] Int) -> (b : [] Int) -> Int
+gcd a b = euclid oneTwentyEight (abs a) (abs b)
+
+euclid : (fuel : [0..1] Nat) -> (a : [] Int) -> (b : [] Int) -> Int
+euclid Z a b = a
+euclid (S fuel) a b = if b == 0 then a else euclid fuel b (a % b)
+
+oneTwentyEight : Nat
+oneTwentyEight = Std.Nat.fromInt 128
+
+-- How `n` is written in decimal.
+@pub show : (n : [] Int) -> String
+show n = showInt n
+
+-- The natural number an `Int` counts, or `Z` for a negative one.
+@pub toNat : (n : [] Int) -> Nat
+toNat n = Std.Nat.fromInt n

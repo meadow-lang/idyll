@@ -9,4 +9,6 @@
 //! runs the passes, and `main.rs` is the `idyllic` command.  The REPL is not
 //! here: it is the `idyll` command, in idyll-driver/.
 
+pub mod inspect;
 pub mod pipeline;
+pub mod stdlib;

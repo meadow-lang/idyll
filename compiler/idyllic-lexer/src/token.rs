@@ -54,7 +54,7 @@ pub enum Token {
     #[regex(r"0o[0-7]+", crate::octal)]
     #[regex(r"0x[0-9A-Fa-f]+", crate::hexadecimal)]
     #[regex(r"[1-9][0-9]*|0", crate::decimal)]
-    /// Arbitrary precision.
+    /// Any size: whether it fits an `Int` is the parser's to say.
     Int(BigInt),
 
     /// A backslash always pairs with the next character, so an escaped quote

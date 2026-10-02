@@ -77,6 +77,9 @@ pub struct CompiledPackage {
     /// whether that expression is `main ()`, the package having none of
     /// its own
     pub main: bool,
+    /// its names, by unique, with its package's name and their paths in it,
+    /// for the symbols a back end names things by
+    pub symbols: Vec<(usize, String, String)>,
     /// what its metavariables were solved with, which its code may mention
     pub meta_solutions: Vec<Option<Rc<Core>>>,
 }
@@ -219,6 +222,7 @@ impl Checker {
             rec_defs: rec_defs.iter().filter(|d| own_set.contains(&d.unique)).cloned().collect(),
             body,
             main: false,
+            symbols: Vec::new(),
             meta_solutions,
         }
     }
@@ -229,6 +233,34 @@ impl Checker {
 /// not, in an order where each comes after those it depends on.  Replaces
 /// the root's program, recursive definitions and tables with the whole
 /// program's; its metavariables are solved away.
+/// Whether the program refers to anything `dep` declares: a definition, a
+/// constructor (built, or matched on), an operation.
+pub fn uses(root: &TypeCheckResult, dep: &CompiledPackage) -> bool {
+    fn mentions(c: &Core, range: &std::ops::Range<usize>) -> bool {
+        let go = |c: &Core| mentions(c, range);
+        match c {
+            Core::Opaque(u, _) => range.contains(u),
+            Core::Pi { grade, in_type, dom, cod, .. } => go(grade) || go(in_type) || go(dom) || go(cod),
+            Core::Lam(_, b) | Core::BoxIntro(b) | Core::Unbox(b) | Core::Runtime(_, b) => go(b),
+            Core::Let(_, a, b)
+            | Core::App(a, b)
+            | Core::BoxTy(a, b)
+            | Core::GradeAdd(a, b)
+            | Core::GradeMul(a, b)
+            | Core::GradeRange(a, b)
+            | Core::Comp(a, b) => go(a) || go(b),
+            Core::Case(s, alts) => {
+                go(s) || alts.iter().any(|a| matches!(a.head, super::core::Head::Con(u) if range.contains(&u)) || go(&a.body))
+            }
+            Core::Handle(b, r, ops) => go(b) || go(r) || ops.iter().any(|op| range.contains(&op.op) || go(&op.body)),
+            Core::Row(labels, tails) => labels.iter().chain(tails).any(|x| go(x)),
+            _ => false,
+        }
+    }
+    let range = &dep.uniques;
+    root.program.as_ref().is_some_and(|p| mentions(p, range)) || root.rec_defs.iter().any(|d| mentions(&d.core, range))
+}
+
 pub fn link(root: &mut TypeCheckResult, deps: &[&CompiledPackage]) {
     let Some(own) = root.compiled.clone() else { return };
     let base = own.base;
@@ -256,8 +288,11 @@ pub fn link(root: &mut TypeCheckResult, deps: &[&CompiledPackage]) {
         })
     };
     let mut lets: Vec<(String, Rc<Core>)> = Vec::new();
-    let mut rec_defs = Vec::new();
     let packages: Vec<&CompiledPackage> = deps.iter().copied().chain(std::iter::once(&own)).collect();
+    // the prelude's recursive definitions, which are the same in every
+    // package and no package's own: the root's, as its prelude `let`s are
+    let mut rec_defs: Vec<RecDef> =
+        root.rec_defs.iter().filter(|d| !packages.iter().any(|p| p.uniques.contains(&d.unique))).cloned().collect();
     for (p, &offset) in packages.iter().zip(&offsets) {
         for (k, (_, name, rhs)) in p.lets.iter().enumerate() {
             lets.push((name.clone(), relocate(p, offset, p.base + k, rhs)));
@@ -287,6 +322,13 @@ pub fn link(root: &mut TypeCheckResult, deps: &[&CompiledPackage]) {
     }
     root.program = Some(program);
     root.rec_defs = rec_defs;
+    root.typer.import(deps);
+    // the top-level `let`s: the prelude's, then each package's in order
+    let prelude = root.prelude_lets.len();
+    root.toplevel = root.toplevel.iter().take(prelude).copied().chain(packages.iter().flat_map(|p| p.lets.iter().map(|(u, ..)| *u))).collect();
+    for p in deps.iter().copied().chain(std::iter::once(&own)) {
+        root.symbols.extend(p.symbols.iter().map(|(u, pkg, path)| (*u, (pkg.clone(), path.clone()))));
+    }
     root.body_type = Some(zonk(&own, ty));
     root.meta_solutions = Vec::new();
     root.ran_main = own.main;

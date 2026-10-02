@@ -45,6 +45,8 @@ pub struct Output {
     /// What running it wrote to the console, if its world was captured (see
     /// [`Options::live`]); a live one has written it already.
     pub printed: String,
+    /// What it wrote as errors (standard error), likewise.
+    pub errors: String,
     /// Whether what was run is `main ()`, for a program with a `main` and no
     /// expression of its own.  Its value, `()`, is not shown.
     pub ran_main: bool,
@@ -58,6 +60,32 @@ pub struct Output {
     /// Every file the program was read from, its own first and the
     /// prelude's last, in the one address space their spans share.
     pub sources: SourceMap,
+    /// Every name the program and the prelude declare, if checking got that
+    /// far: what the REPL lists and searches.
+    pub declarations: Vec<Declaration>,
+}
+
+/// A name a program can use, with what a person looking for it wants to
+/// know.
+#[derive(Clone, Debug)]
+pub struct Declaration {
+    /// as a program writes it: `double`, `Nat.Z`, `Math.double`
+    pub name: String,
+    pub kind: typecheck::DeclKind,
+    /// its type (a data type's or an effect's kind), and that as written
+    pub ty: std::rc::Rc<typecheck::core::Core>,
+    pub shown: String,
+    pub prelude: bool,
+    /// where it is declared, in the program's address space
+    pub span: Span,
+    /// the file, and the one-based line and column there
+    pub file: String,
+    pub line: usize,
+    pub column: usize,
+    /// the `--` comment on the lines just above it, if there is one
+    pub doc: Option<String>,
+    /// the package it comes from, if a dependency (`Std`) declares it
+    pub package: Option<String>,
 }
 
 /// What a package is compiled against: every package it depends on,
@@ -216,9 +244,29 @@ use Result.*
 
 effect Console where
   putStr : String -> ()
-  putStrLn : String -> ()
-  printInt : Int -> ()
+  putErr : String -> ()
   readLine : () -> Maybe String
+
+putStrLn : String -> () ! Console
+putStrLn s = putStr (s ++ \"\\n\")
+
+printInt : (n : [] Int) -> () ! Console
+printInt n = putStrLn (showInt n)
+
+showInt : (n : [] Int) -> String
+showInt n = if n < 0 then \"-\" ++ negativeDigits digitFuel n else negativeDigits digitFuel (0 - n)
+
+data DigitFuel = Spent | More DigitFuel
+
+digitFuel : DigitFuel
+digitFuel = DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More DigitFuel.Spent)))))))))))))))))))
+
+negativeDigits : (fuel : [] DigitFuel) -> (n : [] Int) -> String
+negativeDigits DigitFuel.Spent n = \"\"
+negativeDigits (DigitFuel.More fuel) n =if (0 - 10) < n then digitString (0 - n) else negativeDigits fuel (n / 10) ++ digitString (0 - n % 10)
+
+digitString : (d : [] Int) -> String
+digitString d = if d == 0 then \"0\" else if d == 1 then \"1\" else if d == 2 then \"2\" else if d == 3 then \"3\" else if d == 4 then \"4\" else if d == 5 then \"5\" else if d == 6 then \"6\" else if d == 7 then \"7\" else if d == 8 then \"8\" else \"9\"
 
 effect Fs where
   readToString : String -> Result String String
@@ -258,7 +306,10 @@ effect Time where
 effect Test where
   fail : String -> ()
 
-effect Eff = {Console, Fs, Process, Random, Time, Test, Div}
+effect Abort where
+  abort : {a : Type} -> String -> a
+
+effect Eff = {Console, Fs, Process, Random, Time, Test, Abort, Div}
 ";
 
 /// Lex, lay out and parse one file, added to `map`, so that its spans are
@@ -316,6 +367,7 @@ struct Ran {
     evaluation: Evaluation,
     memory: Option<seq::machine::Memory>,
     printed: String,
+    errors: String,
 }
 
 /// Lower, hold the result to its grades, infer the substitutions, and run,
@@ -327,6 +379,7 @@ fn evaluate(checked: &typecheck::TypeCheckResult, world: Option<World>) -> Optio
         evaluation: Evaluation::Failed(why),
         memory: None,
         printed: String::new(),
+        errors: String::new(),
     };
     let lowered = match seq::lower::lower(checked)? {
         Ok(lowered) => lowered,
@@ -343,7 +396,7 @@ fn evaluate(checked: &typecheck::TypeCheckResult, world: Option<World>) -> Optio
     let native = Some(seq::linearize::linearize(&seq::inline::inline(&lowered)));
     let Some(mut world) = world else {
         let evaluation = Evaluation::Opaque;
-        return Some(Ran { program, native, evaluation, memory: None, printed: String::new() });
+        return Some(Ran { program, native, evaluation, memory: None, printed: String::new(), errors: String::new() });
     };
     use seq::machine::MachineError;
     let (evaluation, memory) = match seq::machine::run_in(&program, FUEL, &mut world) {
@@ -358,8 +411,8 @@ fn evaluate(checked: &typecheck::TypeCheckResult, world: Option<World>) -> Optio
         Err(e @ (MachineError::DivisionByZero | MachineError::TestFailed(_))) => (Evaluation::Stopped(e.to_string()), None),
         Err(e) => (Evaluation::Failed(e.to_string()), None),
     };
-    let printed = world.into_output();
-    Some(Ran { program, native, evaluation, memory, printed })
+    let (printed, errors) = world.into_streams();
+    Some(Ran { program, native, evaluation, memory, printed, errors })
 }
 
 impl Output {
@@ -480,7 +533,15 @@ pub fn compile_package_with(package: &PackageSource, deps: Deps<'_>, opts: &Opti
     build(package, deps, opts, true, Stage::Lower)
 }
 
-fn world(opts: &Options, args: Vec<String>) -> World {
+/// Only check a program: no lowering, no running.  (With no `main` run,
+/// either.)
+pub fn check(src: &str, opts: &Options) -> Output {
+    run_with(src, opts, false, Stage::Check)
+}
+
+/// The world a program runs in: the real one, or a captured one (see
+/// [`Options::live`]), with these arguments for it.
+pub fn world(opts: &Options, args: Vec<String>) -> World {
     if opts.live {
         World::live(args)
     } else {
@@ -511,6 +572,14 @@ pub fn link_compiled(packages: &[&CompiledPackage], opts: &Options) -> Output {
 
 fn linked(packages: &[&CompiledPackage], opts: &Options, stage: Stage) -> Output {
     let (root, deps) = packages.split_last().expect("a program has a package of its own");
+    // Std, which every package has, first, unless it is among them already
+    let std_package = crate::stdlib::compiled();
+    let mut with_std: Vec<&CompiledPackage> = Vec::new();
+    if !deps.iter().any(|p| p.name == crate::stdlib::NAME) {
+        with_std.push(&std_package);
+    }
+    with_std.extend(deps.iter().copied());
+    let deps = &with_std[..];
     // the prelude, as every package has it: its definitions are the
     // outermost of the program, and its tables are everyone's
     let mut out = build(&PackageSource::single("Main", "<link>", ""), Deps::default(), opts, false, Stage::Check);
@@ -521,7 +590,7 @@ fn linked(packages: &[&CompiledPackage], opts: &Options, stage: Stage) -> Output
 }
 
 /// How far to take a program.
-enum Stage {
+pub(crate) enum Stage {
     /// check it
     Check,
     /// and lower it, for the machine and for native code
@@ -535,6 +604,72 @@ fn run_with(src: &str, opts: &Options, entry: bool, stage: Stage) -> Output {
 }
 
 fn build(package: &PackageSource, deps: Deps<'_>, opts: &Options, entry: bool, stage: Stage) -> Output {
+    with_std(&package.name, deps, |deps| build_with(package, deps, opts, entry, stage))
+}
+
+/// `deps`, with the standard library among them, as every package has it,
+/// for `f`: unless the package is the standard library, or already depends
+/// on it by that name. What the package names its own things with starts
+/// after what Std named its with.
+pub(crate) fn with_std<R>(package: &str, deps: Deps<'_>, f: impl FnOnce(Deps<'_>) -> R) -> R {
+    use crate::stdlib::{self, NAME};
+    if package == NAME || deps.direct.iter().any(|(n, _)| *n == NAME) {
+        return f(deps);
+    }
+    let std_package = stdlib::compiled();
+    let all: Vec<&CompiledPackage> = std::iter::once(&*std_package).chain(deps.all.iter().copied()).collect();
+    let direct: Vec<(&str, &CompiledPackage)> = std::iter::once((NAME, &*std_package)).chain(deps.direct.iter().copied()).collect();
+    f(Deps { all: &all, direct: &direct, first_unique: deps.first_unique.max(std_package.uniques.end) })
+}
+
+/// The packages a checked program is to be linked with: all of `deps`,
+/// but Std only if something uses it -- the program itself, when Std is all
+/// there is, or any other package, which may.
+pub(crate) fn to_link<'a>(checked: &typecheck::TypeCheckResult, deps: &[&'a CompiledPackage]) -> Vec<&'a CompiledPackage> {
+    let others = deps.iter().any(|p| p.name != crate::stdlib::NAME);
+    deps.iter()
+        .copied()
+        .filter(|p| p.name != crate::stdlib::NAME || others || typecheck::packages::uses(checked, p))
+        .collect()
+}
+
+fn build_with(package: &PackageSource, deps: Deps<'_>, opts: &Options, entry: bool, stage: Stage) -> Output {
+    let Front { diagnostics, sources, module, spans, mut checked, decls } = match front(package, deps, opts, entry) {
+        Ok(front) => front,
+        Err(unread) => return unread,
+    };
+    let hir = opts.debug.then(|| format!("{module:#?}"));
+    let mut declarations = declarations(&checked, &spans, &sources);
+    declarations.extend(deps.direct.iter().flat_map(|(name, p)| exported(name, p)));
+
+    // a program that uses other packages is put together with them
+    let checks = !diagnostics.iter().any(Diagnostic::is_error);
+    if !matches!(stage, Stage::Check) && checks && checked.program.is_some() {
+        let linking = to_link(&checked, deps.all);
+        if !linking.is_empty() {
+            typecheck::packages::link(&mut checked, &linking);
+        }
+    }
+    let mut out = finish(checked, diagnostics, sources, decls, hir, stage);
+    out.declarations = declarations;
+    out
+}
+
+/// A package read, renamed and checked: the front of the pipeline.
+pub(crate) struct Front {
+    pub diagnostics: Vec<Diagnostic>,
+    pub sources: SourceMap,
+    pub module: idyllic_hir::Module,
+    pub spans: idyllic_hir::SpanTable,
+    pub checked: typecheck::TypeCheckResult,
+    /// the program's own definitions and their types, as written
+    pub decls: Vec<(String, String)>,
+}
+
+/// Read, rename and check a package; or, if it cannot be read, what there
+/// is to say about it.
+pub(crate) fn front(package: &PackageSource, deps: Deps<'_>, opts: &Options, entry: bool) -> Result<Front, Output> {
+    let _ = opts;
     let mut diagnostics = Vec::new();
     let mut sources = SourceMap::default();
     let programs: Vec<Option<idyllic_ast::Program>> =
@@ -543,7 +678,7 @@ fn build(package: &PackageSource, deps: Deps<'_>, opts: &Options, entry: bool, s
     let asts = match programs {
         Some(asts) => asts,
         None => {
-            return Output {
+            return Err(Output {
                 sources,
                 diagnostics,
                 body_type: None,
@@ -553,11 +688,13 @@ fn build(package: &PackageSource, deps: Deps<'_>, opts: &Options, entry: bool, s
                 native: None,
                 evaluation: None,
                 printed: String::new(),
+                errors: String::new(),
                 ran_main: false,
                 memory: None,
                 result_kind: llvm::ResultKind::Other,
                 checked: None,
-            };
+                declarations: Vec::new(),
+            });
         }
     };
 
@@ -579,7 +716,7 @@ fn build(package: &PackageSource, deps: Deps<'_>, opts: &Options, entry: bool, s
             .map(rename::RenameError::to_diagnostic),
     );
     let module = scc::scc_module(renamed.module);
-    let mut checked = typecheck::check_module(&module, renamed.spans.len(), entry, deps.all);
+    let checked = typecheck::check_module(&module, renamed.spans.len(), entry, deps.all);
     diagnostics.extend(
         checked
             .errors
@@ -592,18 +729,133 @@ fn build(package: &PackageSource, deps: Deps<'_>, opts: &Options, entry: bool, s
         decls.sort_by_key(|(id, ..)| renamed.spans.get(*id).map(|s| s.start));
         decls.into_iter().map(|(_, x, ty)| (x.clone(), ty.to_string())).collect()
     };
-    let hir = opts.debug.then(|| format!("{module:#?}"));
+    Ok(Front { diagnostics, sources, module, spans: renamed.spans, checked, decls })
+}
 
-    // a program that uses other packages is put together with them
-    let checks = !diagnostics.iter().any(Diagnostic::is_error);
-    if !matches!(stage, Stage::Check) && !deps.all.is_empty() && checks && checked.program.is_some() {
-        typecheck::packages::link(&mut checked, deps.all);
+/// What [`Output::declarations`] lists, from the checker's catalog.
+fn declarations(checked: &typecheck::TypeCheckResult, spans: &idyllic_hir::SpanTable, sources: &SourceMap) -> Vec<Declaration> {
+    checked
+        .catalog
+        .iter()
+        .filter_map(|d| {
+            let span = spans.get(d.node)?;
+            let (file, offset) = sources.locate(span.start)?;
+            let file = sources.file(file);
+            let (line, column) = LineIndex::new(&file.text).line_col(offset);
+            // a definition's signature and equations are all its own: it is
+            // written where the first of them is, under its comment
+            let last = d.name.rsplit('.').next().unwrap_or(&d.name);
+            let line = own_lines_from(&file.text, line, last);
+            Some(Declaration {
+                name: d.name.clone(),
+                kind: d.kind,
+                ty: d.ty.clone(),
+                shown: d.ty.to_string(),
+                prelude: d.prelude,
+                span,
+                file: file.name.clone(),
+                line: line + 1,
+                column: column + 1,
+                doc: doc_above(&file.text, line),
+                package: None,
+            })
+        })
+        .collect()
+}
+
+/// The first of the lines, ending at line `line` (zero-based), that a
+/// definition of `name` is written on: its signature and equations each
+/// start with it.
+fn own_lines_from(text: &str, line: usize, name: &str) -> usize {
+    let lines: Vec<&str> = text.lines().collect();
+    let own = |l: &str| {
+        let rest = l.strip_prefix(name).or_else(|| l.strip_prefix(&format!("({name})")));
+        rest.is_some_and(|r| r.starts_with([' ', ':']))
+    };
+    let mut first = line.min(lines.len());
+    while first > 0 && own(lines[first - 1]) {
+        first -= 1;
     }
-    finish(checked, diagnostics, sources, decls, hir, stage)
+    first
+}
+
+/// What a package depended on gives its dependents, as declarations: each
+/// public name, written in full (`Std.List.map`), with its type.
+fn exported(package: &str, p: &CompiledPackage) -> Vec<Declaration> {
+    use typecheck::DeclKind;
+    let types: std::collections::HashMap<usize, &std::rc::Rc<typecheck::core::Core>> =
+        p.constants.iter().map(|c| (c.unique, &c.ty)).collect();
+    let datas: std::collections::HashSet<usize> = p.datas.iter().map(|(u, _)| *u).collect();
+    let ctors: std::collections::HashSet<usize> = p.ctors.iter().map(|(u, _)| *u).collect();
+    let effects: std::collections::HashSet<usize> = p.effects.iter().map(|(u, _)| *u).collect();
+    let ops: std::collections::HashSet<usize> = p.ops.iter().map(|(u, _)| *u).collect();
+    // each public name, with what a dependent writes before it: its
+    // module's path, and for a constructor its type's
+    let mut public: Vec<(Vec<String>, String, usize)> = Vec::new();
+    for (path, name, u, vis) in &p.names.exports {
+        if *vis != idyllic_ast::Visibility::Public {
+            continue;
+        }
+        public.push((path.clone(), name.clone(), *u));
+        if let Some((_, _, members)) = p.names.types.iter().find(|(t, ..)| t == u) {
+            let under: Vec<String> = path.iter().cloned().chain(std::iter::once(name.clone())).collect();
+            public.extend(members.iter().map(|(c, cu)| (under.clone(), c.clone(), *cu)));
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    public.retain(|(path, name, u)| seen.insert((path.clone(), name.clone(), *u)));
+    let mut out = Vec::new();
+    for (path, name, u) in &public {
+        let Some(ty) = types.get(u) else { continue };
+        let kind = if datas.contains(u) {
+            DeclKind::Type
+        } else if ctors.contains(u) {
+            DeclKind::Constructor
+        } else if effects.contains(u) {
+            DeclKind::Effect
+        } else if ops.contains(u) {
+            DeclKind::Operation
+        } else {
+            DeclKind::Value
+        };
+        let full = std::iter::once(package.to_string()).chain(path.iter().cloned()).chain(std::iter::once(name.clone()));
+        out.push(Declaration {
+            name: full.collect::<Vec<_>>().join("."),
+            kind,
+            ty: (*ty).clone(),
+            shown: ty.to_string(),
+            prelude: false,
+            span: Span::new(0, 0),
+            file: format!("<{package}>"),
+            line: 0,
+            column: 0,
+            doc: None,
+            package: Some(package.to_string()),
+        });
+    }
+    out
+}
+
+/// The `--` comment on the lines just above line `line` (zero-based) of
+/// `text`, without its dashes.
+fn doc_above(text: &str, line: usize) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut doc: Vec<&str> = lines[..line.min(lines.len())]
+        .iter()
+        .rev()
+        .map(|l| l.trim())
+        .take_while(|l| l.starts_with("--"))
+        .map(|l| {
+            let text = l.trim_start_matches('-');
+            text.strip_prefix(' ').unwrap_or(text)
+        })
+        .collect();
+    doc.reverse();
+    (!doc.is_empty()).then(|| doc.join("\n"))
 }
 
 /// The rest of the pipeline, for a program checked (and linked).
-fn finish(
+pub(crate) fn finish(
     checked: typecheck::TypeCheckResult,
     diagnostics: Vec<Diagnostic>,
     sources: SourceMap,
@@ -620,9 +872,9 @@ fn finish(
         Stage::Lower => evaluate(&checked, None),
         Stage::Run(world) => evaluate(&checked, Some(world)),
     };
-    let (axcut, native, evaluation, memory, printed) = match ran {
-        Some(r) => (Some(r.program), r.native, Some(r.evaluation), r.memory, r.printed),
-        None => (None, None, None, None, String::new()),
+    let (axcut, native, evaluation, memory, printed, errors) = match ran {
+        Some(r) => (Some(r.program), r.native, Some(r.evaluation), r.memory, r.printed, r.errors),
+        None => (None, None, None, None, String::new(), String::new()),
     };
 
     use idyllic_builtins::Builtin;
@@ -643,6 +895,7 @@ fn finish(
         native,
         evaluation,
         printed,
+        errors,
         ran_main,
         memory,
         body_type: checked.body_type.as_ref().map(|ty| ty.to_string()),
@@ -650,6 +903,7 @@ fn finish(
         hir,
         checked: Some(checked),
         sources,
+        declarations: Vec::new(),
     }
 }
 
@@ -666,6 +920,17 @@ pub struct Session {
     seen: usize,
 }
 
+/// How far [`Session::enter_in`] takes an entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// check it, and no more; nor does it extend the session
+    Check,
+    /// and lower it, for whoever runs it some other way
+    Lower,
+    /// and run it on the AxCut machine
+    Run,
+}
+
 /// The result of one entry.  Spans in `output` index `source`, which is the
 /// session's declarations followed by the entry.
 pub struct Entered {
@@ -678,9 +943,19 @@ impl Session {
     /// diagnostics and definitions have been shown already.  An entry made
     /// of declarations alone, with no errors, extends the session.
     pub fn enter(&mut self, entry: &str, opts: &Options) -> Entered {
+        self.enter_in(entry, opts, Mode::Run)
+    }
+
+    /// The same, taken as far as `mode` says.
+    pub fn enter_in(&mut self, entry: &str, opts: &Options, mode: Mode) -> Entered {
         let source = format!("{}{}\n", self.source, entry.trim_end());
+        let stage = match mode {
+            Mode::Check => Stage::Check,
+            Mode::Lower => Stage::Lower,
+            Mode::Run => Stage::Run(world(opts, Vec::new())),
+        };
         // defining `main` is not running it: that is `main ()`
-        let mut output = run_with(&source, opts, false, Stage::Run(world(opts, Vec::new())));
+        let mut output = run_with(&source, opts, false, stage);
         let earlier = self.source.len();
         output
             .diagnostics
@@ -689,11 +964,16 @@ impl Session {
         output.decls.drain(..self.seen.min(defined));
         // (an entry of declarations is kept even if it defines nothing new:
         // `use Nat.*` is one)
-        if output.body_type.is_none() && !output.has_errors() {
+        if output.body_type.is_none() && !output.has_errors() && mode != Mode::Check {
             self.seen = defined;
             self.source = source.clone();
         }
         Entered { output, source }
+    }
+
+    /// The declarations entered so far, as one source text.
+    pub fn source(&self) -> &str {
+        &self.source
     }
 
     /// Forget every declaration.

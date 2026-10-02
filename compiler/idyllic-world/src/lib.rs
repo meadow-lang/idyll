@@ -15,7 +15,6 @@
 //! is what tests want.  Files, the environment and the clock are the real
 //! ones either way.
 
-use num_bigint::BigInt;
 use std::collections::VecDeque;
 use std::io::{BufRead, Write};
 use std::rc::Rc;
@@ -24,8 +23,7 @@ use std::rc::Rc;
 /// code has a function in the runtime for, `idyll_op_NAME`.
 pub const OPERATIONS: &[(&str, usize)] = &[
     ("putStr", 1),
-    ("putStrLn", 1),
-    ("printInt", 1),
+    ("putErr", 1),
     ("readLine", 1),
     ("readToString", 1),
     ("writeString", 2),
@@ -55,12 +53,13 @@ pub const OPERATIONS: &[(&str, usize)] = &[
     ("monotonic", 1),
     ("sleep", 1),
     ("fail", 1),
+    ("abort", 1),
 ];
 
 /// What an operation is given.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Arg {
-    Int(BigInt),
+    Int(i64),
     Str(Rc<str>),
 }
 
@@ -68,7 +67,7 @@ pub enum Arg {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Answer {
     Unit,
-    Int(BigInt),
+    Int(i64),
     Bool(bool),
     Str(Rc<str>),
     /// A constructor of the prelude's, with its tag among its type's
@@ -115,8 +114,9 @@ pub enum Stop {
 /// The world's side of a running program.
 pub struct World {
     live: bool,
-    /// what a captured world was given to print
+    /// what a captured world was given to print, and to print as an error
     output: String,
+    errors: String,
     /// what a captured world has to read, line by line
     input: VecDeque<String>,
     /// the state of the random generator
@@ -135,13 +135,20 @@ impl World {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos() as u64);
-        World { live: true, output: String::new(), input: VecDeque::new(), seed: nanos ^ TEST_SEED, args }
+        World { live: true, output: String::new(), errors: String::new(), input: VecDeque::new(), seed: nanos ^ TEST_SEED, args }
     }
 
     /// Output kept, no input, no arguments, and the same random numbers
     /// every time.
     pub fn captured() -> World {
-        World { live: false, output: String::new(), input: VecDeque::new(), seed: TEST_SEED, args: Vec::new() }
+        World {
+            live: false,
+            output: String::new(),
+            errors: String::new(),
+            input: VecDeque::new(),
+            seed: TEST_SEED,
+            args: Vec::new(),
+        }
     }
 
     /// A captured world with these lines to read.
@@ -157,6 +164,23 @@ impl World {
 
     pub fn into_output(self) -> String {
         self.output
+    }
+
+    /// What a captured world printed, and printed as errors (standard
+    /// error); nothing, for a live one.
+    pub fn into_streams(self) -> (String, String) {
+        (self.output, self.errors)
+    }
+
+    fn print_error(&mut self, s: &str) {
+        if self.live {
+            let _ = std::io::stdout().flush();
+            let mut err = std::io::stderr().lock();
+            let _ = err.write_all(s.as_bytes());
+            let _ = err.flush();
+        } else {
+            self.errors.push_str(s);
+        }
     }
 
     fn print(&mut self, s: &str) {
@@ -205,36 +229,32 @@ impl World {
                 self.print(s);
                 Answer::Unit
             }
-            ("putStrLn", [Str(s)]) => {
-                self.print(&format!("{s}\n"));
-                Answer::Unit
-            }
-            ("printInt", [Int(n)]) => {
-                self.print(&format!("{n}\n"));
+            ("putErr", [Str(s)]) => {
+                self.print_error(s);
                 Answer::Unit
             }
             ("readLine", [_]) => self.read_line().map_or_else(Answer::nothing, |l| Answer::just(Answer::str(l))),
             // Time
             ("now", [_]) => {
                 let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
-                Answer::Int(BigInt::from(since.map_or(0, |d| d.as_millis())))
+                Answer::Int(since.map_or(0, |d| d.as_millis() as i64))
             }
-            ("monotonic", [_]) => Answer::Int(BigInt::from(monotonic_nanos())),
+            ("monotonic", [_]) => Answer::Int(monotonic_nanos() as i64),
             ("sleep", [Int(ms)]) => {
-                if let Ok(ms) = u64::try_from(ms) {
+                if let Ok(ms) = u64::try_from(*ms) {
                     std::thread::sleep(std::time::Duration::from_millis(ms));
                 }
                 Answer::Unit
             }
             // Random
-            ("nextInt", [_]) | ("nextSeed", [_]) => Answer::Int(BigInt::from(self.next_random() as i64)),
+            ("nextInt", [_]) | ("nextSeed", [_]) => Answer::Int(self.next_random() as i64),
             ("intBetween", [Int(lo), Int(hi)]) => {
+                // as the native runtime does it, in unsigned arithmetic
                 if hi <= lo {
-                    Answer::Int(lo.clone())
+                    Answer::Int(*lo)
                 } else {
-                    let span: BigInt = hi - lo;
-                    let r = BigInt::from(self.next_random()) % span;
-                    Answer::Int(lo + r)
+                    let span = hi.wrapping_sub(*lo) as u64;
+                    Answer::Int((*lo as u64).wrapping_add(self.next_random() % span) as i64)
                 }
             }
             // Process
@@ -242,9 +262,9 @@ impl World {
                 if self.live {
                     let _ = std::io::stdout().flush();
                 }
-                return Some(Err(Stop::Exit(i32::try_from(code).unwrap_or(1))));
+                return Some(Err(Stop::Exit(i32::try_from(*code).unwrap_or(1))));
             }
-            ("currentPid", [_]) => Answer::Int(BigInt::from(std::process::id())),
+            ("currentPid", [_]) => Answer::Int(i64::from(std::process::id())),
             ("args", [_]) => Answer::list(self.args.iter().map(|a| Answer::str(a.as_str())).collect()),
             ("getEnv", [Str(name)]) => {
                 std::env::var(&**name).map_or_else(|_| Answer::nothing(), |v| Answer::just(Answer::str(v)))
@@ -263,7 +283,7 @@ impl World {
             }
             ("isTerminal", [Int(fd)]) => {
                 use std::io::IsTerminal;
-                let fd = i64::try_from(fd).unwrap_or(-1);
+                let fd = *fd;
                 Answer::Bool(self.live && match fd {
                     0 => std::io::stdin().is_terminal(),
                     1 => std::io::stdout().is_terminal(),
@@ -289,7 +309,7 @@ impl World {
             ("removeDirAll", [Str(path)]) => Answer::result(std::fs::remove_dir_all(&**path), unit),
             ("rename", [Str(from), Str(to)]) => Answer::result(std::fs::rename(&**from, &**to), unit),
             ("copy", [Str(from), Str(to)]) => {
-                Answer::result(std::fs::copy(&**from, &**to), |n| Answer::Int(BigInt::from(n)))
+                Answer::result(std::fs::copy(&**from, &**to), |n| Answer::Int(n as i64))
             }
             ("readDir", [Str(path)]) => {
                 let names = std::fs::read_dir(&**path).and_then(|entries| {
@@ -306,6 +326,13 @@ impl World {
             ("isDir", [Str(path)]) => Answer::Bool(std::path::Path::new(&**path).is_dir()),
             // Test
             ("fail", [Str(message)]) => return Some(Err(Stop::Failed(message.to_string()))),
+            // what the prelude's `Abort` does unhandled: the message, as an
+            // error, and exit status 1 (on the shared back end, a handler of
+            // the front end's over `putErr` and `exit`)
+            ("abort", [Str(message)]) => {
+                self.print_error(&format!("{message}\n"));
+                return Some(Err(Stop::Exit(1)));
+            }
             _ => return None,
         };
         Some(Ok(answer))
@@ -326,9 +353,9 @@ mod tests {
     #[test]
     fn a_captured_world_keeps_what_is_printed_and_reads_what_it_is_given() {
         let mut w = World::captured().with_input(&["first"]);
-        assert_eq!(w.perform("putStrLn", &[Arg::Str("hi".into())]), Some(Ok(Answer::Unit)));
-        assert_eq!(w.perform("readLine", &[Arg::Int(0.into())]), Some(Ok(Answer::just(Answer::str("first")))));
-        assert_eq!(w.perform("readLine", &[Arg::Int(0.into())]), Some(Ok(Answer::nothing())));
+        assert_eq!(w.perform("putStr", &[Arg::Str("hi\n".into())]), Some(Ok(Answer::Unit)));
+        assert_eq!(w.perform("readLine", &[Arg::Int(0)]), Some(Ok(Answer::just(Answer::str("first")))));
+        assert_eq!(w.perform("readLine", &[Arg::Int(0)]), Some(Ok(Answer::nothing())));
         assert_eq!(w.output(), "hi\n");
     }
 
@@ -336,13 +363,13 @@ mod tests {
     fn a_captured_worlds_randomness_is_the_same_every_time() {
         let draw = || {
             let mut w = World::captured();
-            (0..5).map(|_| w.perform("intBetween", &[Arg::Int(10.into()), Arg::Int(20.into())])).collect::<Vec<_>>()
+            (0..5).map(|_| w.perform("intBetween", &[Arg::Int(10), Arg::Int(20)])).collect::<Vec<_>>()
         };
         let first = draw();
         assert_eq!(first, draw());
         for a in first {
             let Some(Ok(Answer::Int(n))) = a else { panic!("{a:?}") };
-            assert!((10..20).contains(&i64::try_from(n).unwrap()));
+            assert!((10..20).contains(&n));
         }
     }
 
@@ -366,7 +393,7 @@ mod tests {
     #[test]
     fn exit_and_fail_stop_the_program() {
         let mut w = World::captured();
-        assert_eq!(w.perform("exit", &[Arg::Int(3.into())]), Some(Err(Stop::Exit(3))));
+        assert_eq!(w.perform("exit", &[Arg::Int(3)]), Some(Err(Stop::Exit(3))));
         assert_eq!(w.perform("fail", &[Arg::Str("no".into())]), Some(Err(Stop::Failed("no".into()))));
         assert_eq!(w.perform("nothing", &[]), None);
     }

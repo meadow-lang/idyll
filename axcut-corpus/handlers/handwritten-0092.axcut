@@ -1,0 +1,57 @@
+-- | effect Choose where
+-- |   @many flip : Unit -> Bool
+-- | 
+-- | pick : Unit -> Int ! Choose
+-- | pick u = if flip () then 1 else 10
+-- | 
+-- | handle pick () with
+-- |   flip _ k -> k True + k False
+-- expect: value 11
+
+define main : () =
+  new f_0 = (){
+    apply(u_1, k_2) ⇒
+      substitute [k_2 ↦ k_2];
+      let u_3 = unit();
+      substitute [u_3 ↦ u_3, k_2 ↦ k_2];
+      new k_4 = (k_2){
+        ret(r_5) ⇒
+          substitute [k_2 ↦ k_2, r_5 ↦ r_5];
+          switch r_5 {
+            true() ⇒
+              extern lit 1 { (n_6) ⇒
+              substitute [n_6 ↦ n_6, k_2 ↦ k_2];
+              invoke k_2 ret },
+            false() ⇒
+              extern lit 10 { (n_7) ⇒
+              substitute [n_7 ↦ n_7, k_2 ↦ k_2];
+              invoke k_2 ret } } };
+      perform flip(u_3) k_4 };
+  new k_23 = (){
+    ret(r_24) ⇒
+      extern halt(r_24) {} };
+  new h_8 = (){
+    return(x_10, k_11) ⇒
+      invoke k_11 ret,
+    flip(x_12, k_13, k_14) ⇒
+      substitute [k_13 ↦ k_13, k_14 ↦ k_14];
+      let b_15 = true();
+      substitute [k_13 ↦ k_13, b_15 ↦ b_15, k_13' ↦ k_13, k_14 ↦ k_14];
+      new k_16 = (k_13', k_14){
+        ret(r_17) ⇒
+          let b_18 = false();
+          substitute [k_13' ↦ k_13', b_18 ↦ b_18, r_17 ↦ r_17, k_14 ↦ k_14];
+          new k_19 = (r_17, k_14){
+            ret(r_20) ⇒
+              extern add(r_17, r_20) { (r_21) ⇒
+              substitute [r_21 ↦ r_21, k_14 ↦ k_14];
+              invoke k_14 ret } };
+          substitute [b_18 ↦ b_18, k_19 ↦ k_19, k_13' ↦ k_13'];
+          invoke k_13' apply };
+      substitute [b_15 ↦ b_15, k_16 ↦ k_16, k_13 ↦ k_13];
+      invoke k_13 apply };
+  substitute [f_0 ↦ f_0, h_8 ↦ h_8, k_23 ↦ k_23];
+  handle h_8 k_23 as ret_9;
+  let u_22 = unit();
+  substitute [u_22 ↦ u_22, ret_9 ↦ ret_9, f_0 ↦ f_0];
+  invoke f_0 apply

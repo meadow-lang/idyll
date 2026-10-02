@@ -54,8 +54,9 @@ pub(crate) fn text(lex: &mut Lex) -> String {
     lex.slice().to_string()
 }
 
-/// Integers are arbitrary precision, so this cannot overflow; the regex has
-/// already guaranteed every digit is valid for the radix.
+/// Read as arbitrary precision, so this cannot overflow (the parser says
+/// whether it fits an `Int`); the regex has already guaranteed every digit
+/// is valid for the radix.
 fn int(lex: &mut Lex, prefix: usize, radix: u32) -> BigInt {
     BigInt::parse_bytes(&lex.slice().as_bytes()[prefix..], radix)
         .expect("the lexical grammar only admits valid digits")

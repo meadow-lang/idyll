@@ -64,11 +64,14 @@ fn addition_computes_during_type_checking() {
 }
 
 #[test]
-fn arbitrary_precision() {
+fn an_int_is_64_bits_and_wraps_in_types_too() {
+    // the type checker computes as the runtime does
     ok(
-        "\\(f : [0] Int -> Type) (x : f (99999999999999999999999999999 + 1)) -> (x : f 100000000000000000000000000000)",
-        "(f : [0] Int -> Type) -> (x : f 100000000000000000000000000000) -> f 100000000000000000000000000000",
+        "\\(f : [0] Int -> Type) (x : f (9223372036854775807 + 1)) -> (x : f (0 - 9223372036854775807 - 1))",
+        "(f : [0] Int -> Type) -> (x : f -9223372036854775808) -> f -9223372036854775808",
     );
+    let (_, diags) = run("9223372036854775808");
+    assert_eq!(diags, ["parse error: 9223372036854775808 does not fit in an Int, which is 64 bits"]);
 }
 
 #[test]

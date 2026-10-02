@@ -54,19 +54,18 @@
 //!   the value, which is also what the compiled code does.
 //! * **Metavariables** the checker solved stand for their solutions, which
 //!   are closed terms.
-//! * Integers are unbounded.
+//! * Integers are 64 bits and wrap, as the runtime's are.
 //!
 //! The answer is shown as the REPL shows it: numbers, strings, `True`,
 //! `()`, boxes as `[v]`, constructors applied to their fields, lists with
 //! their `::` written infix.  A function or a type has nothing to show.
 
 use idyllic_ast::Lit;
-use idyllic_builtins::{Builtin, Prim};
+use idyllic_builtins::{Builtin, IntResult, Prim};
 use idyllic_typecheck::core::{CaseAlt, Core, Head, Note, OpClause};
 use idyllic_typecheck::handlers::OpInfo;
 use idyllic_typecheck::{CtorInfo, RecDef, TypeCheckResult};
 use idyllic_world::{Answer, Arg, Stop, World};
-use num_bigint::BigInt;
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
@@ -78,7 +77,7 @@ use std::rc::Rc;
 /// What a term evaluates to.
 #[derive(Clone, Debug)]
 pub enum Value {
-    Int(BigInt),
+    Int(i64),
     Str(Rc<str>),
     Bool(bool),
     Unit,
@@ -400,7 +399,7 @@ impl Program<'_> {
                 Ok(Control::Eval(body.clone(), env))
             }
             Core::Lit(lit) => value(match lit {
-                Lit::Int(n) => Value::Int(n.clone()),
+                Lit::Int(n) => Value::Int(*n),
                 Lit::Str(s) => Value::Str(s.as_str().into()),
                 Lit::Bool(b) => Value::Bool(*b),
                 Lit::Unit => Value::Unit,
@@ -444,7 +443,7 @@ impl Program<'_> {
                 },
                 _ => Ok(Control::Eval(inner.clone(), env)),
             },
-            Core::Runtime(Note::Binds(_), inner) => Ok(Control::Eval(inner.clone(), env)),
+            Core::Runtime(Note::Binds { .. }, inner) => Ok(Control::Eval(inner.clone(), env)),
             Core::Lam(_, body) => value(Value::Closure { env, body: body.clone() }),
             Core::App(f, a) => {
                 kont.push(Frame::Arg { arg: a.clone(), env: env.clone() });
@@ -485,10 +484,10 @@ impl Program<'_> {
             let args: Vec<Arg> = args
                 .iter()
                 .map(|a| match &**a {
-                    Value::Int(n) => Arg::Int(n.clone()),
+                    Value::Int(n) => Arg::Int(*n),
                     Value::Str(s) => Arg::Str(s.clone()),
                     // `()`, and whatever else carries nothing an operation reads
-                    _ => Arg::Int(BigInt::ZERO),
+                    _ => Arg::Int(0),
                 })
                 .collect();
             return match world.perform(name, &args) {
@@ -604,18 +603,16 @@ fn apply(fun: &Value, arg: Rc<Value>) -> Result<Control, EvalError> {
             if args.len() < prim.arity() {
                 return value(Value::Prim { prim: *prim, args });
             }
+            if let (Prim::StrAppend, Value::Str(a), Value::Str(b)) = (prim, &*args[0], &*args[1]) {
+                return value(Value::Str(format!("{a}{b}").into()));
+            }
             let (Value::Int(a), Value::Int(b)) = (&*args[0], &*args[1]) else {
                 return stuck(format!("{} is applied to something that is not an integer", prim.name()));
             };
-            value(match prim {
-                Prim::IntAdd => Value::Int(a + b),
-                Prim::IntMul => Value::Int(a * b),
-                Prim::IntSub => Value::Int(a - b),
-                Prim::IntDiv | Prim::IntMod if *b == 0.into() => return stuck("division by zero"),
-                Prim::IntDiv => Value::Int(a / b),
-                Prim::IntMod => Value::Int(a % b),
-                Prim::IntLt => Value::Bool(a < b),
-                Prim::IntEq => Value::Bool(a == b),
+            value(match prim.on_ints(*a, *b) {
+                Some(IntResult::Int(n)) => Value::Int(n),
+                Some(IntResult::Bool(t)) => Value::Bool(t),
+                None => return stuck("division by zero"),
             })
         }
         Value::Ctor { info, seen, fields } => {
@@ -694,7 +691,7 @@ mod tests {
         let mut list = Rc::new(Value::Con { name: "Nil".into(), tag: 0, fields: Vec::new() });
         let mut env = Env::default();
         for n in 0..1_000_000 {
-            let head = Rc::new(Value::Int(n.into()));
+            let head = Rc::new(Value::Int(n));
             list = Rc::new(Value::Con { name: "::".into(), tag: 1, fields: vec![head, list] });
             env = env.push(Rc::new(Value::Box(Rc::new(Value::Unit))));
         }
@@ -706,7 +703,7 @@ mod tests {
     #[test]
     fn a_shared_tail_survives_its_first_owner() {
         let tail = Rc::new(Value::Con { name: "Nil".into(), tag: 0, fields: Vec::new() });
-        let one = Rc::new(Value::Int(1.into()));
+        let one = Rc::new(Value::Int(1));
         let list = Value::Con { name: "::".into(), tag: 1, fields: vec![one, tail.clone()] };
         drop(list);
         assert_eq!(show(&tail).as_deref(), Some("Nil"));

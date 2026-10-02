@@ -74,6 +74,19 @@ impl Env {
         self.0.is_none()
     }
 
+    /// The environment without its `n` innermost values: what it was `n`
+    /// pushes ago.
+    pub fn outer(&self, n: usize) -> Env {
+        let mut cur = self.clone();
+        for _ in 0..n {
+            cur = match &cur.0 {
+                Some(node) => node.tail.clone(),
+                None => break,
+            };
+        }
+        cur
+    }
+
     pub fn get(&self, idx: usize) -> Option<Rc<Value>> {
         let mut cur = self.0.as_ref();
         for _ in 0..idx {
@@ -362,9 +375,9 @@ pub fn atom_key(v: &Value) -> String {
             .collect::<String>()
     };
     match v {
-        Value::Rigid(l, _, sp) => format!("v{l}{}", spine(sp)),
-        Value::Flex(m, sp) => format!("?{m}{}", spine(sp)),
-        Value::Opaque(u, _, sp) => format!("c{u}{}", spine(sp)),
+        Value::Rigid(l, _, sp) => format!("v{l:020}{}", spine(sp)),
+        Value::Flex(m, sp) => format!("?{m:020}{}", spine(sp)),
+        Value::Opaque(u, _, sp) => format!("c{u:020}{}", spine(sp)),
         Value::Stuck(h, sp) => format!("({}){}", atom_key(h), spine(sp)),
         Value::Type(n) => format!("Type {n}"),
         Value::LitTy(b) => b.name().into(),

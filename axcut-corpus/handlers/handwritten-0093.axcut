@@ -1,0 +1,101 @@
+-- | effect Ask where
+-- |   ask : Unit -> Int
+-- | 
+-- | effect Log where
+-- |   log : Int -> Unit
+-- | 
+-- | twice : (f : [] (Unit -> Int ! e)) -> Int ! e
+-- | twice f = f () + f ()
+-- | 
+-- | logged : Unit -> Int ! {Ask, Log}
+-- | logged u = let x = log 1 in ask ()
+-- | 
+-- | inner : Unit -> Int ! Log
+-- | inner u = handle twice logged with
+-- |   ask _ k -> let y = log 100 in k 5
+-- | 
+-- | handle inner () with
+-- |   return x -> x
+-- |   log n k -> n + k ()
+-- expect: value 212
+
+define main : () =
+  new f_0 = (){
+    apply(e_1, k_2) ⇒
+      substitute [k_2 ↦ k_2];
+      new f_3 = (){
+        apply(f_4, k_5) ⇒
+          let u_6 = unit();
+          substitute [f_4 ↦ f_4, u_6 ↦ u_6, f_4' ↦ f_4, k_5 ↦ k_5];
+          new k_7 = (f_4', k_5){
+            ret(r_8) ⇒
+              let u_9 = unit();
+              substitute [f_4' ↦ f_4', u_9 ↦ u_9, r_8 ↦ r_8, k_5 ↦ k_5];
+              new k_10 = (r_8, k_5){
+                ret(r_11) ⇒
+                  extern add(r_8, r_11) { (r_12) ⇒
+                  substitute [r_12 ↦ r_12, k_5 ↦ k_5];
+                  invoke k_5 ret } };
+              substitute [u_9 ↦ u_9, k_10 ↦ k_10, f_4' ↦ f_4'];
+              invoke f_4' apply };
+          substitute [u_6 ↦ u_6, k_7 ↦ k_7, f_4 ↦ f_4];
+          invoke f_4 apply };
+      substitute [f_3 ↦ f_3, k_2 ↦ k_2];
+      invoke k_2 ret };
+  new f_13 = (){
+    apply(u_14, k_15) ⇒
+      extern lit 1 { (n_16) ⇒
+      substitute [n_16 ↦ n_16, k_15 ↦ k_15];
+      new k_17 = (k_15){
+        ret(r_18) ⇒
+          substitute [k_15 ↦ k_15];
+          let u_19 = unit();
+          substitute [u_19 ↦ u_19, k_15 ↦ k_15];
+          perform ask(u_19) k_15 };
+      perform log(n_16) k_17 } };
+  new f_20 = (f_0, f_13){
+    apply(u_21, k_22) ⇒
+      substitute [k_22 ↦ k_22, f_0 ↦ f_0, f_13 ↦ f_13];
+      new h_23 = (){
+        return(x_25, k_26) ⇒
+          invoke k_26 ret,
+        ask(x_27, k_28, k_29) ⇒
+          extern lit 100 { (n_30) ⇒
+          substitute [n_30 ↦ n_30, k_28 ↦ k_28, k_29 ↦ k_29];
+          new k_31 = (k_28, k_29){
+            ret(r_32) ⇒
+              extern lit 5 { (n_33) ⇒
+              substitute [n_33 ↦ n_33, k_29 ↦ k_29, k_28 ↦ k_28];
+              invoke k_28 apply } };
+          perform log(n_30) k_31 } };
+      substitute [f_0 ↦ f_0, f_13 ↦ f_13, h_23 ↦ h_23, k_22 ↦ k_22];
+      handle h_23 k_22 as ret_24;
+      let t_34 = erased();
+      substitute [f_0 ↦ f_0, t_34 ↦ t_34, f_13 ↦ f_13, ret_24 ↦ ret_24];
+      new k_35 = (f_13, ret_24){
+        ret(r_36) ⇒
+          substitute [f_13 ↦ f_13, ret_24 ↦ ret_24, r_36 ↦ r_36];
+          invoke r_36 apply };
+      substitute [t_34 ↦ t_34, k_35 ↦ k_35, f_0 ↦ f_0];
+      invoke f_0 apply };
+  new k_49 = (){
+    ret(r_50) ⇒
+      extern halt(r_50) {} };
+  new h_37 = (){
+    return(x_39, k_40) ⇒
+      invoke k_40 ret,
+    log(n_41, k_42, k_43) ⇒
+      let u_44 = unit();
+      substitute [k_42 ↦ k_42, u_44 ↦ u_44, n_41 ↦ n_41, k_43 ↦ k_43];
+      new k_45 = (n_41, k_43){
+        ret(r_46) ⇒
+          extern add(n_41, r_46) { (r_47) ⇒
+          substitute [r_47 ↦ r_47, k_43 ↦ k_43];
+          invoke k_43 ret } };
+      substitute [u_44 ↦ u_44, k_45 ↦ k_45, k_42 ↦ k_42];
+      invoke k_42 apply };
+  substitute [f_20 ↦ f_20, h_37 ↦ h_37, k_49 ↦ k_49];
+  handle h_37 k_49 as ret_38;
+  let u_48 = unit();
+  substitute [u_48 ↦ u_48, ret_38 ↦ ret_38, f_20 ↦ f_20];
+  invoke f_20 apply

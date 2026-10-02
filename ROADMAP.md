@@ -177,8 +177,18 @@ it drops the tail), and so are sequence literals.
   keeps the handlers in force on a stack of its own, and a resumption is an
   ordinary heap consumer, so resuming twice is just invoking it twice
   (`compiler/idyllic-seq/src/machine.rs`; the reference interpreter
-  `idyll-eval` agrees). Not yet lowered for native code, which refuses
-  handlers; that waits for the shared AxCut (see *Back ends*).
+  `idyll-eval` agrees). Native code compiles every grade too: a program
+  with a handler is compiled with its continuations on the heap, as the
+  AxCut paper has them, so every call is a tail call and a resumption can
+  outlive the stack; the runtime keeps the handlers in force, a handler is
+  a table of clauses keyed by operation, and `perform` captures the
+  handlers above the one it finds into the resumption
+  (`compiler/idyllic-llvm`, `rts/idyll_rt.c`; `tests/llvm.rs` checks it
+  against the machine, multi-shot included). Programs without a handler
+  keep stack continuations. An operation says how often its handlers may
+  resume it: unmarked, at most once, and `@many` for more, which a clause is
+  checked against (decided with Chris, for the shared back end, which needs
+  it where the operation is performed). Left: using the grade natively.
   Port Meadow's evidence passing and its fast path for tail-resumptive
   clauses (`meadow-seq/src/lower.rs`). `[0]` and `[0..1]` take Meadow's
   one-shot paths; `[0..∞]` needs a continuation that can be resumed twice,
@@ -213,16 +223,21 @@ it drops the tail), and so are sequence literals.
   An operation of the world's that no handler of the program's own takes
   is done by the runtime, in `compiler/idyllic-world/` for the AxCut
   machine and `idyll-eval` both, and by `idyll_op_*` functions in
-  `rts/idyll_rt.c` for native code (a program with a handler of its own
-  still doesn't compile). The REPL and `idyllic file.idl -- args` talk to
+  `rts/idyll_rt.c` for native code (where a handler of the program's own
+  is searched for first). The REPL and `idyllic file.idl -- args` talk to
   the real world; tests to a captured one, whose output is kept, input
-  empty and randomness seeded. `exit n` is the process's exit code. `Mut`
+  empty and randomness seeded. `exit n` is the process's exit code. Giving
+  up with a message is the prelude's `Abort` effect (`abort : {a : Type} ->
+  String -> a`), in `Eff`: unhandled, its message goes to standard error
+  (`Console.putErr`) and the exit status is 1 (decided with Chris: on the
+  shared back end the runtime adds only `Console.writeError`, and Idyll's
+  front end handles `Abort` itself over it and `exit`). `Mut`
   is not an effect here (see phase 5), and `Thread` waits for phase 7.
 
 *Done when:* Meadow's `examples/Effects` and `examples/Streams` run (with
 `Yield` defined locally), and a multi-shot backtracking example runs. The
 multi-shot example runs (`compiler/idyllic/tests/effects.rs`); Meadow's
-examples need strings, vectors and more of the standard library first.
+examples need strings to take apart first (`Std.Yield` is the generators).
 
 ## Phase 3: Modules, packages and the build system
 
@@ -267,10 +282,42 @@ examples need strings, vectors and more of the standard library first.
   `target/release/native/` (falling back to the machine for what native code
   can't do yet, unless it was asked for), and an executable is relinked only
   when its package's fingerprint changes. Left: Meadow's `test`, `fmt`, LSP
-  and debugger, the standard library as a package of its own (the prelude is
-  still the compiler's), and, with the back ends shared, `aot.rs`,
+  and debugger, and, with the back ends shared, `aot.rs`,
   `linker.rs`, `pgo.rs` and `runtime.rs` -- choosing and linking Glade or
   Silo. (`idyll-driver/tests/`)
+
+- [x] **The standard library**, `lib/std/`, as Meadow's `lib/std` is: a
+  package embedded in the compiler (`compiler/idyllic/src/stdlib.rs`),
+  compiled once a process and given to every package, lone file and REPL as
+  an implicit dependency called `Std`, linked only into programs that use
+  it. Nothing of it is in scope until a `use` brings it. Modules: Function,
+  Bool, Ordering, Int, Nat, Eq, Void, Dec, Fin, Maybe, Result, Pair, Sigma,
+  List, Vec, String, Console, Throw, State, Yield. Meadow's as the model, with
+  dependent types where they say more: vectors indexed by length (`zip` of
+  equal lengths, `append` into `plus n m`, `splitAt`, `fromList` into the
+  list's `size`), `Fin` indices (`Vec.index`, and `List.nth` on a
+  `Fin (size xs)`), propositional equality with proofs about `Nat`
+  (`plusComm`, `plusAssoc`, ...), `Dec` and `Nat.decEq`, dependent pairs; and
+  linearity in every signature. Meadow's traits, records, maps and string
+  operations wait for those features. Writing it found and fixed, in the
+  checker: data types ordered by their kinds across modules; constraints on a
+  meta applied to something postponed until the definition is checked (so
+  `MkSigma Z Nil` infers its family); rows and effect fitting pairing
+  effects by head (`Throw String` against `Throw ?e`); unconstrained effect
+  rows closed to the empty row; a row's effects ordered by number.
+  (`compiler/idyllic/tests/std.rs`)
+- [x] **Meadow's REPL**, in `idyll-driver/src/repl.rs`: Tab completion; an
+  entry that submits itself once it is whole, with continuation lines
+  indented; the `Ctrl-F` finder (ratatui, as Meadow's), searching by name
+  with nucleo and by type as Hoogle does (`find.rs`, from `meadow-find`);
+  `:t`, `:module`, `:time`, `:find`, and a choice of machine (`:machine`,
+  `:eval` for the reference interpreter, `:native` for LLVM). Idyll's own:
+  proof search (`:prove T`, and `?` in the finder), which proposes terms
+  from the goal's shape and shows only what the checker accepts
+  (`prove.rs`); and `:ir`, a pop-up with every stage of the compiler for a
+  block of code: tokens, AST, HIR, Core, AxCut, inlined AxCut, LLVM IR and
+  Cut (`compiler/idyllic/src/inspect.rs`). Meadow's AxCut and Glade's
+  bytecode join `:ir` once the back end reads Cut.
 
 *Done when:* a workspace with a git dependency builds, a second build reuses
 what it can, and the lockfile pins the dependency. **Met:** a second build
@@ -316,7 +363,7 @@ and a `Map` built with one `Ord` is rejected when used with another.
 
 ## Phase 5: Standard library
 
-- [ ] **Port `lib/Std` in dependency order**: `Bool`, `Maybe`, `Either`,
+- [ ] **Port `lib/std` in dependency order**: `Bool`, `Maybe`, `Either`,
   `Result`, `Tuple`, `Function`, `Ordering`, `Cmp`; then `String`, `Char`,
   `Bytes` and the parsers; then collections; then the effect modules (`Exn`,
   `State`, `Console`, `Yield`/`Stream`, `Random`, `Time`, `Fs`, `Process`,
@@ -355,66 +402,106 @@ shows a type.
 
 ## Back ends: Glade and Silo, shared with Meadow
 
-Not a phase, since it changes nothing in the language, but phase 2's graded
-continuations lower to what it produces, so it lands first. Meadow's two
-runtimes move here and become Idyll's:
+Not a phase, since it changes nothing in the language. **Revised
+2026-10-01**, with Chris and the Meadow session: the back end stays in the
+Meadow repository, as Meadow's runtime the way BEAM is Elixir's, and becomes
+an API that Idyll (and later other languages) compiles to. The full plan,
+with its reasoning, is the shared back-end proposal (version 3), worked out
+between the two sessions; in short:
 
-- **Glade**: a register bytecode VM with a generational collector, green
-  threads and STM, and its own JIT and ahead-of-time compiler
-  (`glade/`, `meadow-bytecode`, `meadow-codegen`; about 27k lines).
-- **Silo**: native code through LLVM, reference counting from linearity with
-  cycle collection, effect handlers as coroutine stack segments
-  (`silo/`, `meadow-llvm`; about 13k lines).
+- **Two IRs, both typed by representations**, not source types: an upper
+  typed sequent IR, which front ends target and the back end's reference
+  interpreter defines, lowered to AxCut, which keeps only representations.
+  Polymorphism is representation variables bound by descriptors, plus a
+  boxed `Unknown` representation for types computed from erased data.
+- **A textual, versioned IR is the contract** (`docs/CUT.md` in the Meadow
+  repository), with a declaration table (which constructors play the
+  runtime's roles, runtime-built records, native operations, which are also
+  the ones allowed to go unhandled), symbols, and the evidence encoding.
+- **Effects:** `handle`/`perform` in the upper IR, with each operation's
+  declared multiplicity choosing the lowering: single resumption (the
+  unannotated default) on Meadow's stack-segment path, `@many` on heap
+  continuations. Analysis may tighten that, never decide it.
+- **`Int`** is the runtime's untagged 64-bit integer, in registers.
+- **Languages call each other** through exported symbols (public top-level
+  declarations, module paths flattened into globally unique names) and the
+  IR's runtime primitives; there are no shared data types.
 
-Both start from AxCut, which becomes the contract between front ends and
-back ends: Idyll lowers to it, and so does Meadow, which keeps everything
-down to its core language and its evidence-passing effect lowering, and
-depends on this repository for the rest.
+Work split: each session changes only its own repository.
 
-Three things tie the runtimes to Meadow today, and each has to go first:
-
-- They depend on `meadow-core` -- for primitives, value descriptors,
-  numbers, hashing and text -- which depends on Meadow's type checker.
-- They know Meadow's standard library by name: they build `Maybe.Just`,
-  `Result.Ok`, `List.Cons` and `Vector` values when a native effect answers
-  one, print by walking those types, and match effect operations by
-  `"Console"`, `"Fs"` and so on. The printing is written out four times.
-- Their tests compile Meadow source.
-
-- [ ] **An `axcut` crate**: Meadow's AxCut (`meadow-seq/src/lib.rs`), which
-  has what Idyll's lacks (value representations, records, arrays,
-  primitives, native effects), with a name type of its own, grades on
-  continuations, and multi-shot consumers. It is versioned and serialised,
-  so a front end in another repository can target it. The AxCut reference
-  machine comes with it.
-- [ ] **A runtime-interface crate**: the primitive table, value descriptors,
-  number, hashing and text helpers, and the native effects -- each
-  operation's name and payload shape. What `meadow-core` lends the runtimes
-  today, without the front end behind it.
-- [ ] **A declaration table in each program**: which constructors play the
-  runtime's roles (option, result, list, vector, tuple) and which effects
-  are native. The runtimes read it rather than names, and one printing module
-  replaces the four.
-- [ ] **Move Glade, `meadow-bytecode`, `meadow-codegen`, Silo and
-  `meadow-llvm` here**, their tests rewritten as AxCut corpora that the
-  reference machine, Glade and Silo must agree on. The tests that start from
-  source stay with each language.
-- [ ] **Retarget Idyll's lowering** at the shared AxCut, and retire
-  `idyllic-llvm` and `rts/idyll_rt.c`. Idyll's benchmarks (`bench/`) are the
-  check that Silo is no slower than what it replaces.
+- [x] **Meadow, step 1**: `axcut` and runtime-interface crates with no front
+  end in them; `meadow-codegen` and `meadow-llvm` cut loose; the runtimes
+  read the declaration table instead of names. (`meadow-rt`,
+  `meadow-axcut`; landed in Meadow's working tree, 2026-10-01.)
+- [~] **Idyll, step 1**:
+  - [x] `Int` 64-bit and wrapping everywhere (see below);
+  - [x] `@many` operations, with clauses checked against them;
+  - [x] row variables bounded to single-resumption effects by default: a
+    row variable's kind is `Effect`, an effect with an `@many` operation
+    has kind `Effect []` (the IR's `ManyEffect`, by Chris's decision: grades
+    are Idyll's spelling), `Effect` is accepted where `Effect []` is, and
+    instantiating an `Effect` row variable with a multi-shot effect is an
+    error; effect aliases take their row's kind;
+  - [ ] representations for Idyll Core's variables, and public names as
+    symbols, to the spec's form;
+  - [x] Idyll's corpus as AxCut for the back end to test against
+    (`axcut-corpus/`).
+- [~] **Step 2, Meadow, reviewed by Idyll**: the upper IR's text format spec,
+  `docs/CUT.md` in the Meadow repository: draft v0, revised with Idyll's
+  review (data declarations, entry and answer, top-level `val`s, handler
+  clauses binding `r` and `k`, a native table binding a language's
+  operations to the runtime's, `/` ending the package in a symbol, quoted
+  segments, `prim if`, the `i64` semantics). Frozen once the primitive and
+  runtime-operation tables are generated from `meadow_rt` and the parser's
+  concrete syntax is quoted.
+- [~] **Step 3**: the upper IR (Meadow); Idyll lowers to its text and runs
+  its corpus through the reference interpreter, keeping `idyllic-llvm`.
+  Idyll's side, so far: program lambdas carry their binder's type
+  (`Note::Binds`), the checker is kept as a type oracle (`typer.rs`: the
+  type of any term again, and the representation read off it), the checker
+  records a symbol for every name (`idyll:Pkg/Mod.name`), and
+  `compiler/idyllic-cut` holds Cut as data, its printer, and the lowering:
+  `def`s, `val`s, data declarations with representation variables, roles,
+  natives, effects with `@many`, `case`, `prim if`, handlers binding `r` and
+  `k`, `perform`, partial applications as objects, and descriptor
+  parameters for type parameters. Every corpus program lowers or says what
+  is not lowered yet (`compiler/idyllic/tests/cut.rs`). Left: running it on
+  Meadow's reference interpreter once it exists; the prelude's `copy`,
+  `readDir` and `args` over the runtime's operations; a to-string for
+  answers that are not strings; effect variables on `def`s; symbols with
+  versions.
+  - [x] Local recursion is lifted, since Cut has none: a recursive
+    definition inside another becomes a `def` of its own, named under the
+    one it was in (`Main/rev.go`), whose first parameters are what it uses
+    of where it was defined: a value it computes with as a value, a type as
+    its descriptor; every use passes them, and mutually recursive ones pass
+    them on. The checker marks such a definition `local` (a level alone
+    cannot tell it from a top-level one), and the lowering finds the
+    top-level definition it is in from who uses it.
+  - [x] The runtime prints only strings. `Console` is `putStr`, `putErr`
+    and `readLine`. `putStrLn`, `printInt` and `showInt` are prelude
+    functions over `putStr`, built on `++` (`concatStrings` in Cut). Every
+    back end leaves out the top-level and recursive definitions a program
+    never uses (`idyllic-typecheck/src/prune.rs`), so the prelude costs
+    nothing when it isn't called.
+- [ ] **Step 4**: a shared corpus, on which the reference interpreter, the
+  AxCut machine, Glade and Silo agree in CI.
+- [ ] **Step 5**: Idyll's build tool on Glade (debug) and Silo (release);
+  `idyllic-llvm` and `rts/idyll_rt.c` retired once Idyll's corpus, tutorial
+  and benchmarks pass on both.
+- [ ] **Step 6**: calling between languages.
 - [ ] **Arrays**: a primitive `Array n a`, sized in its type since a literal
   knows its length, with `#[a; b]` literals and patterns.
-- [ ] **One integer semantics.** Idyll's REPL is unbounded and its native code
-  wraps at 64 bits; Meadow separates `Int` from `BigInt`. The shared
-  primitives settle it.
-
-Worth deciding early: whether Meadow and Idyll code can call each other. A
-shared AxCut does not give that by itself; it needs a shared value layout and
-calling convention, which the runtime interface could define.
+- [x] **One integer semantics.** Decided with Chris: `Int` is the runtime's
+  primitive 64-bit integer, untagged, wrapping, in registers, as Meadow's is.
+  Idyll's REPL, AxCut machine, reference interpreter and type checker all
+  compute that way now (`Prim::on_ints` in `idyllic-builtins`); a literal
+  that does not fit is a parse error. `BigInt` comes later, as a type of
+  its own.
 
 *Done when:* Idyll's corpus and tutorial run on Glade and on Silo with the
-same answers as its reference interpreter, and Meadow builds and passes its
-tests against the moved back ends.
+same answers as the back end's reference interpreter, and Meadow builds and
+passes its tests against the separated back end.
 
 ## Not porting
 
@@ -434,6 +521,9 @@ Not in Meadow, but they will come up along the way:
   is filled in; today only constant grades erase.
 - **Counting the usage of what a hole or an implicit argument is filled
   with.**
+- **Proof search that splits cases**, as Agda's `auto` does: a goal
+  over a data type could be met by a `case` on an argument of it, and the
+  checker would still decide.
 - **Redefinition in the REPL.** A session is one growing program, so
   defining a name twice is an error, and retaking the tour needs `:reset`.
   GHCi's behaviour, where a new definition shadows the old one and earlier
