@@ -11,7 +11,9 @@
 //! `docs/CUT.md` has it (it has no comments); and `NAME.expect`, the Idyll
 //! source (`-- |` lines), what running it printed (`prints:`, a line each),
 //! what its answer is written as (`answer:`, which the Cut's `answer str`
-//! prints), and how it ended (`exit:`). The answers are the AxCut machine's,
+//! prints), and how it ended (`exit:`); and `nondeterministic` if it uses
+//! random numbers or the clock, when only how it ended can be checked. The
+//! answers are the AxCut machine's,
 //! which `idyll-eval/tests/spec.rs` holds to the reference interpreter's.
 //! Programs with handlers of their own go in `handlers/`, those whose only
 //! effects are the world's in `world/`, and the rest in `pure/`; one that
@@ -112,6 +114,11 @@ fn write(dir: &std::path::Path, name: &str, src: &str, opts: &Options, written: 
         expect.push_str(&format!("answer: {answer}\n"));
     }
     expect.push_str(&format!("exit: {exit}\n"));
+    // what a random number or the clock gave cannot be expected again: only
+    // how it ended can
+    if ["Random.", "Time.now", "Time.monotonic"].iter().any(|op| cut.contains(&format!("perform idyll:Prelude/{op}"))) {
+        expect.push_str("nondeterministic\n");
+    }
     let at = dir.join(["pure", "world", "handlers"][kind]);
     std::fs::create_dir_all(&at).expect("the directory can be made");
     std::fs::write(at.join(format!("{name}.cut")), cut).expect("the file can be written");

@@ -166,19 +166,73 @@ def idyll:Std/Num.Nat.double (x_139: ptr; k_140: ptr) =
           <idyll:Std/Num.Nat.Nat.S(v_142) | k_140>>)
   }>
 
+def idyll:Main/"#escape" (s_150: str; k_152: ptr) =
+  prim stringByteLength(s_150; μ̃ n_151: i64.
+    idyll:Main/"#escape".go(s_150, 0, 0, n_151, ""; k_152))
+
+def idyll:Main/"#escape".go (s_153: str, start_154: i64, i_155: i64, n_156: i64, acc_157: str; k_158: ptr) =
+  prim eq(i_155, n_156; μ̃ u_168: unit.
+    prim stringByteAt(s_153, i_155; μ̃ b_159: i64.
+      idyll:Main/"#escape".byte(b_159; μ̃ e_160: str.
+        prim add(i_155, 1; μ̃ j_162: i64.
+          prim stringByteLength(e_160; μ̃ len_161: i64.
+            prim eq(len_161, 0; μ̃ u_166: unit.
+              prim stringSlice(s_153, start_154, i_155; μ̃ run_163: str.
+                prim concatStrings([acc_157, run_163, e_160]; μ̃ acc_164: str.
+                  idyll:Main/"#escape".go(s_153, j_162, j_162, n_156, acc_164; k_158))), μ̃ u_167: unit.
+              idyll:Main/"#escape".go(s_153, start_154, j_162, n_156, acc_157; k_158)))))), μ̃ u_169: unit.
+    prim stringSlice(s_153, start_154, n_156; μ̃ run_165: str.
+      prim concatStrings([acc_157, run_165]; k_158)))
+
+def idyll:Main/"#escape".byte (b_170: i64; k_171: ptr) =
+  prim eq(b_170, 34; μ̃ u_194: unit.
+    prim eq(b_170, 92; μ̃ u_192: unit.
+      prim eq(b_170, 10; μ̃ u_190: unit.
+        prim eq(b_170, 9; μ̃ u_188: unit.
+          prim eq(b_170, 13; μ̃ u_186: unit.
+            prim eq(b_170, 0; μ̃ u_184: unit.
+              prim eq(b_170, 127; μ̃ u_182: unit.
+                prim lt(b_170, 32; μ̃ u_180: unit.
+                  <"" | k_171>, μ̃ u_181: unit.
+                  prim div(b_170, 16; μ̃ hi_172: i64.
+                    prim mod(b_170, 16; μ̃ lo_173: i64.
+                      prim add(hi_172, 1; μ̃ hi_174: i64.
+                        prim add(lo_173, 1; μ̃ lo_175: i64.
+                          prim stringSlice("0123456789abcdef", hi_172, hi_174; μ̃ d_176: str.
+                            prim stringSlice("0123456789abcdef", lo_173, lo_175; μ̃ d_177: str.
+                              prim eq(hi_172, 0; μ̃ u_178: unit.
+                                prim concatStrings(["\\u{", d_176, d_177, "}"]; k_171), μ̃ u_179: unit.
+                                prim concatStrings(["\\u{", d_177, "}"]; k_171))))))))), μ̃ u_183: unit.
+                prim div(b_170, 16; μ̃ hi_172: i64.
+                  prim mod(b_170, 16; μ̃ lo_173: i64.
+                    prim add(hi_172, 1; μ̃ hi_174: i64.
+                      prim add(lo_173, 1; μ̃ lo_175: i64.
+                        prim stringSlice("0123456789abcdef", hi_172, hi_174; μ̃ d_176: str.
+                          prim stringSlice("0123456789abcdef", lo_173, lo_175; μ̃ d_177: str.
+                            prim eq(hi_172, 0; μ̃ u_178: unit.
+                              prim concatStrings(["\\u{", d_176, d_177, "}"]; k_171), μ̃ u_179: unit.
+                              prim concatStrings(["\\u{", d_177, "}"]; k_171))))))))), μ̃ u_185: unit.
+              <"\\0" | k_171>), μ̃ u_187: unit.
+            <"\\r" | k_171>), μ̃ u_189: unit.
+          <"\\t" | k_171>), μ̃ u_191: unit.
+        <"\\n" | k_171>), μ̃ u_193: unit.
+      <"\\\\" | k_171>), μ̃ u_195: unit.
+    <"\\\"" | k_171>)
+
 def idyll:Main/"#show Result String Int" (x_146: ptr; k_147: ptr) =
   <x_146 | case {
     idyll:Prelude/Result.Err(f_148: str) =>
-      prim concatStrings(["\"", f_148, "\""]; μ̃ s_149: str.
-        prim concatStrings(["Err", " ", s_149]; k_147));
-    idyll:Prelude/Result.Ok(f_150: i64) =>
-      idyll:Prelude/showInt(f_150; μ̃ s_151: str.
-        prim concatStrings(["Ok", " ", s_151]; k_147))
+      idyll:Main/"#escape"(f_148; μ̃ e_196: str.
+        prim concatStrings(["\"", e_196, "\""]; μ̃ s_149: str.
+          prim concatStrings(["Err", " ", s_149]; k_147)));
+    idyll:Prelude/Result.Ok(f_197: i64) =>
+      idyll:Prelude/showInt(f_197; μ̃ s_198: str.
+        prim concatStrings(["Ok", " ", s_198]; k_147))
   }>
 
 def idyll:Main/"#entry" (; k_144: ptr) =
   idyll:Std/Exn.toResult(desc(str), desc(i64), cocase {
-    apply(u_152: unit; k_153: ptr) =>
-      idyll:Main/safeDiv(7, 0; k_153)
+    apply(u_199: unit; k_200: ptr) =>
+      idyll:Main/safeDiv(7, 0; k_200)
   }; μ̃ answer_145: ptr.
     idyll:Main/"#show Result String Int"(answer_145; k_144))

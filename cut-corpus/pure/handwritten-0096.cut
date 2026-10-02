@@ -92,31 +92,31 @@ def idyll:Main/second (xs_62: ptr; k_63: ptr) =
       }>
   }>
 
-def idyll:Main/total (x_70: ptr; k_71: ptr) =
-  <x_70 | case {
-    idyll:Main/Vec.VNil =>
-      <0 | k_71>;
-    idyll:Main/Vec.VCons(x_72: i64, xs_73: ptr) =>
-      idyll:Main/total(xs_73; μ̃ v_74: i64.
-        prim add(x_72, v_74; k_71))
+def idyll:Prelude/negativeDigits (fuel_70: ptr, n_71: i64; k_72: ptr) =
+  <fuel_70 | case {
+    idyll:Prelude/DigitFuel.Spent =>
+      <"" | k_72>;
+    idyll:Prelude/DigitFuel.More(fuel_73: ptr) =>
+      prim sub(0, 10; μ̃ v_83: i64.
+        prim lt(v_83, n_71; μ̃ v__74: bool.
+          prim if(v__74; μ̃ u_81: unit.
+            prim div(n_71, 10; μ̃ v_79: i64.
+              idyll:Prelude/negativeDigits(fuel_73, v_79; μ̃ v_75: str.
+                prim mod(n_71, 10; μ̃ v_78: i64.
+                  prim sub(0, v_78; μ̃ v_77: i64.
+                    idyll:Prelude/digitString(v_77; μ̃ v_76: str.
+                      prim concatStrings([v_75, v_76]; k_72)))))), μ̃ u_82: unit.
+            prim sub(0, n_71; μ̃ v_80: i64.
+              idyll:Prelude/digitString(v_80; k_72)))))
   }>
 
-def idyll:Prelude/negativeDigits (fuel_76: ptr, n_77: i64; k_78: ptr) =
-  <fuel_76 | case {
-    idyll:Prelude/DigitFuel.Spent =>
-      <"" | k_78>;
-    idyll:Prelude/DigitFuel.More(fuel_79: ptr) =>
-      prim sub(0, 10; μ̃ v_89: i64.
-        prim lt(v_89, n_77; μ̃ v__80: bool.
-          prim if(v__80; μ̃ u_87: unit.
-            prim div(n_77, 10; μ̃ v_85: i64.
-              idyll:Prelude/negativeDigits(fuel_79, v_85; μ̃ v_81: str.
-                prim mod(n_77, 10; μ̃ v_84: i64.
-                  prim sub(0, v_84; μ̃ v_83: i64.
-                    idyll:Prelude/digitString(v_83; μ̃ v_82: str.
-                      prim concatStrings([v_81, v_82]; k_78)))))), μ̃ u_88: unit.
-            prim sub(0, n_77; μ̃ v_86: i64.
-              idyll:Prelude/digitString(v_86; k_78)))))
+def idyll:Main/total (x_84: ptr; k_85: ptr) =
+  <x_84 | case {
+    idyll:Main/Vec.VNil =>
+      <0 | k_85>;
+    idyll:Main/Vec.VCons(x_86: i64, xs_87: ptr) =>
+      idyll:Main/total(xs_87; μ̃ v_88: i64.
+        prim add(x_86, v_88; k_85))
   }>
 
 def idyll:Main/"#entry" (; k_90: ptr) =

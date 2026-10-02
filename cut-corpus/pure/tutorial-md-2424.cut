@@ -135,131 +135,131 @@ def idyll:Std/Num.Nat.succInjective (x_116: ptr; k_117: ptr) =
       <idyll:Std/Eq.Eq.Refl | k_117>
   }>
 
-def idyll:Std/Num.Nat.plusComm (n_125: ptr, m_126: ptr; k_127: ptr) =
-  <n_125 | case {
+def idyll:Std/Num.Nat.plus (x_125: ptr, m_126: ptr; k_127: ptr) =
+  <x_125 | case {
     idyll:Std/Num.Nat.Nat.Z =>
-      idyll:Std/Num.Nat.plusZero(m_126; μ̃ v_128: ptr.
-        idyll:Std/Eq.sym(desc(ptr), v_128; k_127));
-    idyll:Std/Num.Nat.Nat.S(n_130: ptr) =>
-      idyll:Std/Num.Nat.plusComm(n_130, m_126; μ̃ v_135: ptr.
-        idyll:Std/Eq.cong(desc(ptr), desc(ptr), v_135; μ̃ v_131: ptr.
-          idyll:Std/Num.Nat.plusSucc(m_126; μ̃ v_133: ptr.
-            idyll:Std/Eq.sym(desc(ptr), v_133; μ̃ v_132: ptr.
-              idyll:Std/Eq.trans(desc(ptr), v_131, v_132; k_127)))))
+      <m_126 | k_127>;
+    idyll:Std/Num.Nat.Nat.S(n_128: ptr) =>
+      idyll:Std/Num.Nat.plus(n_128, m_126; μ̃ v_129: ptr.
+        <idyll:Std/Num.Nat.Nat.S(v_129) | k_127>)
   }>
 
-def idyll:Std/Num.Nat.bits (fuel_136: ptr, n_137: i64; k_138: ptr) =
-  <fuel_136 | case {
-    idyll:Std/Num.Nat.Nat.Z =>
-      <idyll:Std/Num.Nat.Nat.Z | k_138>;
-    idyll:Std/Num.Nat.Nat.S(fuel_139: ptr) =>
-      prim lt(n_137, 1; μ̃ v__140: bool.
-        prim if(v__140; μ̃ u_153: unit.
-          prim mod(n_137, 2; μ̃ v_152: i64.
-            prim eq(v_152, 1; μ̃ v__147: bool.
-              <μ j_148.
-                prim if(v__147; μ̃ u_150: unit.
-                  <idyll:Std/Num.Nat.Nat.Z | j_148>, μ̃ u_151: unit.
-                  <idyll:Std/Num.Nat.Nat.Z | μ̃ v_149: ptr.
-                    <idyll:Std/Num.Nat.Nat.S(v_149) | j_148>>) | μ̃ v_143: ptr.
-                prim div(n_137, 2; μ̃ v_146: i64.
-                  idyll:Std/Num.Nat.bits(fuel_139, v_146; μ̃ v_145: ptr.
-                    idyll:Std/Num.Nat.double(v_145; μ̃ v_144: ptr.
-                      idyll:Std/Num.Nat.plus(v_143, v_144; k_138))))>)), μ̃ u_154: unit.
-          <idyll:Std/Num.Nat.Nat.Z | k_138>))
-  }>
-
-def idyll:Std/Num.Nat.double (x_155: ptr; k_156: ptr) =
-  <x_155 | case {
-    idyll:Std/Num.Nat.Nat.Z =>
-      <idyll:Std/Num.Nat.Nat.Z | k_156>;
-    idyll:Std/Num.Nat.Nat.S(n_157: ptr) =>
-      idyll:Std/Num.Nat.double(n_157; μ̃ v_159: ptr.
-        <idyll:Std/Num.Nat.Nat.S(v_159) | μ̃ v_158: ptr.
-          <idyll:Std/Num.Nat.Nat.S(v_158) | k_156>>)
-  }>
-
-def idyll:Std/Num.Nat.plusZero (n_160: ptr; k_161: ptr) =
-  <n_160 | case {
-    idyll:Std/Num.Nat.Nat.Z =>
-      <idyll:Std/Eq.Eq.Refl | k_161>;
-    idyll:Std/Num.Nat.Nat.S(n_162: ptr) =>
-      idyll:Std/Num.Nat.plusZero(n_162; μ̃ v_163: ptr.
-        idyll:Std/Eq.cong(desc(ptr), desc(ptr), v_163; k_161))
-  }>
-
-def idyll:Std/Num.Nat.plusSucc (n_164: ptr; k_165: ptr) =
-  <n_164 | case {
-    idyll:Std/Num.Nat.Nat.Z =>
-      <idyll:Std/Eq.Eq.Refl | k_165>;
-    idyll:Std/Num.Nat.Nat.S(n_166: ptr) =>
-      idyll:Std/Num.Nat.plusSucc(n_166; μ̃ v_167: ptr.
-        idyll:Std/Eq.cong(desc(ptr), desc(ptr), v_167; k_165))
-  }>
-
-def idyll:Prelude/negativeDigits (fuel_168: ptr, n_169: i64; k_170: ptr) =
-  <fuel_168 | case {
+def idyll:Prelude/negativeDigits (fuel_132: ptr, n_133: i64; k_134: ptr) =
+  <fuel_132 | case {
     idyll:Prelude/DigitFuel.Spent =>
-      <"" | k_170>;
-    idyll:Prelude/DigitFuel.More(fuel_171: ptr) =>
-      prim sub(0, 10; μ̃ v_181: i64.
-        prim lt(v_181, n_169; μ̃ v__172: bool.
-          prim if(v__172; μ̃ u_179: unit.
-            prim div(n_169, 10; μ̃ v_177: i64.
-              idyll:Prelude/negativeDigits(fuel_171, v_177; μ̃ v_173: str.
-                prim mod(n_169, 10; μ̃ v_176: i64.
-                  prim sub(0, v_176; μ̃ v_175: i64.
-                    idyll:Prelude/digitString(v_175; μ̃ v_174: str.
-                      prim concatStrings([v_173, v_174]; k_170)))))), μ̃ u_180: unit.
-            prim sub(0, n_169; μ̃ v_178: i64.
-              idyll:Prelude/digitString(v_178; k_170)))))
+      <"" | k_134>;
+    idyll:Prelude/DigitFuel.More(fuel_135: ptr) =>
+      prim sub(0, 10; μ̃ v_145: i64.
+        prim lt(v_145, n_133; μ̃ v__136: bool.
+          prim if(v__136; μ̃ u_143: unit.
+            prim div(n_133, 10; μ̃ v_141: i64.
+              idyll:Prelude/negativeDigits(fuel_135, v_141; μ̃ v_137: str.
+                prim mod(n_133, 10; μ̃ v_140: i64.
+                  prim sub(0, v_140; μ̃ v_139: i64.
+                    idyll:Prelude/digitString(v_139; μ̃ v_138: str.
+                      prim concatStrings([v_137, v_138]; k_134)))))), μ̃ u_144: unit.
+            prim sub(0, n_133; μ̃ v_142: i64.
+              idyll:Prelude/digitString(v_142; k_134)))))
   }>
 
-def idyll:Std/Num.Nat.decEq (n_182: ptr, m_183: ptr; k_184: ptr) =
-  <n_182 | case {
+def idyll:Std/Num.Nat.bits (fuel_146: ptr, n_147: i64; k_148: ptr) =
+  <fuel_146 | case {
     idyll:Std/Num.Nat.Nat.Z =>
-      <m_183 | case {
+      <idyll:Std/Num.Nat.Nat.Z | k_148>;
+    idyll:Std/Num.Nat.Nat.S(fuel_149: ptr) =>
+      prim lt(n_147, 1; μ̃ v__150: bool.
+        prim if(v__150; μ̃ u_161: unit.
+          prim mod(n_147, 2; μ̃ v_160: i64.
+            prim eq(v_160, 1; μ̃ v__155: bool.
+              <μ j_156.
+                prim if(v__155; μ̃ u_158: unit.
+                  <idyll:Std/Num.Nat.Nat.Z | j_156>, μ̃ u_159: unit.
+                  <idyll:Std/Num.Nat.Nat.Z | μ̃ v_157: ptr.
+                    <idyll:Std/Num.Nat.Nat.S(v_157) | j_156>>) | μ̃ v_151: ptr.
+                prim div(n_147, 2; μ̃ v_154: i64.
+                  idyll:Std/Num.Nat.bits(fuel_149, v_154; μ̃ v_153: ptr.
+                    idyll:Std/Num.Nat.double(v_153; μ̃ v_152: ptr.
+                      idyll:Std/Num.Nat.plus(v_151, v_152; k_148))))>)), μ̃ u_162: unit.
+          <idyll:Std/Num.Nat.Nat.Z | k_148>))
+  }>
+
+def idyll:Std/Num.Nat.plusZero (n_163: ptr; k_164: ptr) =
+  <n_163 | case {
+    idyll:Std/Num.Nat.Nat.Z =>
+      <idyll:Std/Eq.Eq.Refl | k_164>;
+    idyll:Std/Num.Nat.Nat.S(n_165: ptr) =>
+      idyll:Std/Num.Nat.plusZero(n_165; μ̃ v_166: ptr.
+        idyll:Std/Eq.cong(desc(ptr), desc(ptr), v_166; k_164))
+  }>
+
+def idyll:Std/Num.Nat.plusSucc (n_168: ptr; k_169: ptr) =
+  <n_168 | case {
+    idyll:Std/Num.Nat.Nat.Z =>
+      <idyll:Std/Eq.Eq.Refl | k_169>;
+    idyll:Std/Num.Nat.Nat.S(n_170: ptr) =>
+      idyll:Std/Num.Nat.plusSucc(n_170; μ̃ v_171: ptr.
+        idyll:Std/Eq.cong(desc(ptr), desc(ptr), v_171; k_169))
+  }>
+
+def idyll:Std/Num.Nat.decEq (n_173: ptr, m_174: ptr; k_175: ptr) =
+  <n_173 | case {
+    idyll:Std/Num.Nat.Nat.Z =>
+      <m_174 | case {
         idyll:Std/Num.Nat.Nat.Z =>
-          <idyll:Std/Eq.Eq.Refl | μ̃ v_185: ptr.
-            <idyll:Std/Dec.Dec.Yes(v_185) | k_184>>;
-        idyll:Std/Num.Nat.Nat.S(m_186: ptr) =>
+          <idyll:Std/Eq.Eq.Refl | μ̃ v_176: ptr.
+            <idyll:Std/Dec.Dec.Yes(v_176) | k_175>>;
+        idyll:Std/Num.Nat.Nat.S(m_177: ptr) =>
           <cocase {
-            apply(a_188: ptr; k_189: ptr) =>
-              idyll:Std/Num.Nat.zeroNotSucc(a_188; k_189)
-          } | μ̃ v_187: ptr.
-            <idyll:Std/Dec.Dec.No(v_187) | k_184>>
+            apply(a_179: ptr; k_180: ptr) =>
+              idyll:Std/Num.Nat.zeroNotSucc(a_179; k_180)
+          } | μ̃ v_178: ptr.
+            <idyll:Std/Dec.Dec.No(v_178) | k_175>>
       }>;
-    idyll:Std/Num.Nat.Nat.S(n_190: ptr) =>
-      <m_183 | case {
+    idyll:Std/Num.Nat.Nat.S(n_181: ptr) =>
+      <m_174 | case {
         idyll:Std/Num.Nat.Nat.Z =>
           <idyll:Std/Dec.Dec.No(cocase {
-            apply(r_191: ptr; k_192: ptr) =>
-              idyll:Std/Eq.sym(desc(ptr), r_191; μ̃ v_193: ptr.
-                idyll:Std/Num.Nat.zeroNotSucc(v_193; k_192))
-          }) | k_184>;
-        idyll:Std/Num.Nat.Nat.S(m_194: ptr) =>
-          idyll:Std/Num.Nat.decEq(n_190, m_194; μ̃ v__195: ptr.
-            <v__195 | case {
-              idyll:Std/Dec.Dec.Yes(p_196: ptr) =>
-                idyll:Std/Eq.cong(desc(ptr), desc(ptr), p_196; μ̃ v_197: ptr.
-                  <idyll:Std/Dec.Dec.Yes(v_197) | k_184>);
-              idyll:Std/Dec.Dec.No(f_198: ptr) =>
+            apply(r_182: ptr; k_183: ptr) =>
+              idyll:Std/Eq.sym(desc(ptr), r_182; μ̃ v_184: ptr.
+                idyll:Std/Num.Nat.zeroNotSucc(v_184; k_183))
+          }) | k_175>;
+        idyll:Std/Num.Nat.Nat.S(m_185: ptr) =>
+          idyll:Std/Num.Nat.decEq(n_181, m_185; μ̃ v__186: ptr.
+            <v__186 | case {
+              idyll:Std/Dec.Dec.Yes(p_187: ptr) =>
+                idyll:Std/Eq.cong(desc(ptr), desc(ptr), p_187; μ̃ v_188: ptr.
+                  <idyll:Std/Dec.Dec.Yes(v_188) | k_175>);
+              idyll:Std/Dec.Dec.No(f_189: ptr) =>
                 <idyll:Std/Dec.Dec.No(cocase {
-                  apply(q_199: ptr; k_200: ptr) =>
-                    idyll:Std/Num.Nat.succInjective(q_199; μ̃ v_201: ptr.
-                      <f_198 | apply(v_201; k_200)>)
-                }) | k_184>
+                  apply(q_190: ptr; k_191: ptr) =>
+                    idyll:Std/Num.Nat.succInjective(q_190; μ̃ v_192: ptr.
+                      <f_189 | apply(v_192; k_191)>)
+                }) | k_175>
             }>)
       }>
   }>
 
-def idyll:Std/Num.Nat.plus (x_204: ptr, m_205: ptr; k_206: ptr) =
-  <x_204 | case {
+def idyll:Std/Num.Nat.double (x_195: ptr; k_196: ptr) =
+  <x_195 | case {
     idyll:Std/Num.Nat.Nat.Z =>
-      <m_205 | k_206>;
-    idyll:Std/Num.Nat.Nat.S(n_207: ptr) =>
-      idyll:Std/Num.Nat.plus(n_207, m_205; μ̃ v_208: ptr.
-        <idyll:Std/Num.Nat.Nat.S(v_208) | k_206>)
+      <idyll:Std/Num.Nat.Nat.Z | k_196>;
+    idyll:Std/Num.Nat.Nat.S(n_197: ptr) =>
+      idyll:Std/Num.Nat.double(n_197; μ̃ v_199: ptr.
+        <idyll:Std/Num.Nat.Nat.S(v_199) | μ̃ v_198: ptr.
+          <idyll:Std/Num.Nat.Nat.S(v_198) | k_196>>)
+  }>
+
+def idyll:Std/Num.Nat.plusComm (n_200: ptr, m_201: ptr; k_202: ptr) =
+  <n_200 | case {
+    idyll:Std/Num.Nat.Nat.Z =>
+      idyll:Std/Num.Nat.plusZero(m_201; μ̃ v_203: ptr.
+        idyll:Std/Eq.sym(desc(ptr), v_203; k_202));
+    idyll:Std/Num.Nat.Nat.S(n_204: ptr) =>
+      idyll:Std/Num.Nat.plusComm(n_204, m_201; μ̃ v_208: ptr.
+        idyll:Std/Eq.cong(desc(ptr), desc(ptr), v_208; μ̃ v_205: ptr.
+          idyll:Std/Num.Nat.plusSucc(m_201; μ̃ v_207: ptr.
+            idyll:Std/Eq.sym(desc(ptr), v_207; μ̃ v_206: ptr.
+              idyll:Std/Eq.trans(desc(ptr), v_205, v_206; k_202)))))
   }>
 
 def idyll:Main/"#entry" (; k_209: ptr) =

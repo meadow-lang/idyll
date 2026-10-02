@@ -67,36 +67,36 @@ def idyll:Prelude/showInt (n_52: i64; k_53: ptr) =
       idyll:Prelude/negativeDigits(idyll:Prelude/digitFuel, n_52; μ̃ v_58: str.
         prim concatStrings(["-", v_58]; k_53))))
 
-def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) =
-  <fuel_61 | case {
-    idyll:Prelude/DigitFuel.Spent =>
-      <"" | k_63>;
-    idyll:Prelude/DigitFuel.More(fuel_64: ptr) =>
-      prim sub(0, 10; μ̃ v_74: i64.
-        prim lt(v_74, n_62; μ̃ v__65: bool.
-          prim if(v__65; μ̃ u_72: unit.
-            prim div(n_62, 10; μ̃ v_70: i64.
-              idyll:Prelude/negativeDigits(fuel_64, v_70; μ̃ v_66: str.
-                prim mod(n_62, 10; μ̃ v_69: i64.
-                  prim sub(0, v_69; μ̃ v_68: i64.
-                    idyll:Prelude/digitString(v_68; μ̃ v_67: str.
-                      prim concatStrings([v_66, v_67]; k_63)))))), μ̃ u_73: unit.
-            prim sub(0, n_62; μ̃ v_71: i64.
-              idyll:Prelude/digitString(v_71; k_63)))))
+def idyll:Main/half (n_61: ptr; k_62: ptr) =
+  <n_61 | case {
+    idyll:Main/Nat.Z =>
+      <idyll:Main/Nat.Z | k_62>;
+    idyll:Main/Nat.S(x_63: ptr) =>
+      <x_63 | case {
+        idyll:Main/Nat.Z =>
+          <idyll:Main/Nat.Z | k_62>;
+        idyll:Main/Nat.S(n_64: ptr) =>
+          idyll:Main/half(n_64; μ̃ v_65: ptr.
+            <idyll:Main/Nat.S(v_65) | k_62>)
+      }>
   }>
 
-def idyll:Main/half (n_75: ptr; k_76: ptr) =
-  <n_75 | case {
-    idyll:Main/Nat.Z =>
-      <idyll:Main/Nat.Z | k_76>;
-    idyll:Main/Nat.S(x_77: ptr) =>
-      <x_77 | case {
-        idyll:Main/Nat.Z =>
-          <idyll:Main/Nat.Z | k_76>;
-        idyll:Main/Nat.S(n_78: ptr) =>
-          idyll:Main/half(n_78; μ̃ v_79: ptr.
-            <idyll:Main/Nat.S(v_79) | k_76>)
-      }>
+def idyll:Prelude/negativeDigits (fuel_67: ptr, n_68: i64; k_69: ptr) =
+  <fuel_67 | case {
+    idyll:Prelude/DigitFuel.Spent =>
+      <"" | k_69>;
+    idyll:Prelude/DigitFuel.More(fuel_70: ptr) =>
+      prim sub(0, 10; μ̃ v_80: i64.
+        prim lt(v_80, n_68; μ̃ v__71: bool.
+          prim if(v__71; μ̃ u_78: unit.
+            prim div(n_68, 10; μ̃ v_76: i64.
+              idyll:Prelude/negativeDigits(fuel_70, v_76; μ̃ v_72: str.
+                prim mod(n_68, 10; μ̃ v_75: i64.
+                  prim sub(0, v_75; μ̃ v_74: i64.
+                    idyll:Prelude/digitString(v_74; μ̃ v_73: str.
+                      prim concatStrings([v_72, v_73]; k_69)))))), μ̃ u_79: unit.
+            prim sub(0, n_68; μ̃ v_77: i64.
+              idyll:Prelude/digitString(v_77; k_69)))))
   }>
 
 def idyll:Main/"#atom Nat" (x_87: ptr; k_88: ptr) =

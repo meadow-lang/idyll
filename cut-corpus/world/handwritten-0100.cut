@@ -103,32 +103,32 @@ def idyll:Main/main (x_70: unit; k_71: ptr) =
           idyll:Prelude/putStrLn(s_74; k_71)
       }>))
 
-def idyll:Prelude/negativeDigits (fuel_76: ptr, n_77: i64; k_78: ptr) =
-  <fuel_76 | case {
-    idyll:Prelude/DigitFuel.Spent =>
-      <"" | k_78>;
-    idyll:Prelude/DigitFuel.More(fuel_79: ptr) =>
-      prim sub(0, 10; μ̃ v_89: i64.
-        prim lt(v_89, n_77; μ̃ v__80: bool.
-          prim if(v__80; μ̃ u_87: unit.
-            prim div(n_77, 10; μ̃ v_85: i64.
-              idyll:Prelude/negativeDigits(fuel_79, v_85; μ̃ v_81: str.
-                prim mod(n_77, 10; μ̃ v_84: i64.
-                  prim sub(0, v_84; μ̃ v_83: i64.
-                    idyll:Prelude/digitString(v_83; μ̃ v_82: str.
-                      prim concatStrings([v_81, v_82]; k_78)))))), μ̃ u_88: unit.
-            prim sub(0, n_77; μ̃ v_86: i64.
-              idyll:Prelude/digitString(v_86; k_78)))))
-  }>
+def idyll:Main/roll (n_76: i64; k_77: ptr) =
+  prim eq(n_76, 0; μ̃ v__78: bool.
+    prim if(v__78; μ̃ u_82: unit.
+      perform idyll:Prelude/Random.intBetween(1, 7; μ̃ v_81: i64.
+        idyll:Prelude/printInt(v_81; μ̃ u_79: unit.
+          prim sub(n_76, 1; μ̃ v_80: i64.
+            idyll:Main/roll(v_80; k_77)))), μ̃ u_83: unit.
+      <unit | k_77>))
 
-def idyll:Main/roll (n_90: i64; k_91: ptr) =
-  prim eq(n_90, 0; μ̃ v__92: bool.
-    prim if(v__92; μ̃ u_96: unit.
-      perform idyll:Prelude/Random.intBetween(1, 7; μ̃ v_95: i64.
-        idyll:Prelude/printInt(v_95; μ̃ u_93: unit.
-          prim sub(n_90, 1; μ̃ v_94: i64.
-            idyll:Main/roll(v_94; k_91)))), μ̃ u_97: unit.
-      <unit | k_91>))
+def idyll:Prelude/negativeDigits (fuel_84: ptr, n_85: i64; k_86: ptr) =
+  <fuel_84 | case {
+    idyll:Prelude/DigitFuel.Spent =>
+      <"" | k_86>;
+    idyll:Prelude/DigitFuel.More(fuel_87: ptr) =>
+      prim sub(0, 10; μ̃ v_97: i64.
+        prim lt(v_97, n_85; μ̃ v__88: bool.
+          prim if(v__88; μ̃ u_95: unit.
+            prim div(n_85, 10; μ̃ v_93: i64.
+              idyll:Prelude/negativeDigits(fuel_87, v_93; μ̃ v_89: str.
+                prim mod(n_85, 10; μ̃ v_92: i64.
+                  prim sub(0, v_92; μ̃ v_91: i64.
+                    idyll:Prelude/digitString(v_91; μ̃ v_90: str.
+                      prim concatStrings([v_89, v_90]; k_86)))))), μ̃ u_96: unit.
+            prim sub(0, n_85; μ̃ v_94: i64.
+              idyll:Prelude/digitString(v_94; k_86)))))
+  }>
 
 def idyll:Main/"#entry" (; k_98: ptr) =
   idyll:Main/main(unit; k_98)

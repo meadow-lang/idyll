@@ -517,8 +517,13 @@ Work split: each session changes only its own repository.
   `putErr` and exiting 1. `cut-corpus/` holds every program of the test
   corpora and the tutorial's sessions that runs (188 of them, every one
   lowering) as Cut, with what it prints, its answer and its exit status
-  (`compiler/idyllic/examples/cut_corpus.rs`). Left: running it through
-  `meadow-cut` and comparing; then step 4.
+  (`compiler/idyllic/examples/cut_corpus.rs`). Run through `meadow-cut`
+  (meadow f46bb2a, 2026-10-02), 185 of 188 agreed; Idyll then escaped
+  strings in answers as its REPL does and marked programs using `Random`
+  or the clock `nondeterministic`, after which 186 agree, the other two
+  waiting on Meadow's change letting a resumption be applied as a
+  function. Left: Meadow adding `stringByteAt` to its interpreter, and its
+  CI test over the corpus, which begins step 4.
   - [x] Local recursion is lifted, since Cut has none: a recursive
     definition inside another becomes a `def` of its own, named under the
     one it was in (`Main/rev.go`), whose first parameters are what it uses

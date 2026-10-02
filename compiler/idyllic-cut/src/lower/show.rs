@@ -13,7 +13,9 @@
 //! that is a field and may need parentheses (`"#atom .."`), and one for
 //! each array type. An integer is shown by
 //! the prelude's `showInt`, which is kept for the purpose. A string is
-//! quoted, but nothing in it is escaped.
+//! quoted and escaped as the REPL does it, which is Rust's `{:?}`: `\"`,
+//! `\\`, `\n`, `\t`, `\r`, `\0`, and `\u{1b}` for any other control
+//! character (`"#escape"`).
 //!
 //! A value with a function or a type in it has nothing to show, as at the
 //! REPL: its program answers `none`.
@@ -73,7 +75,12 @@ impl Lower<'_> {
                 Statement::Prim("if".into(), vec![x], vec![branch(f, "False", k.clone()), branch(t, "True", k)])
             }
             Shown::Unit => Statement::Cut(text("()"), k),
-            Shown::Str => concat(vec![text("\""), x, text("\"")], k),
+            Shown::Str => {
+                let escape = self.escape_def();
+                let e = self.name("e");
+                let quoted = concat(vec![text("\""), Producer::Var(e.clone()), text("\"")], k);
+                Statement::Call(escape, vec![x], vec![str_binder(e, quoted)])
+            }
             // a box is the IR's one-element tuple
             Shown::Box(inner) => {
                 let v = self.name("x");
@@ -338,6 +345,84 @@ impl Lower<'_> {
         Some(show)
     }
 
+    /// What escapes a string as the REPL shows one, made the first time it
+    /// is wanted. It goes byte by byte, copying the runs between what needs
+    /// escaping as they are: each run ends at an ASCII byte, so no character
+    /// is cut in two.
+    fn escape_def(&mut self) -> Symbol {
+        let escape = Symbol { lang: "idyll".into(), package: self.package.clone(), path: vec!["#escape".into()] };
+        if self.atoms.insert("#escape".into()) {
+            self.make_escape(&escape);
+        }
+        escape
+    }
+
+    fn make_escape(&mut self, escape: &Symbol) {
+        let (go, byte) = (escape.child("go"), escape.child("byte"));
+        let var = |x: &String| Producer::Var(x.clone());
+        let text = |t: &str| Producer::Str(t.to_string());
+        let int = Producer::Int;
+        // escape(s) = go(s, 0, 0, the length, "")
+        let (st, n, k) = (self.name("s"), self.name("n"), self.name("k"));
+        let body = prim_then("stringByteLength", vec![var(&st)], &n, Rep::I64,
+            Statement::Call(go.clone(), vec![var(&st), int(0), int(0), var(&n), text("")], vec![Consumer::Var(k.clone())]));
+        self.push_def(escape, vec![(st, Rep::Str)], k, body);
+        // go(s, start, i, n, acc): what is escaped of `s` before `start` is
+        // `acc`; the bytes from `start` up to `i` need no escaping
+        let (st, start, i, n, acc, k) = (self.name("s"), self.name("start"), self.name("i"), self.name("n"), self.name("acc"), self.name("k"));
+        let (b, e, len, j, run, acc2, last) = (self.name("b"), self.name("e"), self.name("len"), self.name("j"), self.name("run"), self.name("acc"), self.name("run"));
+        let kv = || Consumer::Var(k.clone());
+        let plain = Statement::Call(go.clone(), vec![var(&st), var(&start), var(&j), var(&n), var(&acc)], vec![kv()]);
+        let escaped = prim_then("stringSlice", vec![var(&st), var(&start), var(&i)], &run, Rep::Str,
+            concat(vec![var(&acc), var(&run), var(&e)], str_binder(acc2.clone(),
+                Statement::Call(go.clone(), vec![var(&st), var(&j), var(&j), var(&n), var(&acc2)], vec![kv()]))));
+        let which = prim_then("stringByteLength", vec![var(&e)], &len, Rep::I64, test_eq(self, var(&len), int(0), escaped, plain));
+        let after = prim_then("add", vec![var(&i), int(1)], &j, Rep::I64, which);
+        let step = prim_then("stringByteAt", vec![var(&st), var(&i)], &b, Rep::I64,
+            Statement::Call(byte.clone(), vec![var(&b)], vec![str_binder(e, after)]));
+        let end = prim_then("stringSlice", vec![var(&st), var(&start), var(&n)], &last, Rep::Str, concat(vec![var(&acc), var(&last)], kv()));
+        let body = test_eq(self, var(&i), var(&n), step, end);
+        let params = vec![(st, Rep::Str), (start, Rep::I64), (i, Rep::I64), (n, Rep::I64), (acc, Rep::Str)];
+        self.push_def(&go, params, k, body);
+        // byte(b): how it is escaped, or "" if it needs none
+        let (b, k) = (self.name("b"), self.name("k"));
+        let kv = || Consumer::Var(k.clone());
+        let digits = text("0123456789abcdef");
+        let (hi, lo, h1, l1, dh, dl) = (self.name("hi"), self.name("lo"), self.name("hi"), self.name("lo"), self.name("d"), self.name("d"));
+        // `\u{1b}`: lower-case hex digits, no leading zero
+        let written = test_eq(
+            self,
+            var(&hi),
+            int(0),
+            concat(vec![text("\\u{"), var(&dh), var(&dl), text("}")], kv()),
+            concat(vec![text("\\u{"), var(&dl), text("}")], kv()),
+        );
+        let unicode = prim_then("div", vec![var(&b), int(16)], &hi, Rep::I64,
+            prim_then("mod", vec![var(&b), int(16)], &lo, Rep::I64,
+                prim_then("add", vec![var(&hi), int(1)], &h1, Rep::I64,
+                    prim_then("add", vec![var(&lo), int(1)], &l1, Rep::I64,
+                        prim_then("stringSlice", vec![digits.clone(), var(&hi), var(&h1)], &dh, Rep::Str,
+                            prim_then("stringSlice", vec![digits, var(&lo), var(&l1)], &dl, Rep::Str, written))))));
+        // another byte below a space, or DEL; anything else is itself
+        let control = test_lt(self, var(&b), int(32), Statement::Cut(text(""), kv()), unicode.clone());
+        let mut body = test_eq(self, var(&b), int(127), control, unicode);
+        for (code, escaped) in [(0, "\\0"), (13, "\\r"), (9, "\\t"), (10, "\\n"), (92, "\\\\"), (34, "\\\"")] {
+            body = test_eq(self, var(&b), int(code), body, Statement::Cut(text(escaped), kv()));
+        }
+        self.push_def(&byte, vec![(b, Rep::I64)], k, body);
+    }
+
+    fn push_def(&mut self, symbol: &Symbol, params: Vec<(String, Rep)>, k: String, body: Statement) {
+        self.show_defs.push(Def {
+            symbol: symbol.clone(),
+            rep_vars: Vec::new(),
+            effect_vars: Vec::new(),
+            params: params.into_iter().map(|(name, rep)| Binder { name, rep }).collect(),
+            conts: vec![k],
+            body,
+        });
+    }
+
     fn push_show(&mut self, symbol: &Symbol, x: String, k: String, body: Statement) {
         self.show_defs.push(Def {
             symbol: symbol.clone(),
@@ -357,6 +442,21 @@ fn concat(parts: Vec<Producer>, k: Consumer) -> Statement {
 
 fn str_binder(name: String, body: Statement) -> Consumer {
     Consumer::MuTilde(Binder { name, rep: Rep::Str }, Box::new(body))
+}
+
+/// `prim op(args; μ̃ x: rep. body)`
+fn prim_then(op: &str, args: Vec<Producer>, x: &str, rep: Rep, body: Statement) -> Statement {
+    Statement::Prim(op.into(), args, vec![Consumer::MuTilde(Binder { name: x.to_string(), rep }, Box::new(body))])
+}
+
+/// `a == b`: `no` if not, `yes` if so.
+fn test_eq(l: &mut Lower<'_>, a: Producer, b: Producer, no: Statement, yes: Statement) -> Statement {
+    Statement::Prim("eq".into(), vec![a, b], vec![unit_binder(l.name("u"), no), unit_binder(l.name("u"), yes)])
+}
+
+/// `a < b`: `no` if not, `yes` if so.
+fn test_lt(l: &mut Lower<'_>, a: Producer, b: Producer, no: Statement, yes: Statement) -> Statement {
+    Statement::Prim("lt".into(), vec![a, b], vec![unit_binder(l.name("u"), no), unit_binder(l.name("u"), yes)])
 }
 
 /// A test's continuation, which receives `unit`.

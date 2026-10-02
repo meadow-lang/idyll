@@ -237,6 +237,12 @@ fn an_answer_is_written_out_as_the_repl_writes_it() {
     let text = lowered("#[\"a\"; \"b\"]\n");
     has(&text, "def idyll:Main/\"#show Array String\"");
     has(&text, "prim concatStrings([\"\\\"\", e_N, \"\\\"\"]");
+    // a string is escaped as the REPL escapes it, `\t` for a tab, byte by
+    // byte, with the runtime's string primitives
+    let text = lowered("\"a\\tb\"\n");
+    has(&text, "def idyll:Main/\"#escape\" (s_N: str; k_N: ptr) =");
+    has(&text, "prim stringByteAt(s_N, i_N;");
+    has(&text, "<\"\\\\t\" | k_N>");
     // a function has nothing to show
     has(&lowered("\\(x : Int) -> x\n"), "answer none");
     // and a run of `main` answers nothing

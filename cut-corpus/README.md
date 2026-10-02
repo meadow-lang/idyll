@@ -14,13 +14,15 @@ back-end plan in `ROADMAP.md`.
 
 Each program is two files:
 
-- `NAME.cut`, the Cut and nothing else (Cut has no comments).
+- `NAME.cut`, the Cut and nothing else: exactly what the lowering prints.
 - `NAME.expect`, which has:
   - the Idyll source (`-- |` lines);
   - a `prints:` line for each line the program prints;
   - `answer:` with its answer as the REPL writes it, which the Cut computes
     and prints as its `answer str` (absent for `answer none`);
-  - `exit:` with its exit status.
+  - `exit:` with its exit status;
+  - `nondeterministic`, if it uses random numbers or the clock, when what
+    it prints cannot be expected again and only its exit status is checked.
 
 So a program's whole standard output is its `prints:` lines, each followed
 by a newline, then its `answer:` text with no newline after it; and its exit
