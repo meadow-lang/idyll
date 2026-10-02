@@ -1,0 +1,57 @@
+-- `Fin n`: the naturals below `n`, as a type. An index of type `Fin n` into
+-- something of length `n` is always in range, so looking it up cannot fail;
+-- see `Vec.index` and `List.nth`.
+
+use Std.Num.Nat (Nat)
+use Std.Num.Nat.Nat.*
+use Std.Void (Void)
+
+@pub
+data Fin : Nat -> Type where
+  FZ : Fin (S n)
+  FS : Fin n -> Fin (S n)
+
+use Fin.*
+
+@pub
+toNat : Fin n -> Nat
+toNat FZ = Z
+toNat (FS i) = S (toNat i)
+
+@pub
+toInt : Fin n -> Int
+toInt FZ = 0
+toInt (FS i) = 1 + toInt i
+
+-- The same index, below a bound one bigger.
+@pub
+weaken : Fin n -> Fin (S n)
+weaken FZ = FZ
+weaken (FS i) = FS (weaken i)
+
+-- The biggest index below `S n`: `n` itself.
+@pub
+last : (n : Nat) -> Fin (S n)
+last Z = FZ
+last (S n) = FS (last n)
+
+-- `i` as an index below `n`, if it is one.
+@pub
+fromNat : (i : [0..1] Nat) -> (n : [0..1] Nat) -> Maybe (Fin n)
+fromNat i Z = Nothing
+fromNat Z (S n) = Just (FZ : Fin (S n))
+fromNat (S i) (S n) = case fromNat i n of
+  Nothing -> Nothing
+  Just f -> Just (FS f)
+
+-- There is nothing below zero.
+@pub
+noneBelowZero : Fin Z -> Void
+noneBelowZero i impossible
+
+-- Every index below `n`, in order: each one in range of something `n`
+-- long, by its type.
+@pub
+enumerate : (n : Nat) -> List (Fin n)
+enumerate Z = Nil
+enumerate (S n) = FZ :: Std.Collections.List.map FS (enumerate n)

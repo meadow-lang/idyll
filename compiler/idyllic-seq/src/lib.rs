@@ -113,7 +113,9 @@ impl fmt::Display for Symbol {
 }
 
 /// Primitive operations on external types: the machine's integers (here,
-/// big ones) and strings.  An extern does not consume its arguments.
+/// big ones) and strings.  An extern does not consume its arguments — except
+/// a native, which does, as `let` consumes its fields: an array it is given
+/// and nothing else holds is its to change in place.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Extern {
     /// `extern lit n { (v) ⇒ s }`
@@ -135,6 +137,10 @@ pub enum Extern {
     /// `extern halt(v) {}`: no clauses, so nothing follows.  The program's
     /// answer is `v`.
     Halt,
+    /// `extern arrayGet(xs, i) { (v) ⇒ s }`: one of the natives (see
+    /// `idyllic_builtins::Native`), given what it takes at run time, which
+    /// it consumes.
+    Native(idyllic_builtins::Native),
 }
 
 impl Extern {
@@ -150,7 +156,7 @@ impl Extern {
             Extern::Lt => Prim::IntLt,
             Extern::Eq => Prim::IntEq,
             Extern::Append => Prim::StrAppend,
-            Extern::LitInt(_) | Extern::LitStr(_) | Extern::Halt => return None,
+            Extern::LitInt(_) | Extern::LitStr(_) | Extern::Halt | Extern::Native(_) => return None,
         })
     }
 }
@@ -315,6 +321,7 @@ impl fmt::Display for Extern {
             Extern::Eq => write!(f, "eq"),
             Extern::Append => write!(f, "append"),
             Extern::Halt => write!(f, "halt"),
+            Extern::Native(n) => f.write_str(n.name()),
         }
     }
 }

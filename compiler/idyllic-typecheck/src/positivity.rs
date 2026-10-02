@@ -2,8 +2,8 @@
 //! only to the right of every arrow.
 //!
 //! Without this, a data type can loop with no recursion in sight.  From
-//! `data Bad = MkBad (Bad -> Int)` one writes `\b -> case b of MkBad f -> f b`
-//! and applies it to itself wrapped in `MkBad`: the same trick as `Type : Type`,
+//! `data Bad = Bad (Bad -> Int)` one writes `\b -> case b of Bad f -> f b`
+//! and applies it to itself wrapped in `Bad`: the same trick as `Type : Type`,
 //! and just as fatal to the promise that a term with an empty effect row
 //! terminates.  So this sits beside the universe hierarchy in phase 0 of the
 //! roadmap.
@@ -149,7 +149,7 @@ impl Checker {
             Value::BoxTy(_, a) | Value::Comp(a, _) => self.positive(l, a, target),
             Value::Opaque(u, _, sp) if target.is_data(*u) => self.not_in_arguments(l, sp, target),
             Value::Rigid(k, _, sp) if target.is_param(*k) => self.not_in_arguments(l, sp, target),
-            Value::Opaque(u, outer, sp) if self.datas.contains_key(u) => {
+            Value::Opaque(u, outer, sp) if self.datas.contains_key(u) || self.natives.contains_key(u) => {
                 let polarity = self.positive_params.get(u);
                 for (i, elim) in sp.iter().enumerate() {
                     let Elim::App(arg) = elim else { return Err((found, Positivity::Unknown)) };

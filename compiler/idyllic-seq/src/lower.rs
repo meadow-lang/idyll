@@ -58,6 +58,7 @@ use idyllic_builtins::{Builtin, Prim};
 use idyllic_typecheck::grade::Grade;
 use idyllic_typecheck::core::{CaseAlt, Core, Head, Note, OpClause};
 use idyllic_typecheck::handlers::OpInfo;
+use idyllic_typecheck::natives::NativeInfo;
 use idyllic_typecheck::{CtorInfo, RecDef, TypeCheckResult};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
@@ -150,6 +151,8 @@ struct Lowering {
     ctors: HashMap<usize, CtorInfo>,
     /// the program's effects' operations
     ops: HashMap<usize, OpInfo>,
+    /// the natives' operations (their types are type constructors)
+    natives: HashMap<usize, NativeInfo>,
     type_constructors: HashSet<usize>,
     definitions: Vec<Definition>,
     next_var: usize,
@@ -174,6 +177,7 @@ pub fn lower(checked: &TypeCheckResult) -> Option<Result<Program, LowerError>> {
         direct: HashMap::new(),
         ctors: checked.ctors.clone(),
         ops: checked.ops.clone(),
+        natives: checked.natives.iter().filter(|(_, n)| !n.native.is_type()).map(|(u, n)| (*u, *n)).collect(),
         type_constructors: checked.type_constructors.iter().copied().collect(),
         definitions: Vec::new(),
         next_var: 0,
@@ -480,6 +484,31 @@ impl Lowering {
                     );
                 }
             }
+            // a native with what it takes is the extern itself; its type
+            // arguments are erased
+            if let Some(info) = self.natives.get(unique).copied() {
+                let arity = info.native.arity();
+                if args.len() >= info.params + arity {
+                    let mut rest: VecDeque<Rc<Core>> = args.split_off(info.params + arity);
+                    let taken: VecDeque<Rc<Core>> = args.split_off(info.params);
+                    let env2 = env.clone();
+                    let k = if rest.is_empty() {
+                        k
+                    } else {
+                        Kont::then(move |l, f| l.apply_all(&env2, f, std::mem::take(&mut rest), k))
+                    };
+                    return self.terms(
+                        env,
+                        taken,
+                        Vec::new(),
+                        Box::new(move |l, xs| {
+                            let r = l.fresh("r");
+                            let rest = k.apply(l, r.clone())?;
+                            Ok(Stmt::Extern(Extern::Native(info.native), xs, vec![Branch { params: vec![r], body: rest }]))
+                        }),
+                    );
+                }
+            }
             // a constructor with everything it needs is a `let`; the type
             // arguments it starts with are erased, and not even computed
             if let Some(info) = self.ctors.get(unique).cloned() {
@@ -652,6 +681,19 @@ impl Lowering {
                 let finish = Box::new(move |_: &mut Lowering, mut args: Vec<Var>, kv: Var| {
                     let xs = args.split_off(args.len() - info.arity);
                     Stmt::Perform(symbol, xs, kv)
+                });
+                self.curried_value(hints, finish, k)
+            }
+            // a native on its own: a function that does it once it has what
+            // it takes
+            Core::Opaque(unique, _) if self.natives.contains_key(unique) => {
+                let info = self.natives[unique];
+                let hints = vec!["x".to_string(); info.params + info.native.arity()];
+                let finish = Box::new(move |l: &mut Lowering, mut args: Vec<Var>, kv: Var| {
+                    let xs = args.split_off(info.params);
+                    let r = l.fresh("r");
+                    let ret = Stmt::Invoke(kv, Symbol::Ret, vec![r.clone()]);
+                    Stmt::Extern(Extern::Native(info.native), xs, vec![Branch { params: vec![r], body: ret }])
                 });
                 self.curried_value(hints, finish, k)
             }

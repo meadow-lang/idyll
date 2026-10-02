@@ -1,0 +1,21 @@
+-- | effect Ask where
+-- |   ask : Unit -> Int
+-- | 
+-- | effect Log where
+-- |   log : Int -> Unit
+-- | 
+-- | twice : (f : [] (Unit -> Int ! e)) -> Int ! e
+-- | twice f = f () + f ()
+-- | 
+-- | logged : Unit -> Int ! {Ask, Log}
+-- | logged u = let x = log 1 in ask ()
+-- | 
+-- | inner : Unit -> Int ! Log
+-- | inner u = handle twice logged with
+-- |   ask _ k -> let y = log 100 in k 5
+-- | 
+-- | handle inner () with
+-- |   return x -> x
+-- |   log n k -> n + k ()
+answer: 212
+exit: 0

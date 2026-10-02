@@ -4,3 +4,10 @@
 # the compiler's crates.
 [build]
 target-dir = "target"
+
+# The threads tests run on get the stack the commands run on (see
+# `STACK` in compiler/idyllic/src/main.rs and idyll-driver/src/main.rs): the
+# compiler walks a program's structure recursively, and the standard
+# library's definitions alone nest a few hundred deep.
+[env]
+RUST_MIN_STACK = "268435456"

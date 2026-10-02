@@ -35,13 +35,13 @@ pub const OPERATIONS: &[(&str, usize)] = &[
     ("removeDirAll", 1),
     ("rename", 2),
     ("copy", 2),
-    ("readDir", 1),
+    ("listDir", 1),
     ("exists", 1),
     ("isFile", 1),
     ("isDir", 1),
     ("exit", 1),
     ("currentPid", 1),
-    ("args", 1),
+    ("argv", 1),
     ("getEnv", 1),
     ("setEnv", 2),
     ("removeEnv", 1),
@@ -74,6 +74,8 @@ pub enum Answer {
     /// constructors: `Maybe`'s `Nothing` (0) and `Just` (1), `Result`'s
     /// `Err` (0) and `Ok` (1), `List`'s `Nil` (0) and `::` (1).
     Con(&'static str, usize, Vec<Answer>),
+    /// An array (the prelude's `Array`).
+    Array(Vec<Answer>),
 }
 
 impl Answer {
@@ -87,10 +89,6 @@ impl Answer {
 
     fn str(s: impl Into<Rc<str>>) -> Answer {
         Answer::Str(s.into())
-    }
-
-    fn list(items: Vec<Answer>) -> Answer {
-        items.into_iter().rev().fold(Answer::Con("Nil", 0, Vec::new()), |tail, head| Answer::Con("::", 1, vec![head, tail]))
     }
 
     /// `Ok a`, or `Err` with what went wrong, as text.
@@ -265,7 +263,7 @@ impl World {
                 return Some(Err(Stop::Exit(i32::try_from(*code).unwrap_or(1))));
             }
             ("currentPid", [_]) => Answer::Int(i64::from(std::process::id())),
-            ("args", [_]) => Answer::list(self.args.iter().map(|a| Answer::str(a.as_str())).collect()),
+            ("argv", [_]) => Answer::Array(self.args.iter().map(|a| Answer::str(a.as_str())).collect()),
             ("getEnv", [Str(name)]) => {
                 std::env::var(&**name).map_or_else(|_| Answer::nothing(), |v| Answer::just(Answer::str(v)))
             }
@@ -308,10 +306,9 @@ impl World {
             ("removeDir", [Str(path)]) => Answer::result(std::fs::remove_dir(&**path), unit),
             ("removeDirAll", [Str(path)]) => Answer::result(std::fs::remove_dir_all(&**path), unit),
             ("rename", [Str(from), Str(to)]) => Answer::result(std::fs::rename(&**from, &**to), unit),
-            ("copy", [Str(from), Str(to)]) => {
-                Answer::result(std::fs::copy(&**from, &**to), |n| Answer::Int(n as i64))
-            }
-            ("readDir", [Str(path)]) => {
+            // how many bytes were copied, as the runtime's Fs.copy answers
+            ("copy", [Str(from), Str(to)]) => Answer::result(std::fs::copy(&**from, &**to), |n| Answer::Int(n as i64)),
+            ("listDir", [Str(path)]) => {
                 let names = std::fs::read_dir(&**path).and_then(|entries| {
                     let mut names = entries
                         .map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned()))
@@ -319,7 +316,7 @@ impl World {
                     names.sort();
                     Ok(names)
                 });
-                Answer::result(names, |names| Answer::list(names.into_iter().map(Answer::str).collect()))
+                Answer::result(names, |names| Answer::Array(names.into_iter().map(Answer::str).collect()))
             }
             ("exists", [Str(path)]) => Answer::Bool(std::path::Path::new(&**path).exists()),
             ("isFile", [Str(path)]) => Answer::Bool(std::path::Path::new(&**path).is_file()),
@@ -383,7 +380,12 @@ mod tests {
         assert_eq!(w.perform("writeString", &[d("a.txt"), Arg::Str("one".into())]), ok(Answer::Unit));
         assert_eq!(w.perform("appendString", &[d("a.txt"), Arg::Str(" two".into())]), ok(Answer::Unit));
         assert_eq!(w.perform("readToString", &[d("a.txt")]), ok(Answer::str("one two")));
-        assert_eq!(w.perform("readDir", &[d("")]), ok(Answer::list(vec![Answer::str("a.txt")])));
+        assert_eq!(w.perform("listDir", &[d("")]), ok(Answer::Array(vec![Answer::str("a.txt")])));
+        // a copy answers how many bytes it copied, as the runtime's
+        // `Fs.copy` does
+        assert_eq!(w.perform("copy", &[d("a.txt"), d("b.txt")]), ok(Answer::Int(7)));
+        assert_eq!(w.perform("readToString", &[d("b.txt")]), ok(Answer::str("one two")));
+        assert!(matches!(w.perform("copy", &[d("missing"), d("c.txt")]), Some(Ok(Answer::Con("Err", 0, _)))));
         assert_eq!(w.perform("isFile", &[d("a.txt")]), Some(Ok(Answer::Bool(true))));
         assert!(matches!(w.perform("readToString", &[d("missing")]), Some(Ok(Answer::Con("Err", 0, _)))));
         assert_eq!(w.perform("removeDirAll", &[d("")]), ok(Answer::Unit));

@@ -56,14 +56,20 @@
 //!   are closed terms.
 //! * Integers are 64 bits and wrap, as the runtime's are.
 //!
+//! * **Natives** (`@native arrayGet : ..`) are what their documentation in
+//!   `idyllic_builtins::Native` says.  An array is a value holding its
+//!   elements; setting one makes a new array, the old one untouched.
+//!
 //! The answer is shown as the REPL shows it: numbers, strings, `True`,
 //! `()`, boxes as `[v]`, constructors applied to their fields, lists with
-//! their `::` written infix.  A function or a type has nothing to show.
+//! their `::` written infix, arrays as `#[a; b]`.  A function or a type has
+//! nothing to show.
 
 use idyllic_ast::Lit;
-use idyllic_builtins::{Builtin, IntResult, Prim};
+use idyllic_builtins::{Builtin, IntResult, Native, Prim};
 use idyllic_typecheck::core::{CaseAlt, Core, Head, Note, OpClause};
 use idyllic_typecheck::handlers::OpInfo;
+use idyllic_typecheck::natives::NativeInfo;
 use idyllic_typecheck::{CtorInfo, RecDef, TypeCheckResult};
 use idyllic_world::{Answer, Arg, Stop, World};
 use std::collections::HashMap;
@@ -96,6 +102,11 @@ pub enum Value {
     /// the first `info.erased` of which are erased, and the rest are `args`.
     /// It is performed once it has `info.arity` of those.
     Op { op: usize, info: Rc<OpInfo>, seen: usize, args: Vec<Rc<Value>> },
+    /// An array, of its elements.
+    Array(Vec<Rc<Value>>),
+    /// A native still waiting for arguments: `seen` of them have come, the
+    /// first `info.params` of which are erased, and the rest are `args`.
+    Native { info: NativeInfo, seen: usize, args: Vec<Rc<Value>> },
     /// The rest of a handled computation, from where it performed an
     /// operation up to and including its handler: frames to put back.
     Resumption(Rc<Vec<Frame>>),
@@ -198,7 +209,12 @@ impl Value {
     /// Move whatever this value holds onto `out`.
     fn hand_over(&mut self, out: &mut Vec<Garbage>) {
         match self {
-            Value::Con { fields, .. } | Value::Prim { args: fields, .. } | Value::Ctor { fields, .. } | Value::Op { args: fields, .. } => {
+            Value::Con { fields, .. }
+            | Value::Prim { args: fields, .. }
+            | Value::Ctor { fields, .. }
+            | Value::Op { args: fields, .. }
+            | Value::Array(fields)
+            | Value::Native { args: fields, .. } => {
                 out.extend(fields.drain(..).map(Garbage::Value));
             }
             Value::Box(inner) => out.push(Garbage::Value(std::mem::replace(inner, hollow()))),
@@ -274,6 +290,9 @@ pub enum EvalError {
     OutOfFuel,
     /// Nowhere to go: a term that could not have type checked.
     Stuck(String),
+    /// An error of the program's own: dividing by zero, an index outside an
+    /// array.
+    Stopped(String),
     /// The program ended itself: `exit n`.
     Exited(i32),
     /// `fail message`: a test failed.
@@ -285,6 +304,7 @@ impl fmt::Display for EvalError {
         match self {
             EvalError::OutOfFuel => write!(f, "out of fuel"),
             EvalError::Stuck(why) => write!(f, "stuck: {why}"),
+            EvalError::Stopped(why) => f.write_str(why),
             EvalError::Exited(code) => write!(f, "exited with {code}"),
             EvalError::TestFailed(why) => write!(f, "test failed: {why}"),
         }
@@ -314,6 +334,7 @@ struct Program<'c> {
     rec_defs: HashMap<usize, &'c RecDef>,
     ctors: HashMap<usize, Rc<CtorInfo>>,
     ops: HashMap<usize, Rc<OpInfo>>,
+    natives: HashMap<usize, NativeInfo>,
     type_constructors: Vec<usize>,
     meta_solutions: &'c [Option<Rc<Core>>],
 }
@@ -336,6 +357,7 @@ pub fn evaluate_in(checked: &TypeCheckResult, fuel: u64, world: &mut World) -> O
         rec_defs: checked.rec_defs.iter().map(|d| (d.unique, d)).collect(),
         ctors: checked.ctors.iter().map(|(u, info)| (*u, Rc::new(info.clone()))).collect(),
         ops: checked.ops.iter().map(|(u, info)| (*u, Rc::new(info.clone()))).collect(),
+        natives: checked.natives.clone(),
         type_constructors: checked.type_constructors.clone(),
         meta_solutions: &checked.meta_solutions,
     };
@@ -418,6 +440,9 @@ impl Program<'_> {
                 }
                 if let Some(info) = self.ops.get(unique) {
                     return value(Value::Op { op: *unique, info: info.clone(), seen: 0, args: Vec::new() });
+                }
+                if let Some(info) = self.natives.get(unique) {
+                    return value(Value::Native { info: *info, seen: 0, args: Vec::new() });
                 }
                 // a recursive definition: its body, where it was defined
                 let Some(def) = self.rec_defs.get(unique) else { return stuck(format!("no definition of {name}")) };
@@ -566,6 +591,7 @@ fn evaluates_argument(fun: &Value) -> bool {
     match fun {
         Value::Erased => false,
         Value::Ctor { info, seen, .. } => *seen >= info.params,
+        Value::Native { info, seen, .. } => *seen >= info.params,
         _ => true,
     }
 }
@@ -582,6 +608,7 @@ fn answer_value(answer: Answer) -> Value {
         Answer::Con(name, tag, fields) => {
             Value::Con { name: name.into(), tag, fields: fields.into_iter().map(|f| Rc::new(answer_value(f))).collect() }
         }
+        Answer::Array(items) => Value::Array(items.into_iter().map(|x| Rc::new(answer_value(x))).collect()),
     }
 }
 
@@ -612,7 +639,7 @@ fn apply(fun: &Value, arg: Rc<Value>) -> Result<Control, EvalError> {
             value(match prim.on_ints(*a, *b) {
                 Some(IntResult::Int(n)) => Value::Int(n),
                 Some(IntResult::Bool(t)) => Value::Bool(t),
-                None => return stuck("division by zero"),
+                None => return Err(EvalError::Stopped("division by zero".into())),
             })
         }
         Value::Ctor { info, seen, fields } => {
@@ -633,10 +660,115 @@ fn apply(fun: &Value, arg: Rc<Value>) -> Result<Control, EvalError> {
             }
             Ok(Control::Perform(*op, args))
         }
+        Value::Native { info, seen, args } if *seen < info.params => {
+            value(Value::Native { info: *info, seen: seen + 1, args: args.clone() })
+        }
+        Value::Native { info, seen, args } => {
+            let mut args = args.clone();
+            args.push(arg);
+            if args.len() < info.native.arity() {
+                return value(Value::Native { info: *info, seen: seen + 1, args });
+            }
+            native(info.native, &args).map(|v| Control::Return(Rc::new(v)))
+        }
         Value::Resumption(frames) => Ok(Control::Resume(frames.clone(), arg)),
         Value::Erased => value(Value::Erased),
         _ => stuck("applying something that is not a function"),
     }
+}
+
+/// A native, given what it takes.
+fn native(n: Native, args: &[Rc<Value>]) -> Result<Value, EvalError> {
+    let int = |v: &Rc<Value>| match **v {
+        Value::Int(i) => Ok(i),
+        _ => stuck(format!("{} is given something that is not an integer", n.name())),
+    };
+    let array = |v: &Rc<Value>| match &**v {
+        Value::Array(items) => Ok(items.clone()),
+        _ => stuck(format!("{} is given something that is not an array", n.name())),
+    };
+    let at = |items: &[Rc<Value>], i: i64| {
+        usize::try_from(i).ok().filter(|i| *i < items.len()).ok_or_else(|| {
+            EvalError::Stopped(format!("index {i} is out of bounds for an array of length {}", items.len()))
+        })
+    };
+    // `Pair [a] b`: how a native gives back two things, the first boxed
+    let pair = |a: Rc<Value>, b: Rc<Value>| Value::Con { name: "Pair".into(), tag: 0, fields: vec![Rc::new(Value::Box(a)), b] };
+    Ok(match n {
+        Native::Array | Native::MArray => Value::Erased,
+        Native::ArrayLen => Value::Int(array(&args[0])?.len() as i64),
+        Native::ArrayGet => {
+            let items = array(&args[0])?;
+            items[at(&items, int(&args[1])?)?].as_ref().clone()
+        }
+        Native::ArrayGetOr => {
+            let items = array(&args[1])?;
+            match at(&items, int(&args[2])?) {
+                Ok(i) => items[i].as_ref().clone(),
+                Err(_) => args[0].as_ref().clone(),
+            }
+        }
+        Native::ArraySet | Native::MArraySet => {
+            let mut items = array(&args[0])?;
+            let i = at(&items, int(&args[1])?)?;
+            items[i] = args[2].clone();
+            Value::Array(items)
+        }
+        Native::ArrayPush => {
+            let mut items = array(&args[0])?;
+            items.push(args[1].clone());
+            Value::Array(items)
+        }
+        Native::ArrayPop => {
+            let mut items = array(&args[0])?;
+            if items.pop().is_none() {
+                return Err(EvalError::Stopped("popping an empty array".into()));
+            }
+            Value::Array(items)
+        }
+        Native::ArraySlice => {
+            let items = array(&args[0])?;
+            let len = items.len() as i64;
+            let from = int(&args[1])?.clamp(0, len) as usize;
+            let to = (int(&args[2])?.clamp(0, len) as usize).max(from);
+            Value::Array(items[from..to].to_vec())
+        }
+        Native::ArrayConcat => {
+            let mut items = array(&args[0])?;
+            items.extend(array(&args[1])?);
+            Value::Array(items)
+        }
+        Native::ArrayFromList => {
+            let mut items = Vec::new();
+            let mut list = args[0].clone();
+            loop {
+                let next = match &*list {
+                    Value::Con { tag: 0, .. } => break,
+                    Value::Con { tag: 1, fields, .. } if fields.len() == 2 => {
+                        items.push(fields[0].clone());
+                        fields[1].clone()
+                    }
+                    _ => return stuck("arrayFromList is given something that is not a list"),
+                };
+                list = next;
+            }
+            Value::Array(items)
+        }
+        Native::ArrayToList => array(&args[0])?.into_iter().rev().fold(
+            Value::Con { name: "Nil".into(), tag: 0, fields: Vec::new() },
+            |tail, head| Value::Con { name: "::".into(), tag: 1, fields: vec![head, Rc::new(tail)] },
+        ),
+        Native::MArrayNew => {
+            let count = int(&args[0])?.max(0) as usize;
+            Value::Array(vec![args[1].clone(); count])
+        }
+        Native::MArrayLen => pair(Rc::new(Value::Int(array(&args[0])?.len() as i64)), args[0].clone()),
+        Native::MArrayGet => {
+            let items = array(&args[0])?;
+            pair(items[at(&items, int(&args[1])?)?].clone(), args[0].clone())
+        }
+        Native::MArrayFreeze | Native::MArrayThaw => args[0].as_ref().clone(),
+    })
 }
 
 /// What is under a lambda, looking through the note on it.
@@ -656,7 +788,7 @@ fn under_lambda(c: &Rc<Core>) -> Result<Rc<Core>, EvalError> {
 /// has nothing worth showing, and neither has anything that contains one.
 pub fn show(v: &Value) -> Option<String> {
     // a field that is itself an application is parenthesised
-    let atom = |s: String| if s.contains(' ') && !s.starts_with(['[', '"']) { format!("({s})") } else { s };
+    let atom = |s: String| if s.contains(' ') && !s.starts_with(['[', '"', '#', '(']) { format!("({s})") } else { s };
     match v {
         Value::Int(n) => Some(n.to_string()),
         Value::Str(s) => Some(format!("{:?}", &**s)),
@@ -664,6 +796,24 @@ pub fn show(v: &Value) -> Option<String> {
         Value::Bool(false) => Some("False".into()),
         Value::Unit => Some("()".into()),
         Value::Box(inner) => Some(format!("[{}]", show(inner)?)),
+        // a pair is a tuple, `(1, True)`, and one nested to the right a
+        // longer one, `(1, 2, 3)`
+        Value::Con { name, fields, .. } if &**name == "Pair" && fields.len() == 2 => {
+            let mut items = vec![show(&fields[0])?];
+            let mut rest = fields[1].clone();
+            loop {
+                let next = match &*rest {
+                    Value::Con { name, fields, .. } if &**name == "Pair" && fields.len() == 2 => {
+                        items.push(show(&fields[0])?);
+                        fields[1].clone()
+                    }
+                    _ => break,
+                };
+                rest = next;
+            }
+            items.push(show(&rest)?);
+            Some(format!("({})", items.join(", ")))
+        }
         // `x :: xs` is written the way it is read
         Value::Con { name, fields, .. } if &**name == "::" && fields.len() == 2 => {
             Some(format!("{} :: {}", atom(show(&fields[0])?), show(&fields[1])?))
@@ -676,7 +826,22 @@ pub fn show(v: &Value) -> Option<String> {
             }
             Some(out)
         }
-        Value::Closure { .. } | Value::Prim { .. } | Value::Ctor { .. } | Value::Op { .. } | Value::Resumption(_) | Value::Erased => None,
+        // `#[1; 2]`, as one is written
+        Value::Array(items) => {
+            let items = items.iter().map(|x| show(x)).collect::<Option<Vec<String>>>()?;
+            Some(match items.as_slice() {
+                [] => "#[;]".into(),
+                [one] => format!("#[{one};]"),
+                _ => format!("#[{}]", items.join("; ")),
+            })
+        }
+        Value::Closure { .. }
+        | Value::Prim { .. }
+        | Value::Ctor { .. }
+        | Value::Op { .. }
+        | Value::Native { .. }
+        | Value::Resumption(_)
+        | Value::Erased => None,
     }
 }
 

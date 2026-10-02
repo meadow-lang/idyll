@@ -1,0 +1,45 @@
+-- Pairs: Idyll's tuples. The prelude declares `Pair a b`, made by `Pair`,
+-- and a tuple is one: `(x, y)` is `Pair x y`, and `(Int, Bool)` is `Pair Int
+-- Bool`, in a term, a pattern or a type. A longer tuple nests to the
+-- right, `(x, y, z)` being `(x, (y, z))`, so these work on any of them.
+
+-- The two, as a pair: `Pair` as a function, for passing on.
+@pub
+pair : {a b : Type} -> a -> b -> (a, b)
+pair x y = (x, y)
+
+-- The first; the second is dropped.
+@pub
+fst : {a b : Type} -> (p : [0..1] (a, b)) -> a
+fst (x, y) = x
+
+-- The second; the first is dropped.
+@pub
+snd : {a b : Type} -> (p : [0..1] (a, b)) -> b
+snd (x, y) = y
+
+@pub
+swap : {a b : Type} -> (a, b) -> (b, a)
+swap (x, y) = (y, x)
+
+@pub
+mapFst : {a b c : Type} -> (f : a -> c ! e) -> (a, b) -> (c, b) ! e
+mapFst f (x, y) = (f x, y)
+
+@pub
+mapSnd : {a b c : Type} -> (f : b -> c ! e) -> (a, b) -> (a, c) ! e
+mapSnd f (x, y) = (x, f y)
+
+@pub
+mapBoth : {a b c d : Type} -> (f : a -> c ! e) -> (g : b -> d ! e) -> (a, b) -> (c, d) ! e
+mapBoth f g (x, y) = (f x, g y)
+
+-- A function of a pair, as a function of two arguments.
+@pub
+curry : {a b c : Type} -> (f : (a, b) -> c ! e) -> a -> b -> c ! e
+curry f x y = f (x, y)
+
+-- A function of two arguments, as a function of a pair.
+@pub
+uncurry : {a b c : Type} -> (f : a -> b -> c ! e) -> (a, b) -> c ! e
+uncurry f (x, y) = f x y

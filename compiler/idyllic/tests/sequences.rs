@@ -121,6 +121,9 @@ fn seq_names_the_right_constructors() {
 
 #[test]
 fn an_array_is_not_a_sequence() {
-    rejects("#[1; 2]\n", &["parse error: arrays, #[a; b], are not supported yet; a sequence is #[a, b]"]);
+    // semicolons make an array, whatever is expected
+    assert_eq!(result("#[1; 2]\n"), "#[1; 2] : Array Int");
+    assert_eq!(result("#[1;]\n"), "#[1;] : Array Int");
+    assert_eq!(result("(#[;] : Array Int)\n"), "#[;] : Array Int");
     rejects("#[1, 2,]\n", &["parse error: a sequence's elements are separated by single commas"]);
 }

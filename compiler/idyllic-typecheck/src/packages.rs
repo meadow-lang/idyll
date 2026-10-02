@@ -67,6 +67,8 @@ pub struct CompiledPackage {
     pub seqs: Vec<(usize, (usize, usize))>,
     pub effects: Vec<(usize, EffectInfo)>,
     pub ops: Vec<(usize, OpInfo)>,
+    /// its natives, which its code may use
+    pub natives: Vec<(usize, super::natives::NativeInfo)>,
     /// its code: where its own definitions start in its context (after the
     /// builtins and the prelude's), then those definitions in order, its
     /// recursive ones, and its trailing expression with its type
@@ -110,6 +112,7 @@ impl Checker {
             self.seqs.extend(p.seqs.iter().cloned());
             self.effects.extend(p.effects.iter().cloned());
             self.ops.extend(p.ops.iter().cloned());
+            self.natives.extend(p.natives.iter().cloned());
         }
         ctx
     }
@@ -217,6 +220,7 @@ impl Checker {
             seqs: self.seqs.iter().filter(|(u, _)| pick(&own_set, u)).map(|(u, s)| (*u, *s)).collect(),
             effects: self.effects.iter().filter(|(u, _)| pick(&own_set, u)).map(|(u, e)| (*u, e.clone())).collect(),
             ops: self.ops.iter().filter(|(u, _)| pick(&own_set, u)).map(|(u, o)| (*u, o.clone())).collect(),
+            natives: self.natives.iter().filter(|(u, _)| pick(&own_set, u)).map(|(u, n)| (*u, *n)).collect(),
             base,
             lets: code,
             rec_defs: rec_defs.iter().filter(|d| own_set.contains(&d.unique)).cloned().collect(),
@@ -319,6 +323,8 @@ pub fn link(root: &mut TypeCheckResult, deps: &[&CompiledPackage]) {
         root.ctors.extend(p.ctors.iter().cloned());
         root.ops.extend(p.ops.iter().cloned());
         root.type_constructors.extend(p.datas.iter().map(|(u, _)| *u));
+        root.natives.extend(p.natives.iter().cloned());
+        root.type_constructors.extend(p.natives.iter().filter(|(_, n)| n.native.is_type()).map(|(u, _)| *u));
     }
     root.program = Some(program);
     root.rec_defs = rec_defs;

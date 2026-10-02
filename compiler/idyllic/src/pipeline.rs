@@ -108,6 +108,9 @@ pub use typecheck::packages::CompiledPackage;
 #[derive(Clone, Debug)]
 pub struct PackageSource {
     pub name: String,
+    /// its manifest's version, which the symbols a back end is given carry
+    /// (`idyll:Util@0.1.0/double`); none for a lone file, the REPL or `Std`
+    pub version: Option<String>,
     pub modules: Vec<ModuleFile>,
 }
 
@@ -124,7 +127,7 @@ impl PackageSource {
     /// A package of one module, the text given.
     pub fn single(name: &str, file: &str, text: &str) -> PackageSource {
         let root = ModuleFile { path: Vec::new(), file: file.to_string(), text: text.to_string() };
-        PackageSource { name: name.to_string(), modules: vec![root] }
+        PackageSource { name: name.to_string(), version: None, modules: vec![root] }
     }
 }
 
@@ -135,6 +138,7 @@ impl PackageSource {
 /// in a `use` path.
 pub fn load_package(dir: &std::path::Path) -> Result<PackageSource, String> {
     let manifest = dir.join("Idyll.toml");
+    let version = std::fs::read_to_string(&manifest).ok().and_then(|text| manifest_field(&text, "version"));
     let name = match std::fs::read_to_string(&manifest) {
         Ok(text) => manifest_name(&text).ok_or_else(|| format!("{} has no [package] name", manifest.display()))?,
         Err(_) => dir
@@ -160,19 +164,24 @@ pub fn load_package(dir: &std::path::Path) -> Result<PackageSource, String> {
         modules.push(ModuleFile { path, file: shown, text });
     }
     modules.swap(0, root);
-    Ok(PackageSource { name, modules })
+    Ok(PackageSource { name, version, modules })
 }
 
 /// `name = "..."` under `[package]`, from an `Idyll.toml`.  (The build system
 /// will read the rest.)
 fn manifest_name(text: &str) -> Option<String> {
+    manifest_field(text, "name")
+}
+
+/// A `[package]` field of a manifest, as a string: `name`, `version`.
+fn manifest_field(text: &str, field: &str) -> Option<String> {
     let mut in_package = false;
     for line in text.lines().map(str::trim) {
         if line.starts_with('[') {
             in_package = line == "[package]";
-        } else if let (true, Some(rest)) = (in_package, line.strip_prefix("name")) {
-            let value = rest.trim_start().strip_prefix('=')?.trim();
-            return Some(value.trim_matches('"').to_string());
+        } else if let (true, Some(rest)) = (in_package, line.strip_prefix(field)) {
+            let Some(value) = rest.trim_start().strip_prefix('=') else { continue };
+            return Some(value.trim().trim_matches('"').to_string());
         }
     }
     None
@@ -238,9 +247,44 @@ data Maybe a = Nothing | Just a
 
 data Result e a = Err e | Ok a
 
+data Pair a b = Pair a b
+
 use List.*
 use Maybe.*
 use Result.*
+
+@native
+Array : Type -> Type
+
+@native
+arrayLen : {a : Type} -> (xs : [0..1] Array a) -> Int
+
+@native
+arrayGet : {a : Type} -> (xs : [0..1] Array a) -> Int -> a
+
+@native
+arrayGetOr : {a : Type} -> (d : [0..1] a) -> (xs : [0..1] Array a) -> Int -> a
+
+@native
+arraySet : {a : Type} -> (xs : [0..1] Array a) -> Int -> a -> Array a
+
+@native
+arrayPush : {a : Type} -> Array a -> a -> Array a
+
+@native
+arrayPop : {a : Type} -> (xs : [0..1] Array a) -> Array a
+
+@native
+arraySlice : {a : Type} -> (xs : [0..1] Array a) -> Int -> Int -> Array a
+
+@native
+arrayConcat : {a : Type} -> Array a -> Array a -> Array a
+
+@native
+arrayFromList : {a : Type} -> List a -> Array a
+
+@native
+arrayToList : {a : Type} -> Array a -> List a
 
 effect Console where
   putStr : String -> ()
@@ -279,7 +323,7 @@ effect Fs where
   removeDirAll : String -> Result String ()
   rename : String -> String -> Result String ()
   copy : String -> String -> Result String Int
-  readDir : String -> Result String (List String)
+  listDir : String -> Result String (Array String)
   exists : String -> Bool
   isFile : String -> Bool
   isDir : String -> Bool
@@ -287,11 +331,19 @@ effect Fs where
 effect Process where
   exit : Int -> ()
   currentPid : () -> Int
-  args : () -> List String
+  argv : () -> Array String
   getEnv : String -> Maybe String
   setEnv : String -> String -> ()
   removeEnv : String -> ()
   isTerminal : Int -> Bool
+
+readDir : String -> Result String (List String) ! Fs
+readDir path = case listDir path of
+  Err e -> Err e
+  Ok names -> Ok (arrayToList names)
+
+args : () -> List String ! Process
+args () = arrayToList (argv ())
 
 effect Random where
   nextInt : () -> Int
@@ -408,7 +460,12 @@ fn evaluate(checked: &typecheck::TypeCheckResult, world: Option<World>) -> Optio
         Ok(outcome) => (outcome.answer.map_or(Evaluation::Opaque, Evaluation::Value), Some(outcome.memory)),
         Err(MachineError::OutOfFuel) => (Evaluation::OutOfFuel, None),
         Err(MachineError::Exited(code)) => (Evaluation::Exited(code), None),
-        Err(e @ (MachineError::DivisionByZero | MachineError::TestFailed(_))) => (Evaluation::Stopped(e.to_string()), None),
+        Err(
+            e @ (MachineError::DivisionByZero
+            | MachineError::TestFailed(_)
+            | MachineError::OutOfBounds { .. }
+            | MachineError::EmptyArray),
+        ) => (Evaluation::Stopped(e.to_string()), None),
         Err(e) => (Evaluation::Failed(e.to_string()), None),
     };
     let (printed, errors) = world.into_streams();
@@ -699,7 +756,9 @@ pub(crate) fn front(package: &PackageSource, deps: Deps<'_>, opts: &Options, ent
     };
 
     // name resolution -> HIR, then SCC / retopologize, then type check
-    let prelude = read(&mut sources, "<prelude>", PRELUDE, &mut diagnostics).expect("the prelude parses");
+    let Some(prelude) = read(&mut sources, "<prelude>", PRELUDE, &mut diagnostics) else {
+        panic!("the prelude does not parse: {diagnostics:#?}")
+    };
     let modules: Vec<rename::ModuleSource<'_>> = package
         .modules
         .iter()
@@ -708,7 +767,8 @@ pub(crate) fn front(package: &PackageSource, deps: Deps<'_>, opts: &Options, ent
         .collect();
     let direct: Vec<(&str, &idyllic_hir::PackageNames)> = deps.direct.iter().map(|(n, p)| (*n, &p.names)).collect();
     let first_unique = deps.first_unique.max(idyllic_builtins::FIRST_USER_UNIQUE);
-    let renamed = rename::rename_package(&package.name, &modules, &prelude, &direct, first_unique);
+    let mut renamed = rename::rename_package(&package.name, &modules, &prelude, &direct, first_unique);
+    renamed.module.version = package.version.clone();
     diagnostics.extend(
         renamed
             .errors
@@ -780,7 +840,7 @@ fn own_lines_from(text: &str, line: usize, name: &str) -> usize {
 }
 
 /// What a package depended on gives its dependents, as declarations: each
-/// public name, written in full (`Std.List.map`), with its type.
+/// public name, written in full (`Std.Collections.List.map`), with its type.
 fn exported(package: &str, p: &CompiledPackage) -> Vec<Declaration> {
     use typecheck::DeclKind;
     let types: std::collections::HashMap<usize, &std::rc::Rc<typecheck::core::Core>> =

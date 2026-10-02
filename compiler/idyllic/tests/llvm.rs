@@ -58,8 +58,17 @@ fn native(name: &str, src: &str) -> Option<String> {
 #[test]
 fn std_compiles_natively() {
     // what a program uses of the standard library is compiled with it
-    agree("std", "use Std.List (sum, map, reverse)\n\nsum (map (\\(x : Int) -> x * 2) (reverse #[1, 2, 3]))");
-    agree("stdnat", "use Std.Nat (fromInt, toInt, times)\n\ntoInt (times (fromInt 6) (fromInt 7))");
+    agree("std", "use Std.Collections.List (sum, map, reverse)\n\nsum (map (\\(x : Int) -> x * 2) (reverse #[1, 2, 3]))");
+    agree("stdnat", "use Std.Num.Nat (fromInt, toInt, times)\n\ntoInt (times (fromInt 6) (fromInt 7))");
+    // arrays, mutable arrays, and the vectors made of them
+    agree("arrays", "Std.Collections.Array.sum (Std.Collections.Array.map (\\(x : [] Int) -> x * x) (Std.Collections.Array.range 0 100))");
+    agree("marrays", "Std.Collections.Array.sum (Std.Collections.MArray.generate 5 0 (\\(i : [] Int) -> i * i))");
+    agree(
+        "vectors",
+        "use Std.Collections.Vector (Vector, pushBack, pushFront, empty, range, foldl, get, sum, popBack, popFront)\n\n\
+         grow : (v : [] Vector Int) -> (x : [] Int) -> Vector Int\ngrow v x = pushFront (pushBack v x) x\n\n\
+         sum (popFront (popBack (foldl grow empty (range 0 1000))))",
+    );
 }
 
 /// The machine's answer and the compiled program's must be the same.

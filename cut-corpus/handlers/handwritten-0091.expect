@@ -1,0 +1,20 @@
+-- | effect State (s : Type) where
+-- |   get : Unit -> s
+-- |   put : (x : [] s) -> Unit
+-- | 
+-- | counter : Unit -> Int ! State Int
+-- | counter u =
+-- |   let a = get () in
+-- |   let b = put (a + 1) in
+-- |   let c = get () in
+-- |   c * 10
+-- | 
+-- | run : (s : [] Int) -> Int
+-- | run = handle counter () with
+-- |   return x -> \(s : [] Int) -> x
+-- |   get _ k -> \(s : [] Int) -> k s s
+-- |   put s2 k -> \(s : [] Int) -> k () s2
+-- | 
+-- | run 4
+answer: 50
+exit: 0

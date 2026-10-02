@@ -21,18 +21,24 @@
 //! of where it was defined becomes its first parameters, and every use of
 //! it passes them.
 //!
-//! Not yet lowered (each is reported, not miscompiled): a world operation
-//! with no runtime operation of the same shape (`copy`, `readDir` and
-//! `args`), which the prelude will define over the runtime's instead.
+//! The program's answer is written out as the REPL writes it, since the
+//! runtimes print only strings: see [`show`].
+//!
+//! A native the runtime has no primitive for is a `def` of the program's
+//! own: see [`natives`].
+
+mod natives;
+mod show;
 
 use super::*;
 use idyllic_ast::Lit;
-use idyllic_builtins::{Builtin, Prim};
+use idyllic_builtins::{Builtin, Native, Prim};
+use idyllic_typecheck::natives::NativeInfo;
 use idyllic_typecheck::core::{Core, Head, Note};
 use idyllic_typecheck::grade::Grade;
 use idyllic_typecheck::typer::{self, Scope, Typer};
 use idyllic_typecheck::{RecDef, TypeCheckResult};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::rc::Rc;
 
 /// The runtime's operation for each world operation of the prelude's that
@@ -50,11 +56,14 @@ const NATIVE: &[(&str, &str)] = &[
     ("removeDir", "Fs.removeDir"),
     ("removeDirAll", "Fs.removeDirAll"),
     ("rename", "Fs.rename"),
+    ("copy", "Fs.copy"),
+    ("listDir", "Fs.readDir"),
     ("exists", "Fs.exists"),
     ("isFile", "Fs.isFile"),
     ("isDir", "Fs.isDir"),
     ("exit", "Process.exit"),
     ("currentPid", "Process.currentPid"),
+    ("argv", "Process.argv"),
     ("getEnv", "Process.getEnv"),
     ("setEnv", "Process.setEnv"),
     ("removeEnv", "Process.removeEnv"),
@@ -118,6 +127,7 @@ struct Lower<'t> {
     symbols: &'t HashMap<usize, (String, String)>,
     ctors: &'t HashMap<usize, idyllic_typecheck::CtorInfo>,
     ops: &'t HashMap<usize, idyllic_typecheck::handlers::OpInfo>,
+    natives: &'t HashMap<usize, NativeInfo>,
     recs: HashMap<usize, RecDef>,
     /// each recursive definition's parameters, worked out when first needed
     rec_params: HashMap<usize, Rc<Vec<Param>>>,
@@ -140,10 +150,27 @@ struct Lower<'t> {
     effects: BTreeSet<usize>,
     performed: BTreeSet<usize>,
     errors: Vec<String>,
+    /// what shows each type the answer has in it (see [`show`])
+    shows: HashMap<String, Option<show::ShowDefs>>,
+    /// an operation the entry handles itself (`abort`), which so needs no
+    /// runtime operation
+    handled_by_entry: Option<usize>,
+    /// the natives with no primitive whose `def`s have been made
+    natives_made: std::collections::HashSet<Native>,
+    /// the types whose `#atom` has been made
+    atoms: std::collections::HashSet<String>,
+    show_defs: Vec<Def>,
+    /// the prelude's `showInt`, kept for showing an answer
+    show_int: Option<Symbol>,
 }
 
 /// Lower a checked (and linked) program, whose own package is `package`.
 pub fn lower(tc: &mut TypeCheckResult, package: &str) -> Result<Program, Vec<String>> {
+    // an answer is shown with the prelude's `showInt`, so it stays
+    let show_int = tc.symbols.iter().find(|(_, (p, path))| p == "Prelude" && path == "showInt").map(|(u, _)| *u);
+    if !tc.ran_main {
+        tc.roots.extend(show_int);
+    }
     // what the program never uses (most of the prelude, say) is left out
     let Some((program, live)) = idyllic_typecheck::prune::prune(tc) else {
         return Err(vec!["there is no program: it only declares".into()]);
@@ -156,6 +183,7 @@ pub fn lower(tc: &mut TypeCheckResult, package: &str) -> Result<Program, Vec<Str
         symbols: &tc.symbols,
         ctors: &tc.ctors,
         ops: &tc.ops,
+        natives: &tc.natives,
         recs,
         rec_params: HashMap::new(),
         local: HashMap::new(),
@@ -170,7 +198,14 @@ pub fn lower(tc: &mut TypeCheckResult, package: &str) -> Result<Program, Vec<Str
         effects: BTreeSet::new(),
         performed: BTreeSet::new(),
         errors: Vec::new(),
+        shows: HashMap::new(),
+        atoms: std::collections::HashSet::new(),
+        natives_made: std::collections::HashSet::new(),
+        handled_by_entry: None,
+        show_defs: Vec::new(),
+        show_int: None,
     };
+    l.show_int = show_int.and_then(|u| l.symbol(u));
     // the context every program starts in: the builtins, then the primitives
     let mut env = Env { slots: Vec::new(), scope: l.typer.scope() };
     env.slots.extend(Builtin::ALL.iter().map(|_| Slot::Erased));
@@ -181,7 +216,7 @@ pub fn lower(tc: &mut TypeCheckResult, package: &str) -> Result<Program, Vec<Str
     let base = env.slots.len();
     l.local = local_free_levels(&l.recs, &owners(&program, toplevel.len(), base, &l.recs));
     l.levels.push(env.clone());
-    let mut c = program;
+    let mut c = program.clone();
     let mut i = 0;
     // (only the top-level definitions' `let`s: what comes after them is the
     // expression's own)
@@ -207,15 +242,39 @@ pub fn lower(tc: &mut TypeCheckResult, package: &str) -> Result<Program, Vec<Str
         let def = l.def(&symbol, &at, &d.core);
         l.defs.push(def);
     }
-    // the entry: the program's expression, given to `halt`
-    let answer = match body_type.as_deref() {
-        _ if ran_main => Answer::None,
-        Some(Core::LitTy(Builtin::Str)) => Answer::Str,
-        _ => Answer::None,
-    };
-    let entry = Symbol::idyll(package, "#entry");
+    // the entry: the program's expression, written out as the REPL writes
+    // it (see [`show`]), given to `halt`
     let k = l.name("k");
-    let body = l.term(&env, &c, Consumer::Var(k.clone()));
+    let shown = match &body_type {
+        Some(ty) if !ran_main => {
+            let ty = l.typer.eval_type(&env.scope, ty);
+            l.show_answer(&env.scope, &ty, Consumer::Var(k.clone()))
+        }
+        _ => None,
+    };
+    let (answer, k_entry) = match shown {
+        Some((_, shown)) => (Answer::Str, shown),
+        None => (Answer::None, Consumer::Var(k.clone())),
+    };
+    if answer == Answer::Str {
+        let shows = std::mem::take(&mut l.show_defs);
+        l.defs.extend(shows);
+    }
+    let entry = Symbol::idyll(package, "#entry");
+    // `abort`, which no runtime operation does, given up on in the program's
+    // own code: a handler around everything, as Idyll's world does it
+    let abort = l.ops.iter().find(|(u, op)| op.name == "abort" && l.symbols.get(u).is_some_and(|(p, _)| p == "Prelude")).map(|(u, _)| *u);
+    let aborts = abort.filter(|u| mentions(&c, *u) || l.recs.values().any(|d| mentions(&d.core, *u)) || program_lets_mention(&program, toplevel.len(), *u));
+    let body = match aborts {
+        Some(abort) => {
+            let b = l.name("b");
+            let body = l.term(&env, &c, Consumer::Var(b.clone()));
+            let rep = l.rep_of(&env, &c);
+            l.handled_by_entry = Some(abort);
+            l.abort_handler(abort, b, body, rep, k_entry)
+        }
+        None => l.term(&env, &c, k_entry),
+    };
     l.defs.push(Def { symbol: entry.clone(), rep_vars: Vec::new(), effect_vars: Vec::new(), params: Vec::new(), conts: vec![k], body });
     let out = l.declarations(Some(entry), answer);
     if l.errors.is_empty() {
@@ -225,7 +284,82 @@ pub fn lower(tc: &mut TypeCheckResult, package: &str) -> Result<Program, Vec<Str
     }
 }
 
+/// Whether `c` mentions the constant `u`.
+fn mentions(c: &Core, u: usize) -> bool {
+    match c {
+        Core::Opaque(v, _) => *v == u,
+        Core::Pi { grade, in_type, dom, cod, .. } => [grade, in_type, dom, cod].iter().any(|c| mentions(c, u)),
+        Core::Lam(_, b) | Core::BoxIntro(b) | Core::Unbox(b) | Core::Runtime(_, b) => mentions(b, u),
+        Core::App(a, b)
+        | Core::BoxTy(a, b)
+        | Core::Let(_, a, b)
+        | Core::GradeAdd(a, b)
+        | Core::GradeMul(a, b)
+        | Core::GradeRange(a, b)
+        | Core::Comp(a, b) => mentions(a, u) || mentions(b, u),
+        Core::Case(s, alts) => mentions(s, u) || alts.iter().any(|a| mentions(&a.body, u)),
+        Core::Row(a, b) => a.iter().chain(b).any(|c| mentions(c, u)),
+        Core::Handle(b, r, ops) => mentions(b, u) || mentions(r, u) || ops.iter().any(|o| mentions(&o.body, u)),
+        _ => false,
+    }
+}
+
+/// Whether one of the program's first `n` (top-level) definitions mentions
+/// `u`.
+fn program_lets_mention(program: &Rc<Core>, n: usize, u: usize) -> bool {
+    let mut at = program;
+    for _ in 0..n {
+        let Core::Let(_, rhs, rest) = &**at else { return false };
+        if mentions(rhs, u) {
+            return true;
+        }
+        at = rest;
+    }
+    false
+}
+
 impl Lower<'_> {
+    /// `body`, sending its value to `b`, run under a handler for the
+    /// prelude's `Abort` that does what Idyll's world does: the message on
+    /// standard error, then exit status 1.
+    fn abort_handler(&mut self, abort: usize, b: String, body: Statement, rep: Rep, k: Consumer) -> Statement {
+        let prelude_op = |l: &Self, name: &str| {
+            l.ops.iter().find(|(u, op)| op.name == name && l.symbols.get(u).is_some_and(|(p, _)| p == "Prelude")).map(|(u, op)| (*u, op.effect))
+        };
+        let (Some((put_err, console)), Some((exit, process))) = (prelude_op(self, "putErr"), prelude_op(self, "exit")) else {
+            return body;
+        };
+        for (op, effect) in [(put_err, console), (exit, process), (abort, self.ops[&abort].effect)] {
+            self.performed.insert(op);
+            self.effects.insert(effect);
+        }
+        let (Some(abort_s), Some(put_err_s), Some(exit_s)) = (self.symbol(abort), self.symbol(put_err), self.symbol(exit)) else {
+            return body;
+        };
+        let (message, line, r, kc, u, w) = (self.name("message"), self.name("line"), self.name("r"), self.name("k"), self.name("u"), self.name("u"));
+        let then_exit = Statement::Perform(
+            exit_s,
+            vec![Producer::Int(1)],
+            Consumer::MuTilde(Binder { name: w.clone(), rep: Rep::Unit }, Box::new(Statement::Cut(Producer::Var(w), Consumer::Var(kc.clone())))),
+        );
+        let clause_body = Statement::Prim(
+            CONCAT.into(),
+            prim_args(CONCAT, vec![Producer::Var(message.clone()), Producer::Str("\n".into())]),
+            vec![Consumer::MuTilde(
+                Binder { name: line.clone(), rep: Rep::Str },
+                Box::new(Statement::Perform(
+                    put_err_s,
+                    vec![Producer::Var(line)],
+                    Consumer::MuTilde(Binder { name: u, rep: Rep::Unit }, Box::new(then_exit)),
+                )),
+            )],
+        );
+        let clause = Clause { op: abort_s, params: vec![Binder { name: message, rep: Rep::Str }], resumption: r, cont: kc, body: clause_body };
+        let (x, kr) = (self.name("x"), self.name("k"));
+        let ret = (Binder { name: x.clone(), rep }, kr.clone(), Statement::Cut(Producer::Var(x), Consumer::Var(kr)));
+        Statement::Handle(Box::new(Handle { clauses: vec![clause], ret, body_cont: b, body, cont: k }))
+    }
+
     fn name(&mut self, hint: &str) -> String {
         self.fresh += 1;
         let clean: String = hint.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
@@ -391,14 +525,19 @@ impl Lower<'_> {
     fn def(&mut self, symbol: &Symbol, env: &Env, c: &Rc<Core>) -> Def {
         let mut env = env.clone();
         let (mut params, mut rep_vars) = (Vec::new(), Vec::new());
+        let mut effect_vars = Vec::new();
         let mut c = c.clone();
         while let Some((x, grade, ty, body)) = lambda(&c) {
+            // an effect variable: declared, `<e: Effect>`, and erased
+            if let Some(many) = ty.as_ref().and_then(|t| self.typer.effect_binder_kind(&env.scope, t)) {
+                effect_vars.push((self.name(&x), if many { Kind::ManyEffect } else { Kind::Effect }));
+            }
             self.bind_param(&mut env, &x, grade, ty.as_ref(), &mut params, &mut rep_vars);
             c = body;
         }
         let k = self.name("k");
         let body = self.term(&env, &c, Consumer::Var(k.clone()));
-        Def { symbol: symbol.clone(), rep_vars, effect_vars: Vec::new(), params, conts: vec![k], body }
+        Def { symbol: symbol.clone(), rep_vars, effect_vars, params, conts: vec![k], body }
     }
 
     /// Bind a lambda's variable in `env`: a value parameter, a descriptor
@@ -610,6 +749,9 @@ impl Lower<'_> {
                 if let Some(info) = self.ops.get(u).cloned() {
                     return self.perform(env, c, *u, &info, &args, k);
                 }
+                if let Some(info) = self.natives.get(u).copied() {
+                    return self.native(env, c, info, &args, k);
+                }
                 if self.local.contains_key(u) {
                     let Some((s, params, captured)) = self.lift(*u, env) else {
                         return Statement::Error(name.to_string());
@@ -787,6 +929,81 @@ impl Lower<'_> {
             return self.partial(env, whole, Head2::Prim(op.into()), &params[..args.len()], args, k);
         }
         self.atoms(env, &args[..2], &mut |_, ps| Statement::Prim(op.into(), prim_args(op, ps), vec![k.clone()]))
+    }
+
+    /// A native: an array's operation is the runtime's primitive of the
+    /// same name, and a literal, `#[a; b]`, an array.
+    fn native(&mut self, env: &Env, whole: &Rc<Core>, info: NativeInfo, args: &[Rc<Core>], k: Consumer) -> Statement {
+        let n = info.native;
+        let all = info.params + n.arity();
+        if n == Native::ArrayFromList && args.len() == all {
+            if let Some(items) = self.list_literal(&args[info.params]) {
+                return self.atoms(env, &items, &mut |_, ps| Statement::Cut(Producer::Array(ps), k.clone()));
+            }
+        }
+        // one the runtime has no primitive for: a `def` of the program's
+        // own (see [`natives`]), generic in the element as its type is
+        if info.params == 1 {
+            if let Some((symbol, params)) = self.native_helper(n) {
+                return self.call(env, whole, symbol, &params, args, k);
+            }
+        }
+        let reps: &[Rep] = match n {
+            Native::ArrayLen | Native::ArrayPop => &[Rep::Ptr],
+            Native::ArrayGet => &[Rep::Ptr, Rep::I64],
+            Native::ArrayGetOr => &[Rep::Any, Rep::Ptr, Rep::I64],
+            Native::ArraySet | Native::MArraySet => &[Rep::Ptr, Rep::I64, Rep::Any],
+            Native::ArrayPush => &[Rep::Ptr, Rep::Any],
+            Native::ArraySlice => &[Rep::Ptr, Rep::I64, Rep::I64],
+            Native::ArrayConcat => &[Rep::Ptr, Rep::Ptr],
+            _ => {
+                self.errors.push(format!("{} is not lowered yet", n.name()));
+                return Statement::Error(n.name().to_string());
+            }
+        };
+        let params: Vec<Param> = (0..info.params).map(|_| Param::Skip).chain(reps.iter().cloned().map(Param::Value)).collect();
+        // a mutable array is the runtime's array, used linearly
+        let op = if n == Native::MArraySet { "arraySet".to_string() } else { n.name().to_string() };
+        if args.len() < all {
+            return self.partial(env, whole, Head2::Prim(op), &params[..args.len()], args, k);
+        }
+        let values = args[info.params..all].to_vec();
+        let later = args[all..].to_vec();
+        let env2 = env.clone();
+        self.atoms(env, &values, &mut |this, ps| {
+            if later.is_empty() {
+                return Statement::Prim(op.clone(), ps, vec![k.clone()]);
+            }
+            let r = this.name("r");
+            let then = this.apply_args(&env2, Producer::Var(r.clone()), &later, k.clone());
+            Statement::Prim(op.clone(), ps, vec![Consumer::MuTilde(Binder { name: r, rep: Rep::Any }, Box::new(then))])
+        })
+    }
+
+    /// The elements of a list written out, `x :: y :: Nil` (as an array
+    /// literal's are), if `c` is one.
+    fn list_literal(&self, c: &Rc<Core>) -> Option<Vec<Rc<Core>>> {
+        let mut items = Vec::new();
+        let mut at = c.clone();
+        loop {
+            let mut args = Vec::new();
+            let mut head = at.clone();
+            while let Core::App(f, a) = &*head {
+                args.push(a.clone());
+                head = f.clone();
+            }
+            args.reverse();
+            let Core::Opaque(u, _) = &*head else { return None };
+            let info = self.ctors.get(u)?;
+            match (info.name.as_str(), args.len()) {
+                ("Nil", 1) => return Some(items),
+                ("::", 3) => {
+                    items.push(args[1].clone());
+                    at = args[2].clone();
+                }
+                _ => return None,
+            }
+        }
     }
 
     fn construct(&mut self, env: &Env, whole: &Rc<Core>, u: usize, info: &idyllic_typecheck::CtorInfo, args: &[Rc<Core>], k: Consumer) -> Statement {
@@ -1021,6 +1238,9 @@ impl Lower<'_> {
         }
         let mut natives = Vec::new();
         for u in self.performed.clone() {
+            if self.handled_by_entry == Some(u) {
+                continue;
+            }
             let Some((package, _)) = self.symbols.get(&u) else { continue };
             if package != "Prelude" {
                 continue;

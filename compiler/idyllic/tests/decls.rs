@@ -290,3 +290,35 @@ fn an_expression_can_only_come_last() {
 fn a_definition_is_checked_against_its_signature() {
     rejects("n : Int\nn = True\n", &["type mismatch: expected Int, but this has type Bool"]);
 }
+
+// ---------------------------------------------------------------------------
+// Natives and @terminating
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_native_is_declared_with_its_type_and_must_be_one() {
+    rejects(
+        "@native\nfrobnicate : Int -> Int\n\n1",
+        &["there is no native called frobnicate: @native declares something every back end implements, and this is not one of them"],
+    );
+    // the prelude's array natives are declared already; a second
+    // declaration is checked the same way, and its arity must fit
+    rejects(
+        "@native\narrayLen : {a : Type} -> Array a -> Int -> Int\n\n1",
+        &["the type of the native arrayLen does not fit it: it takes 1 argument at run time, after any implicit ones, and has no effects"],
+    );
+    rejects("@native\nf x = x\n\n1", &["parse error: @native goes on a signature, f : a"]);
+}
+
+#[test]
+fn terminating_vouches_for_a_recursion_the_checker_cannot_see_end() {
+    ok(
+        "@terminating\ncountdown : (n : [] Int) -> Int\ncountdown n = if n < 1 then 0 else countdown (n - 1)\n\ncountdown 5",
+        &["countdown : (n : [] Int) -> Int"],
+        Some("Int"),
+    );
+    rejects(
+        "@terminating\ndata T = A\n\n1",
+        &["parse error: @terminating goes on a definition's signature, f : a"],
+    );
+}

@@ -26,7 +26,7 @@ fn package(root: &str, others: &[(&str, &str)]) -> PackageSource {
         let file = format!("src/{}.idl", path.join("/"));
         modules.push(ModuleFile { path, file, text: (*text).into() });
     }
-    PackageSource { name: "App".into(), modules }
+    PackageSource { name: "App".into(), version: None, modules }
 }
 
 fn run(root: &str, others: &[(&str, &str)]) -> pipeline::Output {
@@ -102,9 +102,9 @@ fn constructors_are_reported_under_their_types() {
 // Packages
 // ---------------------------------------------------------------------------
 
-const SYNTAX: &str = "@pub(pkg) data Expr = Lit Int | Add Expr Expr\n";
+const SYNTAX: &str = "@pub(pkg)\ndata Expr = Lit Int | Add Expr Expr\n";
 const EVAL: &str = "use App.Syntax (Expr)\n\n\
-                    @pub(pkg) eval : Expr -> Int\n\
+                    @pub(pkg)\neval : Expr -> Int\n\
                     eval (Expr.Lit n) = n\n\
                     eval (Expr.Add a b) = eval a + eval b\n";
 
@@ -117,8 +117,8 @@ fn modules_use_each_other() {
 
 #[test]
 fn every_form_of_use() {
-    let shapes = "@pub data Shape = Square Int | Rect Int Int\n\nuse Shape.*\n\n\
-                  @pub area : (s : [] Shape) -> Int\n\
+    let shapes = "@pub\ndata Shape = Square Int | Rect Int Int\n\nuse Shape.*\n\n\
+                  @pub\narea : (s : [] Shape) -> Int\n\
                   area (Square n) = n * n\n\
                   area (Rect w h) = w * h\n";
     let others = [("Geometry.Shapes", shapes)];
@@ -139,8 +139,8 @@ fn every_form_of_use() {
 
 #[test]
 fn modules_may_be_mutually_recursive() {
-    let even = "use Odd (isOdd)\n\n@pub isEven : (n : [] Int) -> Bool ! Div\nisEven n = if n == 0 then True else isOdd (n - 1)\n";
-    let odd = "use Even (isEven)\n\n@pub isOdd : (n : [] Int) -> Bool ! Div\nisOdd n = if n == 0 then False else isEven (n - 1)\n";
+    let even = "use Odd (isOdd)\n\n@pub\nisEven : (n : [] Int) -> Bool ! Div\nisEven n = if n == 0 then True else isOdd (n - 1)\n";
+    let odd = "use Even (isEven)\n\n@pub\nisOdd : (n : [] Int) -> Bool ! Div\nisOdd n = if n == 0 then False else isEven (n - 1)\n";
     let root = "use Even (isEven)\n\nmain () = if isEven 7 then putStrLn \"even\" else putStrLn \"odd\"\n";
     assert_eq!(printed(root, &[("Even", even), ("Odd", odd)]), "odd\n");
 }
@@ -168,7 +168,7 @@ fn a_diagnostic_says_which_file() {
 
 #[test]
 fn a_name_is_private_unless_it_says_otherwise() {
-    let math = "@pub(pkg) double : Int -> Int\ndouble n = n * 2\n\nfudge : Int -> Int\nfudge n = n + 1\n";
+    let math = "@pub(pkg)\ndouble : Int -> Int\ndouble n = n * 2\n\nfudge : Int -> Int\nfudge n = n + 1\n";
     assert_eq!(printed("use Math (double)\n\nmain () = printInt (double 21)\n", &[("Math", math)]), "42\n");
     let out = run("use Math as M\n\nmain () = printInt (M.fudge 1)\n", &[("Math", math)]);
     assert_eq!(diags(&out), ["fudge is private to Math: used here"]);
@@ -182,8 +182,8 @@ fn a_package_that_never_mentions_visibility_has_none() {
 
 #[test]
 fn pub_super_is_for_the_parent_and_its_subtree() {
-    let inner = "@pub(super) secret : Int\nsecret = 7\n";
-    let outer = "use App.Outer.Inner (secret)\n\n@pub(pkg) reveal : Int\nreveal = secret\n";
+    let inner = "@pub(super)\nsecret : Int\nsecret = 7\n";
+    let outer = "use App.Outer.Inner (secret)\n\n@pub(pkg)\nreveal : Int\nreveal = secret\n";
     assert_eq!(printed("use Outer (reveal)\n\nmain () = printInt reveal\n", &[("Outer", outer), ("Outer.Inner", inner)]), "7\n");
     let out = run("use Outer.Inner (secret)\n\nmain () = printInt secret\n", &[("Outer", outer), ("Outer.Inner", inner)]);
     assert_eq!(diags(&out), ["secret is private to Outer.Inner: used here"]);
@@ -192,7 +192,7 @@ fn pub_super_is_for_the_parent_and_its_subtree() {
 #[test]
 fn pub_use_gives_names_on() {
     // a library's surface, gathered from its modules
-    let lib = "@pub use App.Syntax (Expr)\n@pub use Syntax.Expr.*\n@pub use Eval (eval)\n";
+    let lib = "@pub\nuse App.Syntax (Expr)\n@pub\nuse Syntax.Expr.*\n@pub\nuse Eval (eval)\n";
     let root = "use Lib\n\nmain () = printInt (eval (Add (Lit 1) (Lit 2)))\n";
     assert_eq!(printed(root, &[("Syntax", SYNTAX), ("Eval", EVAL), ("Lib", lib)]), "3\n");
     // and only `@pub use` gives on: a plain one keeps its names

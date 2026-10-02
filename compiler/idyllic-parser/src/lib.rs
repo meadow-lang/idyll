@@ -14,7 +14,9 @@
 //! tparam  ::= lowerIdent | '(' lowerIdent ':' term ')'
 //! ctor    ::= (upperIdent | '(' conOp ')') field*      -- a field is an atom
 //! ctorSig ::= (upperIdent | '(' conOp ')') ':' term
-//! decl    ::= name ':' comp                            -- signature
+//! item    ::= attr* (data | effect | use | decl | term)
+//! attr    ::= seqAttr | '@' 'pub' ('(' ('pkg' | 'super') ')')? | '@' 'native'
+//! decl    ::= name ':' comp                            -- signature (native, with @native)
 //!           | name param* (':' comp)? rhs              -- equation
 //!           | operand op operand rhs                   -- operator equation
 //!           | name param* 'impossible'                 -- nothing can match
@@ -44,6 +46,7 @@
 //! appExpr ::= atom atom*                   -- application, left assoc
 //! atom    ::= 'Type' | '_' | '∞' | literal | ident | '(' op ')' | '(' term ')'
 //!           | '[' term ']' | '[' ']' | '#[' (term (',' term)*)? ']'
+//!           | '#[' term (';' term)* ';'? ']' | '#[' ';' ']'          -- an array
 //! domain  ::= '(' lowerIdent+ ':' grades? term ')'    -- explicit
 //!           | '{' lowerIdent+ ':' grades? term '}'    -- implicit, erased by default
 //! binder  ::= lowerIdent | '_' | '[' lowerIdent ']'
@@ -108,17 +111,48 @@ enum Attribute {
     Seq(SeqCtors),
     /// `@pub`, `@pub(pkg)`, `@pub(super)`
     Vis(Visibility),
+    /// `@native`, on a signature
+    Native,
+    /// `@terminating`, on a signature: the definition ends, whatever the
+    /// termination checker can see
+    Terminating,
 }
 
 /// The item with its attributes, or what is wrong with them.
-fn attributed(attrs: Vec<(Attribute, Span)>, item: Item) -> Result<(Item, Option<Visibility>), (Span, String)> {
+/// An item, how visible it is, and whether `@terminating` is on it.
+type Attributed = (Item, Option<Visibility>, bool);
+
+fn attributed(attrs: Vec<(Attribute, Span)>, item: Item) -> Result<Attributed, (Span, String)> {
     let mut seq = None;
     let mut vis = None;
+    let mut native = None;
+    let mut terminating = None;
     for (attr, at) in attrs {
         match attr {
             Attribute::Seq(s) if seq.is_none() => seq = Some(s),
             Attribute::Vis(v) if vis.is_none() => vis = Some(v),
+            Attribute::Native if native.is_none() => native = Some(at),
+            Attribute::Terminating if terminating.is_none() => terminating = Some(at),
             _ => return Err((at, "this attribute is given twice".into())),
+        }
+    }
+    // `@native f : a` is a signature with nothing to define it, on purpose
+    let item = match (native, item) {
+        (None, item) => item,
+        (Some(_), Item::Decl(Spanned { node: Decl::Sig(name, ty), span })) => {
+            Item::Decl(Spanned::new(Decl::Native(name, ty), span))
+        }
+        // a native type, `@native Array : Type -> Type`, which (its name
+        // being upper case) reads as an annotated expression
+        (Some(at), Item::Expr(Spanned { node: Term::Ann(e, ty), span })) => match e.node {
+            Term::Var(name) if !name.node.contains('.') => Item::Decl(Spanned::new(Decl::Native(name, *ty), span)),
+            _ => return Err((at, "@native goes on a signature, f : a".into())),
+        },
+        (Some(at), _) => return Err((at, "@native goes on a signature, f : a".into())),
+    };
+    if let Some(at) = terminating {
+        if !matches!(item, Item::Decl(Spanned { node: Decl::Sig(..), .. })) {
+            return Err((at, "@terminating goes on a definition's signature, f : a".into()));
         }
     }
     let item = match item {
@@ -146,7 +180,7 @@ fn attributed(attrs: Vec<(Attribute, Span)>, item: Item) -> Result<(Item, Option
     if seq.is_some() {
         return Err((Span::at(0), "@seq goes on a data type".into()));
     }
-    Ok((item, vis))
+    Ok((item, vis, terminating.is_some()))
 }
 
 /// Parse a program from a post-layout token stream.  `src_len` positions the
@@ -163,7 +197,7 @@ pub fn parse(src_len: usize, tokens: &[Spanned<Token>]) -> Result<Program, Vec<D
     let input = toks.as_slice().map(eoi, |(t, s)| (t, s));
     // The errors borrow from `toks`, so turn them into owned diagnostics (and
     // drop the parser's temporaries) before `toks` goes out of scope.
-    let items: Result<Vec<(Item, Option<Visibility>)>, Vec<Diagnostic>> =
+    let items: Result<Vec<Attributed>, Vec<Diagnostic>> =
         top().parse(input).into_result().map_err(|errs| {
             errs.into_iter()
                 .map(|e| {
@@ -178,19 +212,23 @@ pub fn parse(src_len: usize, tokens: &[Spanned<Token>]) -> Result<Program, Vec<D
         decls: Vec::new(),
         uses: Vec::new(),
         visibility: Vec::new(),
+        terminating: Vec::new(),
         body: None,
     };
     let mut items = items?.into_iter().peekable();
-    while let Some((item, vis)) = items.next() {
+    while let Some((item, vis, terminating)) = items.next() {
         // the name a definition's visibility is for
         let defined = |d: &LDecl| match &d.node {
-            Decl::Sig(x, _) | Decl::Def(x, ..) => x.clone(),
+            Decl::Sig(x, _) | Decl::Def(x, ..) | Decl::Native(x, _) => x.clone(),
         };
         match item {
             Item::Data(d) => program.datas.push(d),
             Item::Effect(e) => program.effects.push(e),
             Item::Decl(d) => {
                 program.visibility.extend(vis.map(|v| (defined(&d), v)));
+                if terminating {
+                    program.terminating.push(defined(&d));
+                }
                 program.decls.push(d);
             }
             Item::Use(u) => program.uses.push(u),
@@ -207,13 +245,16 @@ pub fn parse(src_len: usize, tokens: &[Spanned<Token>]) -> Result<Program, Vec<D
 
 /// The layout pass always wraps the input in a virtual block, so a program is
 /// a virtual-braced list of items.
-fn top<'t, I>() -> impl Parser<'t, I, Vec<(Item, Option<Visibility>)>, Extra<'t>>
+fn top<'t, I>() -> impl Parser<'t, I, Vec<Attributed>, Extra<'t>>
 where
     I: ValueInput<'t, Token = Token, Span = SimpleSpan>,
 {
     let term = term();
     let semi = just(Token::VSemi).or(just(Token::Semi));
-    let attribute = choice((seq_attribute().map(Attribute::Seq), visibility().map(Attribute::Vis)))
+    let native = just(Token::At).ignore_then(select! { Token::LowerIdent(s) if s == "native" => () }).to(Attribute::Native);
+    let terminating =
+        just(Token::At).ignore_then(select! { Token::LowerIdent(s) if s == "terminating" => () }).to(Attribute::Terminating);
+    let attribute = choice((seq_attribute().map(Attribute::Seq), visibility().map(Attribute::Vis), native, terminating))
         .map_with(|a, e| (a, span_of(e.span())))
         .then_ignore(semi.clone().or_not());
     let item = attribute
@@ -232,7 +273,7 @@ where
                 let at = if at == Span::at(0) { span_of(e.span()) } else { at };
                 emitter.emit(Rich::custom(SimpleSpan::from(at.range()), why));
                 // (reported; what is left is nothing)
-                (Item::Decl(Spanned::new(Decl::Sig(Spanned::new("_".into(), at), Spanned::new(Term::Hole, at)), at)), None)
+                (Item::Decl(Spanned::new(Decl::Sig(Spanned::new("_".into(), at), Spanned::new(Term::Hole, at)), at)), None, false)
             }
         });
     // a separator with nothing before it is what a leading comment or blank
@@ -437,11 +478,12 @@ where
         .labelled("use")
 }
 
-/// A sequence literal, `#[a, b]`, of terms or of patterns: its elements.
-/// `#[a; b]` would be an array, and there are none of those yet.
+/// A sequence literal, `#[a, b]`, or an array literal, `#[a; b]`, of terms
+/// or of patterns: its elements, and whether it is an array.  An array's
+/// last `;` may end it (`#[x;]`), and `#[;]` is the empty array.
 fn seq_items<'t, I, T>(
     item: impl Parser<'t, I, T, Extra<'t>> + Clone + 't,
-) -> impl Parser<'t, I, Vec<T>, Extra<'t>> + Clone
+) -> impl Parser<'t, I, (Vec<T>, bool), Extra<'t>> + Clone
 where
     I: ValueInput<'t, Token = Token, Span = SimpleSpan>,
     T: 't,
@@ -457,12 +499,23 @@ where
         // (reported, but parsed all the same: backtracking out of the literal
         // would lose the message)
         .validate(|(first, rest), e, emitter| {
-            if rest.iter().any(|(semi, _)| *semi) {
-                emitter.emit(Rich::custom(e.span(), "arrays, #[a; b], are not supported yet; a sequence is #[a, b]"));
+            let array = rest.iter().any(|(semi, _)| *semi);
+            let n = rest.len();
+            if array {
+                let empty = first.is_none() && n == 1 && rest[0].1.is_none();
+                // every element there, but for a last `;` with nothing after
+                let filled = first.is_some()
+                    && rest.iter().enumerate().all(|(i, (_, item))| item.is_some() || i + 1 == n);
+                if rest.iter().any(|(semi, _)| !*semi) {
+                    emitter.emit(Rich::custom(e.span(), "an array's elements are separated by ;, a sequence's by ,"));
+                } else if !empty && !filled {
+                    emitter.emit(Rich::custom(e.span(), "an array's elements are separated by single semicolons"));
+                }
             } else if first.is_none() && !rest.is_empty() || rest.iter().any(|(_, item)| item.is_none()) {
                 emitter.emit(Rich::custom(e.span(), "a sequence's elements are separated by single commas"));
             }
-            first.into_iter().chain(rest.into_iter().filter_map(|(_, item)| item)).collect()
+            let items = first.into_iter().chain(rest.into_iter().filter_map(|(_, item)| item)).collect();
+            (items, array)
         })
 }
 
@@ -589,9 +642,12 @@ where
             .delimited_by(just(Token::LParen), just(Token::RParen))
             .map(|(subject, in_type)| GradeAnn { subject: Box::new(subject), in_type: Some(Box::new(in_type)) }),
     ));
-    // chumsky backtracks out of `or_not`, so `(x : (f y) a)` — a type that
-    // merely starts with a parenthesis — still parses.
-    just(Token::Colon).ignore_then(grades.or_not()).then(term)
+    // With grades, or failing that without: `(x : (f y) a)` and
+    // `(f : (a, b) -> c)`, types that merely start with a parenthesis (or a
+    // tuple), still parse. A tuple applied to something is never a type, so
+    // `(x : (s, r) a)` is always the grades.
+    let graded = grades.then(term.clone()).map(|(g, t)| (Some(g), t));
+    just(Token::Colon).ignore_then(graded.or(term.map(|t| (None, t))))
 }
 
 /// A lambda's binder; a parenthesised group yields one parameter per name.
@@ -661,10 +717,20 @@ where
             lower()
                 .delimited_by(just(Token::LBracket), just(Token::RBracket))
                 .map(|name| Pat::Bind(Param { name, unbox: true, grade: None, ty: None })),
-            seq_items(pattern(apat.clone())).map(Pat::Seq),
+            seq_items(pattern(apat.clone())).validate(|(items, array), e, emitter| {
+                if array {
+                    emitter.emit(Rich::custom(e.span(), "array patterns, #[a; b], are not supported yet; match a sequence, #[a, b], or index the array"));
+                }
+                Pat::Seq(items)
+            }),
         ))
         .map_with(|p, e| Spanned::new(p, span_of(e.span())))
-        .or(pattern(apat).delimited_by(just(Token::LParen), just(Token::RParen)))
+        .or(pattern(apat)
+            .separated_by(just(Token::Comma))
+            .at_least(1)
+            .collect::<Vec<LPat>>()
+            .delimited_by(just(Token::LParen), just(Token::RParen))
+            .map_with(|items, e| tuple_pattern(items, span_of(e.span()))))
     })
     .labelled("pattern")
     .boxed()
@@ -820,6 +886,26 @@ where
     choice((prefix, infix, sig)).map_with(|d, e| Spanned::new(d, span_of(e.span()))).labelled("declaration").boxed()
 }
 
+/// `(a, b, c)`: `Pair a (Pair b c)`, a pair nesting to the right; `(a)` is
+/// `a`.
+fn tuple_term(mut items: Vec<LTerm>, span: Span) -> LTerm {
+    let last = items.pop().expect("at least one");
+    items.into_iter().rev().fold(last, |rest, x| {
+        let pair = Spanned::new(Term::Var(Spanned::new(idyllic_ast::TUPLE.to_string(), span)), span);
+        let at = Span::new(x.span.start, span.end);
+        Spanned::new(Term::App(Box::new(Spanned::new(Term::App(Box::new(pair), Box::new(x)), at)), Box::new(rest)), at)
+    })
+}
+
+/// The same, as a pattern.
+fn tuple_pattern(mut items: Vec<LPat>, span: Span) -> LPat {
+    let last = items.pop().expect("at least one");
+    items.into_iter().rev().fold(last, |rest, x| {
+        let at = Span::new(x.span.start, span.end);
+        Spanned::new(Pat::Con(Spanned::new(idyllic_ast::TUPLE.to_string(), span), vec![x, rest]), at)
+    })
+}
+
 fn term<'t, I>() -> impl Parser<'t, I, LTerm, Extra<'t>> + Clone
 where
     I: ValueInput<'t, Token = Token, Span = SimpleSpan>,
@@ -847,13 +933,22 @@ where
             operator_name()
                 .delimited_by(just(Token::LParen), just(Token::RParen))
                 .map_with(|op, e| Spanned::new(Term::Var(op), span_of(e.span()))),
-            term.clone().delimited_by(just(Token::LParen), just(Token::RParen)),
+            // `(e)`, or a tuple, `(a, b)`
+            term.clone()
+                .separated_by(just(Token::Comma))
+                .at_least(1)
+                .collect::<Vec<LTerm>>()
+                .delimited_by(just(Token::LParen), just(Token::RParen))
+                .map_with(|items, e| tuple_term(items, span_of(e.span()))),
             // `[e]`: promotion, or a modality's grade
             term.clone()
                 .delimited_by(just(Token::LBracket), just(Token::RBracket))
                 .map_with(|t, e| Spanned::new(Term::BoxIntro(Box::new(t)), span_of(e.span()))),
             // `#[a, b]`, a sequence
-            seq_items(term.clone()).map_with(|items, e| Spanned::new(Term::Seq(items), span_of(e.span()))),
+            seq_items(term.clone()).map_with(|(items, array), e| {
+                let literal = if array { Term::ArrayLit(items) } else { Term::Seq(items) };
+                Spanned::new(literal, span_of(e.span()))
+            }),
             // `[]` is Granule's shorthand for `[0..∞]`
             just(Token::LBracket).then(just(Token::RBracket)).map_with(|_, e| {
                 let span = span_of(e.span());

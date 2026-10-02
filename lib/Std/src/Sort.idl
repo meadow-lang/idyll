@@ -1,0 +1,96 @@
+-- Sorting, by a comparison passed along (see `Std.Cmp`): lists by merge
+-- sort, which is stable (equal elements keep their order) and takes
+-- `n log n` comparisons; arrays and vectors by way of a list.
+--
+-- A comparison looks at what it compares as often as it likes, and an
+-- element is compared and then kept, so the elements are taken with [].
+
+use Std.Ordering (Ordering)
+use Std.Ordering.Ordering.*
+use Std.Collections.Vector (Vector)
+
+-- The list in order, as `cmp` compares; equal elements in the order they
+-- were.
+@pub
+@terminating
+sortBy : {a : Type} -> (cmp : [] ((x : [] a) -> (y : [] a) -> Ordering)) -> (xs : [] List a) -> List a
+sortBy cmp Nil = Nil
+sortBy cmp (x :: Nil) = x :: Nil
+sortBy cmp (x :: y :: rest) = merge cmp (sortBy cmp (front (x :: y :: rest))) (sortBy cmp (back (x :: y :: rest)))
+
+-- The integers, smallest first.
+@pub
+sort : (xs : [] List Int) -> List Int
+sort xs = sortBy Std.Num.Int.compare xs
+
+-- The integers, largest first.
+@pub
+sortDesc : (xs : [] List Int) -> List Int
+sortDesc xs = sortBy (Std.Cmp.reversed Std.Num.Int.compare) xs
+
+-- In order of a key, as `cmp` compares keys.
+@pub
+sortOn : {a b : Type} -> (key : [] ((x : [] a) -> b)) -> (cmp : [] ((x : [] b) -> (y : [] b) -> Ordering)) -> (xs : [] List a) -> List a
+sortOn key cmp xs = sortBy (Std.Cmp.comparing key cmp) xs
+
+@pub
+sortArrayBy : {a : Type} -> (cmp : [] ((x : [] a) -> (y : [] a) -> Ordering)) -> (xs : [] Array a) -> Array a
+sortArrayBy cmp xs = arrayFromList (sortBy cmp (arrayToList xs))
+
+@pub
+sortArray : (xs : [] Array Int) -> Array Int
+sortArray xs = sortArrayBy Std.Num.Int.compare xs
+
+@pub
+sortVectorBy : {a : Type} -> (cmp : [] ((x : [] a) -> (y : [] a) -> Ordering)) -> (v : [] Vector a) -> Vector a
+sortVectorBy cmp v = Std.Collections.Vector.fromList (sortBy cmp (Std.Collections.Vector.toList v))
+
+@pub
+sortVector : (v : [] Vector Int) -> Vector Int
+sortVector v = sortVectorBy Std.Num.Int.compare v
+
+-- Whether the list is in order, as `cmp` compares.
+@pub
+isSortedBy : {a : Type} -> (cmp : [] ((x : [] a) -> (y : [] a) -> Ordering)) -> (xs : [] List a) -> Bool
+isSortedBy cmp Nil = True
+isSortedBy cmp (x :: rest) = sortedAfter cmp x rest
+
+-- Whether `x` and then `xs` are in order.
+sortedAfter : {a : Type} -> (cmp : [] ((x : [] a) -> (y : [] a) -> Ordering)) -> (x : [] a) -> (xs : [] List a) -> Bool
+sortedAfter cmp x Nil = True
+sortedAfter cmp x (y :: rest) = case cmp x y of
+  Greater -> False
+  Less -> sortedAfter cmp y rest
+  Equal -> sortedAfter cmp y rest
+
+@pub
+isSorted : (xs : [] List Int) -> Bool
+isSorted xs = isSortedBy Std.Num.Int.compare xs
+
+-- Two lists in order, as one; on a tie, the first list's first. (Each
+-- round takes an element off one list or the other, which the checker does
+-- not see as either getting smaller, since the other is rebuilt.)
+@terminating
+merge : {a : Type} -> (cmp : [] ((x : [] a) -> (y : [] a) -> Ordering)) -> (xs : [] List a) -> (ys : [] List a) -> List a
+merge cmp Nil ys = ys
+merge cmp (x :: xs) Nil = x :: xs
+merge cmp (x :: xs) (y :: ys) = case cmp y x of
+  Less -> y :: merge cmp (x :: xs) ys
+  Equal -> x :: merge cmp xs (y :: ys)
+  Greater -> x :: merge cmp xs (y :: ys)
+
+-- The first half, the longer when there is a middle element.
+front : {a : Type} -> (xs : [] List a) -> List a
+front xs = takeN ((Std.Collections.List.length xs + 1) / 2) xs
+
+-- The rest.
+back : {a : Type} -> (xs : [] List a) -> List a
+back xs = dropN ((Std.Collections.List.length xs + 1) / 2) xs
+
+takeN : {a : Type} -> (n : [] Int) -> (xs : [0..1] List a) -> List a
+takeN n Nil = Nil
+takeN n (x :: rest) = if n < 1 then Nil else x :: takeN (n - 1) rest
+
+dropN : {a : Type} -> (n : [] Int) -> (xs : [0..1] List a) -> List a
+dropN n Nil = Nil
+dropN n (x :: rest) = if n < 1 then x :: rest else dropN (n - 1) rest

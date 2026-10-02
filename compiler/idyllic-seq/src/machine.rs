@@ -90,11 +90,18 @@
 //! live block must be reachable from the answer, and hold exactly the count
 //! its references imply.
 //!
+//! An array is a block too, its fields its elements, and its word says it
+//! is one; the empty array has no block, as a constructor with no fields has
+//! none.  A native consumes what it is given, so an array whose count is `0`
+//! is the native's alone: setting an element, pushing one, or popping one
+//! changes it in place.  A shared one is copied first, as a shared block is
+//! when it is loaded.
+//!
 //! Idyll has recursion and, so far, nothing to stop one with, so the machine
 //! runs on fuel: one unit per rule of Figure 5.
 
 use super::{Extern, Program, Stmt, Symbol, Var};
-use idyllic_builtins::IntResult;
+use idyllic_builtins::{IntResult, Native};
 use idyllic_world::{Answer, Arg, Stop, World};
 use std::collections::HashMap;
 use std::fmt;
@@ -136,6 +143,9 @@ enum Instr {
     /// (extern): compute from `args`, which stay where they are, and push
     /// the result.
     Extern { op: Extern, args: Vec<Reg> },
+    /// A native: compute from the last `args` registers, which it consumes,
+    /// and put the result in their place.
+    Native { native: Native, args: usize },
     /// `extern halt(v) {}`: the program's answer is register `answer`.
     Halt { answer: Reg },
     /// At the entry of a clause: take the block of the last register, which
@@ -188,6 +198,10 @@ pub enum MachineError {
     OutOfFuel,
     /// `/` or `%` by zero.
     DivisionByZero,
+    /// An array indexed where it has no element.
+    OutOfBounds { index: i64, len: usize },
+    /// `arrayPop` of an array with nothing to pop.
+    EmptyArray,
     /// The program ended itself: `exit n`.
     Exited(i32),
     /// `fail message`: a test failed.
@@ -201,6 +215,10 @@ impl fmt::Display for MachineError {
         match self {
             MachineError::OutOfFuel => write!(f, "out of fuel"),
             MachineError::DivisionByZero => write!(f, "division by zero"),
+            MachineError::OutOfBounds { index, len } => {
+                write!(f, "index {index} is out of bounds for an array of length {len}")
+            }
+            MachineError::EmptyArray => write!(f, "popping an empty array"),
             MachineError::Exited(code) => write!(f, "exited with {code}"),
             MachineError::TestFailed(why) => write!(f, "test failed: {why}"),
             MachineError::Malformed(why) => write!(f, "malformed program: {why}"),
@@ -406,6 +424,19 @@ impl<'p> Assembler<'p> {
                 }
                 _ => malformed(format!("extern halt is given {} arguments", args.len())),
             },
+            Stmt::Extern(Extern::Native(native), args, branches) => {
+                if args.len() != native.arity() {
+                    return malformed(format!("{} is given {} arguments", native.name(), args.len()));
+                }
+                let [branch] = branches.as_slice() else { return malformed("a native continues one way") };
+                if branch.params.len() != 1 {
+                    return malformed(format!("a native's clause binds {} variables, but is given 1", branch.params.len()));
+                }
+                take_tail(&mut env, args, native.name())?;
+                self.emit(Instr::Native { native: *native, args: args.len() });
+                env.extend(branch.params.iter().cloned());
+                self.statement(&branch.body, env)
+            }
             Stmt::Extern(op, args, branches) => {
                 let arity = match op {
                     Extern::LitInt(_) | Extern::LitStr(_) => 0,
@@ -417,7 +448,7 @@ impl<'p> Assembler<'p> {
                     | Extern::Lt
                     | Extern::Eq
                     | Extern::Append => 2,
-                    Extern::Halt => unreachable!("handled above"),
+                    Extern::Halt | Extern::Native(_) => unreachable!("handled above"),
                 };
                 if args.len() != arity {
                     return malformed(format!("extern {op} is given {} arguments", args.len()));
@@ -458,6 +489,8 @@ enum Word {
     /// 64 bits, wrapping, as native code has it
     Int(i64),
     Str(Rc<str>),
+    /// An array, whose elements are its block's fields.
+    Array,
 }
 
 /// The first field of a block.
@@ -637,6 +670,15 @@ impl Heap {
             return match &v.word {
                 Word::Int(n) => Some(n.to_string()),
                 Word::Str(s) => Some(format!("{:?}", &**s)),
+                // `#[1; 2]`, as one is written
+                Word::Array => {
+                    let items = self.fields(v.block).iter().map(|x| self.show(x)).collect::<Option<Vec<String>>>()?;
+                    Some(match items.as_slice() {
+                        [] => "#[;]".into(),
+                        [one] => format!("#[{one};]"),
+                        _ => format!("#[{}]", items.join("; ")),
+                    })
+                }
                 _ => None,
             };
         };
@@ -645,18 +687,33 @@ impl Heap {
             (Symbol::False, []) => Some("False".into()),
             (Symbol::Unit, []) => Some("()".into()),
             (Symbol::Box, [inner]) => Some(format!("[{}]", self.show(inner)?)),
+            // a pair is a tuple, `(1, True)`, and one nested to the right a
+            // longer one, `(1, 2, 3)`
+            (Symbol::Con(name, _), [_, _]) if &**name == "Pair" => {
+                let mut items = Vec::new();
+                let mut at = v.clone();
+                while let (Word::Tag(Symbol::Con(name, _)), [first, rest]) = (&at.word, self.fields(at.block)) {
+                    if &**name != "Pair" {
+                        break;
+                    }
+                    items.push(self.show(first)?);
+                    at = rest.clone();
+                }
+                items.push(self.show(&at)?);
+                Some(format!("({})", items.join(", ")))
+            }
             // `x :: xs` is written the way it is read; its head is
             // parenthesised if it is itself compound
             (Symbol::Con(name, _), [head, tail]) if &**name == "::" => {
                 let head = self.show(head)?;
-                let head = if head.contains(' ') && !head.starts_with(['[', '"']) { format!("({head})") } else { head };
+                let head = if head.contains(' ') && !head.starts_with(['[', '"', '#', '(']) { format!("({head})") } else { head };
                 Some(format!("{head} :: {}", self.show(tail)?))
             }
             (Symbol::Con(name, _), fields) => {
                 let mut out = name.to_string();
                 for f in fields {
                     let f = self.show(f)?;
-                    let compound = f.contains(' ') && !f.starts_with(['[', '"']);
+                    let compound = f.contains(' ') && !f.starts_with(['[', '"', '#', '(']);
                     out.push_str(&if compound { format!(" ({f})") } else { format!(" {f}") });
                 }
                 Some(out)
@@ -806,11 +863,190 @@ fn answer_value(heap: &mut Heap, answer: Answer) -> Value {
         Answer::Int(n) => word(Word::Int(n)),
         Answer::Bool(b) => truth(b),
         Answer::Str(s) => word(Word::Str(s)),
+        Answer::Array(items) => {
+            let items = items.into_iter().map(|x| answer_value(heap, x)).collect();
+            heap.array(items)
+        }
         Answer::Con(name, tag, fields) => {
             let fields = fields.into_iter().map(|f| answer_value(heap, f)).collect();
             Value { block: heap.acquire(fields), word: Word::Tag(Symbol::Con(name.into(), tag)) }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Natives
+// ---------------------------------------------------------------------------
+
+impl Heap {
+    fn array(&mut self, elements: Vec<Value>) -> Value {
+        Value { block: self.acquire(elements), word: Word::Array }
+    }
+
+    /// The elements of an array that is not consumed.
+    fn elements(&self, xs: &Value, by: Native) -> Result<&[Value], MachineError> {
+        match xs.word {
+            Word::Array => Ok(self.fields(xs.block)),
+            _ => malformed(format!("{} is given something that is not an array", by.name())),
+        }
+    }
+
+    /// The elements of an array that is consumed, each a reference of its
+    /// own: moved out of a unique one, whose block is free again (and so
+    /// what the next array made takes — in place, in effect), and copied
+    /// out of a shared one.
+    fn take_elements(&mut self, xs: Value, by: Native) -> Result<Vec<Value>, MachineError> {
+        self.elements(&xs, by)?;
+        self.release(xs.block)
+    }
+
+    /// The element at `i`, shared once more, and the array dropped.
+    fn element(&mut self, xs: &Value, i: i64, by: Native) -> Result<Value, MachineError> {
+        let items = self.elements(xs, by)?;
+        let len = items.len();
+        let x = usize::try_from(i).ok().and_then(|i| items.get(i)).cloned().ok_or(MachineError::OutOfBounds { index: i, len })?;
+        self.share(&x, 1);
+        Ok(x)
+    }
+
+    /// `Pair [a] b`: `Std.Tuple`'s one constructor, which is how a native
+    /// gives back two things, the first in a box.
+    fn boxed_pair(&mut self, a: Value, b: Value) -> Value {
+        let boxed = Value { block: self.acquire(vec![a]), word: Word::Tag(Symbol::Box) };
+        Value { block: self.acquire(vec![boxed, b]), word: Word::Tag(Symbol::Con("Pair".into(), 0)) }
+    }
+}
+
+/// Where `i` is in `xs`, or the error of its not being there.
+fn index(i: i64, len: usize) -> Result<usize, MachineError> {
+    usize::try_from(i).ok().filter(|i| *i < len).ok_or(MachineError::OutOfBounds { index: i, len })
+}
+
+/// Do a native, consuming `xs`, its arguments.
+fn native(heap: &mut Heap, n: Native, xs: Vec<Value>) -> Result<Value, MachineError> {
+    let int = |v: &Value| match v.word {
+        Word::Int(i) => Ok(i),
+        _ => malformed(format!("{} is given something that is not an integer", n.name())),
+    };
+    let int_value = |i: i64| Value { block: None, word: Word::Int(i) };
+    let mut xs = xs.into_iter();
+    let mut next = || xs.next().ok_or_else(|| MachineError::Malformed(format!("{} is given too little", n.name())));
+    Ok(match n {
+        Native::Array | Native::MArray => return malformed("a type is not run"),
+        Native::ArrayLen => {
+            let a = next()?;
+            let len = heap.elements(&a, n)?.len();
+            heap.erase(&a);
+            int_value(len as i64)
+        }
+        Native::ArrayGet => {
+            let (a, i) = (next()?, next()?);
+            let x = heap.element(&a, int(&i)?, n)?;
+            heap.erase(&a);
+            x
+        }
+        Native::ArrayGetOr => {
+            let (d, a, i) = (next()?, next()?, next()?);
+            let len = heap.elements(&a, n)?.len();
+            let i = int(&i)?;
+            let x = if usize::try_from(i).is_ok_and(|i| i < len) {
+                heap.erase(&d);
+                heap.element(&a, i, n)?
+            } else {
+                d
+            };
+            heap.erase(&a);
+            x
+        }
+        Native::ArraySet | Native::MArraySet => {
+            let (a, i, x) = (next()?, next()?, next()?);
+            let mut items = heap.take_elements(a, n)?;
+            let at = index(int(&i)?, items.len())?;
+            let old = std::mem::replace(&mut items[at], x);
+            heap.erase(&old);
+            heap.array(items)
+        }
+        Native::ArrayPush => {
+            let (a, x) = (next()?, next()?);
+            let mut items = heap.take_elements(a, n)?;
+            items.push(x);
+            heap.array(items)
+        }
+        Native::ArrayPop => {
+            let a = next()?;
+            let mut items = heap.take_elements(a, n)?;
+            let last = items.pop().ok_or(MachineError::EmptyArray)?;
+            heap.erase(&last);
+            heap.array(items)
+        }
+        Native::ArraySlice => {
+            let (a, from, to) = (next()?, next()?, next()?);
+            let mut items = heap.take_elements(a, n)?;
+            let len = items.len() as i64;
+            let from = int(&from)?.clamp(0, len) as usize;
+            let to = (int(&to)?.clamp(0, len) as usize).max(from);
+            let kept: Vec<Value> = items.drain(from..to).collect();
+            for dropped in &items {
+                heap.erase(dropped);
+            }
+            heap.array(kept)
+        }
+        Native::ArrayConcat => {
+            let (a, b) = (next()?, next()?);
+            let mut items = heap.take_elements(a, n)?;
+            items.extend(heap.take_elements(b, n)?);
+            heap.array(items)
+        }
+        Native::ArrayFromList => {
+            let mut list = next()?;
+            let mut items = Vec::new();
+            loop {
+                match &list.word {
+                    Word::Tag(Symbol::Con(_, 0)) => break,
+                    Word::Tag(Symbol::Con(_, 1)) => {
+                        let mut cell = heap.release(list.block)?.into_iter();
+                        let (Some(head), Some(tail)) = (cell.next(), cell.next()) else {
+                            return malformed("a list's cell is not a head and a tail");
+                        };
+                        items.push(head);
+                        list = tail;
+                    }
+                    _ => return malformed("arrayFromList is given something that is not a list"),
+                }
+            }
+            heap.array(items)
+        }
+        Native::ArrayToList => {
+            let a = next()?;
+            let items = heap.take_elements(a, n)?;
+            let nil = Value { block: None, word: Word::Tag(Symbol::Con("Nil".into(), 0)) };
+            items.into_iter().rev().fold(nil, |tail, head| Value {
+                block: heap.acquire(vec![head, tail]),
+                word: Word::Tag(Symbol::Con("::".into(), 1)),
+            })
+        }
+        Native::MArrayNew => {
+            let (count, x) = (next()?, next()?);
+            let count = int(&count)?.max(0) as usize;
+            match count {
+                0 => heap.erase(&x),
+                _ => heap.share(&x, count - 1),
+            }
+            heap.array(vec![x; count])
+        }
+        Native::MArrayLen => {
+            let a = next()?;
+            let len = heap.elements(&a, n)?.len();
+            heap.boxed_pair(int_value(len as i64), a)
+        }
+        Native::MArrayGet => {
+            let (a, i) = (next()?, next()?);
+            let x = heap.element(&a, int(&i)?, n)?;
+            heap.boxed_pair(x, a)
+        }
+        // the same block, under the other type
+        Native::MArrayFreeze | Native::MArrayThaw => next()?,
+    })
 }
 
 /// Run assembled code from address `0` until it halts, for at most `fuel`
@@ -940,6 +1176,12 @@ pub fn execute(code: &Code, mut fuel: u64, world: &mut World) -> Result<Outcome,
                     }
                     _ => unreachable!("assembly checked every extern's arity"),
                 };
+                regs.push(result);
+                pc + 1
+            }
+            Instr::Native { native, args } => {
+                let xs = regs.split_off(regs.len() - args);
+                let result = self::native(&mut heap, *native, xs)?;
                 regs.push(result);
                 pc + 1
             }

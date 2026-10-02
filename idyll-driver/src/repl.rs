@@ -565,6 +565,7 @@ impl Repl {
             Err(idyll_eval::EvalError::OutOfFuel) => Evaluation::OutOfFuel,
             Err(idyll_eval::EvalError::Exited(code)) => Evaluation::Exited(code),
             Err(idyll_eval::EvalError::TestFailed(why)) => Evaluation::Stopped(format!("test failed: {why}")),
+            Err(idyll_eval::EvalError::Stopped(why)) => Evaluation::Stopped(why),
             Err(idyll_eval::EvalError::Stuck(why)) => Evaluation::Failed(format!("the reference interpreter is stuck: {why}")),
         });
         if !self.opts.live {

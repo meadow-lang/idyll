@@ -235,6 +235,14 @@ pub fn lit_builtin(l: &Lit) -> Builtin {
     }
 }
 
+/// `a`, if `g` is `Pair a`: a pair's type, waiting for its second.
+fn pair_of(g: &Core) -> Option<&Rc<Core>> {
+    match g {
+        Core::App(h, a) if matches!(&**h, Core::Opaque(_, name) if name == "Pair") => Some(a),
+        _ => None,
+    }
+}
+
 impl fmt::Display for Core {
     /// Render for error messages, in the surface syntax.  Binders are shown
     /// using their name hints, so shadowed names can look ambiguous; that is
@@ -377,6 +385,24 @@ impl fmt::Display for Core {
                     let Core::App(h, a) = &**g else { unreachable!() };
                     let Core::Prim(p) = **h else { unreachable!() };
                     infix((a, &format!(" {} ", p.name()), b), p.precedence(), prec, f)
+                }
+                // the prelude's pair is a tuple, `(Int, Bool)`, and one nested
+                // to the right a longer one, `(Int, Bool, String)`
+                Core::App(g, b) if pair_of(g).is_some() => {
+                    let mut items = vec![pair_of(g).expect("checked")];
+                    let mut rest = b;
+                    while let Core::App(g, b) = &**rest {
+                        let Some(a) = pair_of(g) else { break };
+                        items.push(a);
+                        rest = b;
+                    }
+                    write!(f, "(")?;
+                    for a in items {
+                        go(a, 0, f)?;
+                        write!(f, ", ")?;
+                    }
+                    go(rest, 0, f)?;
+                    write!(f, ")")
                 }
                 Core::App(g, a) => paren(prec > 10, f, |f| {
                     go(g, 10, f)?;

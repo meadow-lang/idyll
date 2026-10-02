@@ -1048,7 +1048,7 @@ well. A type with a field of type `Type` would be a type of all types —
 the same paradox as `Type : Type`:
 
 ```
-> data U = MkU Type
+> data U = U Type
 Error: field too large for its data type
    │ ╰── this field's type lives in Type 1, but U lives in Type
 ```
@@ -1057,14 +1057,14 @@ And a type may appear in its own fields only to the right of every arrow.
 This is called being *strictly positive*:
 
 ```
-> data Bad = MkBad (Bad -> Int)
+> data Bad = Bad (Bad -> Int)
 Error: Bad is not strictly positive
-   │ ╰── it appears to the left of an arrow in this field of MkBad
+   │ ╰── it appears to the left of an arrow in this field of Bad
 ```
 
 With that `Bad` you could write a function that takes a `Bad` apart and
 applies what it finds to the `Bad` itself. Hand it itself, wrapped in
-`MkBad`, and it runs forever with no recursion anywhere. To the right of
+the constructor `Bad`, and it runs forever with no recursion anywhere. To the right of
 an arrow is fine, and so is inside another type that is itself positive
 in its parameter, as `List` is:
 
@@ -1083,7 +1083,9 @@ Lists are an ordinary data type that is already declared,
 spelling: `::` is infix, in expressions and patterns, and associates to
 the right. Two more types are declared for you, for what the world's
 operations give back (see [The world and `main`](#the-world-and-main)):
-`data Maybe a = Nothing | Just a` and `data Result e a = Err e | Ok a`.
+`data Maybe a = Nothing | Just a` and `data Result e a = Err e | Ok a`;
+and pairs, `data Pair a b = Pair a b`, which are written as
+[tuples](#tuples).
 
 ```
 > 1 :: 2 :: 3 :: Nil
@@ -1113,6 +1115,115 @@ A list can also be written out: `#[1, 2, 3]` is `1 :: 2 :: 3 :: Nil`. (The
 
 The same form is a pattern, and it isn't only for lists: see
 [Sequences](#sequences).
+
+### A constructor named for its type
+
+A type with one constructor usually gives it the type's own name. A
+constructor lives under its type (`Point.Point`), and once a `use` brings
+it in, the bare name stands for both: the type where a type is written —
+a signature, an annotation, a field — and the constructor anywhere else,
+in an expression or a pattern:
+
+```
+> data Point = Point Int Int
+use Point.*
+
+Point : Type
+Point.Point : Int -> Int -> Point
+> flip : Point -> Point
+flip (Point x y) = Point y x
+
+flip : Point -> Point
+> flip (Point 1 2)
+Point 2 1 : Point
+```
+
+A path says which it means wherever it is written: through the type,
+`Point.Point`, is the constructor (for a value inside a type, say), and a
+module's, `Std.Sigma.Sigma`, is the type.
+
+### Tuples
+
+`(a, b)` is a pair: the prelude's `data Pair a b = Pair a b`, written as a
+tuple in a term, a pattern and a type alike. A longer tuple is pairs
+nested to the right, `(a, b, c)` being `(a, (b, c))`, so whatever works on
+a pair works on all of them:
+
+```
+> swap : (Int, Bool) -> (Bool, Int)
+swap (n, b) = (b, n)
+
+swap : (Int, Bool) -> (Bool, Int)
+> swap (1, True)
+(True, 1) : (Bool, Int)
+> (1, "two", 3)
+(1, "two", 3) : (Int, String, Int)
+> third : {a b c : Type} -> (t : [0..1] (a, b, c)) -> c
+third (x, y, z) = z
+
+third : {a : Type} -> {b : Type} -> {c : Type} -> (t : [0..1] (a, b, c)) -> c
+> third (1, "two", 3)
+3 : Int
+```
+
+`Std.Tuple` has the functions on them: `fst`, `snd`, `swap`, `curry`,
+`uncurry`, ...
+
+### Arrays
+
+`#[a; b; c]`, with semicolons, is an **array**: its elements side by side
+in memory, any one of them read in constant time. `#[x;]` is an array of
+one, and `#[;]` the empty array.
+
+```
+> #[10; 20; 30]
+#[10; 20; 30] : Array Int
+> arrayGet #[10; 20; 30] 1
+20 : Int
+> arraySet #[10; 20; 30] 1 99
+#[10; 99; 30] : Array Int
+> arrayGet #[10; 20; 30] 5
+: Int
+(stopped: index 5 is out of bounds for an array of length 3)
+```
+
+An index outside the array stops the program, as dividing by zero does.
+`Array` and its operations are declared in the prelude as **natives**:
+`@native`, on a signature with no equations, declares something each
+back end implements itself, so the declaration is only its type.
+
+| Native | Type (all `{a : Type} -> ..`) |
+| --- | --- |
+| `arrayLen` | `(xs : [0..1] Array a) -> Int` |
+| `arrayGet` | `(xs : [0..1] Array a) -> Int -> a` |
+| `arrayGetOr` | `(d : [0..1] a) -> (xs : [0..1] Array a) -> Int -> a`: `d` outside it |
+| `arraySet` | `(xs : [0..1] Array a) -> Int -> a -> Array a` |
+| `arrayPush`, `arrayPop` | `Array a -> a -> Array a`; `(xs : [0..1] Array a) -> Array a`, all but the last |
+| `arraySlice` | `(xs : [0..1] Array a) -> Int -> Int -> Array a`: from the first index up to the second, clamped |
+| `arrayConcat` | `Array a -> Array a -> Array a` |
+| `arrayFromList`, `arrayToList` | `List a -> Array a`, `Array a -> List a` |
+
+An array is persistent: `arraySet` gives a new array, and the old one is
+still there for whoever has it. That costs a copy only when someone does
+have it: an array nothing else refers to is changed in place, which the
+runtime tells by its reference count. Reading an element drops the rest,
+so the array is taken with `[0..1]`, and one used twice is a `[]` value:
+
+```
+> sumTo : (xs : [] Array Int) -> Int
+sumTo xs = arrayLen xs + arrayGet xs 0
+
+sumTo : (xs : [] Array Int) -> Int
+> sumTo #[40; 2]
+42 : Int
+```
+
+The standard library has the rest (see [The standard
+library](#the-standard-library)): `Std.Collections.Array` with `map`,
+folds, `get` giving a `Maybe`, and indices whose type says they are in
+range; `Std.Collections.MArray`, arrays used linearly and so always
+changed in place; and `Std.Collections.Vector`, persistent vectors built
+of arrays.
 
 ## Pattern matching
 
@@ -1322,8 +1433,8 @@ total : {n : Nat} -> Vec n Int -> Int
 
 As a pattern, `#[]` is the empty sequence and `#[x, y]` one of exactly two.
 Layout is suspended inside the brackets, so a long literal can run over as
-many lines as it likes. (`#[a; b]`, with semicolons, will be an array; there
-are none yet.)
+many lines as it likes. With semicolons, `#[a; b]`, it is an array
+instead, whatever is wanted: see [Arrays](#arrays).
 
 ### Matching teaches the types
 
@@ -1531,6 +1642,25 @@ that is what running it might do.
 
 A definition that isn't a function says it with its type,
 `total : Int ! Div`.
+
+When a definition does end, for a reason the checker can't see, the
+attribute `@terminating` says so, on the line before its signature:
+
+```
+> @terminating
+countdown : (n : [] Int) -> Int
+countdown n = if n < 1 then 0 else countdown (n - 1)
+
+countdown : (n : [] Int) -> Int
+> countdown 3
+0 : Int
+```
+
+That is a promise, and nothing checks it: a `@terminating` definition
+that loops loops without `Div` to say it might. Such a definition still
+isn't computed inside a type, which only a recursion seen to end is. The
+standard library uses it for its loops over arrays, which count an index
+up to a length.
 
 ### Types are total
 
@@ -1823,8 +1953,8 @@ with these operations (and `Maybe` and `Result` declared alongside,
 | Effect | Operations |
 | --- | --- |
 | `Console` | `putStr : String -> ()`, `putErr : String -> ()` (to standard error), `readLine : () -> Maybe String` |
-| `Fs` | `readToString : String -> Result String String`; `writeString`, `appendString : String -> String -> Result String ()` (a path, then the text); `removeFile`, `createDir`, `createDirAll`, `removeDir`, `removeDirAll : String -> Result String ()`; `rename : String -> String -> Result String ()`; `copy : String -> String -> Result String Int`; `readDir : String -> Result String (List String)`; `exists`, `isFile`, `isDir : String -> Bool` |
-| `Process` | `exit : Int -> ()`, `currentPid : () -> Int`, `args : () -> List String`, `getEnv : String -> Maybe String`, `setEnv : String -> String -> ()`, `removeEnv : String -> ()`, `isTerminal : Int -> Bool` |
+| `Fs` | `readToString : String -> Result String String`; `writeString`, `appendString : String -> String -> Result String ()` (a path, then the text); `removeFile`, `createDir`, `createDirAll`, `removeDir`, `removeDirAll : String -> Result String ()`; `rename : String -> String -> Result String ()`; `copy : String -> String -> Result String Int` (how many bytes it copied); `listDir : String -> Result String (Array String)`; `exists`, `isFile`, `isDir : String -> Bool` |
+| `Process` | `exit : Int -> ()`, `currentPid : () -> Int`, `argv : () -> Array String`, `getEnv : String -> Maybe String`, `setEnv : String -> String -> ()`, `removeEnv : String -> ()`, `isTerminal : Int -> Bool` |
 | `Random` | `nextInt : () -> Int`, `intBetween : Int -> Int -> Int` (from the first, up to but not including the second), `nextSeed : () -> Int` |
 | `Time` | `now : () -> Int` (milliseconds since 1970), `monotonic : () -> Int` (nanoseconds, for measuring), `sleep : Int -> ()` (milliseconds) |
 | `Test` | `fail : String -> ()`, which stops the program |
@@ -1832,7 +1962,10 @@ with these operations (and `Maybe` and `Result` declared alongside,
 
 The runtime prints only strings. `putStrLn` and `printInt` are ordinary
 prelude functions over `putStr`, not operations, so a handler of
-`Console` sees what they write as `putStr`:
+`Console` sees what they write as `putStr`. Likewise `readDir : String ->
+Result String (List String)` and `args : () -> List String` are prelude
+functions over `listDir` and `argv`, giving lists of what they give as
+arrays:
 
 ```
 putStrLn : String -> () ! Console
@@ -1917,7 +2050,7 @@ Error: effects not allowed
 ```
 
 A file with a `main` is run with `idyllic hello.idl`; what comes after
-`--` on that command line is what `args ()` gives it, and `exit n`
+`--` on that command line is what `args ()` gives it (and `argv ()`, as an array), and `exit n`
 becomes its exit code. It compiles the same way as any other program
 (see [Compiling to native code](#compiling-to-native-code)), and the
 compiled program does what `main` does, and prints nothing more.
@@ -1974,14 +2107,16 @@ own: a sibling's names arrive through a `use`, never for free.
 
 ```
 -- src/Syntax.idl
-@pub(pkg) data Expr = Lit Int | Add Expr Expr
+@pub(pkg)
+data Expr = Lit Int | Add Expr Expr
 ```
 
 ```
 -- src/Eval.idl
 use App.Syntax (Expr)
 
-@pub(pkg) eval : Expr -> Int
+@pub(pkg)
+eval : Expr -> Int
 eval (Expr.Lit n) = n
 eval (Expr.Add a b) = eval a + eval b
 ```
@@ -2031,8 +2166,10 @@ Nothing is visible outside its module until it says so:
 | `@pub(pkg)` | and every module of the package |
 | `@pub` | and anyone who depends on the package |
 
-The attribute goes in front of the declaration: a data type, an effect, a
-signature (or the first equation, for a definition without one). A type's
+The attribute goes on the line before the declaration: a data type, an
+effect, a signature (or the first equation, for a definition without
+one). (It may share the declaration's line, `@pub data T = ..`, but its
+own line is the style.) A type's
 constructors are exactly as visible as the type, and an effect's
 operations as the effect.
 
@@ -2045,9 +2182,14 @@ library's root gathers its surface from its modules:
 
 ```
 -- src/Lib.idl
-@pub use App.Syntax (Expr)
-@pub use Syntax.Expr.*
-@pub use Eval (eval)
+@pub
+use App.Syntax (Expr)
+
+@pub
+use Syntax.Expr.*
+
+@pub
+use Eval (eval)
 ```
 
 A plain `use` keeps what it brings to itself.
@@ -2175,37 +2317,45 @@ reused by the next.
 Every package has Idyll's standard library, `Std`, with no
 `[dependencies]` line, and so do a lone file and the REPL. None of it is
 in scope until a `use` brings it, so a program's own `map` or `Nat` never
-clashes with its; or a name can be written in full, `Std.List.map`. Its
-source is in `lib/std/src/`, one module to a file, and the compiler
-carries it, so there is nothing to install.
+clashes with its; or a name can be written in full,
+`Std.Collections.List.map`. Its source is in `lib/Std/src/`, one module
+to a file, laid out as Meadow's is, and the compiler carries it, so there
+is nothing to install.
 
 | Module | What it has |
 | --- | --- |
 | `Std.Function` | `id`, `const`, `flip`, `compose`, `apply`, `twice`, `iterate` |
 | `Std.Bool` | `not`, `and`, `or`, `xor`, `implies`, `show` |
 | `Std.Ordering` | `Ordering` (`Less`, `Equal`, `Greater`), `invert`, `andThen` |
-| `Std.Int` | `abs`, `max`, `min`, `compare`, `pow`, `gcd`, `isEven`, `show`, ... |
-| `Std.Nat` | `Nat` (`Z`, `S`), arithmetic, `fromInt`, `toInt`, and proofs: `plusZero`, `plusSucc`, `plusComm`, `plusAssoc`, `decEq` |
+| `Std.Cmp` | comparing by a function passed along: `minBy`, `maxBy`, `clampBy`, `comparing`, `reversed`, `thenBy`, `lexicographic` |
+| `Std.Num.Int` | `abs`, `max`, `min`, `compare`, `pow`, `gcd`, `isEven`, `show`, ... |
+| `Std.Num.Nat` | `Nat` (`Z`, `S`), arithmetic, `fromInt`, `toInt`, and proofs: `plusZero`, `plusSucc`, `plusComm`, `plusAssoc`, `decEq` |
+| `Std.Num.Fin` | `Fin n`, the naturals below `n` (`FZ`, `FS`), `toNat`, `weaken`, `last`, `fromNat`, `enumerate` |
 | `Std.Eq` | `Eq x y` with its one proof `Refl`; `sym`, `trans`, `cong`, `cong2`, `subst` |
 | `Std.Void` | `Void`, `absurd`, and `neg p`, which is `p -> Void` |
 | `Std.Dec` | `Dec p`: `Yes` with a proof of `p`, or `No` with a proof there is none |
-| `Std.Fin` | `Fin n`, the naturals below `n` (`FZ`, `FS`), `toNat`, `weaken`, `last`, `fromNat` |
 | `Std.Maybe`, `Std.Result` | `map`, `andThen`, `withDefault`, `orElse`, `toList`, `toResult`, `toMaybe`, ... |
-| `Std.Pair` | `Pair a b` (`MkPair`), `fst`, `snd`, `swap`, `curry`, `uncurry`, ... |
-| `Std.Sigma` | `Sigma a b`, a dependent pair: an `x : a` and a `b x` (`MkSigma`); `first`, `second` |
-| `Std.List` | `map`, `foldr`, `foldl`, `filter`, `filterMap`, `reverse`, `append`, `zip`, `take`, `drop`, `range`, `sortBy`, `lookup`, `nth`, ... |
-| `Std.Vec` | `Vec n a`, a list of length `n` (`Nil`, `Cons`, and `#[..]` literals): `head`, `tail`, `index`, `append`, `zip`, `splitAt`, `fromList`, ... |
+| `Std.Either` | `Either a b` (`Left`, `Right`), `either`, `mapLeft`, `bimap`, `lefts`, `rights`, `partitionEithers`, ... |
+| `Std.Tuple` | on [tuples](#tuples), the prelude's pairs: `pair`, `fst`, `snd`, `swap`, `mapFst`, `curry`, `uncurry`, ... |
+| `Std.Sigma` | `Sigma a b`, a dependent pair: an `x : a` and a `b x` (made by `Sigma`); `first`, `second` |
+| `Std.Collections.List` | `map`, `foldr`, `foldl`, `filter`, `filterMap`, `reverse`, `append`, `zip`, `take`, `drop`, `range`, `sortBy`, `lookup`, `nth`, ... |
+| `Std.Collections.Vec` | `Vec n a`, a list of length `n` (`Nil`, `Cons`, and `#[..]` literals): `head`, `tail`, `index`, `append`, `zip`, `splitAt`, `fromList`, ... |
+| `Std.Collections.Array` | the rest of [arrays](#arrays): `get`, `set`, `map`, `foldl`, `filter`, `range`, `zip`, ..., and `checkIndex`, `at`, `indices`, for indices of type `Fin (size xs)` |
+| `Std.Collections.MArray` | `MArray a`, an array used linearly: `new`, `read`, `write`, `modify`, `swap`, `generate`, `freeze`, `thaw` |
+| `Std.Collections.Vector` | `Vector a`, Meadow's persistent RRB vector: `get`, `set`, `pushBack`, `pushFront`, `popBack`, `popFront`, `append`, `splitAt`, `map`, `filter`, folds, ... |
+| `Std.Sort` | a stable merge sort: `sortBy`, `sort`, `sortOn`, `sortArrayBy`, `sortVectorBy`, `isSortedBy` |
 | `Std.String` | `concat`, `join`, `unlines`, `unwords`, `replicate`, `fromList` |
 | `Std.Console` | `printLines`, `printList`, `printBool`, `readLines` |
-| `Std.Throw` | an effect: `throw`, and `catch` into a `Result` |
+| `Std.Fs`, `Std.Process` | `readToStringOr`, `tryReadDir`, `writeLines`, `existsAll`; `argCount`, `arg`, `envOr`, `exitFailure`, ... |
+| `Std.Exn` | an effect: `throw`, and `toResult`, `catch`, `withDefault`, `toMaybe`, `ofResult`, `ensure` |
 | `Std.State` | an effect: `get`, `put`, `modify`, and `runState` from a first state |
 | `Std.Yield` | an effect: `yield`, `each`, and `collect` into a list |
 
 A module and its type share a name, so its constructors are
-`Std.Nat.Nat.Z`, or bare after `use Std.Nat.Nat.*`.
+`Std.Num.Nat.Nat.Z`, or bare after `use Std.Num.Nat.Nat.*`.
 
 ```
-> use Std.List (map, sum, reverse, length)
+> use Std.Collections.List (map, sum, reverse, length)
 > sum (map (\(x : Int) -> x * 2) (reverse #[1, 2, 3]))
 12 : Int
 > length #[1, 2, 3]
@@ -2227,24 +2377,42 @@ indexing it with a `Fin` of that length cannot fail, and two vectors
 zipped must be as long as each other:
 
 ```
-> use Std.Vec (Vec, zip, fromList, index)
-use Std.Vec.Vec.*
-use Std.Fin.Fin.*
+> use Std.Collections.Vec (Vec, zip, fromList, index)
+use Std.Collections.Vec.Vec.*
+use Std.Num.Fin.Fin.*
 > index (FS FZ) (fromList #[10, 20, 30])
 20 : Int
 > zip (Cons 1 Nil) (Cons 2 (Cons 3 Nil))
 Error: type mismatch
-   │ ╰── expected Vec (S Z) ?2, but this has type Vec (S (S Z)) Int
+   │ ╰── expected Vec (S Z) ?8, but this has type Vec (S (S Z)) Int
 Error: unsolved metavariable
 ```
 
 (`fromList` takes a list to a vector of the list's length, which its type
-computes: `Vec (Std.List.size xs) a`.) The proofs about `Nat` are
-functions to an equality, and a decision says why, either way:
+computes: `Vec (Std.Collections.List.size xs) a`.) An array's length isn't
+in its type, but an index can be checked once and then carry the proof:
+`checkIndex xs i` gives a `Fin (size xs)`, which `at` takes and cannot
+fail with.
 
 ```
-> use Std.Nat (Nat, plus, plusComm, decEq, fromInt)
-use Std.Nat.Nat.*
+> use Std.Collections.Array (checkIndex, at)
+> xs : Array Int
+xs = #[10; 20; 30]
+
+xs : Array Int
+> case checkIndex xs 2 of
+  Just i -> at xs i
+  Nothing -> 0
+
+30 : Int
+```
+
+The proofs about `Nat` are functions to an equality, and a decision says
+why, either way:
+
+```
+> use Std.Num.Nat (Nat, plus, plusComm, decEq, fromInt)
+use Std.Num.Nat.Nat.*
 use Std.Eq (Eq)
 use Std.Dec (isYes)
 > plusComm
@@ -2260,16 +2428,31 @@ True : Bool
 (An equality's type is shown with the type it is an equality in, `Eq Nat
 x y`, which is how it is applied underneath; it is written `Eq x y`.)
 
+The collections that share their parts — arrays and vectors — take them
+with `[]`, and so does what they hand a function: an element, or a fold's
+accumulator. A vector is built by folding `pushBack` over a range, and
+grows a tree of 32-element chunks underneath:
+
+```
+> use Std.Collections.Vector (Vector, pushBack, empty, range, foldl, get, len)
+> grow : (v : [] Vector Int) -> (x : [] Int) -> Vector Int
+grow v x = pushBack v (x * x)
+
+grow : (v : [] Vector Int) -> (x : [] Int) -> Vector Int
+> get (foldl grow empty (range 0 100)) 99
+Just 9801 : Maybe Int
+```
+
 Exceptions, state and generators are effects with handlers, as in
 [Effects](#effects), and the handlers are ordinary functions:
 
 ```
-> use Std.Throw (Throw, throw, catch)
-> safeDiv : (a : [] Int) -> (b : [] Int) -> Int ! Throw String
+> use Std.Exn (Exn, throw, toResult)
+> safeDiv : (a : [] Int) -> (b : [] Int) -> Int ! Exn String
 safeDiv a b = if b == 0 then throw "divide by zero" else a / b
 
-safeDiv : (a : [] Int) -> (b : [] Int) -> Int ! Throw String
-> catch (\(u : ()) -> safeDiv 7 0)
+safeDiv : (a : [] Int) -> (b : [] Int) -> Int ! Exn String
+> toResult (\(u : ()) -> safeDiv 7 0)
 Err "divide by zero" : Result String Int
 ```
 
@@ -2482,7 +2665,7 @@ Error: unsolved metavariable
    │    ╰───── could not infer the type of the binder x
    │ Help: add a type annotation to pin it down
 
-: (x : ?0) -> ?0
+: (x : ?6) -> ?6
 ```
 
 There is no automatic generalisation: `\x -> x` doesn't become the
@@ -2757,6 +2940,7 @@ input can still be checked.
 | `main : () -> () ! Eff` | what a program with no expression of its own runs |
 | `Console`, `Fs`, `Process`, `Random`, `Time`, `Test`, `Abort` | the world's effects, which the runtime handles; see [The world and `main`](#the-world-and-main) |
 | `Maybe a`, `Result e a` | `Nothing`, `Just x`; `Err e`, `Ok x` |
+| `(a, b)`, `(a, b, c)` | a tuple: the prelude's `Pair a b`, nesting to the right; in a term, a pattern or a type |
 | `case e of C x -> a; D -> b` | take a value apart; alternatives in a column, or in braces |
 | `case e of p \| g -> a` | an alternative with a guard |
 | `f (C x) 0 = e` <br> `f _ n = e` | a definition by equations, tried in order |
@@ -2767,6 +2951,9 @@ input can still be checked.
 | `x :: xs`, `Nil` | lists: `::` is an infix constructor, in expressions and patterns |
 | `#[a, b, c]`, `#[]` | a sequence: a `List`, or whatever `@seq` type is wanted; also a pattern |
 | `@seq(nil = Nil, cons = (::))` | before a `data`: the constructors `#[..]` builds it with |
+| `#[a; b; c]`, `#[x;]`, `#[;]` | an array (`Array a`) |
+| `@native f : t` | something each back end implements, declared with its type: the prelude's arrays |
+| `@terminating` | before a signature: the definition ends, though the checker can't see why |
 | `\x -> e`, `\_ -> e` | lambda; `_` for a parameter it doesn't name |
 | `\(x : t) -> e` | lambda with a typed parameter |
 | `\x (y z : t) -> e` | several parameters |
@@ -2843,12 +3030,14 @@ These aren't implemented yet. This section shrinks as they land.
   scope in its equations, which covers most uses. A `case` with no
   annotation to check it against has a result type that doesn't depend on
   what it matched.
-- **More of sequences.** There are no arrays, `#[a; b]`, and a literal can
-  only build a type with constructors, not a contiguous one (a vector made
-  through a trait). A value is shown with its constructors, `1 :: 2 ::
-  Nil`, not as the literal that built it.
+- **More of sequences.** A sequence literal can only build a type with
+  constructors: `#[a, b]` can't build an `Array` or a `Std.Collections.Vector`
+  (an array is `#[a; b]`, and a vector `fromList` of a list). There are no
+  array patterns. A value is shown with its constructors, `1 :: 2 :: Nil`,
+  not as the literal that built it. Natively, an array or a vector as a
+  program's answer is shown as `<value>`, as any structure is.
 - **Termination on `Int`s.** A recursion counting an `Int` down is not
-  seen to end, and needs `! Div`. Only top-level definitions compute in
+  seen to end, and needs `! Div`, or `@terminating` to vouch for it. Only top-level definitions compute in
   types: one defined in a `let` inside a function stays put.
 - **More of effects.** Natively, a program with a handler keeps every
   continuation on the heap, even where its grade says it is resumed once

@@ -1,0 +1,31 @@
+-- A state, as an effect: `get` reads it and `put` replaces it, and
+-- `runState` runs a computation from a first state, giving what it gave
+-- and the state it left. The handler threads the state through, each
+-- clause a function of the state still to come.
+--
+-- A state may be read any number of times, so it is a `[]` value: one
+-- that can be copied and dropped (an `Int`, a `Bool`, a literal).
+
+@pub
+effect State (s : Type) where
+  get : () -> s
+  put : (new : [] s) -> ()
+
+-- Change the state with `f`, which may look at it as often as it likes.
+@pub
+modify : {s : Type} -> (f : [] ((x : [] s) -> s)) -> () ! State s
+modify f = put (f (get ()))
+
+-- Run `body` from the state `init`: what it gives, and the state it left.
+@pub
+runState : {s a : Type} -> (init : [] s) -> (body : () -> a ! {State s | r}) -> (a, s) ! r
+runState init body = threaded body init
+
+-- `body`, as a function of the state it starts in: each clause is one,
+-- passing on the state that follows it. (Handling runs `body` at once, up
+-- to its first operation, so that has the effects too.)
+threaded : {s a : Type} -> (body : () -> a ! {State s | r}) -> ((st : [] s) -> (a, s) ! r) ! r
+threaded body = handle body () with
+  return x -> \(st : [] s) -> (x, st)
+  get u k -> \(st : [] s) -> k st st
+  put new k -> \(st : [] s) -> k () new

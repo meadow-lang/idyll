@@ -1,0 +1,51 @@
+-- How two things compare.
+
+@pub
+data Ordering = Less | Equal | Greater
+
+use Ordering.*
+
+@pub
+isLess : Ordering -> Bool
+isLess Less = True
+isLess Equal = False
+isLess Greater = False
+
+@pub
+isEqual : Ordering -> Bool
+isEqual Less = False
+isEqual Equal = True
+isEqual Greater = False
+
+@pub
+isGreater : Ordering -> Bool
+isGreater Less = False
+isGreater Equal = False
+isGreater Greater = True
+
+-- The other way round.
+@pub
+invert : Ordering -> Ordering
+invert Less = Greater
+invert Equal = Equal
+invert Greater = Less
+
+-- The first, unless it is Equal; then the second. Comparing by one thing,
+-- then by another.
+@pub
+andThen : Ordering -> Ordering -> Ordering
+andThen Less o = settle o Less
+andThen Equal o = o
+andThen Greater o = settle o Greater
+
+-- `answer`, having taken `o` apart, which uses it.
+settle : Ordering -> Ordering -> Ordering
+settle Less answer = answer
+settle Equal answer = answer
+settle Greater answer = answer
+
+@pub
+show : Ordering -> String
+show Less = "Less"
+show Equal = "Equal"
+show Greater = "Greater"

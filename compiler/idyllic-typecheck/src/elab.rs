@@ -510,9 +510,13 @@ impl Checker {
                     self.record(b.id, quoted);
                 }
                 // 4. if they terminate, they may compute in types from here
-                //    on; if they may not, they have to say so
+                //    on; if they may not, they have to say so, unless
+                //    `@terminating` says they end after all
                 if !self.check_termination(&ctx_rec, &members) {
                     for (b, ty) in bs.iter().zip(&sigs) {
+                        if b.name.unique.is_some_and(|u| self.terminating.contains(&u)) {
+                            continue;
+                        }
                         let core = members.iter().find(|(u, _)| Some(*u) == b.name.unique).map(|(_, c)| c);
                         if let Some(core) = core {
                             if !self.declares_div(ctx_rec.lvl, ty.clone(), super::termination::arity(core)) {
@@ -569,7 +573,7 @@ impl Checker {
     /// applied to something (`?b Z` against `Vec Z a`), which only what is
     /// checked after it may solve.  An argument is checked before the
     /// application's result meets the type it is to have, and that result is
-    /// often what says what such a meta is: in `MkSigma Z Nil`, checked
+    /// often what says what such a meta is: in `Sigma Z Nil`, checked
     /// against `Sigma Nat (\n -> Vec n a)`, it is the result that solves
     /// `?b := \n -> Vec n a`, after `Nil` has been checked against `?b Z`.
     /// Whether the question was kept.
@@ -865,6 +869,7 @@ impl Checker {
             TermKind::Handle(body, clauses) => self.handle(ctx, nid, body, clauses, None),
             TermKind::Match(clauses) => self.infer_match(ctx, nid, clauses),
             TermKind::SeqNil | TermKind::SeqCons(..) => self.infer_seq(ctx, t),
+            TermKind::ArrayLit(items) => self.array_literal(ctx, t, items, None),
             TermKind::Omitted => {
                 let ty_c = self.fresh_meta(ctx, nid, "the type of this");
                 let ty = self.eval(&ctx.env, &ty_c);
@@ -1114,6 +1119,13 @@ impl Checker {
             // is known yet
             (TermKind::SeqNil | TermKind::SeqCons(..), _) if !matches!(*expected, Value::Flex(..)) => {
                 self.check_seq(ctx, t, expected.clone())
+            }
+            // an array of what is expected is made of elements checked
+            // against that
+            (TermKind::ArrayLit(items), _) if self.array_element(&expected).is_some() => {
+                let elem = self.array_element(&expected);
+                let (core, _, usage) = self.array_literal(ctx, t, items, elem);
+                (core, usage)
             }
             (TermKind::Omitted, _) => {
                 let origin = MetaOrigin::Inferred("this".into());

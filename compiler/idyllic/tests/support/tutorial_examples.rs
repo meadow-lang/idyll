@@ -24,10 +24,12 @@ pub struct Example {
 /// `value : type`, as the REPL reports an expression that comes to plain
 /// data: a number, a string, `True`, `()`, or a box of one.
 fn value_report(line: &str) -> Option<(&str, &str)> {
-    // a number, a string, a box, `()`, or a constructor (`True`, `Just 3`,
-    // `1 :: Nil` starts with a digit).  No line of *source* in the tutorial
-    // starts with a capital and goes on to a ` : `.
-    let starts_a_value = line.starts_with(|c: char| c.is_ascii_digit() || c.is_ascii_uppercase() || c == '"' || c == '[' || c == '(');
+    // a number, a string, a box, `()`, an array (`#[1; 2]`), or a
+    // constructor (`True`, `Just 3`, `1 :: Nil` starts with a digit).  No
+    // line of *source* in the tutorial starts with a capital, or an array,
+    // and goes on to a ` : `.
+    let starts_a_value = line.starts_with(|c: char| c.is_ascii_digit() || c.is_ascii_uppercase() || c == '"' || c == '[' || c == '(')
+        || line.starts_with("#[") && line.contains(';');
     // a string may contain " : " itself; its report ends at the last quote
     let at = if line.starts_with('"') { line.rfind("\" : ")? + 1 } else { line.find(" : ")? };
     starts_a_value.then(|| (&line[..at], &line[at + 3..]))

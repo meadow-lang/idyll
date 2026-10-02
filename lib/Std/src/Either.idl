@@ -1,0 +1,114 @@
+-- One of two: `Left` an `a`, or `Right` a `b`. A `Result` with neither
+-- side the error, for when both are answers.
+
+@pub
+data Either a b = Left a | Right b
+
+use Either.*
+
+@pub
+isLeft : {a b : Type} -> (x : [0..1] Either a b) -> Bool
+isLeft (Left l) = True
+isLeft (Right r) = False
+
+@pub
+isRight : {a b : Type} -> (x : [0..1] Either a b) -> Bool
+isRight (Left l) = False
+isRight (Right r) = True
+
+-- `onLeft` or `onRight`, whichever there is something for.
+@pub
+either : {a b c : Type} -> (onLeft : [0..1] (a -> c ! e)) -> (onRight : [0..1] (b -> c ! e)) -> Either a b -> c ! e
+either f g (Left l) = f l
+either f g (Right r) = g r
+
+-- What is on the left, or `fallback`.
+@pub
+fromLeft : {a b : Type} -> (fallback : [0..1] a) -> (x : [0..1] Either a b) -> a
+fromLeft d (Left l) = l
+fromLeft d (Right r) = d
+
+-- What is on the right, or `fallback`.
+@pub
+fromRight : {a b : Type} -> (fallback : [0..1] b) -> (x : [0..1] Either a b) -> b
+fromRight d (Left l) = d
+fromRight d (Right r) = r
+
+-- `f` of what is on the right; the left is passed on.
+@pub
+map : {a b c : Type} -> (f : [0..1] (b -> c ! e)) -> Either a b -> Either a c ! e
+map f (Left l) = Left l
+map f (Right r) = Right (f r)
+
+@pub
+mapLeft : {a b c : Type} -> (f : [0..1] (a -> c ! e)) -> Either a b -> Either c b ! e
+mapLeft f (Left l) = Left (f l)
+mapLeft f (Right r) = Right r
+
+@pub
+bimap : {a b c d : Type} -> (f : [0..1] (a -> c ! e)) -> (g : [0..1] (b -> d ! e)) -> Either a b -> Either c d ! e
+bimap f g (Left l) = Left (f l)
+bimap f g (Right r) = Right (g r)
+
+-- `f` of what is on the right, which may itself be on the left.
+@pub
+andThen : {a b c : Type} -> (f : [0..1] (b -> Either a c ! e)) -> Either a b -> Either a c ! e
+andThen f (Left l) = Left l
+andThen f (Right r) = f r
+
+@pub
+swap : {a b : Type} -> Either a b -> Either b a
+swap (Left l) = Right l
+swap (Right r) = Left r
+
+-- What is on the right, if anything.
+@pub
+toMaybe : {a b : Type} -> (x : [0..1] Either a b) -> Maybe b
+toMaybe (Left l) = Nothing
+toMaybe (Right r) = Just r
+
+-- What is on the left, if anything.
+@pub
+leftToMaybe : {a b : Type} -> (x : [0..1] Either a b) -> Maybe a
+leftToMaybe (Left l) = Just l
+leftToMaybe (Right r) = Nothing
+
+-- The left as the error.
+@pub
+toResult : {a b : Type} -> Either a b -> Result a b
+toResult (Left l) = Err l
+toResult (Right r) = Ok r
+
+@pub
+fromResult : {a b : Type} -> Result a b -> Either a b
+fromResult (Err l) = Left l
+fromResult (Ok r) = Right r
+
+-- What there is, or `fallback` on the left.
+@pub
+fromMaybe : {a b : Type} -> (fallback : [0..1] a) -> Maybe b -> Either a b
+fromMaybe d Nothing = Left d
+fromMaybe d (Just r) = Right r
+
+-- Everything on the left, in order.
+@pub
+lefts : {a b : Type} -> (xs : [0..1] List (Either a b)) -> List a
+lefts Nil = Nil
+lefts (Left l :: rest) = l :: lefts rest
+lefts (Right r :: rest) = lefts rest
+
+-- Everything on the right, in order.
+@pub
+rights : {a b : Type} -> (xs : [0..1] List (Either a b)) -> List b
+rights Nil = Nil
+rights (Left l :: rest) = rights rest
+rights (Right r :: rest) = r :: rights rest
+
+-- The lefts and the rights, each in order.
+@pub
+partitionEithers : {a b : Type} -> List (Either a b) -> (List a, List b)
+partitionEithers Nil = (Nil, Nil)
+partitionEithers (x :: rest) = case partitionEithers rest of
+  (ls, rs) -> case x of
+    Left l -> (l :: ls, rs)
+    Right r -> (ls, r :: rs)

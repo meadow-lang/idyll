@@ -94,21 +94,21 @@ fn primitive_types_have_their_own_representations() {
 
 #[test]
 fn functions_and_data_are_pointers() {
-    let src = "data Box = MkBox Int\n\nuse Box.*\n\nlet f = \\(x : Int) -> x + 1 in let b = MkBox 3 in f 1\n";
+    let src = "data Box = Box Int\n\nuse Box.*\n\nlet f = \\(y : Int) -> y + 1 in let b = Box 3 in f 1\n";
     assert_eq!(rep_of(src, "f"), Rep::Ptr);
-    assert_eq!(rep_of(src, "x"), Rep::I64);
+    assert_eq!(rep_of(src, "y"), Rep::I64);
     assert_eq!(rep_of(src, "b"), Rep::Ptr);
 }
 
 #[test]
 fn a_type_variable_is_a_representation_variable() {
-    let src = "id : {a : Type} -> a -> a\nid x = x\n\nid 3\n";
+    let src = "id : {a : Type} -> a -> a\nid y = y\n\nid 3\n";
     let all = binders(src);
     let a = all.iter().position(|(x, _)| x == "a").expect("the type parameter is a binder");
     assert_eq!(all[a].1, Rep::Erased, "{all:?}");
-    match rep_of(src, "x") {
+    match rep_of(src, "y") {
         Rep::Var(_) => {}
-        other => panic!("x should be a representation variable, is {other:?}: {all:?}"),
+        other => panic!("y should be a representation variable, is {other:?}: {all:?}"),
     }
 }
 
@@ -125,7 +125,7 @@ fn fields_are_instantiated_from_the_scrutinee() {
     let vec = "data Nat = Z | S Nat\nuse Nat.*\n\ndata Vec : Nat -> Type -> Type where\n  VNil : Vec Z a\n  VCons : a -> Vec n a -> Vec (S n) a\nuse Vec.*\n\n";
     let total = format!("{vec}total : Vec n Int -> Int\ntotal VNil = 0\ntotal (VCons x xs) = x + total xs\n\ntotal (VCons 1 VNil)\n");
     assert!(has(&total, "x", Rep::I64), "{:?}", binders(&total));
-    let src = "data Pair = MkPair Int String\n\nuse Pair.*\n\ncase MkPair 1 \"a\" of\n  MkPair n s -> if n == 1 then s else s\n";
+    let src = "data Pair = Pair Int String\n\nuse Pair.*\n\ncase Pair 1 \"a\" of\n  Pair n s -> if n == 1 then s else s\n";
     assert_eq!(rep_of(src, "n"), Rep::I64);
     assert_eq!(rep_of(src, "s"), Rep::Str);
 }

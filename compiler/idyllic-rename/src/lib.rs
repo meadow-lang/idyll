@@ -165,6 +165,17 @@ struct Renamer {
     ctors: HashMap<usize, Vec<(String, usize)>>,
     /// each data type's name, by its unique, for messages
     type_names: HashMap<usize, String>,
+    /// each type whose constructor has its name (`Pair`, made by `Pair`),
+    /// and that constructor: the bare name stands for the type where a type
+    /// is written, and for the constructor anywhere else (a pattern, a
+    /// term).  Written with a path, it is whichever the path leads to:
+    /// `Pair.Pair` the constructor, `Std.Tuple.Pair` the type
+    twins: HashMap<usize, usize>,
+    /// the definitions marked `@terminating`
+    terminating: std::collections::HashSet<usize>,
+    /// whether what is being renamed is a type: a signature, an
+    /// annotation, a function type, a constructor's fields
+    in_type: bool,
     /// each effect's operations, by its unique: naming the effect in a `use`
     /// brings them too
     effect_ops: HashMap<usize, Vec<(String, usize)>>,
@@ -193,6 +204,8 @@ struct Bound<'a> {
     data_names: Vec<(Ident, Vec<Ident>)>,
     effect_names: Vec<(Ident, Vec<Ident>)>,
     defs: Vec<Def<'a>>,
+    /// `@native` declarations: each name, bound, and its type
+    natives: Vec<(Ident, &'a ast::LDecl)>,
 }
 
 /// A definition whose name is bound: its equations, and its signature.
@@ -244,7 +257,7 @@ pub fn rename_package(
     for u in &prelude.uses {
         r.rename_use(u);
     }
-    let (mut datas, mut effects, prelude_binds) = r.rename_program(prelude, bound);
+    let (mut datas, mut effects, mut natives, prelude_binds) = r.rename_program(prelude, bound);
     let n = r.scopes.len();
     let names = r.scopes[n - 2..].iter().flatten().map(|(x, &(u, _))| (x.clone(), u)).collect();
     r.base = std::mem::take(&mut r.scopes);
@@ -265,6 +278,7 @@ pub fn rename_package(
         for (u, ty, ctors) in &names.types {
             r.ctors.insert(*u, ctors.clone());
             r.type_names.insert(*u, ty.clone());
+            r.note_twin(*u);
         }
         r.effect_ops.extend(names.effect_ops.iter().cloned());
     }
@@ -308,9 +322,10 @@ pub fn rename_package(
     let mut main = None;
     for (i, (m, b)) in modules.iter().zip(bound).enumerate() {
         r.enter(i);
-        let (d, e, bs) = r.rename_program(m.program, b);
+        let (d, e, n, bs) = r.rename_program(m.program, b);
         datas.extend(d);
         effects.extend(e);
+        natives.extend(n);
         binds.extend(bs);
         if i == 0 {
             body = parts[0].1.map(|b| r.rename_term(b));
@@ -343,6 +358,7 @@ pub fn rename_package(
     let module = hir::Module {
         datas,
         effects,
+        natives,
         groups,
         body,
         prelude: names,
@@ -351,6 +367,8 @@ pub fn rename_package(
         package: package.to_string(),
         names: names_given,
         uniques: (first, r.next_unique),
+        terminating: r.terminating,
+        version: None,
     };
     RenameResult { module, spans: r.spans, errors: r.errors }
 }
@@ -389,6 +407,9 @@ impl Renamer {
             errors: Vec::new(),
             ctors: HashMap::new(),
             type_names: HashMap::new(),
+            twins: HashMap::new(),
+            terminating: Default::default(),
+            in_type: false,
             effect_ops: HashMap::new(),
             package: package.to_string(),
             modules: Vec::new(),
@@ -433,8 +454,20 @@ impl Renamer {
             .collect();
         let datas: Vec<&ast::LData> = prog.datas.iter().collect();
         let data_names = self.bind_datas(&datas);
+        let natives = decls
+            .iter()
+            .filter_map(|d| match &d.node {
+                ast::Decl::Native(name, _) => Some((self.bind_name(name), d)),
+                _ => None,
+            })
+            .collect();
         let defs = self.bind_decls(decls);
-        Bound { datas, data_names, effect_names, defs }
+        for (_, name, _) in &defs {
+            if let (Some(u), true) = (name.unique, prog.terminating.iter().any(|x| x.node == name.text)) {
+                self.terminating.insert(u);
+            }
+        }
+        Bound { datas, data_names, effect_names, defs, natives }
     }
 
     /// What a program says, its names bound and its `use`s taken: data
@@ -445,11 +478,20 @@ impl Renamer {
         &mut self,
         prog: &ast::Program,
         b: Bound<'_>,
-    ) -> (Vec<hir::DataDecl>, Vec<hir::EffectDecl>, Vec<hir::Bind>) {
+    ) -> (Vec<hir::DataDecl>, Vec<hir::EffectDecl>, Vec<hir::NativeDecl>, Vec<hir::Bind>) {
         let datas = self.rename_datas(&b.datas, b.data_names);
         let effects = prog.effects.iter().zip(b.effect_names).map(|(e, names)| self.rename_effect(e, names)).collect();
+        let natives = b
+            .natives
+            .into_iter()
+            .map(|(name, d)| {
+                let ast::Decl::Native(_, ty) = &d.node else { unreachable!("only natives") };
+                let id = self.fresh_node(d.span);
+                hir::NativeDecl { id, name, ty: self.rename_sig(ty) }
+            })
+            .collect();
         let binds = self.rename_defs(b.defs);
-        (datas, effects, binds)
+        (datas, effects, natives, binds)
     }
 
     /// Record what module `i` declares, and how visible each is, for the
@@ -464,7 +506,7 @@ impl Renamer {
             exports.push((name.clone(), e.node.visibility));
             exports.extend(ops.iter().map(|op| (op.clone(), e.node.visibility)));
         }
-        for (_, name, _) in &b.defs {
+        for name in b.defs.iter().map(|(_, name, _)| name).chain(b.natives.iter().map(|(name, _)| name)) {
             let vis = declared.get(name.text.as_str()).copied().unwrap_or_default();
             exports.push((name.clone(), vis));
         }
@@ -653,6 +695,9 @@ impl Renamer {
     }
 
     fn use_name(&mut self, name: &ast::Ident) -> Ident {
+        if name.node == ast::TUPLE {
+            return self.tuple(name.span);
+        }
         if name.node.contains('.') && name.node.len() > 1 {
             return self.use_qualified(name);
         }
@@ -668,7 +713,56 @@ impl Renamer {
             };
             self.errors.push(error);
         }
-        Ident { unique: found, text: name.node.clone() }
+        Ident { unique: found.map(|u| self.as_written(u)), text: name.node.clone() }
+    }
+
+    /// The prelude's `Pair`, which a tuple is made of: the type in a type,
+    /// the constructor elsewhere.
+    fn tuple(&mut self, span: Span) -> Ident {
+        let found = self.base.iter().rev().find_map(|s| s.get("Pair")).map(|&(u, _)| u);
+        if found.is_none() {
+            self.errors.push(RenameError::Unbound { name: "Pair".into(), span });
+        }
+        Ident { unique: found.map(|u| self.as_written(u)), text: "Pair".into() }
+    }
+
+    /// Remember a type whose constructor has its name.
+    fn note_twin(&mut self, ty: usize) {
+        let name = &self.type_names[&ty];
+        if let Some(&(_, c)) = self.ctors[&ty].iter().find(|(c, _)| c == name) {
+            self.twins.insert(ty, c);
+        }
+    }
+
+    /// What a name that found `u` stands for here: a type and the
+    /// constructor that shares its name are one name, the type in a type
+    /// and the constructor elsewhere.
+    fn as_written(&self, u: usize) -> usize {
+        let pair = match self.twins.get(&u) {
+            Some(&c) => Some((u, c)),
+            None => self.twins.iter().find(|(_, &c)| c == u).map(|(&t, &c)| (t, c)),
+        };
+        match pair {
+            Some((t, _)) if self.in_type => t,
+            Some((_, c)) => c,
+            None => u,
+        }
+    }
+
+    /// Rename what `f` renames as a type.
+    fn as_type<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let outer = std::mem::replace(&mut self.in_type, true);
+        let x = f(self);
+        self.in_type = outer;
+        x
+    }
+
+    /// ... and as a term: a pattern, say, which matches constructors.
+    fn as_term<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let outer = std::mem::replace(&mut self.in_type, false);
+        let x = f(self);
+        self.in_type = outer;
+        x
     }
 
     /// The types in scope with a constructor of this name, by name.
@@ -691,6 +785,9 @@ impl Renamer {
         let segments: Vec<&str> = name.node.split('.').collect();
         let last = segments.last().expect("split gives one").to_string();
         match self.resolve_path(&segments, name.span) {
+            // a path says which of two twins it means: `Pair.Pair`, through
+            // the type, is the constructor, and `Std.Tuple.Pair`, the
+            // module's, is the type, wherever either is written
             Some(Target::Name(u)) => Ident { unique: Some(u), text: last },
             Some(Target::Module(_) | Target::Namespace(..)) => {
                 self.errors.push(RenameError::ModuleNotValue { path: name.node.clone(), span: name.span });
@@ -828,7 +925,7 @@ impl Renamer {
             }
             A::Ann(e, a) => {
                 let e = self.rename_term(e);
-                let a = self.rename_term(a);
+                let a = self.as_type(|r| r.rename_term(a));
                 self.node(sp, H::Ann(Box::new(e), Box::new(a)))
             }
             A::Range(lo, hi) => {
@@ -865,10 +962,10 @@ impl Renamer {
             A::Pi(mb, icit, grade, dom, cod) => {
                 // neither the domain nor the grades can see the bound name
                 let grade = grade.as_ref().map(|g| self.rename_grades(g));
-                let dom = self.rename_term(dom);
+                let dom = self.as_type(|r| r.rename_term(dom));
                 self.scoped(|r| {
                     let mb = mb.as_ref().map(|x| r.bind_name(x));
-                    let cod = r.rename_term(cod);
+                    let cod = r.as_type(|r| r.rename_term(cod));
                     r.node(sp, H::Pi(mb, *icit, grade, Box::new(dom), Box::new(cod)))
                 })
             }
@@ -897,6 +994,10 @@ impl Renamer {
             }),
             // `#[a, b]` is `a` in front of `#[b]`, which is `b` in front of
             // `#[]`
+            A::ArrayLit(items) => {
+                let items = items.iter().map(|e| self.rename_term(e)).collect();
+                self.node(sp, H::ArrayLit(items))
+            }
             A::Seq(items) => {
                 let items: Vec<(Span, hir::Term)> = items.iter().map(|e| (e.span, self.rename_term(e))).collect();
                 let nil = self.node(sp, H::SeqNil);
@@ -926,7 +1027,7 @@ impl Renamer {
         free_variables(ty, &mut Vec::new(), &|x| self.lookup(x).is_some(), &mut free);
         self.scoped(|r| {
             let bound: Vec<(Ident, Span)> = free.iter().map(|x| (r.bind_name(x), x.span)).collect();
-            let body = r.rename_term(ty);
+            let body = r.as_type(|r| r.rename_term(ty));
             bound.into_iter().rev().fold(body, |acc, (x, span)| {
                 let dom = r.node(span, hir::TermKind::Omitted);
                 r.node(ty.span, hir::TermKind::Pi(Some(x), Icit::Implicit, None, Box::new(dom), Box::new(acc)))
@@ -958,7 +1059,7 @@ impl Renamer {
                     None => body,
                     Some(ty) => {
                         let span = e.span.merge(ty.span);
-                        let ty = r.rename_term(ty);
+                        let ty = r.as_type(|r| r.rename_term(ty));
                         r.node(span, hir::TermKind::Ann(Box::new(body), Box::new(ty)))
                     }
                 }
@@ -1001,12 +1102,12 @@ impl Renamer {
                 hir::PatKind::As(x, Box::new(self.rename_pattern(q, names)))
             }
             ast::Pat::Con(c, ps) => {
-                let c = self.use_name(c);
+                let c = self.as_term(|r| r.use_name(c));
                 hir::PatKind::Con(c, ps.iter().map(|q| self.rename_pattern(q, names)).collect())
             }
             ast::Pat::Wild => hir::PatKind::Wild,
             ast::Pat::Lit(l) => hir::PatKind::Lit(l.clone()),
-            ast::Pat::Dot(e) => hir::PatKind::Dot(self.rename_term(e)),
+            ast::Pat::Dot(e) => hir::PatKind::Dot(self.as_term(|r| r.rename_term(e))),
             ast::Pat::Seq(ps) => {
                 let ps: Vec<(Span, hir::Pattern)> = ps.iter().map(|q| (q.span, self.rename_pattern(q, names))).collect();
                 let nil = hir::Pattern { id: self.fresh_node(p.span), kind: hir::PatKind::SeqNil };
@@ -1046,6 +1147,7 @@ impl Renamer {
                 if let Some(u) = name.unique {
                     self.ctors.insert(u, ctors);
                     self.type_names.insert(u, name.text.clone());
+                    self.note_twin(u);
                 }
                 (name, idents)
             })
@@ -1067,11 +1169,11 @@ impl Renamer {
                         .params
                         .iter()
                         .map(|(x, kind)| {
-                            let kind = kind.as_ref().map(|k| r.rename_term(k));
+                            let kind = kind.as_ref().map(|k| r.as_type(|r| r.rename_term(k)));
                             (r.bind_name(x), kind)
                         })
                         .collect();
-                    let kind = d.node.kind.as_ref().map(|k| r.rename_term(k));
+                    let kind = d.node.kind.as_ref().map(|k| r.as_type(|r| r.rename_term(k)));
                     let ctors = d
                         .node
                         .ctors
@@ -1080,7 +1182,7 @@ impl Renamer {
                         .map(|((c, shape), name)| {
                             let shape = match shape {
                                 ast::Ctor::Fields(fields) => {
-                                    hir::CtorShape::Fields(fields.iter().map(|f| r.rename_term(f)).collect())
+                                    hir::CtorShape::Fields(fields.iter().map(|f| r.as_type(|r| r.rename_term(f))).collect())
                                 }
                                 ast::Ctor::Sig(ty) => hir::CtorShape::Sig(r.rename_sig(ty)),
                             };
@@ -1113,7 +1215,7 @@ impl Renamer {
                 .params
                 .iter()
                 .map(|(x, kind)| {
-                    let kind = kind.as_ref().map(|k| r.rename_term(k));
+                    let kind = kind.as_ref().map(|k| r.as_type(|r| r.rename_term(k)));
                     (r.bind_name(x), kind)
                 })
                 .collect();
@@ -1137,7 +1239,7 @@ impl Renamer {
     /// renamed first, so it cannot see the name being bound.
     fn bind_param(&mut self, p: &ast::LParam) -> BoundParam {
         let grade = p.node.grade.as_ref().map(|g| self.rename_grades(g));
-        let ty = p.node.ty.as_ref().map(|t| self.rename_term(t));
+        let ty = p.node.ty.as_ref().map(|t| self.as_type(|r| r.rename_term(t)));
         let name = self.bind_name(&p.node.name);
         // the box an unboxing pattern receives shares the name's spelling (it
         // is what shows up in an inferred type) but cannot be referred to
@@ -1265,7 +1367,7 @@ impl Renamer {
                 let mut body = r.rename_term(rhs);
                 if let Some(ty) = result_ty {
                     let span = rhs.span.merge(ty.span);
-                    let ty = r.rename_term(ty);
+                    let ty = r.as_type(|r| r.rename_term(ty));
                     body = r.node(span, hir::TermKind::Ann(Box::new(body), Box::new(ty)));
                 }
                 (ps, body)
@@ -1372,7 +1474,7 @@ fn free_variables(t: &LTerm, bound: &mut Vec<String>, known: &dyn Fn(&str) -> bo
             }
         }
         A::BoxIntro(e) => free_variables(e, bound, known, out),
-        A::Seq(items) => items.iter().for_each(|e| free_variables(e, bound, known, out)),
+        A::Seq(items) | A::ArrayLit(items) => items.iter().for_each(|e| free_variables(e, bound, known, out)),
         A::LetBox(x, e, body) => {
             free_variables(e, bound, known, out);
             under(Some(&x.node), body, bound, out);
@@ -1384,7 +1486,7 @@ fn free_variables(t: &LTerm, bound: &mut Vec<String>, known: &dyn Fn(&str) -> bo
                 .iter()
                 .filter_map(|d| match &d.node {
                     ast::Decl::Def(x, ..) => Some(x.node.clone()),
-                    ast::Decl::Sig(..) => None,
+                    ast::Decl::Sig(..) | ast::Decl::Native(..) => None,
                 })
                 .collect();
             let n = names.len();

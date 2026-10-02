@@ -86,6 +86,8 @@ pub enum TermKind {
     /// is checked against (see [`DataDecl::seq`]).
     SeqNil,
     SeqCons(Box<Term>, Box<Term>),
+    /// An array literal, `#[a; b]`: always an `Array`.
+    ArrayLit(Vec<Term>),
 }
 
 /// `op x k -> body`, or with no operation, `return x -> body`.
@@ -199,6 +201,15 @@ pub struct GradeAnn {
     pub in_type: Option<Box<Term>>,
 }
 
+/// `@native f : a`: a type or an operation the back ends implement (see
+/// `idyllic_builtins::Native`), with its type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeDecl {
+    pub id: NodeId,
+    pub name: Ident,
+    pub ty: Term,
+}
+
 /// A single binding, `x [: a] = e`.  Function sugar `f p1 p2 = e` is desugared
 /// by the renamer into `f = \p1 p2 -> e` when the patterns are variables,
 /// and otherwise into a [`TermKind::Match`] of all of `f`'s equations.
@@ -247,6 +258,8 @@ pub struct Module {
     /// in source order; a data type may mention those before it, and itself
     pub datas: Vec<DataDecl>,
     pub effects: Vec<EffectDecl>,
+    /// the prelude's, then the modules' in order
+    pub natives: Vec<NativeDecl>,
     pub groups: Vec<BindGroup>,
     pub body: Option<Term>,
     /// Every name the prelude declares, by its spelling.  The prelude's
@@ -264,6 +277,12 @@ pub struct Module {
     pub names: PackageNames,
     /// the uniques the package named its own things with
     pub uniques: (usize, usize),
+    /// the package's version, if it has one, for the symbols a back end
+    /// names things by
+    pub version: Option<String>,
+    /// the definitions `@terminating` vouches for: they need not say
+    /// `! Div`, though the checker cannot see that they end
+    pub terminating: std::collections::HashSet<usize>,
 }
 
 /// What a package gives the packages that depend on it, as their renamers

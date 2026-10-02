@@ -107,6 +107,7 @@ mod elab;
 mod eval;
 pub mod handlers;
 mod matching;
+pub mod natives;
 pub mod packages;
 pub mod prune;
 mod positivity;
@@ -366,7 +367,7 @@ pub enum TypeErrorKind {
     /// `Type n` where `n` is not a number
     LevelNotANumber,
     /// a constructor field whose type is in a larger universe than its data
-    /// type: `data U = MkU Type`
+    /// type: `data U = U Type`
     LargeField { data: String, level: core::Level },
     /// a data type appearing where it is not strictly positive
     NotStrictlyPositive { data: String, ctor: String, why: Positivity },
@@ -392,6 +393,10 @@ pub enum TypeErrorKind {
     UnhandledEffects(Rc<Core>),
     /// an operation's type that is not `a -> b`
     OpSignature(String),
+    /// `@native` on a name no back end knows
+    UnknownNative(String),
+    /// a native declared with a type of the wrong shape, and what it needs
+    NativeSignature(String, String),
     /// a handler clause for something that is not an operation
     NotAnOperation(String),
     /// a handler with clauses for two effects' operations
@@ -423,9 +428,9 @@ pub enum TypeErrorKind {
 /// Where a data type appears that makes it fail strict positivity.
 #[derive(Clone, Debug)]
 pub enum Positivity {
-    /// in the domain of a function type: `MkBad (Bad -> Int)`
+    /// in the domain of a function type: `Bad (Bad -> Int)`
     LeftOfArrow,
-    /// in an argument of itself: `MkBad (Bad (Bad a))`
+    /// in an argument of itself: `Bad (Bad (Bad a))`
     OwnArgument,
     /// in an argument of another data type, for a parameter that type does
     /// not use strictly positively
@@ -625,6 +630,11 @@ impl TypeError {
                 .label(here, "write this after an arrow, as in a -> b ! e"),
             TypeErrorKind::OpSignature(op) => Diagnostic::error(format!("{op} is not an operation's type"))
                 .label(here, "an operation takes arguments and gives a result, as in a -> b; use () for none"),
+            TypeErrorKind::UnknownNative(name) => Diagnostic::error(format!("there is no native called {name}"))
+                .label(here, "@native declares something every back end implements, and this is not one of them"),
+            TypeErrorKind::NativeSignature(name, why) => {
+                Diagnostic::error(format!("the type of the native {name} does not fit it")).label(here, why.clone())
+            }
             TypeErrorKind::NotAnOperation(name) => Diagnostic::error(format!("{name} is not an operation"))
                 .label(here, "a handler's clauses are for the operations of an effect, and return"),
             TypeErrorKind::HandlerMixesEffects => Diagnostic::error("one handler, one effect")
@@ -929,8 +939,12 @@ pub struct Checker {
     /// constructors, in order
     datas: HashMap<usize, Vec<usize>>,
     /// for each data type, which of its parameters it uses strictly
-    /// positively (see [`positivity`])
+    /// positively (see [`positivity`]); and for each native type, all
     positive_params: HashMap<usize, Vec<bool>>,
+    /// every declared native, by its unique
+    natives: HashMap<usize, natives::NativeInfo>,
+    /// the definitions `@terminating` vouches for
+    terminating: std::collections::HashSet<usize>,
     /// the type of every constant (data type, constructor, recursive
     /// definition), by its unique
     constants: HashMap<usize, VTy>,
@@ -1061,9 +1075,11 @@ pub struct TypeCheckResult {
     pub ctors: HashMap<usize, CtorInfo>,
     /// The declared effects' operations, by the unique of their names.
     pub ops: HashMap<usize, handlers::OpInfo>,
-    /// The uniques of the declared data types.  As terms they are types, and
-    /// so are erased.
+    /// The uniques of the declared data types, and of the native types.  As
+    /// terms they are types, and so are erased.
     pub type_constructors: Vec<usize>,
+    /// The natives, by unique: what each is at run time.
+    pub natives: HashMap<usize, natives::NativeInfo>,
     /// Side table: node id to type, for every node the checker visited.
     pub node_types: Vec<Option<Rc<Core>>>,
     /// The final metacontext, so callers can inspect what was solved.
@@ -1107,6 +1123,8 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         ctors: HashMap::new(),
         datas: HashMap::new(),
         positive_params: HashMap::new(),
+        natives: HashMap::new(),
+        terminating: m.terminating.clone(),
         constants: HashMap::new(),
         next_key: usize::MAX,
         transparent: HashMap::new(),
@@ -1120,9 +1138,13 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
     };
     let ctx = Ctx::initial(&tc);
     let ctx = tc.import(&ctx, deps);
+    // native types first, which the data types and effects may mention; and
+    // native operations once those are known, as their types may mention them
+    let ctx = tc.declare_natives(&ctx, &m.natives, true);
     let ctx = tc.declare_effects(&ctx, &m.effects);
     let ctx = tc.declare_datas(&ctx, &m.datas);
     let ctx = tc.declare_ops(&ctx, &m.effects);
+    let ctx = tc.declare_natives(&ctx, &m.natives, false);
     // Top-level definitions are closed, so whatever they and the entry
     // expression use is only ever a definition or a primitive: there is no
     // binder left to hold the final usage to account.
@@ -1209,9 +1231,14 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
     let mut symbols: HashMap<usize, (String, String)> = HashMap::new();
     {
         let own = |u: usize| (m.uniques.0..m.uniques.1).contains(&u);
+        // a package with a version is known by both: `Util@0.1.0`
+        let this = match &m.version {
+            Some(v) => format!("{}@{v}", m.package),
+            None => m.package.clone(),
+        };
         let mut add = |x: &hir::Ident, path: String| {
             if let Some(u) = x.unique {
-                let package = if own(u) { m.package.clone() } else { "Prelude".to_string() };
+                let package = if own(u) { this.clone() } else { "Prelude".to_string() };
                 symbols.insert(u, (package, path));
             }
         };
@@ -1262,7 +1289,13 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         .collect();
     compiled.symbols.sort();
     let compiled = Some(compiled);
-    let type_constructors = tc.datas.keys().copied().collect();
+    let type_constructors = tc
+        .datas
+        .keys()
+        .copied()
+        .chain(tc.natives.iter().filter(|(_, n)| n.native.is_type()).map(|(u, _)| *u))
+        .collect();
+    let natives = tc.natives.clone();
     let ctors = tc.ctors.clone();
     let ops = tc.ops.clone();
     let node_types = std::mem::take(&mut tc.node_types);
@@ -1280,6 +1313,7 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         ctors,
         ops,
         type_constructors,
+        natives,
         node_types,
         metas,
         errors,

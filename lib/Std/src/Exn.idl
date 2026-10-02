@@ -1,0 +1,68 @@
+-- Exceptions, as an effect: `throw` gives up with an error of type `e`,
+-- and a handler decides what giving up comes to: `toResult` makes it an
+-- `Err`, `catch` a value of its own. Nothing after a `throw` runs: these
+-- handlers never resume it.
+--
+-- A computation that may throw is a function of `()`, as a handler runs
+-- one: `toResult (\(u : ()) -> safeDiv 7 0)`.
+
+@pub
+effect Exn (e : Type) where
+  throw : {a : Type} -> e -> a
+
+-- Run `body`: `Ok` what it gives, or `Err` what it threw.
+@pub
+toResult : {e a : Type} -> (body : () -> a ! {Exn e | r}) -> Result e a ! r
+toResult body = handle body () with
+  return x -> Ok x
+  throw err k -> Err err
+
+-- What `body` gives, or `recover` of what it threw. (A handler's clause
+-- may run any number of times, as far as the checker can see, so what it
+-- uses from outside is taken with [].)
+@pub
+catch : {e a : Type} -> (recover : [] (e -> a ! r)) -> (body : () -> a ! {Exn e | r}) -> a ! r
+catch recover body = handle body () with
+  return x -> x
+  throw err k -> recover err
+
+-- The rest drop what was thrown, or what was given, so may not run
+-- `body` to completion as far as its result is concerned: it is taken with
+-- [0..1].
+
+-- What `body` gives, or `fallback` if it threw.
+@pub
+withDefault : {e a : Type} -> (fallback : [0..1] a) -> (body : [0..1] (() -> a ! {Exn e | r})) -> a ! r
+withDefault fallback body = Std.Result.withDefault fallback (toResult body)
+
+-- `Just` what `body` gives, or `Nothing` if it threw.
+@pub
+toMaybe : {e a : Type} -> (body : [0..1] (() -> a ! {Exn e | r})) -> Maybe a ! r
+toMaybe body = Std.Result.toMaybe (toResult body)
+
+-- Whether `body` threw.
+@pub
+threw : {e a : Type} -> (body : [0..1] (() -> a ! {Exn e | r})) -> Bool ! r
+threw body = Std.Result.isErr (toResult body)
+
+-- The value of a `Result`, or its error, thrown.
+@pub
+ofResult : {e a : Type} -> Result e a -> a ! Exn e
+ofResult (Err err) = throw err
+ofResult (Ok x) = x
+
+-- The value of a `Maybe`, or `err`, thrown.
+@pub
+ofMaybe : {e a : Type} -> (err : [0..1] e) -> Maybe a -> a ! Exn e
+ofMaybe err Nothing = throw err
+ofMaybe err (Just x) = x
+
+-- Nothing, if `cond` holds; otherwise `err`, thrown.
+@pub
+ensure : {e : Type} -> Bool -> (err : [0..1] e) -> () ! Exn e
+ensure cond err = if cond then () else throw err
+
+-- Nothing, unless `cond` holds; then `err`, thrown.
+@pub
+refute : {e : Type} -> Bool -> (err : [0..1] e) -> () ! Exn e
+refute cond err = if cond then throw err else ()

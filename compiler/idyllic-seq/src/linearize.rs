@@ -15,7 +15,8 @@
 //!
 //! So variables are dropped as early and copied as late as possible.  A
 //! substitution that would change nothing is left out.  `extern`s consume
-//! nothing and need no arranging.
+//! nothing and need no arranging, but for the natives, which consume their
+//! arguments as `let` does its fields.
 //!
 //! This is also where a closure's environment is decided: `new` captures the
 //! free variables of its clauses, which the lowering left unsaid.
@@ -27,7 +28,7 @@
 //! At run time each copy is a reference count going up and each drop one
 //! going down, and nothing else ever touches a count ([`super::machine`]).
 
-use super::{free_vars, Branch, Clauses, Definition, Program, Stmt, Var};
+use super::{free_vars, Branch, Clauses, Definition, Extern, Program, Stmt, Var};
 use std::collections::HashMap;
 
 pub fn linearize(p: &Program) -> Program {
@@ -197,6 +198,17 @@ fn stmt(s: &Stmt, env: &[Var], renaming: &Renaming) -> Stmt {
             let k = consumed.pop().expect("the continuation");
             a.before(env, Stmt::Perform(op.clone(), consumed, k))
         }
+        // like a `let`: a native consumes what it is given
+        Stmt::Extern(op @ Extern::Native(_), args, branches) => match branches.as_slice() {
+            [Branch { params, body }] if params.len() == 1 => {
+                let r = &params[0];
+                let a = arrange(env, &live_after(body, r, renaming), &now(args));
+                let body = stmt(body, &extended(&a.kept, std::slice::from_ref(r)), renaming);
+                let args = a.consumed.clone();
+                a.before(env, Stmt::Extern(op.clone(), args, vec![Branch { params: params.clone(), body }]))
+            }
+            _ => unreachable!("a native continues one way, with its result"),
+        },
         Stmt::Extern(op, args, branches) => {
             let branches = branches
                 .iter()

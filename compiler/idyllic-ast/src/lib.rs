@@ -77,6 +77,9 @@ pub enum Term {
     /// A sequence literal, `#[a, b, c]`: built with the constructors of
     /// whatever sequence type is expected (see [`Data::seq`]).
     Seq(Vec<LTerm>),
+    /// An array literal, `#[a; b; c]` (and `#[x;]`, `#[;]`): always an
+    /// `Array`, whatever is expected.
+    ArrayLit(Vec<LTerm>),
 }
 
 /// One clause of a handler: `op x k -> e`, or `return x -> e`.
@@ -173,7 +176,16 @@ pub enum Decl {
     /// function may be defined by several equations in a row, and an
     /// operator by equations written infix, `Z + m = m`.
     Def(Ident, Vec<LPat>, Option<LTerm>, Rhs),
+    /// `@native f : a`: something every back end implements itself (see
+    /// `idyllic_builtins::Native`), declared with its type.  Only at the top
+    /// level.
+    Native(Ident, LTerm),
 }
+
+/// The name a tuple, `(a, b)`, is built with (in a term, a pattern or a
+/// type): the renamer takes it to be the prelude's `Pair`, whatever else is
+/// called that.
+pub const TUPLE: &str = "(,)";
 
 /// A whole source text, which is one module: declarations, then optionally
 /// an expression to evaluate against them (what the REPL is given, mostly).
@@ -186,6 +198,9 @@ pub struct Program {
     /// how visible each name the definitions in `decls` define is, where an
     /// attribute says (a data type's or an effect's is on it)
     pub visibility: Vec<(Ident, Visibility)>,
+    /// the definitions `@terminating` says end, though the checker cannot
+    /// see why
+    pub terminating: Vec<Ident>,
     pub body: Option<LTerm>,
 }
 

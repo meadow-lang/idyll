@@ -1,0 +1,50 @@
+-- Idyll's standard library, laid out as Meadow's is.
+--
+-- Every package has it, as `Std`, with no `[dependencies]` line, and none
+-- of it is in scope until a `use` brings it: `use Std.Collections.List
+-- (map, foldr)`, or `Std.Num.Nat.plus` written out in full. Its modules:
+--
+--   Function          id, const, flip, compose, ...
+--   Bool              not, and, or, xor, implies
+--   Ordering          Less, Equal, Greater, and comparing in turn
+--   Cmp               comparing by a function passed along: minBy, maxBy,
+--                     comparing, lexicographic, ...
+--   Num.Int           abs, max, min, compare, pow, gcd, ...
+--   Num.Nat           the natural numbers, which types compute with, and
+--                     proofs about them
+--   Num.Fin           Fin n, the naturals below n: safe indices
+--   Eq                propositional equality: Refl, sym, trans, cong, subst
+--   Void              the empty type, absurd, neg
+--   Dec               decidable propositions: a proof, or a proof there is
+--                     none
+--   Maybe             what the prelude's Maybe needs
+--   Result            and its Result
+--   Either            one of two: Left or Right
+--   Tuple             on tuples, (a, b): the prelude's Pair a b
+--   Sigma             dependent pairs: a value, and something whose type
+--                     depends on it
+--   Collections.List  lists, and indexing them safely with a Fin
+--   Collections.Vec   vectors, whose length is in their type
+--   Collections.Array arrays, the rest of what the prelude declares; and
+--                     indices whose type says they are in range
+--   Collections.MArray
+--                     arrays used linearly, so always changed in place
+--   Collections.Vector
+--                     Meadow's persistent RRB vector
+--   Sort              a stable merge sort, of lists, arrays and vectors
+--   String            building strings
+--   Console           printing more than a line
+--   Fs, Process       files, arguments and the environment, beyond the
+--                     prelude's effects
+--   Exn               exceptions, as an effect: throw, toResult, catch
+--   State             a state, as an effect: get, put, and running with one
+--   Yield             generators, as an effect: yield, and collecting a list
+--
+-- Linearity runs through all of it: a function takes what it uses once as
+-- it is, what it may drop or only look at with the grade [0..1], and what it
+-- uses many times with []. So `List.map` takes its function with [] (it is
+-- called for each element) and its list as it is (each element is used
+-- once), and `List.length` takes its list with [0..1], since it drops the
+-- elements. Proofs take what only the types need with [0]. The collections
+-- that share their parts, arrays and vectors, are taken with [], and so is
+-- what they hand a function they are given.

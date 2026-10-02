@@ -1,0 +1,92 @@
+-- Mutable arrays: arrays changed in place, always. Every operation takes
+-- the array and gives it back, and the array is linear, used once each
+-- time: so nothing else ever holds it, and nothing ever needs a copy. Build
+-- one up with `write`s in a loop, then `freeze` it into an `Array`.
+--
+-- An element goes in unrestricted (`[]`), since reading it leaves it there
+-- too; and comes out in a box, `a []`, to be used as often as wanted: a
+-- read is `case read m i of (b, m2) -> let [x] = b in ..`, the array given
+-- back to use again.
+
+@native
+@pub
+MArray : Type -> Type
+
+-- `n` copies of `x`.
+@native
+@pub
+marrayNew : {a : Type} -> Int -> (x : [] a) -> MArray a
+
+-- How many elements, and the array back.
+@native
+@pub
+marrayLen : {a : Type} -> MArray a -> (Int [], MArray a)
+
+-- The element at `i`, and the array back. An index outside it is an error
+-- at run time.
+@native
+@pub
+marrayGet : {a : Type} -> MArray a -> Int -> (a [], MArray a)
+
+-- The array with `x` at `i`. An index outside it is an error at run time.
+@native
+@pub
+marraySet : {a : Type} -> MArray a -> Int -> (x : [] a) -> MArray a
+
+-- The array, done with: an `Array`, which may be shared.
+@native
+@pub
+marrayFreeze : {a : Type} -> MArray a -> Array a
+
+-- An array to change. One that is shared is copied the first time it is
+-- written to.
+@native
+@pub
+marrayThaw : {a : Type} -> (xs : [] Array a) -> MArray a
+
+@pub
+new : {a : Type} -> Int -> (x : [] a) -> MArray a
+new n x = marrayNew n x
+
+@pub
+length : {a : Type} -> MArray a -> (Int [], MArray a)
+length m = marrayLen m
+
+@pub
+read : {a : Type} -> MArray a -> Int -> (a [], MArray a)
+read m i = marrayGet m i
+
+@pub
+write : {a : Type} -> MArray a -> Int -> (x : [] a) -> MArray a
+write m i x = marraySet m i x
+
+@pub
+freeze : {a : Type} -> MArray a -> Array a
+freeze m = marrayFreeze m
+
+@pub
+thaw : {a : Type} -> (xs : [] Array a) -> MArray a
+thaw xs = marrayThaw xs
+
+-- What is at `i`, replaced by `f` of it.
+@pub
+modify : {a : Type} -> MArray a -> (i : [] Int) -> (f : [] ((x : [] a) -> a)) -> MArray a
+modify m i f = case marrayGet m i of
+  (b, m2) -> let [x] = b in marraySet m2 i (f x)
+
+-- What is at `i` and what is at `j`, the other way round.
+@pub
+swap : {a : Type} -> MArray a -> (i : [] Int) -> (j : [] Int) -> MArray a
+swap m i j = case marrayGet m i of
+  (bx, m2) -> case marrayGet m2 j of
+    (by, m3) -> let [x] = bx in let [y] = by in marraySet (marraySet m3 i y) j x
+
+-- `f` of each index, from `0` up to `n`, written there: an array made in
+-- place, and frozen.
+@pub
+generate : {a : Type} -> (n : [] Int) -> (fill : [] a) -> (f : [] ((i : [] Int) -> a)) -> Array a
+generate n fill f = marrayFreeze (generateFrom (marrayNew n fill) n f 0)
+
+@terminating
+generateFrom : {a : Type} -> MArray a -> (n : [] Int) -> (f : [] ((i : [] Int) -> a)) -> (i : [] Int) -> MArray a
+generateFrom m n f i = if i < n then generateFrom (marraySet m i (f i)) n f (i + 1) else m

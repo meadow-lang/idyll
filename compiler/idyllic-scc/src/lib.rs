@@ -91,6 +91,7 @@ pub fn scc_term(t: Term) -> Term {
         k @ (Type | Hole | Omitted | Inf | Lit(_) | Var(_) | SeqNil) => k,
         App(f, a) => App(Box::new(scc_term(*f)), Box::new(scc_term(*a))),
         SeqCons(h, t) => SeqCons(Box::new(scc_term(*h)), Box::new(scc_term(*t))),
+        ArrayLit(items) => ArrayLit(items.into_iter().map(scc_term).collect()),
         Ann(e, a) => Ann(Box::new(scc_term(*e)), Box::new(scc_term(*a))),
         Range(lo, hi) => Range(Box::new(scc_term(*lo)), Box::new(scc_term(*hi))),
         Pi(x, icit, g, dom, cod) => {
@@ -275,6 +276,7 @@ pub fn free_uniques(t: &Term) -> HashSet<usize> {
                 go(a, out);
             }
             BoxIntro(a) => go(a, out),
+            ArrayLit(items) => items.iter().for_each(|e| go(e, out)),
             LetBox(x, e, body) => {
                 go(e, out);
                 let mut inner = HashSet::new();

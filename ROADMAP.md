@@ -74,9 +74,18 @@ and the tour has steps for it.
   - Layout is suspended inside `#[ … ]`, so a `;` there is always the array's.
   - This is the reverse of Meadow's reading, where `;` marks a list
     (`[a; b]`) and `#[a, b]` is an array.
-- **The back ends are Glade and Silo, and live here.** Meadow's runtimes move
-  into this repository as Idyll's, and Meadow becomes a second front end that
-  compiles to the same AxCut; see *Back ends* below.
+- **The back ends are Glade and Silo**, which stay Meadow's (as BEAM is
+  Elixir's) and become a back end Idyll compiles to through Cut; see *Back
+  ends* below. Idyll's own `rts/` and `idyllic-llvm` stay until Idyll's
+  corpus runs on both (decided with Chris, 2026-10-02).
+- **A constructor may share its type's name** (Meadow's `Pair`, made by
+  `Pair`), and the `Mk` prefix is gone from Idyll's code. The bare name is
+  the type where a type is written (a signature, an annotation, a function
+  type, a constructor's fields) and the constructor in a term or a
+  pattern; a path is whichever it leads to, `Pair.Pair` the constructor and
+  `Std.Tuple.Pair` the type. Decided with Chris, 2026-10-02.
+- **Attributes go on a line of their own**, above what they are on, as a
+  matter of style (`@pub` then `data T ..`); the inline form still parses.
 
 ## Phase 0: Groundwork
 
@@ -96,7 +105,7 @@ Not ports, but needed before later phases can promise anything.
   passed where a meta is wanted is kept whole only if it fits; `id id`
   now instantiates the inner `id`.
 - [x] **Strict positivity checking.** A data type that is not strictly
-  positive, such as `data Bad = MkBad (Bad -> Int)`, loops with no recursion
+  positive, such as `data Bad = Bad (Bad -> Int)`, loops with no recursion
   at all, so "an empty row means it terminates" needs this as much as it
   needs universes. Checked one strongly connected group of declarations at
   a time, with nested occurrences (`Node a (List (Rose a))`) allowed where
@@ -130,9 +139,27 @@ neither does a negative data type. **Done** (`compiler/idyllic/tests/universes.r
   against a type declared `@seq(nil = .., cons = ..)`, built from its
   constructors, and the same as a pattern; a `List` (the prelude's, which is
   declared `@seq`) when nothing says which. Layout is suspended inside the
-  brackets. The contiguous half waits for traits (phase 4), and arrays,
-  `#[a; b]`, for the shared back ends; both are reported as not supported
-  yet. (`compiler/idyllic/tests/sequences.rs`)
+  brackets. The contiguous half waits for traits (phase 4).
+  (`compiler/idyllic/tests/sequences.rs`)
+- [x] **Arrays**, `#[a; b]` (`#[x;]`, `#[;]`), and **natives**: `@native
+  f : t` declares something every back end implements itself
+  (`idyllic_builtins::Native`), checked against what it is
+  (`idyllic-typecheck/src/natives.rs`). The prelude declares `Array` and
+  `arrayLen`, `arrayGet`, `arrayGetOr`, `arraySet`, `arrayPush`,
+  `arrayPop`, `arraySlice`, `arrayConcat`, `arrayFromList`,
+  `arrayToList`; `Std.Collections.MArray` the mutable ones. Arrays are
+  persistent and changed in place when unique: a native consumes its
+  arguments (AxCut's `extern` otherwise does not), so a count of `0` makes
+  it the native's. The AxCut machine, the C runtime (big arrays outside the
+  size-classed free lists), the reference interpreter and Cut
+  (`arrayGet` and the rest are the runtime's prims; a literal is a Cut
+  array) all have them. An index outside an array stops the program. No
+  array patterns yet. The world's `listDir` and `argv` answer arrays, and
+  `readDir` and `args` are prelude functions over them.
+- [x] **`@terminating`**, on a signature, vouches that a recursion ends that
+  the checker cannot see ending (an index counting up to a length): it
+  needs no `Div`, and stays opaque in types. The standard library's array
+  and vector loops use it.
 - [x] **Termination checker**, running on the elaborated case trees, as
   Agda's does (size-change: structural, mutual and lexicographic
   recursion). Recursive definitions that pass become transparent at the
@@ -286,13 +313,18 @@ examples need strings to take apart first (`Std.Yield` is the generators).
   `linker.rs`, `pgo.rs` and `runtime.rs` -- choosing and linking Glade or
   Silo. (`idyll-driver/tests/`)
 
-- [x] **The standard library**, `lib/std/`, as Meadow's `lib/std` is: a
+- [x] **The standard library**, `lib/Std/`, laid out as Meadow's `lib/Std` is: a
   package embedded in the compiler (`compiler/idyllic/src/stdlib.rs`),
   compiled once a process and given to every package, lone file and REPL as
   an implicit dependency called `Std`, linked only into programs that use
   it. Nothing of it is in scope until a `use` brings it. Modules: Function,
-  Bool, Ordering, Int, Nat, Eq, Void, Dec, Fin, Maybe, Result, Pair, Sigma,
-  List, Vec, String, Console, Throw, State, Yield. Meadow's as the model, with
+  Bool, Ordering, Cmp, Num.{Int, Nat, Fin}, Eq, Void, Dec, Maybe, Result,
+  Either, Tuple, Sigma, Collections.{List, Vec, Array, MArray, Vector}, Sort,
+  String, Console, Fs, Process, Exn, State, Yield. `Collections.Vector` is
+  Meadow's RRB vector with every one of its operations (two-level buffers at
+  each end, balanced and relaxed branches; `append` and `splitAt` rebuild),
+  checked against it at 100,000 elements natively; `Collections.Array`
+  indexes with a `Fin (size xs)` that `checkIndex` gives. Meadow's as the model, with
   dependent types where they say more: vectors indexed by length (`zip` of
   equal lengths, `append` into `plus n m`, `splitAt`, `fromList` into the
   list's `size`), `Fin` indices (`Vec.index`, and `List.nth` on a
@@ -302,7 +334,7 @@ examples need strings to take apart first (`Std.Yield` is the generators).
   operations wait for those features. Writing it found and fixed, in the
   checker: data types ordered by their kinds across modules; constraints on a
   meta applied to something postponed until the definition is checked (so
-  `MkSigma Z Nil` infers its family); rows and effect fitting pairing
+  `Sigma Z Nil` infers its family); rows and effect fitting pairing
   effects by head (`Throw String` against `Throw ?e`); unconstrained effect
   rows closed to the empty row; a row's effects ordered by number.
   (`compiler/idyllic/tests/std.rs`)
@@ -363,11 +395,13 @@ and a `Map` built with one `Ord` is rejected when used with another.
 
 ## Phase 5: Standard library
 
-- [ ] **Port `lib/std` in dependency order**: `Bool`, `Maybe`, `Either`,
-  `Result`, `Tuple`, `Function`, `Ordering`, `Cmp`; then `String`, `Char`,
-  `Bytes` and the parsers; then collections; then the effect modules (`Exn`,
-  `State`, `Console`, `Yield`/`Stream`, `Random`, `Time`, `Fs`, `Process`,
-  `Test`); then `Json`. (The prelude already declares `Maybe`, `Result`
+- [ ] **Port `lib/Std` in dependency order**: `Bool`, `Maybe`, `Either`,
+  `Result`, `Tuple`, `Function`, `Ordering`, `Cmp` (done, without traits:
+  comparisons are passed along); then `String`, `Char`, `Bytes` and the
+  parsers; then collections (`List`, `Array`, `Vector` done; `Map`, `Set`,
+  `HashMap` wait for traits); then the effect modules (`Exn`, `State`,
+  `Yield`, `Fs`, `Process` done; `Stream`, `Random`, `Time`, `Test` left);
+  then `Json`. (The prelude already declares `Maybe`, `Result`
   and the world's effects themselves; what is left of those modules is
   their functions, and the operations phase 2 left out.)
 - [ ] **Adapt rather than copy**: `Ref`, `Mut` and `St` become linear mutable
@@ -433,7 +467,7 @@ Work split: each session changes only its own repository.
   end in them; `meadow-codegen` and `meadow-llvm` cut loose; the runtimes
   read the declaration table instead of names. (`meadow-rt`,
   `meadow-axcut`; landed in Meadow's working tree, 2026-10-01.)
-- [~] **Idyll, step 1**:
+- [x] **Idyll, step 1**:
   - [x] `Int` 64-bit and wrapping everywhere (see below);
   - [x] `@many` operations, with clauses checked against them;
   - [x] row variables bounded to single-resumption effects by default: a
@@ -442,8 +476,10 @@ Work split: each session changes only its own repository.
     are Idyll's spelling), `Effect` is accepted where `Effect []` is, and
     instantiating an `Effect` row variable with a multi-shot effect is an
     error; effect aliases take their row's kind;
-  - [ ] representations for Idyll Core's variables, and public names as
-    symbols, to the spec's form;
+  - [x] representations for Idyll Core's variables, and public names as
+    symbols, to the spec's form (done with step 3: `typer.rs` reads a
+    representation off any term's type, arrays included, and every name has
+    a symbol, `idyll:Pkg/Mod.name`);
   - [x] Idyll's corpus as AxCut for the back end to test against
     (`axcut-corpus/`).
 - [~] **Step 2, Meadow, reviewed by Idyll**: the upper IR's text format spec,
@@ -465,11 +501,24 @@ Work split: each session changes only its own repository.
   natives, effects with `@many`, `case`, `prim if`, handlers binding `r` and
   `k`, `perform`, partial applications as objects, and descriptor
   parameters for type parameters. Every corpus program lowers or says what
-  is not lowered yet (`compiler/idyllic/tests/cut.rs`). Left: running it on
-  Meadow's reference interpreter once it exists; the prelude's `copy`,
-  `readDir` and `args` over the runtime's operations; a to-string for
-  answers that are not strings; effect variables on `def`s; symbols with
-  versions.
+  is not lowered yet (`compiler/idyllic/tests/cut.rs`). `copy` answers the
+  bytes copied, as `Fs.copy` does, and `listDir` and `argv` are the
+  runtime's `Fs.readDir` and `Process.argv`. A program's answer is written
+  out in Cut as the REPL writes it, and answered as a string
+  (`idyllic-cut/src/lower/show.rs`: monomorphic show `def`s per type, the
+  prelude's `showInt`, tuples, lists, arrays, boxes; strings quoted but
+  not escaped). Meadow's `meadow-cut` parser and reference interpreter run
+  Idyll's Cut (2026-10-02, not yet pushed). Also done: effect variables
+  on `def`s (`<e: Effect>`, `<e: ManyEffect>`); a package's version in its
+  symbols (`idyll:Util@0.1.0/double`, from the manifest); the natives with
+  no runtime primitive (`arrayToList`, `arrayFromList`, the mutable arrays)
+  as generic `def`s of the program's own; and `abort`, which no runtime
+  operation does, as a handler around the entry writing the message with
+  `putErr` and exiting 1. `cut-corpus/` holds every program of the test
+  corpora and the tutorial's sessions that runs (188 of them, every one
+  lowering) as Cut, with what it prints, its answer and its exit status
+  (`compiler/idyllic/examples/cut_corpus.rs`). Left: running it through
+  `meadow-cut` and comparing; then step 4.
   - [x] Local recursion is lifted, since Cut has none: a recursive
     definition inside another becomes a `def` of its own, named under the
     one it was in (`Main/rev.go`), whose first parameters are what it uses
@@ -490,8 +539,9 @@ Work split: each session changes only its own repository.
   `idyllic-llvm` and `rts/idyll_rt.c` retired once Idyll's corpus, tutorial
   and benchmarks pass on both.
 - [ ] **Step 6**: calling between languages.
-- [ ] **Arrays**: a primitive `Array n a`, sized in its type since a literal
-  knows its length, with `#[a; b]` literals and patterns.
+- [~] **Arrays**: `Array a` and `#[a; b]` literals are done (see phase 1),
+  natively and in Cut. Left: array patterns, and an `Array n a` sized in
+  its type.
 - [x] **One integer semantics.** Decided with Chris: `Int` is the runtime's
   primitive 64-bit integer, untagged, wrapping, in registers, as Meadow's is.
   Idyll's REPL, AxCut machine, reference interpreter and type checker all

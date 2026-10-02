@@ -228,6 +228,7 @@ impl Package {
         modules.sort_by_key(|m| !m.path.is_empty());
         idyllic::pipeline::PackageSource {
             name: self.name.clone(),
+            version: self.version.clone(),
             modules: modules
                 .into_iter()
                 .map(|m| idyllic::pipeline::ModuleFile {

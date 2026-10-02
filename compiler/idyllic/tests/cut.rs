@@ -38,9 +38,10 @@ fn has(text: &str, part: &str) {
 #[test]
 fn a_function_is_a_def_and_the_expression_the_entry() {
     let text = lowered("double : Int -> Int\ndouble n = n * 2\n\ndouble 21\n");
-    has(&text, "cut 0\nentry idyll:Main/\"#entry\"\nanswer none\n");
+    // its value is written out (see `an_answer_is_written_out_as_the_repl_writes_it`)
+    has(&text, "cut 0\nentry idyll:Main/\"#entry\"\nanswer str\n");
     has(&text, "def idyll:Main/double (n_N: i64; k_N: ptr) =\n  prim mul(n_N, 2; k_N)");
-    has(&text, "def idyll:Main/\"#entry\" (; k_N: ptr) =\n  idyll:Main/double(21; k_N)");
+    has(&text, "def idyll:Main/\"#entry\" (; k_N: ptr) =\n  idyll:Main/double(21; μ̃ answer_N: i64.\n    idyll:Prelude/showInt(answer_N; k_N))");
     // the prelude's effect alias is a type, nothing at run time
     assert!(!text.contains("Eff"), "{text}");
 }
@@ -58,7 +59,7 @@ fn data_is_declared_built_and_taken_apart() {
 fn a_type_parameter_is_a_descriptor() {
     let text = lowered("id : {a : Type} -> a -> a\nid x = x\n\nid 3\n");
     has(&text, "def idyll:Main/id <'a_N = d_a_N> (d_a_N: desc, x_N: 'a_N; k_N: ptr) =\n  <x_N | k_N>");
-    has(&text, "idyll:Main/id(desc(i64), 3; k_N)");
+    has(&text, "idyll:Main/id(desc(i64), 3; μ̃ answer_N: i64.");
 }
 
 #[test]
@@ -84,7 +85,8 @@ fn values_and_the_world() {
 #[test]
 fn a_bool_is_branched_on_with_if() {
     let text = lowered("if 1 < 2 then \"yes\" else \"no\"\n");
-    has(&text, "prim lt(1, 2; μ̃ v__N: bool.\n    prim if(v__N; μ̃ u_N: unit.\n      <\"no\" | k_N>, μ̃ u_N: unit.\n      <\"yes\" | k_N>))");
+    // (the two ways meet at a join point, where the answer is written out)
+    has(&text, "prim if(v__N; μ̃ u_N: unit.\n        <\"no\" | j_N>, μ̃ u_N: unit.\n        <\"yes\" | j_N>) | μ̃ answer_N: str.");
 }
 
 #[test]
@@ -95,7 +97,7 @@ fn handlers_bind_the_resumption_and_where_the_handle_goes() {
     has(&text, "perform idyll:Main/Ask.ask(unit; μ̃ v_N: i64.");
     has(&text, "idyll:Main/Ask.ask(v__N: unit; r_N: ptr, k_N: ptr) =>\n      <r_N | resume(10; k_N)>;");
     has(&text, "return(x_N: i64; k_N: ptr) =>\n      <x_N | k_N>");
-    has(&text, "} in μ b_N.\n    idyll:Main/sum3(unit; b_N)\n  ; k_N");
+    has(&text, "} in μ b_N.\n    idyll:Main/sum3(unit; b_N)\n  ; μ̃ answer_N: i64.");
     // an operation resumed more than once says so
     let choose = "effect Choose where\n  @many flip : () -> Bool\n\npick : () -> Int ! Choose\npick u = if flip () then 1 else 10\n\n";
     let text = lowered(&format!("{choose}handle pick () with\n  flip _ k -> k True + k False\n"));
@@ -106,7 +108,7 @@ fn handlers_bind_the_resumption_and_where_the_handle_goes() {
 fn a_partial_application_waits_for_the_rest() {
     let text = lowered("add : Int -> Int -> Int\nadd a b = a + b\n\nlet f = add 1 in f 2\n");
     // `add 1` is an object taking `b`, as an `i64`, then calling `add`
-    has(&text, "<cocase {\n    apply(a_N: i64; k_N: ptr) =>\n      idyll:Main/add(1, a_N; k_N)\n  } | μ̃ f_N: ptr.\n    <f_N | apply(2; k_N)>>");
+    has(&text, "<cocase {\n    apply(a_N: i64; k_N: ptr) =>\n      idyll:Main/add(1, a_N; k_N)\n  } | μ̃ f_N: ptr.\n    <f_N | apply(2; μ̃ answer_N: i64.");
 }
 
 #[test]
@@ -147,19 +149,45 @@ fn a_lifted_definition_is_told_the_types_it_was_generic_in() {
 
 #[test]
 fn what_a_program_uses_of_std_is_lowered_with_it_under_stds_symbols() {
-    let text = lowered("use Std.List (sum)
+    let text = lowered("use Std.Collections.List (sum)
 
 sum #[1, 2]
 ");
-    has(&text, "def idyll:Std/List.sum (");
+    has(&text, "def idyll:Std/Collections.List.sum (");
     // and nothing of it that the program does not use
-    assert!(!text.contains("idyll:Std/List.map"), "{text}");
+    assert!(!text.contains("idyll:Std/Collections.List.map"), "{text}");
 }
 
 #[test]
-fn what_is_not_lowered_yet_says_so() {
-    let err = cut("case readDir \".\" of\n  Ok names -> names\n  Err e -> #[e]\n").expect_err("readDir has no runtime operation of its shape");
-    assert!(err.iter().any(|e| e.contains("readDir has no runtime operation of its shape yet")), "{err:?}");
+fn abort_is_given_up_on_in_the_programs_own_code() {
+    // no runtime operation aborts: a handler around the entry writes the
+    // message to standard error and exits with status 1, as Idyll's world
+    let text = lowered("main : () -> () ! Abort\nmain () = abort \"no\"\n");
+    has(&text, "idyll:Prelude/Abort.abort(message_N: str; r_N: ptr, k_N: ptr) =>");
+    has(&text, "perform idyll:Prelude/Console.putErr(line_N;");
+    has(&text, "perform idyll:Prelude/Process.exit(1;");
+    // and it is not one of the runtime's
+    assert!(!text.contains("Abort.abort = "), "{text}");
+}
+
+#[test]
+fn an_array_is_the_runtimes_array() {
+    let text = lowered("arrayGet (arrayPush #[1; 2] 3) 0\n");
+    has(&text, "<[1, 2] | μ̃ v_N: ptr.\n    prim arrayPush(v_N, 3; μ̃ v_N: ptr.\n      prim arrayGet(v_N, 0; μ̃ answer_N: i64.");
+}
+
+#[test]
+fn listing_a_directory_is_the_runtimes_read_dir() {
+    let text = lowered(
+        "first : (r : [0..1] Result String (Array String)) -> String
+first (Ok names) = arrayGetOr \"none\" names 0
+first (Err e) = e
+
+main : () -> () ! {Fs, Console}
+main () = putStrLn (first (listDir \".\"))
+",
+    );
+    has(&text, "Fs.readDir");
 }
 
 #[test]
@@ -188,4 +216,70 @@ fn every_program_in_the_corpora_lowers() {
     }
     assert!(lowered_ok > 40, "only {lowered_ok} programs lowered");
     assert!(unexpected.is_empty(), "{}", unexpected.join("\n\n"));
+}
+
+#[test]
+fn an_answer_is_written_out_as_the_repl_writes_it() {
+    // the runtimes print only strings, so a program's value is shown in
+    // Cut, as the REPL shows it, and answered as a string
+    let text = lowered("Just (1, True)\n");
+    has(&text, "answer str");
+    has(&text, "def idyll:Main/\"#show Maybe (Int, Bool)\" (x_N: ptr; k_N: ptr) =");
+    has(&text, "prim concatStrings([\"Just\", \" \", s_N]; k_N)");
+    // a tuple brings its own parentheses, and an integer is the prelude's
+    // `showInt`
+    has(&text, "prim concatStrings([\"(\", s_N, \")\"]; k_N)");
+    has(&text, "def idyll:Prelude/showInt (");
+    // a field with fields of its own is parenthesised
+    let text = lowered("Just (1 :: Nil)\n");
+    has(&text, "def idyll:Main/\"#atom List Int\"");
+    // an array, a string and a box
+    let text = lowered("#[\"a\"; \"b\"]\n");
+    has(&text, "def idyll:Main/\"#show Array String\"");
+    has(&text, "prim concatStrings([\"\\\"\", e_N, \"\\\"\"]");
+    // a function has nothing to show
+    has(&lowered("\\(x : Int) -> x\n"), "answer none");
+    // and a run of `main` answers nothing
+    has(&lowered("main : () -> () ! Console\nmain () = putStrLn \"hi\"\n"), "answer none");
+}
+
+#[test]
+fn an_effect_variable_is_declared_on_its_def() {
+    let text = lowered("twice : (f : [2] (Int -> Int ! e)) -> Int -> Int ! e\ntwice f x = f (f x)\n\ntwice (\\(n : Int) -> n + 1) 0\n");
+    has(&text, "def idyll:Main/twice <e_N: Effect> (f_N: ptr, x_N: i64; k_N: ptr) =");
+    // one that may stand for an effect resumed more than once
+    let text = lowered("again : {e : Effect []} -> (f : [2] (() -> Int ! e)) -> Int ! e\nagain f = f () + f ()\n\nagain (\\(u : ()) -> 1)\n");
+    has(&text, "def idyll:Main/again <e_N: ManyEffect> (f_N: ptr; k_N: ptr) =");
+}
+
+#[test]
+fn a_package_with_a_version_is_named_with_it() {
+    // `idyll:Util@0.1.0/double`: the symbols a back end links by say which
+    // version of a package they are from
+    let mut source = pipeline::PackageSource::single("Util", "src/Lib.idl", "double : Int -> Int\ndouble n = n * 2\n\ndouble 21\n");
+    source.version = Some("0.1.0".into());
+    let out = pipeline::check_package_with(&source, pipeline::Deps::default(), &Options { debug: false, style: OutputStyle::PLAIN, live: false }, true);
+    assert!(!out.has_errors(), "{:#?}", out.diagnostics);
+    let mut checked = out.checked.expect("checked");
+    let text = idyllic_cut::lower::lower(&mut checked, "Util@0.1.0").expect("lowers").to_string();
+    has(&text, "def idyll:Util@0.1.0/double (");
+    // the prelude has none
+    has(&text, "idyll:Prelude/showInt");
+}
+
+#[test]
+fn a_native_with_no_primitive_is_a_def_of_the_programs_own() {
+    // generic in the element, as a Cut function is: a descriptor for it
+    let text = lowered("arrayToList #[1; 2]\n");
+    has(&text, "def idyll:Main/\"#arrayToList\" <'a_N = d_N> (d_N: desc, xs_N: ptr; k_N: ptr) =");
+    has(&text, "idyll:Main/\"#arrayToList\"(desc(i64), v_N;");
+    has(&text, "prim arrayGet(xs_N, i_N; μ̃ e_N: 'a_N.");
+    // a list that is not written out is pushed, element by element
+    let text = lowered("f : List Int -> Array Int\nf xs = arrayFromList xs\n\nf (1 :: Nil)\n");
+    has(&text, "def idyll:Main/\"#arrayFromList\".go <'a_N = d_N> (d_N: desc, l_N: ptr, acc_N: ptr; k_N: ptr) =");
+    // a mutable array is the runtime's, and a read gives it back with what
+    // it read boxed
+    let text = lowered("Std.Collections.MArray.freeze (Std.Collections.MArray.write (Std.Collections.MArray.new 2 0) 1 5)\n");
+    has(&text, "def idyll:Main/\"#marrayNew\"");
+    has(&text, "prim arraySet(");
 }

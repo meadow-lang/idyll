@@ -43,10 +43,10 @@ fn every_package_has_std_without_asking_for_it() {
     // against it, on the machine as compiled from what the build kept
     let dir = scratch("std");
     let app = common::fixture(&dir, "App");
-    common::write(&app.join("src/Main.idl"), "use Std.List (sum, reverse)
-use Std.Nat (fromInt)
+    common::write(&app.join("src/Main.idl"), "use Std.Collections.List (sum, reverse)
+use Std.Num.Nat (fromInt)
 
-sum (reverse (Std.List.range 1 (fromInt 4)))
+sum (reverse (Std.Collections.List.range 1 (fromInt 4)))
 ");
     let out = pipeline::build(&app, Profile::Debug, &common::OPTS);
     assert!(said(&out).is_empty(), "{:?}", said(&out));

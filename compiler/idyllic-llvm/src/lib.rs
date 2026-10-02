@@ -180,6 +180,8 @@ struct Emitter<'p> {
     /// the world's operations the program performs, and their arities, to
     /// declare
     world: BTreeMap<&'static str, usize>,
+    /// the natives the program uses, and their arities, likewise
+    natives: BTreeMap<&'static str, usize>,
 }
 
 pub fn emit(program: &Program, result: ResultKind) -> Result<String, String> {
@@ -234,6 +236,7 @@ pub fn emit(program: &Program, result: ResultKind) -> Result<String, String> {
         next: 0,
         result,
         world: BTreeMap::new(),
+        natives: BTreeMap::new(),
     };
     for d in &program.definitions {
         e.function(&format!("L.{}", d.label), &d.params, None, &d.body)?;
@@ -279,6 +282,10 @@ pub fn emit(program: &Program, result: ResultKind) -> Result<String, String> {
     for (name, arity) in &e.world {
         let words = vec!["i64"; *arity].join(", ");
         writeln!(out, "declare void @idyll_op_{name}({words}, ptr, ptr)").unwrap();
+    }
+    for (name, arity) in &e.natives {
+        let values = vec!["ptr, i64"; *arity].join(", ");
+        writeln!(out, "declare void @idyll_native_{name}({values}, ptr, ptr)").unwrap();
     }
     out.push('\n');
     for t in &e.tables {
@@ -741,6 +748,28 @@ impl<'p> Emitter<'p> {
                 }
                 self.call(f, &format!("@\"L.{l}\""), "undef", &values)
             }
+            // a native, in the runtime: it consumes what it is given, and
+            // gives back a value through two places in this frame
+            Stmt::Extern(Extern::Native(native), args, branches) => {
+                let values = Self::take(&mut env, args)?;
+                self.natives.insert(native.name(), values.len());
+                let mut passed = Vec::new();
+                for v in &values {
+                    let (block, word) = Self::data(v)?;
+                    passed.push(format!("ptr {block}, i64 {word}"));
+                }
+                self.next += 1;
+                let id = self.next;
+                writeln!(self.allocas, "  %nb{id} = alloca ptr\n  %nw{id} = alloca i64").unwrap();
+                writeln!(f, "  call void @idyll_native_{}({}, ptr %nb{id}, ptr %nw{id})", native.name(), passed.join(", ")).unwrap();
+                let (block, word) = (self.fresh("r"), self.fresh("r"));
+                writeln!(f, "  {block} = load ptr, ptr %nb{id}").unwrap();
+                writeln!(f, "  {word} = load i64, ptr %nw{id}").unwrap();
+                let [branch] = branches.as_slice() else { return Err(format!("{} continues one way", native.name())) };
+                let [result] = branch.params.as_slice() else { return Err(format!("{} binds one variable", native.name())) };
+                env.push((result.clone(), Val::Data { block, word, external: false }));
+                self.stmt(f, &branch.body, env)
+            }
             Stmt::Extern(op, args, branches) => {
                 let words: Vec<String> =
                     args.iter().map(|a| Ok(Self::data(Self::lookup(&env, a)?)?.1.to_string())).collect::<Result<_, String>>()?;
@@ -776,6 +805,7 @@ impl<'p> Emitter<'p> {
                         writeln!(f, "  {r} = call i64 @idyll_str_append(i64 {}, i64 {})", words[0], words[1]).unwrap();
                         r
                     }
+                    Extern::Native(_) => unreachable!("a native is handled above"),
                     // the end of the program, wherever on the stack it is
                     Extern::Halt => {
                         let answer = &words[0];

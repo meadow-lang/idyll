@@ -64,7 +64,7 @@ fn reference(out: &Output) -> Result<Option<Answer>, String> {
         None => Ok(None),
         Some(Ok(o)) => Ok(Some(answer(printed, o.answer))),
         Some(Err(EvalError::OutOfFuel)) => Ok(Some(Answer::Diverges)),
-        Some(Err(e @ (EvalError::Exited(_) | EvalError::TestFailed(_)))) => {
+        Some(Err(e @ (EvalError::Exited(_) | EvalError::TestFailed(_) | EvalError::Stopped(_)))) => {
             Ok(Some(printing(printed, Answer::Ended(e.to_string()))))
         }
         Some(Err(e)) => Err(e.to_string()),
@@ -79,7 +79,13 @@ fn machine(program: &idyllic_seq::Program) -> Result<Answer, String> {
         Ok(o) if o.memory.leaked + o.memory.miscounted > 0 => Err(o.memory.to_string()),
         Ok(o) => Ok(answer(printed, o.answer)),
         Err(MachineError::OutOfFuel) => Ok(Answer::Diverges),
-        Err(e @ (MachineError::Exited(_) | MachineError::TestFailed(_))) => Ok(printing(printed, Answer::Ended(e.to_string()))),
+        Err(
+            e @ (MachineError::Exited(_)
+            | MachineError::TestFailed(_)
+            | MachineError::DivisionByZero
+            | MachineError::OutOfBounds { .. }
+            | MachineError::EmptyArray),
+        ) => Ok(printing(printed, Answer::Ended(e.to_string()))),
         Err(e) => Err(e.to_string()),
     }
 }
@@ -117,9 +123,7 @@ fn check(what: &str, src: &str, out: &Output, failures: &mut Vec<String>) -> boo
         Some(Evaluation::Opaque) => answer(out.printed.clone(), None),
         Some(Evaluation::OutOfFuel) => return true,
         Some(Evaluation::Exited(code)) => printing(out.printed.clone(), Answer::Ended(format!("exited with {code}"))),
-        Some(Evaluation::Stopped(why)) if why.starts_with("test failed") => {
-            printing(out.printed.clone(), Answer::Ended(why.clone()))
-        }
+        Some(Evaluation::Stopped(why)) => printing(out.printed.clone(), Answer::Ended(why.clone())),
         other => {
             failures.push(format!("{what}: the pipeline gave {other:?}\n{src}"));
             return true;

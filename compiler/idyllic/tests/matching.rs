@@ -316,7 +316,7 @@ fn only_a_forced_argument_may_be_large() {
     accepts(&format!("{NAT}{VEC}"));
     // but a type hidden inside a value is a set of all sets
     rejects(
-        "data Box : Type where\n  MkBox : {a : Type} -> a -> Box\n",
+        "data Box : Type where\n  Box : {a : Type} -> a -> Box\n",
         &["field too large for its data type: this field's type lives in Type 1, but Box lives in Type"],
     );
 }

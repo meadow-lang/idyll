@@ -22,7 +22,7 @@ fn diags(out: &pipeline::Output) -> Vec<String> {
 
 fn package(name: &str, root: &str) -> PackageSource {
     let file = format!("{name}/src/Lib.idl");
-    PackageSource { name: name.into(), modules: vec![ModuleFile { path: Vec::new(), file, text: root.into() }] }
+    PackageSource { name: name.into(), version: None, modules: vec![ModuleFile { path: Vec::new(), file, text: root.into() }] }
 }
 
 /// Compile a library against what it depends on.
@@ -37,10 +37,10 @@ fn program(root: &str, all: &[&CompiledPackage], direct: &[(&str, &CompiledPacka
     pipeline::run_package_with(&package("App", root), deps, &OPTIONS, Vec::new())
 }
 
-const UTIL: &str = "@pub double : Int -> Int\ndouble n = n * 2\n\n\
-                    @pub data Nat = Z | S Nat\n\nuse Nat.*\n\n\
-                    @pub plus : Nat -> Nat -> Nat\nplus Z m = m\nplus (S n) m = S (plus n m)\n\n\
-                    @pub greeting : String\ngreeting = \"hello\"\n\n\
+const UTIL: &str = "@pub\ndouble : Int -> Int\ndouble n = n * 2\n\n\
+                    @pub\ndata Nat = Z | S Nat\n\nuse Nat.*\n\n\
+                    @pub\nplus : Nat -> Nat -> Nat\nplus Z m = m\nplus (S n) m = S (plus n m)\n\n\
+                    @pub\ngreeting : String\ngreeting = \"hello\"\n\n\
                     secret : Int\nsecret = 7\n";
 
 #[test]
@@ -86,7 +86,7 @@ fn a_chain_of_packages_links_in_order() {
     let util = library("Util", UTIL, &[], &[], 1);
     let text = library(
         "Text",
-        "use Util (double, greeting)\n\n@pub shout : Int\nshout = double (double 5)\n\n@pub hello : String\nhello = greeting\n",
+        "use Util (double, greeting)\n\n@pub\nshout : Int\nshout = double (double 5)\n\n@pub\nhello : String\nhello = greeting\n",
         &[&util],
         &[("Util", &util)],
         2,
@@ -104,8 +104,8 @@ fn a_chain_of_packages_links_in_order() {
 #[test]
 fn a_packages_types_are_its_own() {
     // two packages each declaring a `Shape` have two types
-    let a = library("A", "@pub data Shape = Circle Int\n", &[], &[], 1);
-    let b = library("B", "@pub data Shape = Circle Int\n\n@pub radius : Shape -> Int\nradius s = case s of\n  Shape.Circle r -> r\n", &[], &[], 2);
+    let a = library("A", "@pub\ndata Shape = Circle Int\n", &[], &[], 1);
+    let b = library("B", "@pub\ndata Shape = Circle Int\n\n@pub\nradius : Shape -> Int\nradius s = case s of\n  Shape.Circle r -> r\n", &[], &[], 2);
     let out = program("use A (Shape)\nuse B (radius)\n\nradius (Shape.Circle 1)\n", &[&a, &b], &[("A", &a), ("B", &b)]);
     assert_eq!(diags(&out), ["type mismatch: expected Shape, but this has type Shape"]);
 }

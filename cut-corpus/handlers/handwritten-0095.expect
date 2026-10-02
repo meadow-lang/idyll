@@ -1,0 +1,14 @@
+-- | effect Yield where
+-- |   yield : (x : [] Int) -> Unit
+-- | 
+-- | from : (n : [] Int) -> Unit ! {Yield, Div}
+-- | from n = let u = yield n in from (n + 1)
+-- | 
+-- | first : Unit -> ((n : [] Int) -> List Int ! Div) ! Div
+-- | first u = handle from 0 with
+-- |   return v -> \(n : [] Int) -> Nil
+-- |   yield x k -> \(n : [] Int) -> if n == 0 then Nil else x :: k () (n - 1)
+-- | 
+-- | first () 5
+answer: 0 :: 1 :: 2 :: 3 :: 4 :: Nil
+exit: 0

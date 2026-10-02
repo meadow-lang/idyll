@@ -162,10 +162,10 @@ fn a_case_must_cover_the_type_and_nothing_else() {
 
 #[test]
 fn types_can_take_several_parameters_and_be_recursive() {
-    let src = "data Pair a b = MkPair a b\nuse Pair.*\ndata Tree a = Leaf | Node (Tree a) a (Tree a)\n\nuse Tree.*\n\n\
+    let src = "data Two a b = Two a b\nuse Two.*\ndata Tree a = Leaf | Node (Tree a) a (Tree a)\n\nuse Tree.*\n\n\
                size : {a : Type} -> Tree (a [0]) -> Int\n\
                size t = case t of\n  Leaf -> 0\n  Node l x r -> let [y] = x in size l + 1 + size r\n\n";
-    assert_eq!(result(&format!("{src}MkPair 1 True")), "MkPair 1 True : Pair Int Bool");
+    assert_eq!(result(&format!("{src}Two 1 True")), "Two 1 True : Two Int Bool");
     assert_eq!(result(&format!("{src}size (Node (Node Leaf [1] Leaf) [2] Leaf)")), "2 : Int");
 }
 

@@ -90,19 +90,19 @@ fn a_signature_can_be_in_any_universe() {
 fn a_data_type_cannot_hold_a_type() {
     // the shape of every "set of all sets" paradox
     rejects(
-        "data U = MkU Type",
+        "data U = U Type",
         &["field too large for its data type: this field's type lives in Type 1, but U lives in Type"],
     );
     rejects(
-        "data Poly = MkPoly ((a : Type) -> a -> a)",
+        "data Poly = Poly ((a : Type) -> a -> a)",
         &["field too large for its data type: this field's type lives in Type 1, but Poly lives in Type"],
     );
 }
 
 #[test]
 fn small_data_types_are_unaffected() {
-    accepts("data Pair a b = MkPair a b\n\nuse Pair.*\n\nMkPair 1 True");
-    accepts("data Proxy (a : Type 1) = MkProxy\n\nuse Proxy.*\n\n(MkProxy : Proxy Type)");
+    accepts("data Pair a b = Pair a b\n\nuse Pair.*\n\nPair 1 True");
+    accepts("data Proxy (a : Type 1) = Proxy\n\nuse Proxy.*\n\n(Proxy : Proxy Type)");
 }
 
 // ---------------------------------------------------------------------------
@@ -112,27 +112,27 @@ fn small_data_types_are_unaffected() {
 #[test]
 fn a_type_may_not_appear_to_the_left_of_an_arrow_in_its_own_fields() {
     rejects(
-        "data Bad = MkBad (Bad -> Int)",
-        &["Bad is not strictly positive: it appears to the left of an arrow in this field of MkBad"],
+        "data Bad = Bad (Bad -> Int)",
+        &["Bad is not strictly positive: it appears to the left of an arrow in this field of Bad"],
     );
     rejects(
-        "data Bad = MkBad ((Int -> Bad) -> Int)",
-        &["Bad is not strictly positive: it appears to the left of an arrow in this field of MkBad"],
+        "data Bad = Bad ((Int -> Bad) -> Int)",
+        &["Bad is not strictly positive: it appears to the left of an arrow in this field of Bad"],
     );
 }
 
 #[test]
 fn to_the_right_of_every_arrow_is_fine() {
-    accepts("data Stream = MkStream (Int -> Stream)");
+    accepts("data Stream = Stream (Int -> Stream)");
     accepts("data Tree = Leaf | Node Tree Int Tree");
-    accepts("data Inf = MkInf (Int -> Bool -> Inf) Int");
+    accepts("data Inf = Inf (Int -> Bool -> Inf) Int");
 }
 
 #[test]
 fn a_type_may_not_appear_in_its_own_arguments() {
     rejects(
-        "data Bad a = MkBad (Bad (Bad a))",
-        &["Bad is not strictly positive: it appears in an argument of itself in this field of MkBad"],
+        "data Bad a = Bad (Bad (Bad a))",
+        &["Bad is not strictly positive: it appears in an argument of itself in this field of Bad"],
     );
     // a different argument at the recursive occurrence is fine, though
     accepts("data Nest a = NilN | ConsN a (Nest (Maybe a))\nuse Nest.*\ndata Maybe a = Nothing | Just a");
@@ -142,15 +142,15 @@ fn a_type_may_not_appear_in_its_own_arguments() {
 fn nested_occurrences_follow_the_parameters_polarity() {
     // List's parameter is strictly positive, so a rose tree is fine
     accepts("data Rose a = Node a (List (Rose a))");
-    accepts("data Box a = MkBox a\nuse Box.*\ndata T = MkT (Box T)");
+    accepts("data Box a = Box a\nuse Box.*\ndata T = T (Box T)");
     // but a type whose parameter is used negatively passes the problem on
     rejects(
-        "data Neg a = MkNeg (a -> Int)\nuse Neg.*\ndata Bad = MkBad (Neg Bad)",
-        &["Bad is not strictly positive: it appears inside Neg, whose parameter is not strictly positive, in this field of MkBad"],
+        "data Neg a = Neg (a -> Int)\nuse Neg.*\ndata Bad = Bad (Neg Bad)",
+        &["Bad is not strictly positive: it appears inside Neg, whose parameter is not strictly positive, in this field of Bad"],
     );
     rejects(
-        "data Bad = MkBad (List (Bad -> Int))",
-        &["Bad is not strictly positive: it appears to the left of an arrow in this field of MkBad"],
+        "data Bad = Bad (List (Bad -> Int))",
+        &["Bad is not strictly positive: it appears to the left of an arrow in this field of Bad"],
     );
 }
 
@@ -160,18 +160,18 @@ fn mutually_recursive_types_are_checked_together() {
     // B is what appears to the left of the arrow, and it is only a problem
     // because B in turn contains an A
     rejects(
-        "data A = MkA (B -> Int)\nuse A.*\ndata B = MkB A",
-        &["B is not strictly positive: it appears to the left of an arrow in this field of MkA"],
+        "data A = A (B -> Int)\nuse A.*\ndata B = B A",
+        &["B is not strictly positive: it appears to the left of an arrow in this field of A"],
     );
     // without that, a type from an earlier group is just a type
-    accepts("data B = MkB Int\nuse B.*\ndata A = MkA (B -> Int)");
+    accepts("data B = B Int\nuse B.*\ndata A = A (B -> Int)");
 }
 
 #[test]
 fn an_unknown_type_former_cannot_be_trusted() {
     rejects(
-        "data Bad (f : Type -> Type) = MkBad (f (Bad f))",
-        &["Bad is not strictly positive: it appears under a type it is not known to be positive in, in this field of MkBad"],
+        "data Bad (f : Type -> Type) = Bad (f (Bad f))",
+        &["Bad is not strictly positive: it appears under a type it is not known to be positive in, in this field of Bad"],
     );
 }
 

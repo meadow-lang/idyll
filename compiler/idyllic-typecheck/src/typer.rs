@@ -19,7 +19,7 @@ use super::core::{lit_builtin, CaseAlt, Core, Head, Lvl, Note};
 use super::value::{vvar, Closure, Poly, Value};
 use super::{BinderInfo, Checker, Ctx, MetaEntry};
 use crate::grade::Grade;
-use idyllic_builtins::Builtin;
+use idyllic_builtins::{Builtin, Native};
 use idyllic_hir::NodeId;
 use std::rc::Rc;
 
@@ -42,6 +42,35 @@ pub enum Rep {
     Any,
     /// a type, a grade or an effect: nothing at run time
     Erased,
+}
+
+/// What a value of a type looks like written out, as the REPL shows one:
+/// what a back end that prints a program's answer must write.
+#[derive(Clone, Debug)]
+pub enum Shown {
+    Int,
+    Bool,
+    Unit,
+    Str,
+    /// a box, `[v]`, of what is inside
+    Box(Rc<Value>),
+    /// an array, `#[a; b]`, of these
+    Array(Rc<Value>),
+    /// data: the type, written out (which names what shows it), and each
+    /// constructor that can make a value of it, with its fields' types
+    Data { key: String, ctors: Vec<ShownCtor> },
+    /// a function, a type, or data whose fields' types depend on what is
+    /// in them: nothing the REPL would show
+    Nothing,
+}
+
+/// A constructor that can make a value of a type, with its fields' types
+/// there.
+#[derive(Clone, Debug)]
+pub struct ShownCtor {
+    pub unique: usize,
+    pub name: String,
+    pub fields: Vec<Rc<Value>>,
 }
 
 /// A program's types after checking: see the module docs.
@@ -141,6 +170,8 @@ impl Typer {
             Value::Comp(a, _) => self.rep(s, a),
             // a data type is on the heap; an effect is no value at all
             Value::Opaque(u, _, _) if self.chk.datas.contains_key(u) => Rep::Ptr,
+            // an array: a heap object
+            Value::Opaque(u, _, _) if self.chk.natives.get(u).is_some_and(|n| n.native.is_type()) => Rep::Ptr,
             Value::Opaque(u, _, _) if self.chk.effects.contains_key(u) => Rep::Erased,
             // a type variable, which a descriptor stands for
             Value::Rigid(l, _, sp) if sp.is_empty() => match s.ctx.binders.get(*l).map(|b| self.chk.force(b.ty.clone())) {
@@ -164,6 +195,15 @@ impl Typer {
     pub fn is_type_binder(&mut self, s: &Scope, ty: &Rc<Core>) -> bool {
         let v = self.chk.eval(&s.ctx.env, ty);
         matches!(*self.chk.force(v), Value::Type(_))
+    }
+
+    /// The kind of the effect variable a binder of type `ty` binds:
+    /// `Some(false)` for `Effect`, `Some(true)` for `Effect []` (one that
+    /// may stand for an effect resumed more than once), `None` for a binder
+    /// of anything else.
+    pub fn effect_binder_kind(&mut self, s: &Scope, ty: &Rc<Core>) -> Option<bool> {
+        let v = self.chk.eval(&s.ctx.env, ty);
+        self.chk.row_kind(&v)
     }
 
     /// Whether the term `c` (in `s`) is a type: what an erased argument for a
@@ -292,6 +332,79 @@ impl Typer {
     pub fn alt_types(&mut self, s: &Scope, scrutinee: &Rc<Core>, alt: &CaseAlt) -> Vec<Rc<Value>> {
         let inner = self.alt_scope(s, scrutinee, alt);
         (s.ctx.lvl..inner.ctx.lvl).map(|l| inner.ctx.binders[l].ty.clone()).collect()
+    }
+
+    /// A type, as a value, in `s`.
+    pub fn eval_type(&self, s: &Scope, ty: &Rc<Core>) -> Rc<Value> {
+        self.chk.eval(&s.ctx.env, ty)
+    }
+
+    /// What a value of `ty` looks like written out: see [`Shown`].
+    pub fn shown(&mut self, s: &Scope, ty: &Rc<Value>) -> Shown {
+        let ty = self.chk.force(ty.clone());
+        match &*ty {
+            Value::LitTy(Builtin::Int) => Shown::Int,
+            Value::LitTy(Builtin::Bool) => Shown::Bool,
+            Value::LitTy(Builtin::Unit) => Shown::Unit,
+            Value::LitTy(Builtin::Str) => Shown::Str,
+            Value::BoxTy(_, a) => Shown::Box(a.clone()),
+            Value::Opaque(u, _, sp) if self.chk.natives.get(u).is_some_and(|n| n.native == Native::Array) => {
+                match sp.as_slice() {
+                    [super::value::Elim::App(a)] => Shown::Array(a.clone()),
+                    _ => Shown::Nothing,
+                }
+            }
+            Value::Opaque(u, _, _) if self.chk.datas.contains_key(u) => {
+                let key = self.chk.quote(s.ctx.lvl, ty.clone()).to_string();
+                // (a metavariable left in it: something it was not told)
+                if key.contains('?') {
+                    return Shown::Nothing;
+                }
+                let mut ctors: Vec<usize> = self.chk.datas[u].clone();
+                ctors.sort_by_key(|c| self.chk.ctors.get(c).map_or(0, |i| i.tag));
+                let mut out = Vec::new();
+                for c in ctors {
+                    let name = self.chk.ctors.get(&c).map_or_else(String::new, |i| i.name.clone());
+                    // one that cannot make a value of this type, as `Nil`
+                    // cannot a `Vec (S n) a`, has no value to show
+                    if let Some(fields) = self.ctor_fields(s, c, &ty) {
+                        out.push(ShownCtor { unique: c, name, fields });
+                    }
+                }
+                Shown::Data { key, ctors: out }
+            }
+            _ => Shown::Nothing,
+        }
+    }
+
+    /// The written form of a type, as `Shown::Data`'s key is: `None` if
+    /// it has an unsolved metavariable in it.
+    pub fn type_key(&mut self, s: &Scope, ty: &Rc<Value>) -> Option<String> {
+        let key = self.chk.quote(s.ctx.lvl, ty.clone()).to_string();
+        (!key.contains('?')).then_some(key)
+    }
+
+    /// The types of the fields of constructor `c` making a value of `ty`,
+    /// if it can make one.
+    fn ctor_fields(&mut self, s: &Scope, c: usize, ty: &Rc<Value>) -> Option<Vec<Rc<Value>>> {
+        let mut cty = self.chk.constants.get(&c)?.clone();
+        let params = self.ctor_params(c);
+        let all = params + self.chk.ctors.get(&c)?.fields;
+        let mut fields = Vec::new();
+        for i in 0..all {
+            let forced = self.chk.force(cty.clone());
+            let Value::Pi { dom, cod, .. } = &*forced else { return None };
+            // every argument a metavariable: the parameters are what the
+            // type says, and a field another's type depends on is unknown
+            let m = self.chk.fresh_meta(&s.ctx, NodeId(0), "a constructor's argument");
+            let v = self.chk.eval(&s.ctx.env, &m);
+            if i >= params {
+                fields.push(dom.clone());
+            }
+            cty = self.chk.apply(cod, v);
+        }
+        let (result, _) = self.chk.split_comp(cty);
+        self.chk.unify(s.ctx.lvl, result, ty.clone()).then_some(fields)
     }
 
     /// How many of a constructor's arguments are erased type parameters.

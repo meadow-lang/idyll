@@ -44,7 +44,18 @@ struct Cli {
     args: Vec<String>,
 }
 
+/// The stack the whole command runs on, as the `idyll` command's: the
+/// compiler walks a program's structure recursively, and a main thread's
+/// stack is 8 MB at most (1 MB on Windows).
+const STACK: usize = 256 << 20;
+
 fn main() -> ExitCode {
+    let run = std::thread::Builder::new().name("idyllic".into()).stack_size(STACK).spawn(command).expect("the main thread starts");
+    // A panic has said what it was already; the exit status is Rust's own.
+    run.join().unwrap_or(ExitCode::from(101))
+}
+
+fn command() -> ExitCode {
     let cli = Cli::parse();
     let mut style = OutputStyle::detect();
     style.color &= !cli.no_color;
