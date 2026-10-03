@@ -4,6 +4,8 @@
 -- right, `(x, y, z)` being `(x, (y, z))`, so these work on any of them.
 
 -- The two, as a pair: `Pair` as a function, for passing on.
+@linear
+
 @pub
 pair : {a b : Type} -> a -> b -> (a, b)
 pair x y = (x, y)
@@ -23,23 +25,23 @@ swap : {a b : Type} -> (a, b) -> (b, a)
 swap (x, y) = (y, x)
 
 @pub
-mapFst : {a b c : Type} -> (f : a -> c ! e) -> (a, b) -> (c, b) ! e
+mapFst : {a b c : Type} -> (f : (x : [] a) -> c ! e) -> (p : [] (a, b)) -> (c, b) ! e
 mapFst f (x, y) = (f x, y)
 
 @pub
-mapSnd : {a b c : Type} -> (f : b -> c ! e) -> (a, b) -> (a, c) ! e
+mapSnd : {a b c : Type} -> (f : (y : [] b) -> c ! e) -> (p : [] (a, b)) -> (a, c) ! e
 mapSnd f (x, y) = (x, f y)
 
 @pub
-mapBoth : {a b c d : Type} -> (f : a -> c ! e) -> (g : b -> d ! e) -> (a, b) -> (c, d) ! e
+mapBoth : {a b c d : Type} -> (f : (x : [] a) -> c ! e) -> (g : (y : [] b) -> d ! e) -> (p : [] (a, b)) -> (c, d) ! e
 mapBoth f g (x, y) = (f x, g y)
 
 -- A function of a pair, as a function of two arguments.
 @pub
-curry : {a b c : Type} -> (f : (a, b) -> c ! e) -> a -> b -> c ! e
+curry : {a b c : Type} -> {r : Grade} -> (f : (p : [r] (a, b)) -> c ! e) -> (x : [r] a) -> (y : [r] b) -> c ! e
 curry f x y = f (x, y)
 
 -- A function of two arguments, as a function of a pair.
 @pub
-uncurry : {a b c : Type} -> (f : a -> b -> c ! e) -> (a, b) -> c ! e
+uncurry : {a b c : Type} -> (f : (x : [] a) -> (y : [] b) -> c ! e) -> (p : [] (a, b)) -> c ! e
 uncurry f (x, y) = f x y

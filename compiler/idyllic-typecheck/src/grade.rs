@@ -84,10 +84,13 @@ impl Grade {
     /// Unrestricted use, `0..∞`; Granule also writes it as an empty `[]`.
     pub const ANY: Grade = Grade { lo: Ext::Fin(0), hi: Ext::Inf };
 
-    /// What an omitted grade means on a binder.  As in Granule the base is
-    /// *linear*: `a -> b` uses its argument exactly once, and anything else
-    /// is said explicitly.
-    pub const DEFAULT: Grade = Grade::ONE;
+    /// What an omitted grade means on a binder: *unrestricted*, as Idris 2's
+    /// ω is.  `a -> b` may use its argument as often as it likes, and a
+    /// grade is written where it means something: `[1]` for exactly once,
+    /// `[0..1]` for at most.  A module that says `@linear` (or a program
+    /// compiled with `--linear`) has Granule's linear base instead, which
+    /// the renamer gives it by writing `[1]` on its unannotated binders.
+    pub const DEFAULT: Grade = Grade::ANY;
     /// What an omitted *type-level* grade means: how often the rest of a
     /// function type may mention its binder.  Unrestricted, so dependency is
     /// only policed where it is asked for.

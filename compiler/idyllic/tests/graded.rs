@@ -8,9 +8,11 @@
 use idyllic_diagnostics::OutputStyle;
 use idyllic::pipeline::{self, Options};
 
-/// The inferred type and the diagnostics as `headline: label`.
+/// The inferred type and the diagnostics as `headline: label`, of a program
+/// whose unannotated binders are linear, the base these tests are about.
 fn run(src: &str) -> (String, Vec<String>) {
-    let out = pipeline::run(src, &Options { debug: false, style: OutputStyle::PLAIN, live: false });
+    let src = format!("@linear\n\n{src}");
+    let out = pipeline::run(&src, &Options { debug: false, style: OutputStyle::PLAIN, live: false });
     let diags = out
         .diagnostics
         .iter()
@@ -31,6 +33,29 @@ fn ok(src: &str, ty: &str) {
 fn rejects(src: &str, expected: &str) {
     let (_, diags) = run(src);
     assert_eq!(diags, [expected], "{src}");
+}
+
+// ---------------------------------------------------------------------------
+// The default: unrestricted, unless the module is linear
+// ---------------------------------------------------------------------------
+
+#[test]
+fn outside_a_linear_module_a_binder_that_says_nothing_is_unrestricted() {
+    let plain = |src: &str| {
+        let out = pipeline::run(src, &Options { debug: false, style: OutputStyle::PLAIN, live: false });
+        let diags: Vec<String> = out.diagnostics.iter().map(|d| d.message.clone()).collect();
+        (out.body_type.unwrap_or_default(), diags)
+    };
+    // printed as it is read: `[]` goes unsaid, and `1` is said
+    assert_eq!(plain("\\(x : Int) -> x + x"), ("(x : Int) -> Int".into(), vec![]));
+    assert_eq!(plain("\\(x : Int) -> 5"), ("(x : Int) -> Int".into(), vec![]));
+    assert_eq!(plain("\\(x : [1] Int) -> x"), ("(x : [1] Int) -> Int".into(), vec![]));
+    assert_eq!(plain("\\(x : [1] Int) -> x + x").1, ["usage mismatch"]);
+    // a truth value is looked at once by the `if` that looks at it, whatever
+    // the default (it has no fields to hand on)
+    assert_eq!(plain("\\(x : [1] Int) -> if x < 0 then 1 else 2").1, Vec::<String>::new());
+    // and in a linear module, the other way round
+    assert_eq!(run("\\(x : [] Int) -> x + x"), ("(x : [] Int) -> Int".into(), vec![]));
 }
 
 // ---------------------------------------------------------------------------

@@ -97,6 +97,8 @@ fn span_of(s: SimpleSpan) -> Span {
 
 enum Item {
     Data(LData),
+    /// a record, and its fields' projections
+    Record(LData, Vec<LDecl>),
     Effect(LEffect),
     Decl(LDecl),
     Use(Spanned<Use>),
@@ -116,23 +118,28 @@ enum Attribute {
     /// `@terminating`, on a signature: the definition ends, whatever the
     /// termination checker can see
     Terminating,
+    /// `@linear`, at the top of a module: its unannotated binders are linear
+    Linear,
 }
 
 /// The item with its attributes, or what is wrong with them.
-/// An item, how visible it is, and whether `@terminating` is on it.
-type Attributed = (Item, Option<Visibility>, bool);
+/// An item, how visible it is, whether `@terminating` is on it, and whether
+/// `@linear` came before it (which is the module's, not the item's).
+type Attributed = (Item, Option<Visibility>, bool, bool);
 
 fn attributed(attrs: Vec<(Attribute, Span)>, item: Item) -> Result<Attributed, (Span, String)> {
     let mut seq = None;
     let mut vis = None;
     let mut native = None;
     let mut terminating = None;
+    let mut linear = false;
     for (attr, at) in attrs {
         match attr {
             Attribute::Seq(s) if seq.is_none() => seq = Some(s),
             Attribute::Vis(v) if vis.is_none() => vis = Some(v),
             Attribute::Native if native.is_none() => native = Some(at),
             Attribute::Terminating if terminating.is_none() => terminating = Some(at),
+            Attribute::Linear => linear = true,
             _ => return Err((at, "this attribute is given twice".into())),
         }
     }
@@ -165,6 +172,10 @@ fn attributed(attrs: Vec<(Attribute, Span)>, item: Item) -> Result<Attributed, (
             e.node.visibility = vis.unwrap_or_default();
             Item::Effect(e)
         }
+        Item::Record(mut d, projections) => {
+            d.node.visibility = vis.unwrap_or_default();
+            Item::Record(d, projections)
+        }
         Item::Use(mut u) => {
             u.node.public = vis.is_some();
             if vis.is_some_and(|v| v != Visibility::Public) {
@@ -180,7 +191,7 @@ fn attributed(attrs: Vec<(Attribute, Span)>, item: Item) -> Result<Attributed, (
     if seq.is_some() {
         return Err((Span::at(0), "@seq goes on a data type".into()));
     }
-    Ok((item, vis, terminating.is_some()))
+    Ok((item, vis, terminating.is_some(), linear))
 }
 
 /// Parse a program from a post-layout token stream.  `src_len` positions the
@@ -213,16 +224,29 @@ pub fn parse(src_len: usize, tokens: &[Spanned<Token>]) -> Result<Program, Vec<D
         uses: Vec::new(),
         visibility: Vec::new(),
         terminating: Vec::new(),
+        linear: false,
         body: None,
     };
     let mut items = items?.into_iter().peekable();
-    while let Some((item, vis, terminating)) = items.next() {
+    while let Some((item, vis, terminating, linear)) = items.next() {
+        program.linear |= linear;
         // the name a definition's visibility is for
         let defined = |d: &LDecl| match &d.node {
             Decl::Sig(x, _) | Decl::Def(x, ..) | Decl::Native(x, _) => x.clone(),
         };
         match item {
             Item::Data(d) => program.datas.push(d),
+            // a field is as visible as its record
+            Item::Record(d, projections) => {
+                let vis = d.node.visibility;
+                for p in projections {
+                    if vis != Visibility::Private && matches!(p.node, Decl::Sig(..)) {
+                        program.visibility.push((defined(&p), vis));
+                    }
+                    program.decls.push(p);
+                }
+                program.datas.push(d);
+            }
             Item::Effect(e) => program.effects.push(e),
             Item::Decl(d) => {
                 program.visibility.extend(vis.map(|v| (defined(&d), v)));
@@ -254,7 +278,8 @@ where
     let native = just(Token::At).ignore_then(select! { Token::LowerIdent(s) if s == "native" => () }).to(Attribute::Native);
     let terminating =
         just(Token::At).ignore_then(select! { Token::LowerIdent(s) if s == "terminating" => () }).to(Attribute::Terminating);
-    let attribute = choice((seq_attribute().map(Attribute::Seq), visibility().map(Attribute::Vis), native, terminating))
+    let linear = just(Token::At).ignore_then(select! { Token::LowerIdent(s) if s == "linear" => () }).to(Attribute::Linear);
+    let attribute = choice((seq_attribute().map(Attribute::Seq), visibility().map(Attribute::Vis), native, terminating, linear))
         .map_with(|a, e| (a, span_of(e.span())))
         .then_ignore(semi.clone().or_not());
     let item = attribute
@@ -262,6 +287,7 @@ where
         .collect::<Vec<_>>()
         .then(choice((
             data(term.clone()).map(Item::Data),
+            record(term.clone()).map(|(d, ps)| Item::Record(d, ps)),
             effect(term.clone()),
             use_item().map(Item::Use),
             decl(term.clone()).map(Item::Decl),
@@ -273,7 +299,7 @@ where
                 let at = if at == Span::at(0) { span_of(e.span()) } else { at };
                 emitter.emit(Rich::custom(SimpleSpan::from(at.range()), why));
                 // (reported; what is left is nothing)
-                (Item::Decl(Spanned::new(Decl::Sig(Spanned::new("_".into(), at), Spanned::new(Term::Hole, at)), at)), None, false)
+                (Item::Decl(Spanned::new(Decl::Sig(Spanned::new("_".into(), at), Spanned::new(Term::Hole, at)), at)), None, false, false)
             }
         });
     // a separator with nothing before it is what a leading comment or blank
@@ -375,10 +401,110 @@ where
         .then(body)
         .map_with(|(((name, params), kind), ctors), e| {
             let visibility = Visibility::Private;
-            Spanned::new(Data { name, params, kind, ctors, seq: None, visibility }, span_of(e.span()))
+            Spanned::new(Data { name, params, kind, ctors, seq: None, visibility, fields: None }, span_of(e.span()))
         })
         .labelled("data declaration")
         .boxed()
+}
+
+/// `record Point = { x : Int, y : Int }`: a data type with one constructor,
+/// named for the type, whose fields have names; each field's type may
+/// mention the fields before it. With it come the fields' projections,
+/// `Point.x : (r : [0..1] Point) -> Int`, which live under the type as its
+/// constructor does (they are named `Point.x` here, which the renamer
+/// finds through the type). A later field's type, in its projection,
+/// mentions the earlier ones as their projections of `r`.
+fn record<'t, I>(term: impl Parser<'t, I, LTerm, Extra<'t>> + Clone + 't) -> Boxed<'t, 't, I, (LData, Vec<LDecl>), Extra<'t>>
+where
+    I: ValueInput<'t, Token = Token, Span = SimpleSpan>,
+{
+    let upper = select! { Token::UpperIdent(s) = e => Spanned::new(s, span_of(e.span())) };
+    let param = choice((
+        lower().map(|x| (x, None)),
+        lower()
+            .then_ignore(just(Token::Colon))
+            .then(term.clone())
+            .delimited_by(just(Token::LParen), just(Token::RParen))
+            .map(|(x, kind)| (x, Some(kind))),
+    ));
+    let field = lower().then_ignore(just(Token::Colon)).then(term);
+    let fields = field
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .collect::<Vec<(Ident, LTerm)>>()
+        .delimited_by(just(Token::LBrace), just(Token::RBrace));
+    select! { Token::LowerIdent(s) if s == "record" => () }
+        .ignore_then(upper)
+        .then(param.repeated().collect::<Vec<_>>())
+        .then_ignore(just(Token::Eq))
+        .then(fields)
+        .map_with(|((name, params), fields), e| record_parts(name, params, fields, span_of(e.span())))
+        .labelled("record declaration")
+        .boxed()
+}
+
+/// A record's data type and its projections: see [`record`].
+fn record_parts(name: Ident, params: Vec<(Ident, Option<LTerm>)>, fields: Vec<(Ident, LTerm)>, span: Span) -> (LData, Vec<LDecl>) {
+    let at = |t: Term| Spanned::new(t, span);
+    let var = |x: &str| at(Term::Var(Spanned::new(x.to_string(), span)));
+    let app = |f: LTerm, a: LTerm| at(Term::App(Box::new(f), Box::new(a)));
+    // `Point a b`, the type
+    let whole = params.iter().fold(var(&name.node), |acc, (p, _)| app(acc, var(&p.node)));
+    // the constructor: a field each, in order, which later ones may mention
+    let ctor_ty = fields.iter().rev().fold(whole.clone(), |acc, (f, ty)| {
+        at(Term::Pi(Some(f.clone()), Icit::Explicit, None, Box::new(ty.clone()), Box::new(acc)))
+    });
+    let data = Spanned::new(
+        Data {
+            name: name.clone(),
+            params,
+            kind: None,
+            ctors: vec![(name.clone(), Ctor::Sig(ctor_ty))],
+            seq: None,
+            visibility: Visibility::Private,
+            fields: Some(fields.iter().map(|(f, _)| f.clone()).collect()),
+        },
+        span,
+    );
+    let r = "self";
+    let droppable = GradeAnn {
+        subject: Box::new(at(Term::Range(Box::new(at(Term::Lit(Lit::Int(0)))), Box::new(at(Term::Lit(Lit::Int(1))))))),
+        in_type: None,
+    };
+    let mut decls = Vec::new();
+    for (i, (f, ty)) in fields.iter().enumerate() {
+        let projection = format!("{}.{}", name.node, f.node);
+        // where its field is: a field's projection is listed, and reported,
+        // as declared there
+        let span = f.span;
+        let at = |t: Term| Spanned::new(t, span);
+        // the earlier fields, as read off `r`
+        let ty = fields[..i]
+            .iter()
+            .fold(ty.clone(), |ty, (g, _)| idyllic_ast::substitute(&ty, &g.node, &app(var(&format!("{}.{}", name.node, g.node)), var(r))));
+        let sig = at(Term::Pi(
+            Some(Spanned::new(r.to_string(), span)),
+            Icit::Explicit,
+            Some(droppable.clone()),
+            Box::new(whole.clone()),
+            Box::new(ty),
+        ));
+        decls.push(Spanned::new(Decl::Sig(Spanned::new(projection.clone(), span), sig), span));
+        let pats = fields
+            .iter()
+            .enumerate()
+            .map(|(j, (g, _))| {
+                let p = if j == i { Pat::Bind(Param { name: g.clone(), unbox: false, grade: None, ty: None }) } else { Pat::Wild };
+                Spanned::new(p, span)
+            })
+            .collect();
+        let pattern = Spanned::new(Pat::Con(name.clone(), pats), span);
+        decls.push(Spanned::new(
+            Decl::Def(Spanned::new(projection, span), vec![pattern], None, Rhs::Plain(var(&f.node))),
+            span,
+        ));
+    }
+    (data, decls)
 }
 
 /// `@seq(nil = Nil, cons = (::))`, in front of a data type: what a sequence
@@ -712,6 +838,18 @@ where
             literal().map(Pat::Lit),
             just(Token::Underscore).to(Pat::Wild),
             lower().map(var),
+            // `Point { x = p }`
+            upper
+                .then(
+                    lower()
+                        .then_ignore(just(Token::Eq))
+                        .then(pattern(apat.clone()))
+                        .separated_by(just(Token::Comma))
+                        .allow_trailing()
+                        .collect::<Vec<(Ident, LPat)>>()
+                        .delimited_by(just(Token::LBrace), just(Token::RBrace)),
+                )
+                .map(|(r, fields)| Pat::Record(r, fields)),
             upper.map(|c| Pat::Con(c, Vec::new())),
             just(Token::Period).ignore_then(dotted).map(|e| Pat::Dot(Box::new(e))),
             lower()
@@ -920,7 +1058,28 @@ where
         };
         let any_ident = lower().or(upper).or(qualified);
 
+        // `x = e, ..` in braces: a record's fields
+        let field_values = lower()
+            .then_ignore(just(Token::Eq))
+            .then(term.clone())
+            .separated_by(just(Token::Comma))
+            .allow_trailing()
+            .collect::<Vec<(Ident, LTerm)>>();
+        let record_name = select! {
+            Token::UpperIdent(s) = e => Spanned::new(s, span_of(e.span())),
+            Token::QualUpper(s) = e => Spanned::new(s, span_of(e.span())),
+        };
         let atom = choice((
+            // `Point { x = 1, y = 2 }`
+            record_name
+                .then(field_values.clone().delimited_by(just(Token::LBrace), just(Token::RBrace)))
+                .map_with(|(r, fields), e| Spanned::new(Term::RecordLit(r, fields), span_of(e.span()))),
+            // `{ p | x = 3 }`
+            term.clone()
+                .then_ignore(just(Token::Bar))
+                .then(field_values)
+                .delimited_by(just(Token::LBrace), just(Token::RBrace))
+                .map_with(|(r, fields), e| Spanned::new(Term::Update(Box::new(r), fields), span_of(e.span()))),
             just(Token::Type).map_with(|_, e| Spanned::new(Term::Type, span_of(e.span()))),
             just(Token::Underscore).map_with(|_, e| Spanned::new(Term::Hole, span_of(e.span()))),
             just(Token::Infinity).map_with(|_, e| Spanned::new(Term::Inf, span_of(e.span()))),
@@ -960,6 +1119,13 @@ where
         .labelled("atom")
         .boxed();
 
+        // `p.x`, `p.pos.x`: fields, read off what comes before
+        let atom = atom
+            .foldl(just(Token::Period).ignore_then(lower()).repeated(), |e: LTerm, f: Ident| {
+                let span = e.span.merge(f.span);
+                Spanned::new(Term::Proj(Box::new(e), f), span)
+            })
+            .boxed();
         let app = atom
             .clone()
             .foldl(atom.repeated(), |f: LTerm, a: LTerm| {

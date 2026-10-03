@@ -19,7 +19,7 @@
 pub enum Section {
     /// Enough to write something.
     Basics,
-    /// Linearity: how many times things are used, and saying so.
+    /// Grades: how many times things are used, and saying so.
     Grades,
     /// Types as values: universes, polymorphism, implicit arguments.
     Dependent,
@@ -44,7 +44,7 @@ impl Section {
     pub fn title(self) -> &'static str {
         match self {
             Section::Basics => "the basics",
-            Section::Grades => "linearity and grades",
+            Section::Grades => "grades",
             Section::Dependent => "dependent types",
             Section::Matching => "pattern matching",
             Section::Effects => "effects",
@@ -244,6 +244,21 @@ use Point.*"),
         ],
     },
     Step {
+        title: "Records",
+        section: Section::Basics,
+        text: &[
+            "`record` declares a type with named fields: built with them in any",
+            "order, read with `.`, updated with `{ p | x = .. }`, and matched by",
+            "name. A field's type may mention the fields before it.",
+        ],
+        examples: &[
+            ok("record Size = { width : Int, height : Int }"),
+            ok("area : (s : [] Size) -> Int\narea s = s.width * s.height"),
+            ok("taller : (s : [] Size) -> Size\ntaller s = { s | height = s.height * 2 }"),
+            ok("area (taller (Size { width = 3, height = 4 }))"),
+        ],
+    },
+    Step {
         title: "Arrays",
         section: Section::Basics,
         text: &[
@@ -263,21 +278,23 @@ use Point.*"),
     // Linearity and grades
     // -----------------------------------------------------------------------
     Step {
-        title: "Linear by default",
+        title: "Grades",
         section: Section::Grades,
         text: &[
-            "Functions are linear by default: `Int -> Int` promises to use",
-            "its argument exactly once. A value can't be silently dropped or",
-            "copied, which is what lets a type describe a resource, such as",
-            "memory that must be freed, and not just data.",
+            "Every binder has a grade: how many times it is used. One that",
+            "says nothing may be used any number of times. A grade, in",
+            "brackets before the type, says how many uses to expect instead:",
+            "`[1]` is exactly once, linear, which is what lets a type describe",
+            "a resource, such as memory that must be freed, and not just data.",
             "",
-            "So using `x` twice is an error. A grade, in brackets before the",
-            "type, says how many uses to expect instead.",
+            "A module that starts with `@linear` makes `1` the default.",
         ],
         examples: &[
-            rejected("\\(x : Int) -> x + x", "usage mismatch"),
+            ok("\\(x : Int) -> x + x"),
+            rejected("\\(x : [1] Int) -> x + x", "usage mismatch"),
             ok("\\(x : [2] Int) -> x + x"),
             ok("\\(x : [0] Int) -> 5"),
+            rejected("@linear\n\\(x : Int) -> x + x", "usage mismatch"),
         ],
     },
     Step {
@@ -285,7 +302,8 @@ use Point.*"),
         section: Section::Grades,
         text: &[
             "A grade can be a range. `0..1` is \"at most once\", `1..inf` is",
-            "\"at least once\", and empty brackets mean any number of times.",
+            "\"at least once\", and empty brackets mean any number of times,",
+            "which is what a binder that says nothing has.",
             "A usage fits a grade when every count it might be is allowed.",
         ],
         examples: &[
@@ -321,12 +339,13 @@ use Maybe.*"),
         text: &[
             "Grades are terms of type `Grade`, so a function can take one as",
             "an argument, in braces (the next section explains those). `app`",
-            "works for a function of any grade, handed a box to match.",
+            "works for a function of any grade, handed a box to match. It",
+            "hands the box on once, which is what `@linear` says.",
         ],
         examples: &[
-            ok("app : {a b : Type} {r : Grade} (f : a [r] -> b) -> a [r] -> b\napp f [x] = f [x]"),
+            ok("@linear\napp : {a b : Type} {r : Grade} (f : a [r] -> b) -> a [r] -> b\napp f [x] = f [x]"),
             ok("app copy [4]"),
-            rejected("\\(y : Int) -> app copy [y]", "usage mismatch"),
+            rejected("\\(y : [1] Int) -> app copy [y]", "usage mismatch"),
         ],
     },
     // -----------------------------------------------------------------------

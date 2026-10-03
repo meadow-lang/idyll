@@ -281,7 +281,7 @@ fn a_row_variable_takes_effects_resumed_at_most_once_unless_it_says_otherwise() 
     // a row variable a signature binds for you is `Effect`
     let twice = "twice : (f : [] (() -> Int ! e)) -> Int ! e\ntwice f = f () + f ()\n\n";
     let out = accepts(twice);
-    assert!(out.decls.contains(&("twice".into(), "{e : Effect} -> (f : [] () -> Int ! e) -> Int ! e".into())), "{:?}", out.decls);
+    assert!(out.decls.contains(&("twice".into(), "{e : Effect} -> (f : () -> Int ! e) -> Int ! e".into())), "{:?}", out.decls);
     // so it takes `Ask`, and not `Choose`
     let pick_ask = "pickA : () -> Int ! Ask\npickA u = ask ()\n\n";
     assert_eq!(value(&format!("{ask}{twice}{pick_ask}handle twice pickA with\n  ask _ k -> k 5\n")), "10 : Int");
@@ -444,7 +444,7 @@ fn an_effect_alias_can_have_parameters() {
          handle count 1 with\n  get _ k -> k 41\n"
     );
     let out = accepts(&src);
-    assert!(out.decls.contains(&("Stateful".into(), "(s : [] Type) -> Effect".into())), "{:?}", out.decls);
+    assert!(out.decls.contains(&("Stateful".into(), "(s : Type) -> Effect".into())), "{:?}", out.decls);
     assert_eq!(out.evaluation, Some(Evaluation::Value("42".into())));
 }
 
@@ -486,7 +486,7 @@ fn a_program_gives_up_with_abort() {
     // it gives any type, and a function that may give up says so
     let half = "half : (n : [] Int) -> Int ! Abort\nhalf n = if n % 2 == 0 then n / 2 else abort \"odd\"\n\n";
     let out = accepts(half);
-    assert!(out.decls.contains(&("half".into(), "(n : [] Int) -> Int ! Abort".into())), "{:?}", out.decls);
+    assert!(out.decls.contains(&("half".into(), "(n : Int) -> Int ! Abort".into())), "{:?}", out.decls);
     // and like any effect it can be handled
     assert_eq!(value(&format!("{half}handle half 7 with\n  abort m k -> let u = putErr m in 0 - 1\n")), "-1 : Int");
     assert_eq!(value(&format!("{half}handle half 8 with\n  abort m k -> let u = putErr m in 0 - 1\n")), "4 : Int");

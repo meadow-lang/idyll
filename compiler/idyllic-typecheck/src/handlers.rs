@@ -393,7 +393,9 @@ impl Checker {
                 let l = inner_x.lvl;
                 let dom = self.quote(l, op_result.clone());
                 let cod = Rc::new(Core::Comp(self.quote(l + 1, result.clone()), self.quote(l + 1, resumed.clone())));
-                let k_c = pi("y", Grade::DEFAULT, Icit::Explicit, dom, cod);
+                // (a resumption uses what it is resumed with once: any
+                // value can be given to it)
+                let k_c = pi("y", Grade::ONE, Icit::Explicit, dom, cod);
                 self.eval(&inner_x.env, &k_c)
             };
             let k_grade = {

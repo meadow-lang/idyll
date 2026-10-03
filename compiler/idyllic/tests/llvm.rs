@@ -101,7 +101,7 @@ fn closures_and_boxes() {
 fn sharing_and_dropping() {
     // a box used twice (shared, then released once shared and once unique),
     // and a structure dropped whole
-    agree("share", "(\\(f : Int [2] -> Int [2] -> Int) (b : [2] Int [2]) -> f b b) (\\[x] [y] -> x + x + y + y) [4]");
+    agree("share", "@linear\n\n(\\(f : Int [2] -> Int [2] -> Int) (b : [2] Int [2]) -> f b b) (\\[x] [y] -> x + x + y + y) [4]");
     agree("drop", "(\\(b : [0..1] Int [1] [1] [1]) -> 5) [[[1]]]");
 }
 

@@ -68,7 +68,7 @@ pub fn source() -> PackageSource {
             }
         })
         .collect();
-    PackageSource { name: NAME.to_string(), version: None, modules }
+    PackageSource { name: NAME.to_string(), version: None, linear: false, modules }
 }
 
 /// Std, compiled: once a process, and read back once a thread.

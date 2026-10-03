@@ -435,7 +435,27 @@ impl Checker {
 
     /// Check one dependency-ordered group, returning the context extended
     /// with its bindings, what it owes, and how to re-bind it in Core.
+    /// What an unannotated binder's grade is where the checker is: `[]`,
+    /// or `1` in a linear module.  An implicit binder's is `0` either way.
+    pub(super) fn default_grade(&self) -> Grade {
+        if self.linear { Grade::ONE } else { Grade::DEFAULT }
+    }
+
     fn check_group(&mut self, ctx: &Ctx, group: &hir::BindGroup) -> (Ctx, Pending, LetWrap) {
+        // in the mode of the module the group was written in
+        let linear = match group {
+            hir::BindGroup::NonRec(b) => b.linear,
+            hir::BindGroup::Rec(bs) => bs.iter().any(|b| b.linear),
+        };
+        let outer = std::mem::replace(&mut self.linear, linear);
+        let printing = crate::core::print_linear(linear);
+        let result = self.check_group_in(ctx, group);
+        crate::core::print_linear(printing);
+        self.linear = outer;
+        result
+    }
+
+    fn check_group_in(&mut self, ctx: &Ctx, group: &hir::BindGroup) -> (Ctx, Pending, LetWrap) {
         match group {
             hir::BindGroup::NonRec(b) => {
                 let (rhs, ty, usage) = match &b.ty {
@@ -748,7 +768,7 @@ impl Checker {
             // quantifying over `Type` is not itself in `Type`, which is what
             // keeps the hierarchy from collapsing into `Type : Type`.
             TermKind::Pi(mx, icit, ann, dom, cod) => {
-                let default = if *icit == Icit::Implicit { Grade::ZERO } else { Grade::DEFAULT };
+                let default = if *icit == Icit::Implicit { Grade::ZERO } else { self.default_grade() };
                 let ((grade, _), (in_type, in_type_v)) = self.binder_grades(ctx, ann.as_ref(), default);
                 let name = mx.as_ref().map_or("_", |x| x.text.as_str()).to_string();
                 let (dom_c, dom_v, dom_level, dom_usage) = match &dom.kind {
@@ -796,7 +816,7 @@ impl Checker {
                 if ann.as_ref().is_some_and(|ann| ann.in_type.is_some()) {
                     self.error(nid, TypeErrorKind::UncheckedInTypeGrade(name.clone()));
                 }
-                let ((_, grade), (_, in_type)) = self.binder_grades(ctx, ann.as_ref(), Grade::DEFAULT);
+                let ((_, grade), (_, in_type)) = self.binder_grades(ctx, ann.as_ref(), self.default_grade());
                 let ctx2 = ctx.bind(Some(x), &name, dom.clone()).graded(&grade);
                 let (body_c, body_ty, mut usage) = self.infer(&ctx2, body);
                 // what calling it does is what its body does
@@ -1381,7 +1401,9 @@ impl Checker {
             Rc::new(Core::Pi {
                 name: "_".into(),
                 icit: Icit::Explicit,
-                grade: Core::grade(Grade::ONE),
+                // linear in a linear module, and `[]` elsewhere, as a field
+                // of a constructor's signature is
+                grade: Core::grade(if d.linear { Grade::ONE } else { Grade::DEFAULT }),
                 in_type: Core::grade(Grade::DEFAULT_IN_TYPE),
                 dom: f,
                 cod: acc,

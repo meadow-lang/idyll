@@ -506,14 +506,14 @@ impl TypeError {
             TypeErrorKind::UsageMismatch { name, used, allowed, in_type: false } => {
                 let d = Diagnostic::error("usage mismatch")
                     .label(here, format!("{name} has grade {allowed}, but is used {}", times(used)));
-                let linear = matches!(&**allowed, Core::GradeLit(g) if *g == Grade::DEFAULT);
+                let linear = matches!(&**allowed, Core::GradeLit(g) if *g == Grade::ONE);
                 match &**used {
                     _ if !linear => d,
                     Core::GradeLit(g) if g.is_zero() => d.help(format!(
-                        "binders are linear by default; write ({name} : [0] ..) if it is meant to be unused"
+                        "{name} is linear; write ({name} : [0] ..) if it is meant to be unused"
                     )),
                     _ => d.help(format!(
-                        "binders are linear by default; write ({name} : [{used}] ..) to allow this, or ({name} : [] ..) for any number of uses"
+                        "{name} is linear, being written [1] or in a module that is @linear; write ({name} : [{used}] ..) to allow this, or ({name} : [] ..) for any number of uses"
                     )),
                 }
             }
@@ -945,6 +945,9 @@ pub struct Checker {
     natives: HashMap<usize, natives::NativeInfo>,
     /// the definitions `@terminating` vouches for
     terminating: std::collections::HashSet<usize>,
+    /// whether what is being checked was written in a linear module: what
+    /// has no grade there is used once, not as often as wanted
+    linear: bool,
     /// the type of every constant (data type, constructor, recursive
     /// definition), by its unique
     constants: HashMap<usize, VTy>,
@@ -1114,6 +1117,9 @@ pub struct TypeCheckResult {
 /// The module is checked against the compiled packages it depends on, which
 /// come in an order where each follows those it depends on.
 pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&packages::CompiledPackage]) -> TypeCheckResult {
+    // the types of what is checked, and of the answer, are printed as the
+    // root module reads them (a group of another mode says so as it goes)
+    core::print_linear(m.linear_body);
     let mut tc = Checker {
         metas: Vec::new(),
         node_types: vec![None; node_count],
@@ -1125,6 +1131,7 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         positive_params: HashMap::new(),
         natives: HashMap::new(),
         terminating: m.terminating.clone(),
+        linear: false,
         constants: HashMap::new(),
         next_key: usize::MAX,
         transparent: HashMap::new(),
@@ -1162,6 +1169,8 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
     let main_fits = main.map(|b| tc.check_main(&ctx, b, world.clone()));
     let body = match (&m.body, main.zip(main_fits)) {
         (Some(body), _) => {
+            // in the root module's mode
+            tc.linear = m.linear_body;
             let (core, ty, usage) = tc.infer(&ctx, body);
             // (a `main` that is wrong has said so already)
             if main_fits != Some(false) {

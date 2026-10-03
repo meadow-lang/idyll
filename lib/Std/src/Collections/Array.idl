@@ -19,6 +19,8 @@
 -- a `Fin (size xs)`, an index the type says is in range of `xs`, which
 -- `at` takes and cannot fail with. `indices` gives every one of them.
 
+@linear
+
 use Std.Num.Nat (Nat)
 use Std.Num.Fin (Fin)
 
@@ -68,7 +70,7 @@ set xs i x = if inRange xs i then arraySet xs i x else xs
 
 -- `xs` with what is at `i` replaced by `f` of it.
 @pub
-update : {a : Type} -> (xs : [] Array a) -> (i : [] Int) -> (f : [0..1] (a -> a ! e)) -> Array a ! e
+update : {a : Type} -> (xs : [] Array a) -> (i : [] Int) -> (f : [0..1] ((x : [] a) -> a ! e)) -> Array a ! e
 update xs i f = if inRange xs i then arraySet xs i (f (arrayGet xs i)) else xs
 
 -- One more, at the end.

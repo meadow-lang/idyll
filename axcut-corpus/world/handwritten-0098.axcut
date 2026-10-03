@@ -138,12 +138,12 @@ define main : () =
               substitute [r_87 ↦ r_87, k_59 ↦ k_59];
               invoke k_59 ret } };
           substitute [f_26 ↦ f_26, c_25 ↦ c_25, n_58 ↦ n_58, k_85 ↦ k_85];
-          jump negativeDigits_70 },
+          jump negativeDigits_83 },
         false() ⇒
           extern lit 0 { (n_88) ⇒
           extern sub(n_88, n_58) { (r_89) ⇒
           substitute [f_26 ↦ f_26, c_25 ↦ c_25, r_89 ↦ r_89, k_59 ↦ k_59];
-          jump negativeDigits_70 } } } } } };
+          jump negativeDigits_83 } } } } } };
   substitute [f_0 ↦ f_0, f_0' ↦ f_0, f_57 ↦ f_57];
   new f_90 = (f_0', f_57){
     apply(n_91, k_92) ⇒
@@ -153,24 +153,14 @@ define main : () =
           invoke f_0' apply };
       substitute [n_91 ↦ n_91, k_93 ↦ k_93, f_57 ↦ f_57];
       invoke f_57 apply };
-  new f_95 = (f_0, f_90){
-    apply(x_96, k_97) ⇒
-      extern lit "counting: " { (s_98) ⇒
-      substitute [s_98 ↦ s_98, k_97 ↦ k_97, f_0 ↦ f_0, f_90 ↦ f_90];
-      new k_99 = (k_97, f_0, f_90){
-        ret(r_100) ⇒
-          extern lit 3 { (n_110) ⇒
-          substitute [f_0 ↦ f_0, f_90 ↦ f_90, n_110 ↦ n_110, k_97 ↦ k_97];
-          jump count_90 } };
-      perform putStr(s_98) k_99 } };
-  let u_111 = unit();
-  new k_112 = (){
-    ret(r_113) ⇒
-      extern halt(r_113) {} };
-  substitute [u_111 ↦ u_111, k_112 ↦ k_112, f_95 ↦ f_95];
-  invoke f_95 apply
+  let u_110 = unit();
+  substitute [f_0 ↦ f_0, f_90 ↦ f_90];
+  new k_111 = (){
+    ret(r_112) ⇒
+      extern halt(r_112) {} };
+  jump main_3370
 
-define negativeDigits_70 : (f_26, fuel_63, n_64, k_65) =
+define negativeDigits_83 : (f_26, fuel_63, n_64, k_65) =
   substitute [f_26 ↦ f_26, n_64 ↦ n_64, k_65 ↦ k_65, fuel_63 ↦ fuel_63];
   switch fuel_63 {
     Spent() ⇒
@@ -207,24 +197,34 @@ define negativeDigits_70 : (f_26, fuel_63, n_64, k_65) =
                   invoke k_65 ret } };
               substitute [r_81 ↦ r_81, k_82 ↦ k_82, f_26' ↦ f_26'];
               invoke f_26' apply } } } } };
-          jump negativeDigits_70 } } } } } } } }
+          jump negativeDigits_83 } } } } } } } }
 
-define count_90 : (f_0, f_90, n_101, k_102) =
-  extern lit 0 { (n_103) ⇒
-  extern eq(n_101, n_103) { (r_104) ⇒
-  substitute [f_0 ↦ f_0, f_90 ↦ f_90, n_101 ↦ n_101, k_102 ↦ k_102, r_104 ↦ r_104];
-  switch r_104 {
+define count_3369 : (f_0, f_90, n_100, k_101) =
+  extern lit 0 { (n_102) ⇒
+  extern eq(n_100, n_102) { (r_103) ⇒
+  substitute [f_0 ↦ f_0, f_90 ↦ f_90, n_100 ↦ n_100, k_101 ↦ k_101, r_103 ↦ r_103];
+  switch r_103 {
     true() ⇒
-      extern lit "liftoff" { (s_105) ⇒
-      substitute [s_105 ↦ s_105, k_102 ↦ k_102, f_0 ↦ f_0];
+      extern lit "liftoff" { (s_104) ⇒
+      substitute [s_104 ↦ s_104, k_101 ↦ k_101, f_0 ↦ f_0];
       invoke f_0 apply },
     false() ⇒
-      substitute [f_90 ↦ f_90, n_101 ↦ n_101, f_0 ↦ f_0, f_90' ↦ f_90, n_101' ↦ n_101, k_102 ↦ k_102];
-      new k_106 = (f_0, f_90', n_101', k_102){
-        ret(r_107) ⇒
-          extern lit 1 { (n_108) ⇒
-          extern sub(n_101', n_108) { (r_109) ⇒
-          substitute [f_0 ↦ f_0, f_90' ↦ f_90', r_109 ↦ r_109, k_102 ↦ k_102];
-          jump count_90 } } };
-      substitute [n_101 ↦ n_101, k_106 ↦ k_106, f_90 ↦ f_90];
+      substitute [f_90 ↦ f_90, n_100 ↦ n_100, f_0 ↦ f_0, f_90' ↦ f_90, n_100' ↦ n_100, k_101 ↦ k_101];
+      new k_105 = (f_0, f_90', n_100', k_101){
+        ret(r_106) ⇒
+          extern lit 1 { (n_107) ⇒
+          extern sub(n_100', n_107) { (r_108) ⇒
+          substitute [f_0 ↦ f_0, f_90' ↦ f_90', r_108 ↦ r_108, k_101 ↦ k_101];
+          jump count_3369 } } };
+      substitute [n_100 ↦ n_100, k_105 ↦ k_105, f_90 ↦ f_90];
       invoke f_90 apply } } }
+
+define main_3370 : (f_0, f_90, k_96) =
+  extern lit "counting: " { (s_97) ⇒
+  substitute [s_97 ↦ s_97, f_0 ↦ f_0, f_90 ↦ f_90, k_96 ↦ k_96];
+  new k_98 = (f_0, f_90, k_96){
+    ret(r_99) ⇒
+      extern lit 3 { (n_109) ⇒
+      substitute [f_0 ↦ f_0, f_90 ↦ f_90, n_109 ↦ n_109, k_96 ↦ k_96];
+      jump count_3369 } };
+  perform putStr(s_97) k_98 }

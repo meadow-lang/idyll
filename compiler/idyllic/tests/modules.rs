@@ -26,7 +26,7 @@ fn package(root: &str, others: &[(&str, &str)]) -> PackageSource {
         let file = format!("src/{}.idl", path.join("/"));
         modules.push(ModuleFile { path, file, text: (*text).into() });
     }
-    PackageSource { name: "App".into(), version: None, modules }
+    PackageSource { name: "App".into(), version: None, linear: false, modules }
 }
 
 fn run(root: &str, others: &[(&str, &str)]) -> pipeline::Output {

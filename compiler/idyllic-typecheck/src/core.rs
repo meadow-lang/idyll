@@ -235,6 +235,24 @@ pub fn lit_builtin(l: &Lit) -> Builtin {
     }
 }
 
+thread_local! {
+    /// Whether types are printed for a linear module, where an unannotated
+    /// binder is linear: there `1` goes unsaid and `[]` is written, and
+    /// elsewhere the other way round.
+    static LINEAR_PRINTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Print types from here on as a linear module (or not) reads them; what
+/// it was before.
+pub fn print_linear(linear: bool) -> bool {
+    LINEAR_PRINTING.with(|l| l.replace(linear))
+}
+
+/// What an unannotated explicit binder has, as types are printed now.
+fn printed_default() -> Grade {
+    if LINEAR_PRINTING.with(std::cell::Cell::get) { Grade::ONE } else { Grade::DEFAULT }
+}
+
 /// `a`, if `g` is `Pair a`: a pair's type, waiting for its second.
 fn pair_of(g: &Core) -> Option<&Rc<Core>> {
     match g {
@@ -247,7 +265,8 @@ impl fmt::Display for Core {
     /// Render for error messages, in the surface syntax.  Binders are shown
     /// using their name hints, so shadowed names can look ambiguous; that is
     /// a display nicety only.  Grades are shown only when they differ from
-    /// the defaults, the way they are written.
+    /// the defaults, the way they are written: in a linear module's way, if
+    /// [`print_linear`] says so.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         /// `x : a`, `x : [s] a` or `x : (s, r) a`.
         fn binder(
@@ -264,9 +283,11 @@ impl fmt::Display for Core {
                 write!(f, ", ")?;
                 go(in_type, 0, f)?;
                 write!(f, ") ")?;
+            } else if grade.is_grade(default) {
+                // (what an unannotated binder has goes unsaid)
             } else if grade.is_grade(Grade::ANY) {
                 write!(f, "[] ")?;
-            } else if !grade.is_grade(default) {
+            } else {
                 write!(f, "[")?;
                 go(grade, 0, f)?;
                 write!(f, "] ")?;
@@ -430,7 +451,7 @@ impl fmt::Display for Core {
                 // an anonymous, default-graded binder is just an arrow
                 Core::Pi { name, grade, in_type, dom, cod, .. }
                     if name == "_"
-                        && grade.is_grade(Grade::DEFAULT)
+                        && grade.is_grade(printed_default())
                         && in_type.is_grade(Grade::DEFAULT_IN_TYPE) =>
                 {
                     paren(prec > 0, f, |f| {
@@ -441,7 +462,7 @@ impl fmt::Display for Core {
                 }
                 Core::Pi { name, grade, in_type, dom, cod, .. } => paren(prec > 0, f, |f| {
                     write!(f, "(")?;
-                    binder(name, (grade, in_type), Grade::DEFAULT, dom, f)?;
+                    binder(name, (grade, in_type), printed_default(), dom, f)?;
                     write!(f, ") -> ")?;
                     go(cod, 0, f)
                 }),

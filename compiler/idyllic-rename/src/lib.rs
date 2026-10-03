@@ -63,6 +63,8 @@ pub enum RenameError {
     NotInModule { module: String, name: String, span: Span },
     /// a module, where a value or a type is wanted
     ModuleNotValue { path: String, span: Span },
+    /// a record built, matched, read or updated wrongly: what, and where
+    Record { message: String, label: String, span: Span },
 }
 
 impl RenameError {
@@ -94,6 +96,7 @@ impl RenameError {
             RenameError::NotInModule { module, name, span } => {
                 Diagnostic::error(format!("{module} has no {name}")).label(*span, "used here")
             }
+            RenameError::Record { message, label, span } => Diagnostic::error(message.clone()).label(*span, label.clone()),
             RenameError::ModuleNotValue { path, span } => Diagnostic::error(format!("{path} is a module"))
                 .label(*span, "a module is not a value; name something in it, as in M.x"),
             RenameError::AliasForType { path, span } => {
@@ -171,8 +174,16 @@ struct Renamer {
     /// term).  Written with a path, it is whichever the path leads to:
     /// `Pair.Pair` the constructor, `Std.Tuple.Pair` the type
     twins: HashMap<usize, usize>,
+    /// each record's fields, in order, by the record type's unique: each
+    /// one's name and its projection's unique (`Point.x`)
+    fields: HashMap<usize, Vec<(String, usize)>>,
     /// the definitions marked `@terminating`
     terminating: std::collections::HashSet<usize>,
+    /// whether the package's modules are all linear (`--linear`)
+    linear_package: bool,
+    /// whether the module being renamed is: its unannotated binders get
+    /// `[1]`, where elsewhere they mean `[]`
+    linear: bool,
     /// whether what is being renamed is a type: a signature, an
     /// annotation, a function type, a constructor's fields
     in_type: bool,
@@ -225,7 +236,7 @@ enum Target {
 /// Rename a whole program, one module: its declarations become the
 /// top-level bindings and its trailing expression, if any, the body.
 pub fn rename_module(prog: &ast::Program, prelude: &ast::Program) -> RenameResult {
-    rename_package("Main", &[ModuleSource { path: Vec::new(), program: prog }], prelude, &[], FIRST_USER_UNIQUE)
+    rename_package("Main", &[ModuleSource { path: Vec::new(), program: prog }], prelude, &[], FIRST_USER_UNIQUE, false)
 }
 
 /// Rename a package: every module of it at once, so that any may mention
@@ -246,18 +257,22 @@ pub fn rename_package(
     prelude: &ast::Program,
     deps: &[(&str, &hir::PackageNames)],
     first_unique: usize,
+    linear: bool,
 ) -> RenameResult {
     let mut r = Renamer::new(package);
+    r.linear_package = linear;
     // the prelude's names get scopes of their own (what it brings in with
     // `use`, then what it declares), so that redefining a builtin shadows it
     // rather than clashing with it
     r.scopes.push(Scope::new());
     r.scopes.push(Scope::new());
+    r.linear = prelude.linear;
     let bound = r.bind_program(prelude, &prelude.decls);
     for u in &prelude.uses {
         r.rename_use(u);
     }
     let (mut datas, mut effects, mut natives, prelude_binds) = r.rename_program(prelude, bound);
+    r.linear = false;
     let n = r.scopes.len();
     let names = r.scopes[n - 2..].iter().flatten().map(|(x, &(u, _))| (x.clone(), u)).collect();
     r.base = std::mem::take(&mut r.scopes);
@@ -281,6 +296,7 @@ pub fn rename_package(
             r.note_twin(*u);
         }
         r.effect_ops.extend(names.effect_ops.iter().cloned());
+        r.fields.extend(names.fields.iter().cloned());
     }
     r.next_unique = r.next_unique.max(first_unique);
     let first = r.next_unique;
@@ -296,6 +312,7 @@ pub fn rename_package(
     let mut bound = Vec::new();
     for (i, m) in modules.iter().enumerate() {
         r.enter(i);
+        r.linear = r.linear_package || m.program.linear;
         let b = r.bind_program(m.program, parts[i].0);
         r.export(i, m.program, &b);
         r.leave();
@@ -322,6 +339,7 @@ pub fn rename_package(
     let mut main = None;
     for (i, (m, b)) in modules.iter().zip(bound).enumerate() {
         r.enter(i);
+        r.linear = r.linear_package || m.program.linear;
         let (d, e, n, bs) = r.rename_program(m.program, b);
         datas.extend(d);
         effects.extend(e);
@@ -354,6 +372,11 @@ pub fn rename_package(
             .filter(|e: &&hir::EffectDecl| own(&e.name.unique))
             .filter_map(|e| Some((e.name.unique?, r.effect_ops.get(&e.name.unique?)?.clone())))
             .collect(),
+        fields: datas
+            .iter()
+            .filter(|d: &&hir::DataDecl| own(&d.name.unique))
+            .filter_map(|d| Some((d.name.unique?, r.fields.get(&d.name.unique?)?.clone())))
+            .collect(),
     };
     let module = hir::Module {
         datas,
@@ -369,6 +392,7 @@ pub fn rename_package(
         uniques: (first, r.next_unique),
         terminating: r.terminating,
         version: None,
+        linear_body: linear || modules.first().is_some_and(|m| m.program.linear),
     };
     RenameResult { module, spans: r.spans, errors: r.errors }
 }
@@ -408,7 +432,10 @@ impl Renamer {
             ctors: HashMap::new(),
             type_names: HashMap::new(),
             twins: HashMap::new(),
+            fields: HashMap::new(),
             terminating: Default::default(),
+            linear_package: false,
+            linear: false,
             in_type: false,
             effect_ops: HashMap::new(),
             package: package.to_string(),
@@ -462,6 +489,20 @@ impl Renamer {
             })
             .collect();
         let defs = self.bind_decls(decls);
+        // a record's fields, by their projections, which the parser named
+        // `Point.x` and are bound (under that name) with the definitions
+        for (d, (name, _)) in datas.iter().zip(&data_names) {
+            let (Some(fields), Some(u)) = (&d.node.fields, name.unique) else { continue };
+            let found = fields
+                .iter()
+                .filter_map(|f| {
+                    let key = format!("{}.{}", d.node.name.node, f.node);
+                    let scope = self.scopes.last().expect("scope stack is never empty");
+                    scope.get(&key).map(|&(p, _)| (f.node.clone(), p))
+                })
+                .collect();
+            self.fields.insert(u, found);
+        }
         for (_, name, _) in &defs {
             if let (Some(u), true) = (name.unique, prog.terminating.iter().any(|x| x.node == name.text)) {
                 self.terminating.insert(u);
@@ -629,8 +670,11 @@ impl Renamer {
                         self.errors.push(RenameError::NotAType { path: here, span });
                         return None;
                     };
+                    let field = self.fields.get(&u).and_then(|fs| fs.iter().find(|(f, _)| f == seg)).map(|&(_, p)| p);
                     match ctors.iter().find(|(c, _)| c == seg) {
                         Some(&(_, c)) => Target::Name(c),
+                        // a record's field, `Point.x`: its projection
+                        None if field.is_some() => Target::Name(field.expect("checked")),
                         None => {
                             let error = RenameError::NoSuchConstructor { ty: here, name: seg.to_string(), span };
                             self.errors.push(error);
@@ -893,6 +937,159 @@ impl Renamer {
         }
     }
 
+    /// The record type a name written as a record's names, and its fields,
+    /// in order: `None` (and an error) if it is no record.
+    fn record_named(&mut self, name: &ast::Ident, report: bool) -> Option<Vec<String>> {
+        let ty = self.as_type(|r| r.use_name(name));
+        let fields = ty.unique.and_then(|u| self.fields.get(&u)).map(|fs| fs.iter().map(|(f, _)| f.clone()).collect());
+        if fields.is_none() && report && ty.unique.is_some() {
+            self.errors.push(RenameError::Record {
+                message: format!("{} is not a record", name.node),
+                label: "fields, `{ x = .. }`, are for a type declared with `record`".into(),
+                span: name.span,
+            });
+        }
+        fields
+    }
+
+    /// The values (or patterns) given for a record's fields, in the order
+    /// the fields are declared: each field's, if it was given. Reports a
+    /// field given that the record has not, or one given twice.
+    fn in_field_order<'v, T>(&mut self, record: &str, fields: &[String], given: &'v [(ast::Ident, T)], report: bool) -> Vec<Option<&'v T>> {
+        if report {
+            for (i, (f, _)) in given.iter().enumerate() {
+                if !fields.contains(&f.node) {
+                    self.errors.push(RenameError::Record {
+                        message: format!("{record} has no field {}", f.node),
+                        label: format!("its fields are {}", fields.join(", ")),
+                        span: f.span,
+                    });
+                } else if given[..i].iter().any(|(g, _)| g.node == f.node) {
+                    self.errors.push(RenameError::Record {
+                        message: format!("the field {} is given twice", f.node),
+                        label: "given again here".into(),
+                        span: f.span,
+                    });
+                }
+            }
+        }
+        fields.iter().map(|f| given.iter().find(|(g, _)| g.node == *f).map(|(_, v)| v)).collect()
+    }
+
+    /// `Point { x = 1, y = 2 }`: the constructor, given every field, in the
+    /// order they are declared (and so computed in that order).
+    fn record_literal(&mut self, name: &ast::Ident, values: &[(ast::Ident, LTerm)], span: Span) -> Option<LTerm> {
+        let fields = self.record_named(name, true)?;
+        let ordered = self.in_field_order(&name.node, &fields, values, true);
+        let missing: Vec<&String> = fields.iter().zip(&ordered).filter(|(_, v)| v.is_none()).map(|(f, _)| f).collect();
+        if !missing.is_empty() {
+            let missing: Vec<&str> = missing.iter().map(|f| f.as_str()).collect();
+            self.errors.push(RenameError::Record {
+                message: format!("{} is missing {}", name.node, missing.join(", ")),
+                label: "a record is built with every one of its fields".into(),
+                span,
+            });
+            return None;
+        }
+        let ctor = Spanned::new(ast::Term::Var(name.clone()), name.span);
+        Some(ordered.into_iter().flatten().fold(ctor, |f, v| {
+            Spanned::new(ast::Term::App(Box::new(f), Box::new(v.clone())), span)
+        }))
+    }
+
+    /// `Point { x = p }`: the constructor's pattern, `_` for a field not
+    /// named.
+    fn record_pattern(&mut self, name: &ast::Ident, given: &[(ast::Ident, ast::LPat)], span: Span, report: bool) -> Option<ast::LPat> {
+        let fields = self.record_named(name, report)?;
+        let ordered = self.in_field_order(&name.node, &fields, given, report);
+        let pats = ordered.into_iter().map(|p| p.cloned().unwrap_or_else(|| Spanned::new(ast::Pat::Wild, span))).collect();
+        Some(Spanned::new(ast::Pat::Con(name.clone(), pats), span))
+    }
+
+    /// The records in scope, by their type's name as it is written here, that
+    /// have every one of `wanted`'s fields.
+    fn records_with(&self, wanted: &[&str]) -> Vec<(String, Vec<String>)> {
+        let mut found: Vec<(String, Vec<String>)> = self
+            .fields
+            .iter()
+            .filter(|(_, fs)| wanted.iter().all(|w| fs.iter().any(|(f, _)| f == w)))
+            .filter_map(|(t, fs)| {
+                let name = self.type_names.get(t).filter(|n| self.lookup(n) == Some(*t))?;
+                Some((name.clone(), fs.iter().map(|(f, _)| f.clone()).collect()))
+            })
+            .collect();
+        found.sort();
+        found
+    }
+
+    /// The one record in scope with these fields, or the error of there
+    /// being none, or several.
+    fn the_record_with(&mut self, wanted: &[&str], span: Span, what: &str) -> Option<(String, Vec<String>)> {
+        let mut found = self.records_with(wanted);
+        match found.len() {
+            1 => found.pop(),
+            0 => {
+                self.errors.push(RenameError::Record {
+                    message: format!("no record in scope has the field{} {}", if wanted.len() == 1 { "" } else { "s" }, wanted.join(", ")),
+                    label: format!("{what} a record's fields, which this does not name"),
+                    span,
+                });
+                None
+            }
+            _ => {
+                let names: Vec<String> = found.into_iter().map(|(n, _)| n).collect();
+                self.errors.push(RenameError::Record {
+                    message: format!("{} records have {}: {}", names.len(), wanted.join(", "), names.join(", ")),
+                    label: format!("say which: write {}.{} e", names[0], wanted[0]),
+                    span,
+                });
+                None
+            }
+        }
+    }
+
+    /// `e.x`: the projection of the one record in scope with a field `x`,
+    /// applied to `e`.
+    fn projection(&mut self, e: &LTerm, field: &ast::Ident, span: Span) -> Option<LTerm> {
+        let (record, _) = self.the_record_with(&[field.node.as_str()], field.span, "reads")?;
+        let projection = Spanned::new(ast::Term::Var(Spanned::new(format!("{record}.{}", field.node), field.span)), field.span);
+        Some(Spanned::new(ast::Term::App(Box::new(projection), Box::new(e.clone())), span))
+    }
+
+    /// `{ e | x = v }`: `e` taken apart and built again, with `v` for `x`.
+    fn record_update(&mut self, e: &LTerm, values: &[(ast::Ident, LTerm)], span: Span) -> Option<LTerm> {
+        let wanted: Vec<&str> = values.iter().map(|(f, _)| f.node.as_str()).collect();
+        let (record, fields) = self.the_record_with(&wanted, span, "updates")?;
+        let ordered = self.in_field_order(&record, &fields, values, true);
+        let at = |t: ast::Term| Spanned::new(t, span);
+        let name = Spanned::new(record.clone(), span);
+        // what is kept is bound under a name nothing else can have
+        let kept = |f: &str| format!("#{f}");
+        let pats = fields
+            .iter()
+            .zip(&ordered)
+            .map(|(f, v)| match v {
+                Some(_) => Spanned::new(ast::Pat::Wild, span),
+                None => Spanned::new(ast::Pat::Bind(ast::Param { name: Spanned::new(kept(f), span), unbox: false, grade: None, ty: None }), span),
+            })
+            .collect();
+        let rebuilt = fields.iter().zip(&ordered).fold(at(ast::Term::Var(name.clone())), |acc, (f, v)| {
+            let value = match v {
+                Some(v) => (*v).clone(),
+                None => at(ast::Term::Var(Spanned::new(kept(f), span))),
+            };
+            at(ast::Term::App(Box::new(acc), Box::new(value)))
+        });
+        let alt = ast::Alt { pat: Spanned::new(ast::Pat::Con(name, pats), span), rhs: ast::Rhs::Plain(rebuilt) };
+        Some(at(ast::Term::Case(Box::new(e.clone()), vec![alt])))
+    }
+
+    /// `[1]`, written where nothing was.
+    fn grade_one(&mut self, span: Span) -> hir::GradeAnn {
+        let one = self.node(span, hir::TermKind::Lit(ast::Lit::Int(1)));
+        hir::GradeAnn { subject: Box::new(one), in_type: None }
+    }
+
     fn rename_grades(&mut self, g: &ast::GradeAnn) -> hir::GradeAnn {
         hir::GradeAnn {
             subject: Box::new(self.rename_term(&g.subject)),
@@ -961,7 +1158,12 @@ impl Renamer {
             }
             A::Pi(mb, icit, grade, dom, cod) => {
                 // neither the domain nor the grades can see the bound name
-                let grade = grade.as_ref().map(|g| self.rename_grades(g));
+                let grade = match grade {
+                    Some(g) => Some(self.rename_grades(g)),
+                    // in a linear module, an unannotated binder is `[1]`
+                    None if self.linear && *icit == Icit::Explicit => Some(self.grade_one(sp)),
+                    None => None,
+                };
                 let dom = self.as_type(|r| r.rename_term(dom));
                 self.scoped(|r| {
                     let mb = mb.as_ref().map(|x| r.bind_name(x));
@@ -998,6 +1200,21 @@ impl Renamer {
                 let items = items.iter().map(|e| self.rename_term(e)).collect();
                 self.node(sp, H::ArrayLit(items))
             }
+            A::RecordLit(name, values) => match self.record_literal(name, values, sp) {
+                Some(built) => self.rename_term(&built),
+                // (reported; nothing to say about it after)
+                None => self.node(sp, H::Var(Ident { unique: None, text: "_".into() })),
+            },
+            A::Proj(e, field) => match self.projection(e, field, sp) {
+                Some(read) => self.rename_term(&read),
+                // (reported; nothing to say about it after)
+                None => self.node(sp, H::Var(Ident { unique: None, text: "_".into() })),
+            },
+            A::Update(e, values) => match self.record_update(e, values, sp) {
+                Some(rebuilt) => self.rename_term(&rebuilt),
+                // (reported; nothing to say about it after)
+                None => self.node(sp, H::Var(Ident { unique: None, text: "_".into() })),
+            },
             A::Seq(items) => {
                 let items: Vec<(Span, hir::Term)> = items.iter().map(|e| (e.span, self.rename_term(e))).collect();
                 let nil = self.node(sp, H::SeqNil);
@@ -1084,6 +1301,13 @@ impl Renamer {
                 self.bind_pattern(q, names);
             }
             ast::Pat::Con(_, ps) | ast::Pat::Seq(ps) => ps.iter().for_each(|q| self.bind_pattern(q, names)),
+            // in the order the fields are declared, which is the order
+            // `rename_pattern` takes the names in
+            ast::Pat::Record(r, fs) => {
+                if let Some(desugared) = self.record_pattern(r, fs, p.span, false) {
+                    self.bind_pattern(&desugared, names);
+                }
+            }
             ast::Pat::Wild | ast::Pat::Lit(_) | ast::Pat::Dot(_) => {}
         }
     }
@@ -1105,6 +1329,10 @@ impl Renamer {
                 let c = self.as_term(|r| r.use_name(c));
                 hir::PatKind::Con(c, ps.iter().map(|q| self.rename_pattern(q, names)).collect())
             }
+            ast::Pat::Record(r, fs) => match self.record_pattern(r, fs, p.span, true) {
+                Some(desugared) => return self.rename_pattern(&desugared, names),
+                None => hir::PatKind::Wild,
+            },
             ast::Pat::Wild => hir::PatKind::Wild,
             ast::Pat::Lit(l) => hir::PatKind::Lit(l.clone()),
             ast::Pat::Dot(e) => hir::PatKind::Dot(self.as_term(|r| r.rename_term(e))),
@@ -1184,7 +1412,11 @@ impl Renamer {
                                 ast::Ctor::Fields(fields) => {
                                     hir::CtorShape::Fields(fields.iter().map(|f| r.as_type(|r| r.rename_term(f))).collect())
                                 }
-                                ast::Ctor::Sig(ty) => hir::CtorShape::Sig(r.rename_sig(ty)),
+                                ast::Ctor::Sig(ty) => {
+                                    // (a field that says nothing has the
+                                    // module's default, as any binder does)
+                                    hir::CtorShape::Sig(r.rename_sig(ty))
+                                }
                             };
                             hir::CtorDecl { id: r.fresh_node(c.span), name, shape }
                         })
@@ -1199,7 +1431,7 @@ impl Renamer {
                         Ident { unique: found, text: c.node.clone() }
                     };
                     let seq = d.node.seq.as_ref().map(|s| (own(r, &s.nil), own(r, &s.cons)));
-                    hir::DataDecl { id, name, params, kind, ctors, seq }
+                    hir::DataDecl { id, name, params, kind, ctors, seq, linear: r.linear }
                 })
             })
             .collect()
@@ -1374,7 +1606,7 @@ impl Renamer {
             });
             // f (x : a) y = e  ~~>  f = \x y -> e
             let rhs = params.into_iter().rev().fold(body, |body, p| r.wrap_param(d.span, p, body));
-            hir::Bind { id, name, ty, rhs }
+            hir::Bind { id, name, ty, rhs, linear: r.linear }
         })
     }
 
@@ -1397,7 +1629,7 @@ impl Renamer {
                 })
                 .collect();
             let rhs = r.node(span, hir::TermKind::Match(clauses));
-            hir::Bind { id, name, ty, rhs }
+            hir::Bind { id, name, ty, rhs, linear: r.linear }
         })
     }
 
@@ -1475,6 +1707,12 @@ fn free_variables(t: &LTerm, bound: &mut Vec<String>, known: &dyn Fn(&str) -> bo
         }
         A::BoxIntro(e) => free_variables(e, bound, known, out),
         A::Seq(items) | A::ArrayLit(items) => items.iter().for_each(|e| free_variables(e, bound, known, out)),
+        A::RecordLit(_, values) => values.iter().for_each(|(_, e)| free_variables(e, bound, known, out)),
+        A::Proj(e, _) => free_variables(e, bound, known, out),
+        A::Update(e, values) => {
+            free_variables(e, bound, known, out);
+            values.iter().for_each(|(_, v)| free_variables(v, bound, known, out));
+        }
         A::LetBox(x, e, body) => {
             free_variables(e, bound, known, out);
             under(Some(&x.node), body, bound, out);

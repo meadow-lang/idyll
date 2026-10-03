@@ -174,6 +174,9 @@ pub struct DataDecl {
     /// `@seq(nil = Nil, cons = (::))`: the constructors a sequence literal of
     /// this type is made of
     pub seq: Option<(Ident, Ident)>,
+    /// whether it was declared in a linear module, where a field that says
+    /// nothing is linear (elsewhere it is `[]`, as any binder is)
+    pub linear: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -219,6 +222,9 @@ pub struct Bind {
     pub name: Ident,
     pub ty: Option<Term>,
     pub rhs: Term,
+    /// written in a linear module (`@linear`, `--linear`), where what has no
+    /// grade is used once rather than as often as wanted
+    pub linear: bool,
 }
 
 /// A set of bindings that must be handled together.  Emitted by the SCC pass:
@@ -280,6 +286,9 @@ pub struct Module {
     /// the package's version, if it has one, for the symbols a back end
     /// names things by
     pub version: Option<String>,
+    /// whether the root module, whose expression is the program's body, is
+    /// linear
+    pub linear_body: bool,
     /// the definitions `@terminating` vouches for: they need not say
     /// `! Div`, though the checker cannot see that they end
     pub terminating: std::collections::HashSet<usize>,
@@ -297,6 +306,10 @@ pub struct PackageNames {
     pub types: Vec<(usize, String, Members)>,
     /// its effects' operations, by the effect's unique
     pub effect_ops: Vec<(usize, Members)>,
+    /// its records' fields, in order, by the record type's unique: each
+    /// one's projection
+    #[serde(default)]
+    pub fields: Vec<(usize, Members)>,
 }
 
 /// A type's constructors, or an effect's operations: each name, with its

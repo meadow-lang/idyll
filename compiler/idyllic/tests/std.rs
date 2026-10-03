@@ -195,6 +195,21 @@ fn arrays() {
 }
 
 #[test]
+fn a_function_from_a_module_that_is_not_linear_fits_the_library() {
+    // the library is linear, and its functions take another's at whatever
+    // grades its arguments have: `map` and `all` generic in them, `foldr`
+    // taking any
+    let src = "use Std.Collections.List (map, foldr, all)\n\n\
+               double : Int -> Int\ndouble n = n + n\n\n\
+               (map double #[1, 2], foldr (\\x acc -> if x < acc then acc else x) 0 #[3, 1], all (\\x -> 0 < x + x) #[1])";
+    assert_eq!(value(src), "(2 :: 4 :: Nil, 3, True)");
+    let state = "use Std.State (State, get, put, runState)\n\n\
+                 bump : () -> Int ! State Int\nbump u = let n = get () in let v = put (n + n) in n\n\n\
+                 runState 4 bump";
+    assert_eq!(value(state), "(4, 8)");
+}
+
+#[test]
 fn mutable_arrays() {
     let m = "use Std.Collections.MArray (MArray, new, write, read, freeze, thaw, swap, modify, generate)\n\n";
     assert_eq!(value(&format!("{m}freeze (write (write (new 3 0) 0 7) 2 9)")), "#[7; 0; 9]");
@@ -203,7 +218,8 @@ fn mutable_arrays() {
     // a read gives back the array, which is linear and must be used, and
     // the element boxed, to use as often as wanted
     assert_eq!(value(&format!("{m}case read (new 2 21) 1 of\n  (b, m2) -> let [x] = b in (x + x, freeze m2)")), "(42, #[21; 21])");
-    assert!(!rejected(&format!("{m}case read (new 2 21) 1 of\n  (b, m2) -> let [x] = b in x + x")).is_empty());
+    // and, in a linear module, dropping the array is an error
+    assert!(!rejected(&format!("@linear\n\n{m}case read (new 2 21) 1 of\n  (b, m2) -> let [x] = b in x + x")).is_empty());
 }
 
 #[test]

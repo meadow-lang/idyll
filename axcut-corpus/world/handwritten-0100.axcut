@@ -139,12 +139,12 @@ define main : () =
               substitute [r_87 ↦ r_87, k_59 ↦ k_59];
               invoke k_59 ret } };
           substitute [f_26 ↦ f_26, c_25 ↦ c_25, n_58 ↦ n_58, k_85 ↦ k_85];
-          jump negativeDigits_70 },
+          jump negativeDigits_83 },
         false() ⇒
           extern lit 0 { (n_88) ⇒
           extern sub(n_88, n_58) { (r_89) ⇒
           substitute [f_26 ↦ f_26, c_25 ↦ c_25, r_89 ↦ r_89, k_59 ↦ k_59];
-          jump negativeDigits_70 } } } } } };
+          jump negativeDigits_83 } } } } } };
   substitute [f_0 ↦ f_0, f_0' ↦ f_0, f_57 ↦ f_57];
   new f_90 = (f_0', f_57){
     apply(n_91, k_92) ⇒
@@ -154,36 +154,14 @@ define main : () =
           invoke f_0' apply };
       substitute [n_91 ↦ n_91, k_93 ↦ k_93, f_57 ↦ f_57];
       invoke f_57 apply };
-  new f_95 = (f_0, f_90){
-    apply(x_96, k_97) ⇒
-      extern lit 3 { (n_111) ⇒
-      substitute [f_90 ↦ f_90, n_111 ↦ n_111, k_97 ↦ k_97, f_0 ↦ f_0];
-      new k_112 = (k_97, f_0){
-        ret(r_113) ⇒
-          substitute [k_97 ↦ k_97, f_0 ↦ f_0];
-          let u_114 = unit();
-          substitute [u_114 ↦ u_114, k_97 ↦ k_97, f_0 ↦ f_0];
-          new k_115 = (k_97, f_0){
-            ret(r_116) ⇒
-              substitute [k_97 ↦ k_97, f_0 ↦ f_0, r_116 ↦ r_116];
-              switch r_116 {
-                Nothing() ⇒
-                  extern lit 4 { (n_117) ⇒
-                  substitute [n_117 ↦ n_117, k_97 ↦ k_97];
-                  perform exit(n_117) k_97 },
-                Just(s_118) ⇒
-                  substitute [s_118 ↦ s_118, k_97 ↦ k_97, f_0 ↦ f_0];
-                  invoke f_0 apply } };
-          perform readLine(u_114) k_115 };
-      jump roll_90 } };
-  let u_119 = unit();
-  new k_120 = (){
-    ret(r_121) ⇒
-      extern halt(r_121) {} };
-  substitute [u_119 ↦ u_119, k_120 ↦ k_120, f_95 ↦ f_95];
-  invoke f_95 apply
+  let u_118 = unit();
+  substitute [f_0 ↦ f_0, f_90 ↦ f_90];
+  new k_119 = (){
+    ret(r_120) ⇒
+      extern halt(r_120) {} };
+  jump main_3370
 
-define negativeDigits_70 : (f_26, fuel_63, n_64, k_65) =
+define negativeDigits_83 : (f_26, fuel_63, n_64, k_65) =
   substitute [f_26 ↦ f_26, n_64 ↦ n_64, k_65 ↦ k_65, fuel_63 ↦ fuel_63];
   switch fuel_63 {
     Spent() ⇒
@@ -220,31 +198,53 @@ define negativeDigits_70 : (f_26, fuel_63, n_64, k_65) =
                   invoke k_65 ret } };
               substitute [r_81 ↦ r_81, k_82 ↦ k_82, f_26' ↦ f_26'];
               invoke f_26' apply } } } } };
-          jump negativeDigits_70 } } } } } } } }
+          jump negativeDigits_83 } } } } } } } }
 
-define roll_90 : (f_90, n_98, k_99) =
-  extern lit 0 { (n_100) ⇒
-  extern eq(n_98, n_100) { (r_101) ⇒
-  substitute [f_90 ↦ f_90, n_98 ↦ n_98, k_99 ↦ k_99, r_101 ↦ r_101];
-  switch r_101 {
+define roll_3369 : (f_90, n_97, k_98) =
+  extern lit 0 { (n_99) ⇒
+  extern eq(n_97, n_99) { (r_100) ⇒
+  substitute [f_90 ↦ f_90, n_97 ↦ n_97, k_98 ↦ k_98, r_100 ↦ r_100];
+  switch r_100 {
     true() ⇒
-      substitute [k_99 ↦ k_99];
-      let u_102 = unit();
-      substitute [u_102 ↦ u_102, k_99 ↦ k_99];
-      invoke k_99 ret,
+      substitute [k_98 ↦ k_98];
+      let u_101 = unit();
+      substitute [u_101 ↦ u_101, k_98 ↦ k_98];
+      invoke k_98 ret,
     false() ⇒
-      extern lit 1 { (n_103) ⇒
-      extern lit 7 { (n_104) ⇒
-      substitute [n_103 ↦ n_103, n_104 ↦ n_104, f_90 ↦ f_90, n_98 ↦ n_98, k_99 ↦ k_99];
-      new k_105 = (f_90, n_98, k_99){
-        ret(r_106) ⇒
-          substitute [r_106 ↦ r_106, f_90 ↦ f_90, f_90' ↦ f_90, n_98 ↦ n_98, k_99 ↦ k_99];
-          new k_107 = (f_90', n_98, k_99){
-            ret(r_108) ⇒
-              extern lit 1 { (n_109) ⇒
-              extern sub(n_98, n_109) { (r_110) ⇒
-              substitute [f_90' ↦ f_90', r_110 ↦ r_110, k_99 ↦ k_99];
-              jump roll_90 } } };
-          substitute [r_106 ↦ r_106, k_107 ↦ k_107, f_90 ↦ f_90];
+      extern lit 1 { (n_102) ⇒
+      extern lit 7 { (n_103) ⇒
+      substitute [n_102 ↦ n_102, n_103 ↦ n_103, f_90 ↦ f_90, n_97 ↦ n_97, k_98 ↦ k_98];
+      new k_104 = (f_90, n_97, k_98){
+        ret(r_105) ⇒
+          substitute [r_105 ↦ r_105, f_90 ↦ f_90, f_90' ↦ f_90, n_97 ↦ n_97, k_98 ↦ k_98];
+          new k_106 = (f_90', n_97, k_98){
+            ret(r_107) ⇒
+              extern lit 1 { (n_108) ⇒
+              extern sub(n_97, n_108) { (r_109) ⇒
+              substitute [f_90' ↦ f_90', r_109 ↦ r_109, k_98 ↦ k_98];
+              jump roll_3369 } } };
+          substitute [r_105 ↦ r_105, k_106 ↦ k_106, f_90 ↦ f_90];
           invoke f_90 apply };
-      perform intBetween(n_103, n_104) k_105 } } } } }
+      perform intBetween(n_102, n_103) k_104 } } } } }
+
+define main_3370 : (f_0, f_90, k_96) =
+  extern lit 3 { (n_110) ⇒
+  substitute [f_90 ↦ f_90, n_110 ↦ n_110, f_0 ↦ f_0, k_96 ↦ k_96];
+  new k_111 = (f_0, k_96){
+    ret(r_112) ⇒
+      substitute [f_0 ↦ f_0, k_96 ↦ k_96];
+      let u_113 = unit();
+      substitute [u_113 ↦ u_113, f_0 ↦ f_0, k_96 ↦ k_96];
+      new k_114 = (f_0, k_96){
+        ret(r_115) ⇒
+          substitute [f_0 ↦ f_0, k_96 ↦ k_96, r_115 ↦ r_115];
+          switch r_115 {
+            Nothing() ⇒
+              extern lit 4 { (n_116) ⇒
+              substitute [n_116 ↦ n_116, k_96 ↦ k_96];
+              perform exit(n_116) k_96 },
+            Just(s_117) ⇒
+              substitute [s_117 ↦ s_117, k_96 ↦ k_96, f_0 ↦ f_0];
+              invoke f_0 apply } };
+      perform readLine(u_113) k_114 };
+  jump roll_3369 }

@@ -12,8 +12,11 @@ use idyllic_seq::{Branch, Definition, Extern, Program, Stmt, Symbol};
 use idyllic_diagnostics::OutputStyle;
 use idyllic::pipeline::{self, Evaluation, Options};
 
+/// A program whose unannotated binders are linear, as the lowering's
+/// bookkeeping (what is shared, copied, dropped) is about.
 fn run(src: &str) -> pipeline::Output {
-    pipeline::run(src, &Options { debug: false, style: OutputStyle::PLAIN, live: false })
+    let src = format!("@linear\n\n{src}");
+    pipeline::run(&src, &Options { debug: false, style: OutputStyle::PLAIN, live: false })
 }
 
 /// The program's value, as the REPL shows it.

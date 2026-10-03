@@ -80,6 +80,13 @@ pub enum Term {
     /// An array literal, `#[a; b; c]` (and `#[x;]`, `#[;]`): always an
     /// `Array`, whatever is expected.
     ArrayLit(Vec<LTerm>),
+    /// `Point { x = 1, y = 2 }`: a record, by its type and its fields'
+    /// values, in any order
+    RecordLit(Ident, Vec<(Ident, LTerm)>),
+    /// `e.x`: a field of a record
+    Proj(Box<LTerm>, Ident),
+    /// `{ e | x = v }`: the record `e`, with these fields replaced
+    Update(Box<LTerm>, Vec<(Ident, LTerm)>),
 }
 
 /// One clause of a handler: `op x k -> e`, or `return x -> e`.
@@ -140,6 +147,9 @@ pub enum Pat {
     /// `#[p, q]`: a sequence of exactly these, taken apart with the
     /// constructors of the matched type.
     Seq(Vec<LPat>),
+    /// `Point { x = p }`: a record, its fields matched by the patterns
+    /// given, and any not named by anything.
+    Record(Ident, Vec<(Ident, LPat)>),
 }
 
 /// What an equation or an alternative gives, if its patterns match.
@@ -201,6 +211,9 @@ pub struct Program {
     /// the definitions `@terminating` says end, though the checker cannot
     /// see why
     pub terminating: Vec<Ident>,
+    /// `@linear`: an unannotated binder here is linear, `[1]`, rather than
+    /// unrestricted, `[]`
+    pub linear: bool,
     pub body: Option<LTerm>,
 }
 
@@ -279,6 +292,9 @@ pub struct Data {
     /// `#[a, b]` of this type is built with, `a :: b :: Nil`
     pub seq: Option<SeqCtors>,
     pub visibility: Visibility,
+    /// a record's fields, in order: what its one constructor's fields are
+    /// called (`record Point = { x : Int, y : Int }`)
+    pub fields: Option<Vec<Ident>>,
 }
 
 /// The empty sequence and adding an element to the front of one.
@@ -294,4 +310,43 @@ pub enum Ctor {
     Fields(Vec<LTerm>),
     /// `Cons : a -> Vec n a -> Vec (S n) a`: the constructor's whole type
     Sig(LTerm),
+}
+
+/// `t` with the free variable `name` replaced by `by`: what a record's
+/// field type becomes when an earlier field is read off the record, and the
+/// field's projection is what its type mentions instead. A binder of the
+/// same name hides it. Inside a `let`, a `case`, a handler or a record
+/// update nothing is replaced (a field's type is rarely one of those), so
+/// the name stays, and is reported if nothing else binds it.
+pub fn substitute(t: &LTerm, name: &str, by: &LTerm) -> LTerm {
+    let go = |t: &LTerm| Box::new(substitute(t, name, by));
+    let node = match &t.node {
+        Term::Var(x) if x.node == name => return by.clone(),
+        Term::Pi(x, icit, grade, dom, cod) => {
+            let cod = if x.as_ref().is_some_and(|x| x.node == name) { cod.clone() } else { go(cod) };
+            Term::Pi(x.clone(), *icit, grade.clone(), go(dom), cod)
+        }
+        Term::Lam(p, body) => {
+            let body = if p.node.name.node == name { body.clone() } else { go(body) };
+            let mut p = p.clone();
+            p.node.ty = p.node.ty.as_ref().map(|t| substitute(t, name, by));
+            Term::Lam(p, body)
+        }
+        Term::App(f, a) => Term::App(go(f), go(a)),
+        Term::Ann(e, ty) => Term::Ann(go(e), go(ty)),
+        Term::BoxIntro(e) => Term::BoxIntro(go(e)),
+        Term::Range(a, b) => Term::Range(go(a), go(b)),
+        Term::Eff(a, b) => Term::Eff(go(a), go(b)),
+        Term::Row(labels, tail) => {
+            Term::Row(labels.iter().map(|l| substitute(l, name, by)).collect(), tail.as_ref().map(|t| go(t)))
+        }
+        Term::Seq(items) => Term::Seq(items.iter().map(|e| substitute(e, name, by)).collect()),
+        Term::ArrayLit(items) => Term::ArrayLit(items.iter().map(|e| substitute(e, name, by)).collect()),
+        Term::RecordLit(r, fields) => {
+            Term::RecordLit(r.clone(), fields.iter().map(|(f, e)| (f.clone(), substitute(e, name, by))).collect())
+        }
+        Term::Proj(e, f) => Term::Proj(go(e), f.clone()),
+        other => other.clone(),
+    };
+    Spanned::new(node, t.span)
 }

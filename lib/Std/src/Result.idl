@@ -1,6 +1,8 @@
 -- `Result e a`, which the prelude declares: an error `Err e`, or `Ok` an
 -- `a`. What the world's operations give back.
 
+@linear
+
 @pub
 isOk : {e a : Type} -> (r : [0..1] Result e a) -> Bool
 isOk (Err e) = False
@@ -18,24 +20,24 @@ withDefault d (Err e) = d
 withDefault d (Ok x) = x
 
 @pub
-map : {e a b : Type} -> (f : [0..1] (a -> b ! r)) -> Result e a -> Result e b ! r
+map : {e a b : Type} -> (f : [0..1] ((x : [] a) -> b ! r)) -> (v : [] Result e a) -> Result e b ! r
 map f (Err e) = Err e
 map f (Ok x) = Ok (f x)
 
 @pub
-mapErr : {e d a : Type} -> (f : [0..1] (e -> d ! r)) -> Result e a -> Result d a ! r
+mapErr : {e d a : Type} -> (f : [0..1] ((err : [] e) -> d ! r)) -> (v : [] Result e a) -> Result d a ! r
 mapErr f (Err e) = Err (f e)
 mapErr f (Ok x) = Ok x
 
 -- `f` of the value, if there is one, which may itself fail.
 @pub
-andThen : {e a b : Type} -> (f : [0..1] (a -> Result e b ! r)) -> Result e a -> Result e b ! r
+andThen : {e a b : Type} -> (f : [0..1] ((x : [] a) -> Result e b ! r)) -> (v : [] Result e a) -> Result e b ! r
 andThen f (Err e) = Err e
 andThen f (Ok x) = f x
 
 -- Either way, one answer: `onErr` of the error or `onOk` of the value.
 @pub
-fold : {e a b : Type} -> (onErr : [0..1] (e -> b ! r)) -> (onOk : [0..1] (a -> b ! r)) -> Result e a -> b ! r
+fold : {e a b : Type} -> {g : Grade} -> (onErr : [0..1] ((err : [g] e) -> b ! r)) -> (onOk : [0..1] ((x : [g] a) -> b ! r)) -> (v : [g] Result e a) -> b ! r
 fold f g (Err e) = f e
 fold f g (Ok x) = g x
 

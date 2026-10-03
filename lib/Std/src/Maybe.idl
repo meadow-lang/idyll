@@ -3,6 +3,8 @@
 -- A function that is given a function to call on what is there may not
 -- call it, so takes it with [0..1]; what is not there to use, likewise.
 
+@linear
+
 @pub
 isJust : {a : Type} -> (m : [0..1] Maybe a) -> Bool
 isJust Nothing = False
@@ -20,13 +22,13 @@ withDefault d Nothing = d
 withDefault d (Just x) = x
 
 @pub
-map : {a b : Type} -> (f : [0..1] (a -> b ! e)) -> Maybe a -> Maybe b ! e
+map : {a b : Type} -> {r : Grade} -> (f : [0..1] ((x : [r] a) -> b ! e)) -> (m : [r] Maybe a) -> Maybe b ! e
 map f Nothing = Nothing
 map f (Just x) = Just (f x)
 
 -- `f` of what is there, which may itself be nothing.
 @pub
-andThen : {a b : Type} -> (f : [0..1] (a -> Maybe b ! e)) -> Maybe a -> Maybe b ! e
+andThen : {a b : Type} -> {r : Grade} -> (f : [0..1] ((x : [r] a) -> Maybe b ! e)) -> (m : [r] Maybe a) -> Maybe b ! e
 andThen f Nothing = Nothing
 andThen f (Just x) = f x
 
@@ -38,7 +40,7 @@ orElse (Just x) fallback = Just x
 
 -- `onNothing`, or `onJust` of what is there.
 @pub
-maybe : {a b : Type} -> (onNothing : [0..1] b) -> (onJust : [0..1] (a -> b ! e)) -> Maybe a -> b ! e
+maybe : {a b : Type} -> {r : Grade} -> (onNothing : [0..1] b) -> (onJust : [0..1] ((x : [r] a) -> b ! e)) -> (m : [r] Maybe a) -> b ! e
 maybe d f Nothing = d
 maybe d f (Just x) = f x
 

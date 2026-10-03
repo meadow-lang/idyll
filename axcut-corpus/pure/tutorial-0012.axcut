@@ -1,0 +1,14 @@
+-- | \(x y : Int) -> x
+-- expect: nothing to show
+
+define main : () =
+  new f_0 = (){
+    apply(x_1, k_2) ⇒
+      substitute [k_2 ↦ k_2, x_1 ↦ x_1];
+      new f_3 = (x_1){
+        apply(y_4, k_5) ⇒
+          substitute [x_1 ↦ x_1, k_5 ↦ k_5];
+          invoke k_5 ret };
+      substitute [f_3 ↦ f_3, k_2 ↦ k_2];
+      invoke k_2 ret };
+  extern halt(f_0) {}

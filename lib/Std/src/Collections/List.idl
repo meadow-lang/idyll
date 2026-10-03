@@ -5,7 +5,14 @@
 -- that may stop early, or only counts, drops what it does not use, so takes
 -- the list with [0..1]; one that keeps an element it has looked at (`filter`
 -- keeps what passes its test) uses each element twice, so takes the list
--- with []. A function called for each element is taken with [].
+-- with []. A function called for each element is taken with [], and is
+-- given each element at a grade of its own, `r`, which is the grade the list
+-- is taken with: `map` of a function that uses its argument twice takes the
+-- list with [2], and of one from a module that is not `@linear` (whose
+-- arguments are []) with []. A fold hands what `f` made back to `f`, so it
+-- takes `f`'s arguments, the start and the list with [].
+
+@linear
 
 use Std.Num.Nat (Nat)
 use Std.Num.Nat.Nat.*
@@ -86,31 +93,32 @@ concat Nil = Nil
 concat (xs :: xss) = append xs (concat xss)
 
 @pub
-map : {a b : Type} -> (f : [] (a -> b ! e)) -> List a -> List b ! e
+map : {a b : Type} -> {r : Grade} -> (f : [] ((x : [r] a) -> b ! e)) -> (xs : [r] List a) -> List b ! e
 map f Nil = Nil
 map f (x :: xs) = f x :: map f xs
 
 @pub
-concatMap : {a b : Type} -> (f : [] (a -> List b ! e)) -> List a -> List b ! e
+concatMap : {a b : Type} -> {r : Grade} -> (f : [] ((x : [r] a) -> List b ! e)) -> (xs : [r] List a) -> List b ! e
 concatMap f Nil = Nil
 concatMap f (x :: xs) = append (f x) (concatMap f xs)
 
 -- `f x1 (f x2 (.. (f xn z)))`: the list, with `f` for `::` and `z` for `Nil`.
+-- What `f` makes is handed to it again, so it and `z` are unrestricted.
 @pub
-foldr : {a b : Type} -> (f : [] (a -> b -> b ! e)) -> b -> List a -> b ! e
+foldr : {a b : Type} -> (f : [] ((x : [] a) -> (acc : [] b) -> b ! e)) -> (z : [] b) -> (xs : [] List a) -> b ! e
 foldr f z Nil = z
 foldr f z (x :: xs) = f x (foldr f z xs)
 
 -- `f (.. (f (f z x1) x2) ..) xn`, from the left, in constant space.
 @pub
-foldl : {a b : Type} -> (f : [] (b -> a -> b ! e)) -> b -> List a -> b ! e
+foldl : {a b : Type} -> (f : [] ((acc : [] b) -> (x : [] a) -> b ! e)) -> (z : [] b) -> (xs : [] List a) -> b ! e
 foldl f z Nil = z
 foldl f z (x :: xs) = foldl f (f z x) xs
 
 -- What `f` keeps of each element: `filter` for when the test can give the
 -- element back, which takes each element once.
 @pub
-filterMap : {a b : Type} -> (f : [] (a -> Maybe b ! e)) -> List a -> List b ! e
+filterMap : {a b : Type} -> {r : Grade} -> (f : [] ((x : [r] a) -> Maybe b ! e)) -> (xs : [r] List a) -> List b ! e
 filterMap f Nil = Nil
 filterMap f (x :: xs) = case f x of
   Nothing -> filterMap f xs
@@ -137,13 +145,13 @@ find p (x :: xs) = if p x then Just x else find p xs
 
 -- Whether every element passes; it stops at the first that fails.
 @pub
-all : {a : Type} -> (p : [] (a -> Bool ! e)) -> (xs : [0..1] List a) -> Bool ! e
+all : {a : Type} -> {r : Grade} -> (p : [] ((x : [r] a) -> Bool ! e)) -> (xs : [(0..1) * r] List a) -> Bool ! e
 all p Nil = True
 all p (x :: xs) = if p x then all p xs else False
 
 -- Whether some element passes; it stops at the first that does.
 @pub
-any : {a : Type} -> (p : [] (a -> Bool ! e)) -> (xs : [0..1] List a) -> Bool ! e
+any : {a : Type} -> {r : Grade} -> (p : [] ((x : [r] a) -> Bool ! e)) -> (xs : [(0..1) * r] List a) -> Bool ! e
 any p Nil = False
 any p (x :: xs) = if p x then True else any p xs
 
@@ -210,7 +218,7 @@ zip (x :: xs) Nil = Nil
 zip (x :: xs) (y :: ys) = (x, y) :: zip xs ys
 
 @pub
-zipWith : {a b c : Type} -> (f : [] (a -> b -> c ! e)) -> (xs : [0..1] List a) -> (ys : [0..1] List b) -> List c ! e
+zipWith : {a b c : Type} -> {r s : Grade} -> (f : [] ((x : [r] a) -> (y : [s] b) -> c ! e)) -> (xs : [(0..1) * r] List a) -> (ys : [(0..1) * s] List b) -> List c ! e
 zipWith f Nil ys = Nil
 zipWith f (x :: xs) Nil = Nil
 zipWith f (x :: xs) (y :: ys) = f x y :: zipWith f xs ys

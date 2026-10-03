@@ -1,0 +1,44 @@
+-- | let const : (a : Type) -> (b : Type) -> a -> b -> a = \a b x y -> x in const _ _ 1 True
+-- expect: value 1
+
+define main : () =
+  new f_0 = (){
+    apply(a_1, k_2) ⇒
+      substitute [k_2 ↦ k_2];
+      new f_3 = (){
+        apply(b_4, k_5) ⇒
+          substitute [k_5 ↦ k_5];
+          new f_6 = (){
+            apply(x_7, k_8) ⇒
+              substitute [k_8 ↦ k_8, x_7 ↦ x_7];
+              new f_9 = (x_7){
+                apply(y_10, k_11) ⇒
+                  substitute [x_7 ↦ x_7, k_11 ↦ k_11];
+                  invoke k_11 ret };
+              substitute [f_9 ↦ f_9, k_8 ↦ k_8];
+              invoke k_8 ret };
+          substitute [f_6 ↦ f_6, k_5 ↦ k_5];
+          invoke k_5 ret };
+      substitute [f_3 ↦ f_3, k_2 ↦ k_2];
+      invoke k_2 ret };
+  let t_12 = erased();
+  new k_13 = (){
+    ret(r_14) ⇒
+      let t_15 = erased();
+      new k_16 = (){
+        ret(r_17) ⇒
+          extern lit 1 { (n_18) ⇒
+          new k_19 = (){
+            ret(r_20) ⇒
+              let b_21 = true();
+              new k_22 = (){
+                ret(r_23) ⇒
+                  extern halt(r_23) {} };
+              substitute [b_21 ↦ b_21, k_22 ↦ k_22, r_20 ↦ r_20];
+              invoke r_20 apply };
+          substitute [n_18 ↦ n_18, k_19 ↦ k_19, r_17 ↦ r_17];
+          invoke r_17 apply } };
+      substitute [t_15 ↦ t_15, k_16 ↦ k_16, r_14 ↦ r_14];
+      invoke r_14 apply };
+  substitute [t_12 ↦ t_12, k_13 ↦ k_13, f_0 ↦ f_0];
+  invoke f_0 apply

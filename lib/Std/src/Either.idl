@@ -1,6 +1,8 @@
 -- One of two: `Left` an `a`, or `Right` a `b`. A `Result` with neither
 -- side the error, for when both are answers.
 
+@linear
+
 @pub
 data Either a b = Left a | Right b
 
@@ -18,7 +20,7 @@ isRight (Right r) = True
 
 -- `onLeft` or `onRight`, whichever there is something for.
 @pub
-either : {a b c : Type} -> (onLeft : [0..1] (a -> c ! e)) -> (onRight : [0..1] (b -> c ! e)) -> Either a b -> c ! e
+either : {a b c : Type} -> {r : Grade} -> (onLeft : [0..1] ((x : [r] a) -> c ! e)) -> (onRight : [0..1] ((y : [r] b) -> c ! e)) -> (v : [r] Either a b) -> c ! e
 either f g (Left l) = f l
 either f g (Right r) = g r
 
@@ -36,23 +38,23 @@ fromRight d (Right r) = r
 
 -- `f` of what is on the right; the left is passed on.
 @pub
-map : {a b c : Type} -> (f : [0..1] (b -> c ! e)) -> Either a b -> Either a c ! e
+map : {a b c : Type} -> (f : [0..1] ((y : [] b) -> c ! e)) -> (v : [] Either a b) -> Either a c ! e
 map f (Left l) = Left l
 map f (Right r) = Right (f r)
 
 @pub
-mapLeft : {a b c : Type} -> (f : [0..1] (a -> c ! e)) -> Either a b -> Either c b ! e
+mapLeft : {a b c : Type} -> (f : [0..1] ((x : [] a) -> c ! e)) -> (v : [] Either a b) -> Either c b ! e
 mapLeft f (Left l) = Left (f l)
 mapLeft f (Right r) = Right r
 
 @pub
-bimap : {a b c d : Type} -> (f : [0..1] (a -> c ! e)) -> (g : [0..1] (b -> d ! e)) -> Either a b -> Either c d ! e
+bimap : {a b c d : Type} -> {r : Grade} -> (f : [0..1] ((x : [r] a) -> c ! e)) -> (g : [0..1] ((y : [r] b) -> d ! e)) -> (v : [r] Either a b) -> Either c d ! e
 bimap f g (Left l) = Left (f l)
 bimap f g (Right r) = Right (g r)
 
 -- `f` of what is on the right, which may itself be on the left.
 @pub
-andThen : {a b c : Type} -> (f : [0..1] (b -> Either a c ! e)) -> Either a b -> Either a c ! e
+andThen : {a b c : Type} -> (f : [0..1] ((y : [] b) -> Either a c ! e)) -> (v : [] Either a b) -> Either a c ! e
 andThen f (Left l) = Left l
 andThen f (Right r) = f r
 

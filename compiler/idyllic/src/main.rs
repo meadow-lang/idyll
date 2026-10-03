@@ -39,6 +39,11 @@ struct Cli {
     #[arg(short, long, value_name = "EXE")]
     output: Option<PathBuf>,
 
+    /// Make every unannotated binder linear, `[1]`, as if each module said
+    /// `@linear`; otherwise it is unrestricted, `[]`.
+    #[arg(long)]
+    linear: bool,
+
     /// Arguments for the program, after `--`: what its `args ()` gives it.
     #[arg(last = true)]
     args: Vec<String>,
@@ -65,7 +70,7 @@ fn command() -> ExitCode {
     if cli.emit_llvm.is_some() || cli.output.is_some() {
         compile_file(&cli.file, &opts, &cli)
     } else {
-        check_file(&cli.file, &opts, cli.axcut, cli.args.clone())
+        check_file(&cli.file, &opts, cli.axcut, cli.args.clone(), cli.linear)
     }
 }
 
@@ -74,17 +79,21 @@ fn command() -> ExitCode {
 /// link-time optimisation, so that allocation is inlined into the program.
 /// The package at `path`: a directory's, or one file's, which is a package
 /// of one module named after it.
-fn load(path: &Path) -> Result<pipeline::PackageSource, String> {
-    if path.is_dir() {
-        return pipeline::load_package(path);
-    }
-    let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    let name = path.file_stem().map_or("Main".into(), |s| s.to_string_lossy().into_owned());
-    Ok(pipeline::PackageSource::single(&name, &path.display().to_string(), &text))
+fn load(path: &Path, linear: bool) -> Result<pipeline::PackageSource, String> {
+    let mut package = if path.is_dir() {
+        pipeline::load_package(path)?
+    } else {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        let name = path.file_stem().map_or("Main".into(), |s| s.to_string_lossy().into_owned());
+        pipeline::PackageSource::single(&name, &path.display().to_string(), &text)
+    };
+    package.linear = linear;
+    Ok(package)
 }
 
 fn compile_file(path: &Path, opts: &Options, cli: &Cli) -> ExitCode {
-    let package = match load(path) {
+    let linear = cli.linear;
+    let package = match load(path, linear) {
         Ok(package) => package,
         Err(why) => {
             eprintln!("error: {why}");
@@ -137,8 +146,8 @@ fn compile_file(path: &Path, opts: &Options, cli: &Cli) -> ExitCode {
     }
 }
 
-fn check_file(path: &Path, opts: &Options, axcut: bool, args: Vec<String>) -> ExitCode {
-    let package = match load(path) {
+fn check_file(path: &Path, opts: &Options, axcut: bool, args: Vec<String>, linear: bool) -> ExitCode {
+    let package = match load(path, linear) {
         Ok(package) => package,
         Err(why) => {
             eprintln!("error: {why}");

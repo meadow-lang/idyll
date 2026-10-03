@@ -33,14 +33,14 @@ fn a_let_bound_function_used_once_is_inlined() {
 
 #[test]
 fn a_small_function_used_twice_is_copied_into_both_calls() {
-    let text = inlined("let f : (Int -> Int) [2] = [\\x -> x * 2] in let [g] = f in g (g 5)");
+    let text = inlined("@linear\n\nlet f : (Int -> Int) [2] = [\\x -> x * 2] in let [g] = f in g (g 5)");
     assert_eq!(text.matches("extern mul").count(), 2, "{text}");
 }
 
 #[test]
 fn a_big_function_used_twice_is_not_duplicated() {
     let body = "x * 2 * 2 * 2 * 2 * 2 * 2 * 2 * 2 * 2 * 2";
-    let text = inlined(&format!("let f : (Int -> Int) [2] = [\\x -> {body}] in let [g] = f in g (g 5)"));
+    let text = inlined(&format!("@linear\n\nlet f : (Int -> Int) [2] = [\\x -> {body}] in let [g] = f in g (g 5)"));
     assert_eq!(text.matches("extern mul").count(), 10, "{text}");
     assert_eq!(text.matches("apply(").count(), 1, "{text}");
 }

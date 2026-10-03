@@ -111,6 +111,9 @@ pub struct PackageSource {
     /// its manifest's version, which the symbols a back end is given carry
     /// (`idyll:Util@0.1.0/double`); none for a lone file, the REPL or `Std`
     pub version: Option<String>,
+    /// whether every module of it is linear, as if each said `@linear`:
+    /// `idyllic --linear`
+    pub linear: bool,
     pub modules: Vec<ModuleFile>,
 }
 
@@ -127,7 +130,7 @@ impl PackageSource {
     /// A package of one module, the text given.
     pub fn single(name: &str, file: &str, text: &str) -> PackageSource {
         let root = ModuleFile { path: Vec::new(), file: file.to_string(), text: text.to_string() };
-        PackageSource { name: name.to_string(), version: None, modules: vec![root] }
+        PackageSource { name: name.to_string(), version: None, linear: false, modules: vec![root] }
     }
 }
 
@@ -164,7 +167,7 @@ pub fn load_package(dir: &std::path::Path) -> Result<PackageSource, String> {
         modules.push(ModuleFile { path, file: shown, text });
     }
     modules.swap(0, root);
-    Ok(PackageSource { name, version, modules })
+    Ok(PackageSource { name, version, linear: false, modules })
 }
 
 /// `name = "..."` under `[package]`, from an `Idyll.toml`.  (The build system
@@ -240,6 +243,8 @@ fn collect_modules(
 /// of one of them that no handler of the program's own takes is done by the
 /// runtime (see `idyllic_world`, and `rts/idyll_rt.c` for native code).
 pub const PRELUDE: &str = "\
+@linear
+
 @seq(nil = Nil, cons = (::))
 data List a = Nil | (::) a (List a)
 
@@ -767,7 +772,7 @@ pub(crate) fn front(package: &PackageSource, deps: Deps<'_>, opts: &Options, ent
         .collect();
     let direct: Vec<(&str, &idyllic_hir::PackageNames)> = deps.direct.iter().map(|(n, p)| (*n, &p.names)).collect();
     let first_unique = deps.first_unique.max(idyllic_builtins::FIRST_USER_UNIQUE);
-    let mut renamed = rename::rename_package(&package.name, &modules, &prelude, &direct, first_unique);
+    let mut renamed = rename::rename_package(&package.name, &modules, &prelude, &direct, first_unique, package.linear);
     renamed.module.version = package.version.clone();
     diagnostics.extend(
         renamed

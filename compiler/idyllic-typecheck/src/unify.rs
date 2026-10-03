@@ -41,6 +41,24 @@ impl Checker {
             (Value::Type(i), Value::Type(j)) => i <= j,
             // a row resumed at most once is one that may be resumed more
             (Value::LitTy(idyllic_builtins::Builtin::Effect), _) if self.row_kind(&expected) == Some(true) => true,
+            // A function that uses its argument within what is allowed is
+            // one that may: `(x : [1] a) -> b` where `a -> b` (any number of
+            // uses) is wanted, as a constructor is passed to `map`. The
+            // grade fits, the domains are the same, and the results are
+            // compared in turn.
+            (
+                Value::Pi { name, icit: i1, grade: g1, in_type: t1, dom: d1, cod: c1 },
+                Value::Pi { icit: i2, grade: g2, in_type: t2, dom: d2, cod: c2, .. },
+            ) if i1 == i2 => {
+                let (g1, g2) = (self.to_poly(self.force(g1.clone())).as_constant(), self.to_poly(self.force(g2.clone())).as_constant());
+                let (Some(g1), Some(g2)) = (g1, g2) else { return self.unify(l, actual, expected) };
+                if g1 == g2 || !g1.fits(g2) {
+                    return self.unify(l, actual, expected);
+                }
+                let x = vvar(l, name.clone());
+                let (c1, c2) = (self.apply(c1, x.clone()), self.apply(c2, x));
+                self.unify(l, t1.clone(), t2.clone()) && self.unify(l, d1.clone(), d2.clone()) && self.subtype(l + 1, c1, c2)
+            }
             _ => self.unify(l, actual, expected),
         }
     }

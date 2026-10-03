@@ -70,7 +70,7 @@ fn only_one_alternative_runs_so_usages_join() {
     assert_eq!(result("(\\(b : Bool) (x : Int) -> if b then x else x + 1) False 1"), "2 : Int");
     // used in one alternative only: 0..1, which a linear variable does not allow
     rejects(
-        "\\(b : Bool) (x : Int) -> if b then x else 0",
+        "@linear\n\n\\(b : Bool) (x : Int) -> if b then x else 0",
         &["usage mismatch: x has grade 1, but is used 0..1 times"],
     );
     assert_eq!(
@@ -79,7 +79,7 @@ fn only_one_alternative_runs_so_usages_join() {
     );
     // twice in one and once in the other: 1..2
     rejects(
-        "\\(b : Bool) (x : Int) -> if b then x + x else x",
+        "@linear\n\n\\(b : Bool) (x : Int) -> if b then x + x else x",
         &["usage mismatch: x has grade 1, but is used 1..2 times"],
     );
 }
@@ -130,7 +130,7 @@ fn the_papers_from_maybe() {
 #[test]
 fn fields_are_linear() {
     rejects(
-        &format!("{MAYBE}\\(m : Maybe Int) -> case m of {{ Nothing -> 0; Just x -> x + x }}"),
+        &format!("@linear\n\n{MAYBE}\\(m : Maybe Int) -> case m of {{ Nothing -> 0; Just x -> x + x }}"),
         &["usage mismatch: x has grade 1, but is used 2 times"],
     );
     // a field to be used otherwise is a box

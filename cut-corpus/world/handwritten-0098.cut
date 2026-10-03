@@ -79,35 +79,35 @@ def idyll:Prelude/printInt (n_66: i64; k_67: ptr) =
   idyll:Prelude/showInt(n_66; μ̃ v_68: str.
     idyll:Prelude/putStrLn(v_68; k_67))
 
-def idyll:Main/main (x_70: unit; k_71: ptr) =
-  perform idyll:Prelude/Console.putStr("counting: "; μ̃ u_72: unit.
-    idyll:Main/count(3; k_71))
+def idyll:Main/main (x_69: unit; k_70: ptr) =
+  perform idyll:Prelude/Console.putStr("counting: "; μ̃ u_71: unit.
+    idyll:Main/count(3; k_70))
 
-def idyll:Prelude/negativeDigits (fuel_74: ptr, n_75: i64; k_76: ptr) =
-  <fuel_74 | case {
+def idyll:Prelude/negativeDigits (fuel_73: ptr, n_74: i64; k_75: ptr) =
+  <fuel_73 | case {
     idyll:Prelude/DigitFuel.Spent =>
-      <"" | k_76>;
-    idyll:Prelude/DigitFuel.More(fuel_77: ptr) =>
-      prim sub(0, 10; μ̃ v_87: i64.
-        prim lt(v_87, n_75; μ̃ v__78: bool.
-          prim if(v__78; μ̃ u_85: unit.
-            prim div(n_75, 10; μ̃ v_83: i64.
-              idyll:Prelude/negativeDigits(fuel_77, v_83; μ̃ v_79: str.
-                prim mod(n_75, 10; μ̃ v_82: i64.
-                  prim sub(0, v_82; μ̃ v_81: i64.
-                    idyll:Prelude/digitString(v_81; μ̃ v_80: str.
-                      prim concatStrings([v_79, v_80]; k_76)))))), μ̃ u_86: unit.
-            prim sub(0, n_75; μ̃ v_84: i64.
-              idyll:Prelude/digitString(v_84; k_76)))))
+      <"" | k_75>;
+    idyll:Prelude/DigitFuel.More(fuel_76: ptr) =>
+      prim sub(0, 10; μ̃ v_86: i64.
+        prim lt(v_86, n_74; μ̃ v__77: bool.
+          prim if(v__77; μ̃ u_84: unit.
+            prim div(n_74, 10; μ̃ v_82: i64.
+              idyll:Prelude/negativeDigits(fuel_76, v_82; μ̃ v_78: str.
+                prim mod(n_74, 10; μ̃ v_81: i64.
+                  prim sub(0, v_81; μ̃ v_80: i64.
+                    idyll:Prelude/digitString(v_80; μ̃ v_79: str.
+                      prim concatStrings([v_78, v_79]; k_75)))))), μ̃ u_85: unit.
+            prim sub(0, n_74; μ̃ v_83: i64.
+              idyll:Prelude/digitString(v_83; k_75)))))
   }>
 
-def idyll:Main/count (n_88: i64; k_89: ptr) =
-  prim eq(n_88, 0; μ̃ v__90: bool.
-    prim if(v__90; μ̃ u_93: unit.
-      idyll:Prelude/printInt(n_88; μ̃ u_91: unit.
-        prim sub(n_88, 1; μ̃ v_92: i64.
-          idyll:Main/count(v_92; k_89))), μ̃ u_94: unit.
-      idyll:Prelude/putStrLn("liftoff"; k_89)))
+def idyll:Main/count (n_87: i64; k_88: ptr) =
+  prim eq(n_87, 0; μ̃ v__89: bool.
+    prim if(v__89; μ̃ u_92: unit.
+      idyll:Prelude/printInt(n_87; μ̃ u_90: unit.
+        prim sub(n_87, 1; μ̃ v_91: i64.
+          idyll:Main/count(v_91; k_88))), μ̃ u_93: unit.
+      idyll:Prelude/putStrLn("liftoff"; k_88)))
 
-def idyll:Main/"#entry" (; k_95: ptr) =
-  idyll:Main/main(unit; k_95)
+def idyll:Main/"#entry" (; k_94: ptr) =
+  idyll:Main/main(unit; k_94)

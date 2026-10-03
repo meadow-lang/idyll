@@ -246,7 +246,11 @@ impl Checker {
             }
             None => {
                 let key = self.fresh_key();
-                let ctx2 = ctx.bind_keyed(key, "_", s_ty, None);
+                // a value with nothing inside (a truth value, a number, an
+                // enumeration's) is looked at once, which is all a match
+                // does with it; one with fields gives them the default grade
+                let grade = self.fieldless(&s_ty).then(|| Poly::constant(Grade::ONE).into_value());
+                let ctx2 = ctx.bind_keyed(key, "_", s_ty, grade);
                 let (core, mut usage) =
                     self.run_match(&ctx2, nid, clauses, problems(ctx.lvl), goal.clone(), vec![ctx.lvl], false);
                 // what the scrutinee uses, as often as its variable is used
@@ -816,9 +820,20 @@ impl Checker {
         self.error(node, kind);
     }
 
-    /// How often a slot may be used, if known; otherwise once.
+    /// How often a slot may be used, if known; otherwise as an unannotated
+    /// binder may be (as often as wanted, or once in a linear module).
     fn slot_grade(&self, ctx: &Ctx, k: Lvl) -> Rc<Value> {
-        ctx.binders[k].grade.clone().unwrap_or_else(|| Poly::constant(Grade::ONE).into_value())
+        ctx.binders[k].grade.clone().unwrap_or_else(|| Poly::constant(self.default_grade()).into_value())
+    }
+
+    /// Whether no value of a type has fields: a literal's type, or a data
+    /// type whose constructors take none.
+    fn fieldless(&self, ty: &VTy) -> bool {
+        match &*self.force(ty.clone()) {
+            Value::LitTy(_) => true,
+            Value::Opaque(d, _, _) => self.datas.get(d).is_some_and(|cs| cs.iter().all(|c| self.ctors[c].fields == 0)),
+            _ => false,
+        }
     }
 
     /// Whether a slot is erased: its grade is known to be `0`.

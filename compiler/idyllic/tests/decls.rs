@@ -135,7 +135,9 @@ fn equations_take_granules_unboxing_patterns() {
 #[test]
 fn equations_take_annotated_and_graded_patterns() {
     ok("dup (n : [2] Int) : Int = n + n\n", &["dup : (n : [2] Int) -> Int"], None);
-    rejects("dup (n : Int) : Int = n + n\n", &["usage mismatch: n has grade 1, but is used 2 times"]);
+    rejects("@linear\n\ndup (n : Int) : Int = n + n\n", &["usage mismatch: n has grade 1, but is used 2 times"]);
+    // which is a linear module's default; elsewhere `n` may be used freely
+    ok("dup (n : Int) : Int = n + n\n", &["dup : (n : Int) -> Int"], None);
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +150,7 @@ fn an_implicit_binder_is_an_ordinary_binder_in_braces() {
     // (quantifying over types puts it a universe up)
     ok("{a b : Type} {r : Grade} (f : a [r] -> b) -> a [r] -> b\n", &[], Some("Type 1"));
     ok(
-        "(\\f [x] -> f [x]) : {a b : Type} {r : Grade} (f : a [r] -> b) -> a [r] -> b\n",
+        "@linear\n\n(\\f [x] -> f [x]) : {a b : Type} {r : Grade} (f : a [r] -> b) -> a [r] -> b\n",
         &[],
         Some("{a : Type} -> {b : Type} -> {r : Grade} -> (f : a [r] -> b) -> a [r] -> b"),
     );
@@ -208,7 +210,7 @@ fn a_polymorphic_argument_stays_polymorphic_when_nothing_says_otherwise() {
     ok(&format!("{prelude}(\\x -> x) id\n"), &[&sig], Some(id_ty));
     // the result really is polymorphic: here it is used at two types
     ok(
-        &format!("{prelude}let [f] = ([id id] : ({{a : Type}} -> a -> a) [2]) in f (f True)\n"),
+        &format!("@linear\n\n{prelude}let [f] = ([id id] : ({{a : Type}} -> a -> a) [2]) in f (f True)\n"),
         &[&sig],
         Some("Bool"),
     );
@@ -243,7 +245,7 @@ fn an_implicit_argument_nothing_determines_is_reported() {
 #[test]
 fn grade_polymorphic_declarations() {
     ok(
-        "app : {a b : Type} -> {r : Grade} -> (a [r] -> b) -> a [r] -> b\napp f [x] = f [x]\n\n\
+        "@linear\n\napp : {a b : Type} -> {r : Grade} -> (a [r] -> b) -> a [r] -> b\napp f [x] = f [x]\n\n\
          copy : Int [2] -> Int\ncopy [x] = x + x\n\napp copy [4]\n",
         &["app : {a : Type} -> {b : Type} -> {r : Grade} -> (a [r] -> b) -> a [r] -> b", "copy : Int [2] -> Int"],
         Some("Int"),
@@ -314,7 +316,7 @@ fn a_native_is_declared_with_its_type_and_must_be_one() {
 fn terminating_vouches_for_a_recursion_the_checker_cannot_see_end() {
     ok(
         "@terminating\ncountdown : (n : [] Int) -> Int\ncountdown n = if n < 1 then 0 else countdown (n - 1)\n\ncountdown 5",
-        &["countdown : (n : [] Int) -> Int"],
+        &["countdown : (n : Int) -> Int"],
         Some("Int"),
     );
     rejects(

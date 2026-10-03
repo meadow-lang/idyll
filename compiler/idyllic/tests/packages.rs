@@ -22,7 +22,7 @@ fn diags(out: &pipeline::Output) -> Vec<String> {
 
 fn package(name: &str, root: &str) -> PackageSource {
     let file = format!("{name}/src/Lib.idl");
-    PackageSource { name: name.into(), version: None, modules: vec![ModuleFile { path: Vec::new(), file, text: root.into() }] }
+    PackageSource { name: name.into(), version: None, linear: false, modules: vec![ModuleFile { path: Vec::new(), file, text: root.into() }] }
 }
 
 /// Compile a library against what it depends on.

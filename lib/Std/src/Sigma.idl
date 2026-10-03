@@ -3,6 +3,8 @@
 -- length, with the length, is `Sigma Nat (\n -> Vec n a)`; a number with a
 -- proof about it is `Sigma Nat (\n -> Eq (plus n n) m)`.
 
+@linear
+
 @pub
 data Sigma : (a : Type) -> (a -> Type) -> Type where
   Sigma : {a : Type} -> {b : a -> Type} -> (x : a) -> b x -> Sigma a b

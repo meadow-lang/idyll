@@ -6,13 +6,15 @@
 -- A computation that may throw is a function of `()`, as a handler runs
 -- one: `toResult (\(u : ()) -> safeDiv 7 0)`.
 
+@linear
+
 @pub
 effect Exn (e : Type) where
   throw : {a : Type} -> e -> a
 
 -- Run `body`: `Ok` what it gives, or `Err` what it threw.
 @pub
-toResult : {e a : Type} -> (body : () -> a ! {Exn e | r}) -> Result e a ! r
+toResult : {e a : Type} -> (body : (u : [] ()) -> a ! {Exn e | r}) -> Result e a ! r
 toResult body = handle body () with
   return x -> Ok x
   throw err k -> Err err
@@ -21,7 +23,7 @@ toResult body = handle body () with
 -- may run any number of times, as far as the checker can see, so what it
 -- uses from outside is taken with [].)
 @pub
-catch : {e a : Type} -> (recover : [] (e -> a ! r)) -> (body : () -> a ! {Exn e | r}) -> a ! r
+catch : {e a : Type} -> (recover : [] ((err : [1] e) -> a ! r)) -> (body : (u : [] ()) -> a ! {Exn e | r}) -> a ! r
 catch recover body = handle body () with
   return x -> x
   throw err k -> recover err
@@ -32,17 +34,17 @@ catch recover body = handle body () with
 
 -- What `body` gives, or `fallback` if it threw.
 @pub
-withDefault : {e a : Type} -> (fallback : [0..1] a) -> (body : [0..1] (() -> a ! {Exn e | r})) -> a ! r
+withDefault : {e a : Type} -> (fallback : [0..1] a) -> (body : [0..1] ((u : [] ()) -> a ! {Exn e | r})) -> a ! r
 withDefault fallback body = Std.Result.withDefault fallback (toResult body)
 
 -- `Just` what `body` gives, or `Nothing` if it threw.
 @pub
-toMaybe : {e a : Type} -> (body : [0..1] (() -> a ! {Exn e | r})) -> Maybe a ! r
+toMaybe : {e a : Type} -> (body : [0..1] ((u : [] ()) -> a ! {Exn e | r})) -> Maybe a ! r
 toMaybe body = Std.Result.toMaybe (toResult body)
 
 -- Whether `body` threw.
 @pub
-threw : {e a : Type} -> (body : [0..1] (() -> a ! {Exn e | r})) -> Bool ! r
+threw : {e a : Type} -> (body : [0..1] ((u : [] ()) -> a ! {Exn e | r})) -> Bool ! r
 threw body = Std.Result.isErr (toResult body)
 
 -- The value of a `Result`, or its error, thrown.

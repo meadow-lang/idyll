@@ -39,7 +39,8 @@ fn value_report(line: &str) -> Option<(&str, &str)> {
 /// rather than an expression (so that it reports a value): `Nothing : ..` is
 /// the one or the other depending on what was asked.
 fn declares(source: &str) -> bool {
-    let first = source.lines().next().unwrap_or("");
+    // (`@linear` is the module's, and says nothing about what follows it)
+    let first = source.lines().find(|l| l.trim() != "@linear").unwrap_or("");
     let mut words = first.split_whitespace();
     match (words.next(), words.next()) {
         (Some("data" | "effect"), _) => true,
@@ -48,10 +49,32 @@ fn declares(source: &str) -> bool {
         (Some("let" | "if" | "case"), _) => false,
         (Some(name), second) => {
             name.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
-                && (second == Some(":") || first.contains(" = "))
+                && (second == Some(":") || equation(first))
         }
         _ => false,
     }
+}
+
+/// Whether a line has an equation's `=`: one outside any brackets, as a
+/// record's `{ x = 1 }` is not.
+fn equation(line: &str) -> bool {
+    let mut depth = 0i32;
+    let bytes = line.as_bytes();
+    for (i, c) in line.char_indices() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            '=' if depth == 0 => {
+                let before = i > 0 && bytes[i - 1] == b' ';
+                let after = bytes.get(i + 1) == Some(&b' ');
+                if before && after {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// `name : type`, as the REPL reports a definition, a data type or a

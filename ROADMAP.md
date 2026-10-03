@@ -55,6 +55,19 @@ and the tour has steps for it.
   empty row, because erased terms are never run, so a diverging erased proof
   would never be caught.
 - **Pattern matching is dependent**: matching refines types.
+- **A binder that says nothing is unrestricted, `[]`** (Chris, 2026-10-02).
+  Linearity is asked for: by a grade, `[1]`, or for a whole module by
+  `@linear` on a line of its own at its top, or for every module of a
+  package by `idyllic --linear`, where a binder that says nothing (a
+  constructor's field too) is `1`. Types print as their module reads them.
+  The prelude and Std are linear modules, so that what they declare can
+  hold resources; their callbacks take what they hand on at a grade
+  variable where one covers it (`map`'s elements, `{r : Grade}`) and at
+  `[]` where none does (a fold's accumulator), so a function from any
+  module fits them. A function type whose parameter allows fewer uses fits
+  one whose parameter allows more (`(x : [1] a) -> b` where `(x : [] a) ->
+  b` is wanted); a match on a value with no fields (a `Bool`, an `Int`)
+  looks at it once, whatever the default.
 - **Traits are auto-implicit records**, as in Idris. Unnamed instances form a
   canonical, coherent set used by instance search; named instances are
   outside the search and are used only by being given explicitly.
@@ -160,6 +173,10 @@ neither does a negative data type. **Done** (`compiler/idyllic/tests/universes.r
   the checker cannot see ending (an index counting up to a length): it
   needs no `Div`, and stays opaque in types. The standard library's array
   and vector loops use it.
+- [x] **A definition by matching stays folded** until its case tree can
+  choose, as Agda's and Idris's do, even one that never calls itself: it is
+  checked as a recursive definition (if it has a signature), so a type
+  mentioning `first p` says so rather than showing the `case` it would be.
 - [x] **Termination checker**, running on the elaborated case trees, as
   Agda's does (size-change: structural, mutual and lexicographic
   recursion). Recursive definitions that pass become transparent at the
@@ -330,7 +347,7 @@ examples need strings to take apart first (`Std.Yield` is the generators).
   list's `size`), `Fin` indices (`Vec.index`, and `List.nth` on a
   `Fin (size xs)`), propositional equality with proofs about `Nat`
   (`plusComm`, `plusAssoc`, ...), `Dec` and `Nat.decEq`, dependent pairs; and
-  linearity in every signature. Meadow's traits, records, maps and string
+  grades in every signature. Meadow's traits, records, maps and string
   operations wait for those features. Writing it found and fixed, in the
   checker: data types ordered by their kinds across modules; constraints on a
   meta applied to something postponed until the definition is checked (so
@@ -358,10 +375,34 @@ from what `idyll.lock` pinned.
 
 ## Phase 4: Records and traits
 
-- [ ] **Records**, nominal at first. A field may depend on the fields before
+- [~] **Records**, nominal at first. A field may depend on the fields before
   it, which is the machinery of dependent pairs, and that also removes phase
   2's escaping-`let` restriction. Record update. Row-polymorphic records can
   come later: combining rows with dependent fields is harder than it looks.
+  - [x] Nominal records, as Meadow writes them: `record Point = { x : Int,
+    y : Int }`, built `Point { y = 2, x = 1 }` (fields in any order),
+    read `p.x`, updated `{ p | x = 3 }`, matched `Point { x = a }` (a
+    field not named matched by anything). A record is a data type of one
+    constructor named for it, whose type is the telescope of its fields, so
+    a field's type may mention the fields before it (`record Sized = {
+    size : Nat, items : Vec size Int }`); each field is a projection living
+    under the type as the constructor does, `Point.x : (self : [0..1]
+    Point) -> Int`, a later field's mentioning the earlier ones as their
+    projections of `self`. The parser and renamer desugar it all, so the
+    checker and every back end see ordinary data and functions. A field is
+    found by its name among the records in scope (where two have one of
+    that name, `Point.x p` says which); type-directed selection, as
+    Meadow's, can come later. (`compiler/idyllic/tests/records.rs`)
+  - [ ] The escaping-`let` restriction lifted; anonymous, row-polymorphic
+    records.
+  - **Decided (Chris, 2026-10-02): braces before `->` are an implicit
+    binder.** When anonymous records come, `{a : Type} -> T` stays the
+    implicit binder; a function of a closed record of one field is written
+    `({ a : Type }) -> T`. A record type that cannot be a binder needs no
+    parentheses: `{ x : Int, y : Int } -> T`, or with a row variable
+    `{ x : Int | r } -> T`. A named implicit argument will be written as
+    Lean writes it, `f (a := Int)`, so that braces holding `=` are always a
+    record.
 - [ ] **Auto-implicit binders**, `{auto x : t}`, filled by searching the auto
   binders in scope and the registered hints. Because this works for any
   type, proof search (`{auto p : LTE n m}`) comes with it, as in Idris.
@@ -490,7 +531,7 @@ Work split: each session changes only its own repository.
   segments, `prim if`, the `i64` semantics). Frozen once the primitive and
   runtime-operation tables are generated from `meadow_rt` and the parser's
   concrete syntax is quoted.
-- [~] **Step 3**: the upper IR (Meadow); Idyll lowers to its text and runs
+- [x] **Step 3**: the upper IR (Meadow); Idyll lowers to its text and runs
   its corpus through the reference interpreter, keeping `idyllic-llvm`.
   Idyll's side, so far: program lambdas carry their binder's type
   (`Note::Binds`), the checker is kept as a type oracle (`typer.rs`: the
@@ -522,8 +563,11 @@ Work split: each session changes only its own repository.
   strings in answers as its REPL does and marked programs using `Random`
   or the clock `nondeterministic`, after which 186 agree, the other two
   waiting on Meadow's change letting a resumption be applied as a
-  function. Left: Meadow adding `stringByteAt` to its interpreter, and its
-  CI test over the corpus, which begins step 4.
+  function. Meadow then added `stringByteAt` and that change: **all 188
+  agree** (meadow 5b1b279 against idyll 88df3ed, 2026-10-02), and
+  `meadow-cut`'s corpus test runs them
+  (`CUT_CORPUS=<idyll>/cut-corpus cargo test --release -p meadow-cut --test corpus`
+  from meadow's `compiler/`).
   - [x] Local recursion is lifted, since Cut has none: a recursive
     definition inside another becomes a `def` of its own, named under the
     one it was in (`Main/rev.go`), whose first parameters are what it uses
@@ -538,8 +582,12 @@ Work split: each session changes only its own repository.
     back end leaves out the top-level and recursive definitions a program
     never uses (`idyllic-typecheck/src/prune.rs`), so the prelude costs
     nothing when it isn't called.
-- [ ] **Step 4**: a shared corpus, on which the reference interpreter, the
-  AxCut machine, Glade and Silo agree in CI.
+- [~] **Step 4**: a shared corpus, on which the reference interpreter, the
+  AxCut machine, Glade and Silo agree in CI. `cut-corpus/` is it, and the
+  reference interpreter agrees with all of it (220 programs, with records,
+  and holes lowered as their solutions, 2026-10-03); next is Meadow's lowering of
+  Cut to AxCut (its step 3.3), pure programs first, then effects, then
+  `@many`, each checked against the same corpus.
 - [ ] **Step 5**: Idyll's build tool on Glade (debug) and Silo (release);
   `idyllic-llvm` and `rts/idyll_rt.c` retired once Idyll's corpus, tutorial
   and benchmarks pass on both.
@@ -571,7 +619,23 @@ passes its tests against the separated back end.
 Not in Meadow, but they will come up along the way:
 
 - **Grade approximation**: accepting an `a [1]` where an `a [0..1]` is
-  wanted, and `(x : [] a) -> b` where `a -> b` is.
+  wanted. (A function's parameter is approximated already: `(x : [1] a) ->
+  b` is accepted where `(x : [] a) -> b` is wanted.)
+- **Matching through a grade variable counts the look.** A match uses its
+  scrutinee once, so a function that matches on an argument of grade `r`
+  needs `1 <= r`, as Granule says with a constraint. Idyll refuses to match
+  a value of grade `0`, but not one whose grade is a variable later
+  instantiated at `0`: `foldr` generic in `r`, given a function of a `[0]`
+  element and a list of grade `0`, matches an erased list (found checking
+  the folds of TUTORIAL.md's *Working out grades* in Granule, 2026-10-02).
+  The fix is a requirement on each grade variable a definition matches
+  through, checked where it is instantiated.
+- **The grade `s*`**, the least `g` with `1 <= g` and `s * g <= g`: a fold's
+  start, given an accumulator of grade `s` (TUTORIAL.md, *Working out
+  grades*). With it, one `foldr` would serve a linear accumulator and an
+  unrestricted one; today Std's takes `[]`. Granule says it with those two
+  constraints and an SMT solver; Idyll would need either constraints on
+  grade variables or `*` as a grade operator with its two laws.
 - **Erasing arguments whose grade is only known to be `0`** once a variable
   is filled in; today only constant grades erase.
 - **Counting the usage of what a hole or an implicit argument is filled

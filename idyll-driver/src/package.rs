@@ -229,6 +229,7 @@ impl Package {
         idyllic::pipeline::PackageSource {
             name: self.name.clone(),
             version: self.version.clone(),
+            linear: false,
             modules: modules
                 .into_iter()
                 .map(|m| idyllic::pipeline::ModuleFile {

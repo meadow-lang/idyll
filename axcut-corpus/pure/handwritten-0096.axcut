@@ -19,79 +19,76 @@
 -- expect: value 26
 
 define main : () =
-  new f_0 = (){
-    apply(xs_1, k_2) ⇒
-      substitute [k_2 ↦ k_2, xs_1 ↦ xs_1];
-      switch xs_1 {
-        Nil() ⇒
-          extern lit 0 { (n_3) ⇒
-          substitute [n_3 ↦ n_3, k_2 ↦ k_2];
-          invoke k_2 ret },
-        ::(x_4, x_5) ⇒
-          substitute [k_2 ↦ k_2, x_5 ↦ x_5];
-          switch x_5 {
-            Nil() ⇒
-              extern lit 0 { (n_6) ⇒
-              substitute [n_6 ↦ n_6, k_2 ↦ k_2];
-              invoke k_2 ret },
-            ::(x_7, x_8) ⇒
-              switch x_8 {
-                Nil() ⇒
-                  substitute [x_7 ↦ x_7, k_2 ↦ k_2];
-                  invoke k_2 ret,
-                ::(x_9, x_10) ⇒
-                  extern lit 0 { (n_11) ⇒
-                  substitute [n_11 ↦ n_11, k_2 ↦ k_2];
-                  invoke k_2 ret } } } } };
-  let t_22 = erased();
-  extern lit 1 { (n_23) ⇒
-  extern lit 2 { (n_24) ⇒
-  extern lit 3 { (n_25) ⇒
-  substitute [f_0 ↦ f_0, n_23 ↦ n_23, n_24 ↦ n_24, n_25 ↦ n_25];
-  let c_26 = VNil();
-  let c_27 = VCons(n_25, c_26);
-  let c_28 = VCons(n_24, c_27);
-  let c_29 = VCons(n_23, c_28);
-  substitute [c_29 ↦ c_29, f_0 ↦ f_0];
-  new k_30 = (f_0){
-    ret(r_31) ⇒
-      extern lit 10 { (n_32) ⇒
-      extern lit 20 { (n_33) ⇒
-      let c_34 = Nil();
-      let c_35 = ::(n_33, c_34);
-      let c_36 = ::(n_32, c_35);
-      substitute [f_0 ↦ f_0, c_36 ↦ c_36, r_31 ↦ r_31, f_0' ↦ f_0];
-      new k_37 = (r_31, f_0'){
-        ret(r_38) ⇒
-          extern add(r_31, r_38) { (r_39) ⇒
-          extern lit 5 { (n_40) ⇒
-          substitute [f_0' ↦ f_0', r_39 ↦ r_39, n_40 ↦ n_40];
-          let c_41 = Nil();
-          let c_42 = ::(n_40, c_41);
-          substitute [f_0' ↦ f_0', c_42 ↦ c_42, r_39 ↦ r_39];
-          new k_43 = (r_39){
-            ret(r_44) ⇒
-              extern add(r_39, r_44) { (r_45) ⇒
-              extern halt(r_45) {} } };
-          substitute [c_42 ↦ c_42, k_43 ↦ k_43, f_0' ↦ f_0'];
-          invoke f_0' apply } } };
-      substitute [c_36 ↦ c_36, k_37 ↦ k_37, f_0 ↦ f_0];
-      invoke f_0 apply } } };
-  jump total_96 } } }
+  let t_10 = erased();
+  extern lit 1 { (n_11) ⇒
+  extern lit 2 { (n_12) ⇒
+  extern lit 3 { (n_13) ⇒
+  substitute [n_11 ↦ n_11, n_12 ↦ n_12, n_13 ↦ n_13];
+  let c_14 = VNil();
+  let c_15 = VCons(n_13, c_14);
+  let c_16 = VCons(n_12, c_15);
+  let c_17 = VCons(n_11, c_16);
+  new k_18 = (){
+    ret(r_19) ⇒
+      extern lit 10 { (n_31) ⇒
+      extern lit 20 { (n_32) ⇒
+      let c_33 = Nil();
+      let c_34 = ::(n_32, c_33);
+      let c_35 = ::(n_31, c_34);
+      substitute [c_35 ↦ c_35, r_19 ↦ r_19];
+      new k_36 = (r_19){
+        ret(r_37) ⇒
+          extern add(r_19, r_37) { (r_38) ⇒
+          extern lit 5 { (n_39) ⇒
+          substitute [r_38 ↦ r_38, n_39 ↦ n_39];
+          let c_40 = Nil();
+          let c_41 = ::(n_39, c_40);
+          substitute [c_41 ↦ c_41, r_38 ↦ r_38];
+          new k_42 = (r_38){
+            ret(r_43) ⇒
+              extern add(r_38, r_43) { (r_44) ⇒
+              extern halt(r_44) {} } };
+          jump second_3376 } } };
+      jump second_3376 } } };
+  jump total_3375 } } }
 
-define total_96 : (x_13, k_14) =
-  substitute [k_14 ↦ k_14, x_13 ↦ x_13];
-  switch x_13 {
+define total_3375 : (x_1, k_2) =
+  substitute [k_2 ↦ k_2, x_1 ↦ x_1];
+  switch x_1 {
     VNil() ⇒
-      extern lit 0 { (n_15) ⇒
-      substitute [n_15 ↦ n_15, k_14 ↦ k_14];
-      invoke k_14 ret },
-    VCons(x_16, xs_17) ⇒
-      let t_18 = erased();
-      substitute [xs_17 ↦ xs_17, k_14 ↦ k_14, x_16 ↦ x_16];
-      new k_19 = (k_14, x_16){
-        ret(r_20) ⇒
-          extern add(x_16, r_20) { (r_21) ⇒
-          substitute [r_21 ↦ r_21, k_14 ↦ k_14];
-          invoke k_14 ret } };
-      jump total_96 }
+      extern lit 0 { (n_3) ⇒
+      substitute [n_3 ↦ n_3, k_2 ↦ k_2];
+      invoke k_2 ret },
+    VCons(x_4, xs_5) ⇒
+      let t_6 = erased();
+      substitute [xs_5 ↦ xs_5, k_2 ↦ k_2, x_4 ↦ x_4];
+      new k_7 = (k_2, x_4){
+        ret(r_8) ⇒
+          extern add(x_4, r_8) { (r_9) ⇒
+          substitute [r_9 ↦ r_9, k_2 ↦ k_2];
+          invoke k_2 ret } };
+      jump total_3375 }
+
+define second_3376 : (xs_20, k_21) =
+  substitute [k_21 ↦ k_21, xs_20 ↦ xs_20];
+  switch xs_20 {
+    Nil() ⇒
+      extern lit 0 { (n_22) ⇒
+      substitute [n_22 ↦ n_22, k_21 ↦ k_21];
+      invoke k_21 ret },
+    ::(x_23, x_24) ⇒
+      substitute [k_21 ↦ k_21, x_24 ↦ x_24];
+      switch x_24 {
+        Nil() ⇒
+          extern lit 0 { (n_25) ⇒
+          substitute [n_25 ↦ n_25, k_21 ↦ k_21];
+          invoke k_21 ret },
+        ::(x_26, x_27) ⇒
+          switch x_27 {
+            Nil() ⇒
+              substitute [x_26 ↦ x_26, k_21 ↦ k_21];
+              invoke k_21 ret,
+            ::(x_28, x_29) ⇒
+              extern lit 0 { (n_30) ⇒
+              substitute [n_30 ↦ n_30, k_21 ↦ k_21];
+              invoke k_21 ret } } } }

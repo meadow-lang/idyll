@@ -251,11 +251,18 @@ fn an_answer_is_written_out_as_the_repl_writes_it() {
 
 #[test]
 fn an_effect_variable_is_declared_on_its_def() {
-    let text = lowered("twice : (f : [2] (Int -> Int ! e)) -> Int -> Int ! e\ntwice f x = f (f x)\n\ntwice (\\(n : Int) -> n + 1) 0\n");
+    let text = lowered("twice : (f : [] (Int -> Int ! e)) -> Int -> Int ! e\ntwice f x = f (f x)\n\ntwice (\\(n : Int) -> n + 1) 0\n");
     has(&text, "def idyll:Main/twice <e_N: Effect> (f_N: ptr, x_N: i64; k_N: ptr) =");
     // one that may stand for an effect resumed more than once
     let text = lowered("again : {e : Effect []} -> (f : [2] (() -> Int ! e)) -> Int ! e\nagain f = f () + f ()\n\nagain (\\(u : ()) -> 1)\n");
     has(&text, "def idyll:Main/again <e_N: ManyEffect> (f_N: ptr; k_N: ptr) =");
+}
+
+#[test]
+fn a_hole_is_lowered_as_what_it_was_solved_with() {
+    // the types given as `_` are solved, and nothing at run time
+    let src = "let ap : (a : Type) -> (b : a -> Type) -> (f : (x : a) -> b x) -> (y : a) -> b y = \\a b f y -> f y in ap _ _ (\\(n : Int) -> n) 3";
+    assert!(cut(src).is_ok(), "{:?}", cut(src));
 }
 
 #[test]

@@ -3,6 +3,8 @@
 -- usually wants.
 
 -- The file's text, or `fallback` if it cannot be read.
+@linear
+
 @pub
 readToStringOr : (fallback : [0..1] String) -> (path : [0..1] String) -> String ! Fs
 readToStringOr fallback path = Std.Result.withDefault fallback (readToString path)

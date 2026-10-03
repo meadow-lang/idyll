@@ -1,0 +1,23 @@
+-- | let apply : (a : Type) -> (b : a -> Type) -> (f : (x : a) -> b x) -> (y : a) -> b y = \a b f y -> f y in apply
+-- expect: nothing to show
+
+define main : () =
+  new f_0 = (){
+    apply(a_1, k_2) ⇒
+      substitute [k_2 ↦ k_2];
+      new f_3 = (){
+        apply(b_4, k_5) ⇒
+          substitute [k_5 ↦ k_5];
+          new f_6 = (){
+            apply(f_7, k_8) ⇒
+              substitute [k_8 ↦ k_8, f_7 ↦ f_7];
+              new f_9 = (f_7){
+                apply(y_10, k_11) ⇒
+                  invoke f_7 apply };
+              substitute [f_9 ↦ f_9, k_8 ↦ k_8];
+              invoke k_8 ret };
+          substitute [f_6 ↦ f_6, k_5 ↦ k_5];
+          invoke k_5 ret };
+      substitute [f_3 ↦ f_3, k_2 ↦ k_2];
+      invoke k_2 ret };
+  extern halt(f_0) {}

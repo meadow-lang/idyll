@@ -186,7 +186,16 @@ pub fn scc_binds(binds: Vec<Bind>) -> Vec<BindGroup> {
             let self_edge = members.len() == 1 && edges[members[0]].contains(&members[0]);
             let mut bs: Vec<Bind> =
                 members.iter().map(|&i| slots[i].take().expect("each bind is in one component")).collect();
-            if bs.len() == 1 && !self_edge {
+            // A definition by matching, with a signature, is a recursive one
+            // even if it never
+            // calls itself: a constant that unfolds only when its case tree
+            // can choose (see the checker's termination module), as Agda's
+            // and Idris's do, so that a type mentioning `first p` says so
+            // rather than the `case` it would be.
+            // (One with no signature stays as it is: a recursive definition's
+            // type is not inferred.)
+            let by_matching = bs.len() == 1 && bs[0].ty.is_some() && matches!(bs[0].rhs.kind, TermKind::Match(_));
+            if bs.len() == 1 && !self_edge && !by_matching {
                 BindGroup::NonRec(bs.pop().unwrap())
             } else {
                 BindGroup::Rec(bs)

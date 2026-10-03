@@ -1,0 +1,24 @@
+-- | let f (x : Int) (y : Bool) : Int = x in f 1 True
+-- expect: value 1
+
+define main : () =
+  new f_0 = (){
+    apply(x_1, k_2) ⇒
+      substitute [k_2 ↦ k_2, x_1 ↦ x_1];
+      new f_3 = (x_1){
+        apply(y_4, k_5) ⇒
+          substitute [x_1 ↦ x_1, k_5 ↦ k_5];
+          invoke k_5 ret };
+      substitute [f_3 ↦ f_3, k_2 ↦ k_2];
+      invoke k_2 ret };
+  extern lit 1 { (n_6) ⇒
+  new k_7 = (){
+    ret(r_8) ⇒
+      let b_9 = true();
+      new k_10 = (){
+        ret(r_11) ⇒
+          extern halt(r_11) {} };
+      substitute [b_9 ↦ b_9, k_10 ↦ k_10, r_8 ↦ r_8];
+      invoke r_8 apply };
+  substitute [n_6 ↦ n_6, k_7 ↦ k_7, f_0 ↦ f_0];
+  invoke f_0 apply }

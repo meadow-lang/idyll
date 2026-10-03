@@ -165,6 +165,15 @@ struct Lower<'t> {
 }
 
 /// Lower a checked (and linked) program, whose own package is `package`.
+/// `c` with each solved metavariable replaced by its solution (which, for
+/// one applied to a spine, is a function of it).
+fn zonk(solutions: &[Option<Rc<Core>>], c: &Rc<Core>) -> Rc<Core> {
+    c.rewrite(0, &|c, _| match c {
+        Core::Meta(m) => solutions.get(*m).cloned().flatten().map(|s| zonk(solutions, &s)),
+        _ => None,
+    })
+}
+
 pub fn lower(tc: &mut TypeCheckResult, package: &str) -> Result<Program, Vec<String>> {
     // an answer is shown with the prelude's `showInt`, so it stays
     let show_int = tc.symbols.iter().find(|(_, (p, path))| p == "Prelude" && path == "showInt").map(|(u, _)| *u);
@@ -175,7 +184,15 @@ pub fn lower(tc: &mut TypeCheckResult, package: &str) -> Result<Program, Vec<Str
     let Some((program, live)) = idyllic_typecheck::prune::prune(tc) else {
         return Err(vec!["there is no program: it only declares".into()]);
     };
-    let recs: HashMap<usize, RecDef> = tc.rec_defs.iter().filter(|d| live.contains(&d.unique)).map(|d| (d.unique, d.clone())).collect();
+    // a hole is lowered as what it was solved with
+    let solutions = tc.meta_solutions.clone();
+    let program = zonk(&solutions, &program);
+    let recs: HashMap<usize, RecDef> = tc
+        .rec_defs
+        .iter()
+        .filter(|d| live.contains(&d.unique))
+        .map(|d| (d.unique, RecDef { core: zonk(&solutions, &d.core), ..d.clone() }))
+        .collect();
     let toplevel = tc.toplevel.clone();
     let (ran_main, body_type) = (tc.ran_main, tc.body_type.clone());
     let mut l = Lower {

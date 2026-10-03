@@ -267,7 +267,7 @@ fn matching_cannot_decide_what_does_not_compute() {
 #[test]
 fn fields_have_the_grade_of_what_they_came_out_of() {
     rejects(
-        &format!("{NAT}isZero : Nat -> Bool\nisZero Z = True\nisZero (S n) = False\n"),
+        &format!("@linear\n\n{NAT}isZero : Nat -> Bool\nisZero Z = True\nisZero (S n) = False\n"),
         &["usage mismatch: n has grade 1, but is used never"],
     );
     accepts(&format!("{NAT}isZero : (m : [0..1] Nat) -> Bool\nisZero Z = True\nisZero (S n) = False\n"));

@@ -4,8 +4,9 @@ This tutorial covers the language **as it works today**. Idyll is still
 early: right now it is a small dependently typed core — roughly the
 Calculus of Constructions with a few built-in types — with *graded*
 types in the style of [Granule](https://granule-project.github.io), whose
-syntax it borrows: every variable is **linear** (used exactly once) unless
-its type says otherwise. The REPL type-checks your program, runs it, and
+syntax it borrows: every variable has a **grade**, how many times it is
+used, which is any number of times unless its type says otherwise, or
+exactly once (**linear**) in a module that asks for that. The REPL type-checks your program, runs it, and
 prints its value and type. This tutorial is kept up to date as features
 land, and anything not covered here isn't implemented yet (see
 [What's missing](#whats-missing)).
@@ -16,7 +17,7 @@ land, and anything not covered here isn't implemented yet (see
 2. [Values and their types](#values-and-their-types)
 3. [Functions](#functions)
 4. [Type annotations](#type-annotations)
-5. [Linearity and grades](#linearity-and-grades)
+5. [Grades](#grades)
 6. [Dependent types](#dependent-types)
 7. [Declarations](#declarations)
 8. [Let bindings](#let-bindings)
@@ -29,12 +30,13 @@ land, and anything not covered here isn't implemented yet (see
 15. [The standard library](#the-standard-library)
 16. [Boxes](#boxes)
 17. [Grade polymorphism](#grade-polymorphism)
-18. [Grades in types](#grades-in-types)
-19. [Inference and holes](#inference-and-holes)
-20. [How programs run](#how-programs-run)
-21. [Reading error messages](#reading-error-messages)
-22. [Syntax reference](#syntax-reference)
-23. [What's missing](#whats-missing)
+18. [Working out grades](#working-out-grades)
+19. [Grades in types](#grades-in-types)
+20. [Inference and holes](#inference-and-holes)
+21. [How programs run](#how-programs-run)
+22. [Reading error messages](#reading-error-messages)
+23. [Syntax reference](#syntax-reference)
+24. [What's missing](#whats-missing)
 
 ---
 
@@ -128,7 +130,7 @@ asked for still match, just further down:
 
 ```
 :find Int -> String
-fun    showInt : (n : [] Int) -> String  (prelude)
+fun    showInt : (n : Int) -> String  (prelude)
 ```
 
 Grades, implicit binders and effects are left out of the comparison, so
@@ -148,8 +150,8 @@ The search builds terms from the goal's shape, smallest first: lambdas for
 a function's arguments, variables and literals, and functions and
 constructors applied to terms of what they take, three deep. Each one is
 then checked by the type checker, and only what it accepts is shown, so
-grades count: `{a : Type} -> {b : Type} -> a -> b -> a` has no proof,
-since `\x y -> x` doesn't use `y`, which is linear. A goal that needs a
+grades count: `{a : Type} -> {b : Type} -> a -> (y : [1] b) -> a` has
+no proof, since `\x y -> x` doesn't use `y`, which is linear. A goal that needs a
 `case` is beyond the search.
 
 ### Looking inside: `:ir`
@@ -297,7 +299,7 @@ Addition is *computed* while type checking, which matters because types
 can mention values (see [Dependent types](#dependent-types)). Here `x` is
 accepted at type `f 4` because `f (2 + 2)` is the same type. (The `0`
 marks `f` as used only in types; see
-[Linearity and grades](#linearity-and-grades).)
+[Grades](#grades).)
 
 ```
 > \(f : [0] Int -> Type) (x : f (2 + 2)) -> (x : f 4)
@@ -417,7 +419,7 @@ type can share an annotation:
 `\x y -> e` is shorthand for `\x -> \y -> e`.
 
 A parameter must be **used exactly once** in the body — that example uses
-both `x` and `y`. [Linearity and grades](#linearity-and-grades) explains
+both `x` and `y`. [Grades](#grades) explains
 why, and how to say otherwise.
 
 ### Application
@@ -456,36 +458,33 @@ than application, so `f x : t` annotates `f x`.
 Annotations are how you give an unannotated lambda its type — in the
 second example, `x` gets its type `Int` from the annotation.
 
-## Linearity and grades
+## Grades
 
-Idyll's functions are **linear** by default, as in
-[Granule](https://granule-project.github.io): `a -> b` promises to use
-its argument *exactly once*. A value can't be silently dropped or
-duplicated, which is what lets types describe resources — a file handle
-that must be closed, memory that must be freed — and not just data.
-
-So these are rejected:
+Every binder has a **grade**: how many times the function uses it, as in
+[Granule](https://granule-project.github.io). A binder that says nothing
+has grade `[]`, *any number of times*, so an ordinary function is written
+as in any functional language:
 
 ```
 > \(x : Int) -> 5
-Error: usage mismatch
-   │ ╰── x has grade 1, but is used never
-   │ Help: binders are linear by default; write (x : [0] ..) if it is meant to be unused
+: (x : Int) -> Int
 > \(x : Int) -> x + x
-Error: usage mismatch
-   │ ╰── x has grade 1, but is used 2 times
+: (x : Int) -> Int
 ```
 
-### Grades
-
-To use something a different number of times, say so with a **grade**, in
-square brackets before the type. A bare number is an exact count:
+A grade says otherwise, in square brackets before the type. Saying how
+often a value is used is what lets types describe resources — a file
+handle that must be closed exactly once, memory freed exactly once — and
+not just data. A bare number is an exact count:
 
 ```
 > \(x : [0] Int) -> 5
 : (x : [0] Int) -> Int
 > \(x : [2] Int) -> x + x
 : (x : [2] Int) -> Int
+> \(x : [1] Int) -> x + x
+Error: usage mismatch
+   │ ╰── x has grade 1, but is used 2 times
 ```
 
 Exact means exact — grade `2` is not "up to twice":
@@ -513,24 +512,25 @@ Error: usage mismatch
 ```
 
 `1..∞` is "at least once", and `0..∞` lifts the restriction entirely. That
-one is common enough to be written with nothing in the brackets:
+one is what a binder has when it says nothing, and can be written with
+nothing in the brackets:
 
 ```
 > \(x : [1..∞] Int) -> 7
 Error: usage mismatch
    │ ╰── x has grade 1..∞, but is used never
 > \(x : [] Int) -> x + x + x
-: (x : [] Int) -> Int
+: (x : Int) -> Int
 ```
 
 | Grade | Meaning |
 | ----- | ------- |
 | `0` | not used at run time |
-| `1` | used exactly once — the default, so usually not written |
+| `1` | used exactly once (*linear*) |
 | `2`, `3`, … | used exactly that many times |
 | `0..1` | used at most once (*affine*) |
 | `1..∞` | used at least once (*relevant*) |
-| `0..∞`, or empty brackets | used any number of times |
+| `0..∞`, or empty brackets | used any number of times — the default, so usually not written |
 
 A usage fits a grade when every count it might be is one the grade allows:
 `1` fits `0..1`, and `0..1` fits `0..5`, but `0..1` does not fit `1`. Usages
@@ -538,7 +538,7 @@ can be ranges themselves — calling a function that *may* use `y` uses `y`
 `0..1` times:
 
 ```
-> let opt (n : [0..1] Int) : Int = 1 in \(y : Int) -> opt y
+> let opt (n : [0..1] Int) : Int = 1 in \(y : [1] Int) -> opt y
 Error: usage mismatch
    │ ╰── y has grade 1, but is used 0..1 times
 ```
@@ -552,13 +552,37 @@ type gets its grade from it:
 : (x : [2] Int) -> Int
 ```
 
+### Linear modules
+
+A module that is mostly about resources can make `1` the default instead:
+`@linear`, on a line of its own at the top, makes every binder in it that
+says nothing linear. (`idyllic --linear` does the same for every module of
+a package.) In the REPL, an entry may start with it:
+
+```
+> @linear
+\(x : Int) -> 5
+Error: usage mismatch
+   │ ╰── x has grade 1, but is used never
+> @linear
+\(x : Int) -> x
+: (x : Int) -> Int
+```
+
+A type is printed as the module it is in reads it: there, `(x : Int)` is
+linear, and an unrestricted binder is written `(x : [] Int)`. The prelude
+and the standard library are linear modules, so that what they declare can
+hold resources; their functions take what they are given at the grades
+they say, and a function from anywhere else fits them (see
+[The standard library](#the-standard-library)).
+
 ### Grades flow through calls
 
 If a function uses its argument twice, then everything *in* that argument
 is used twice. Here `y` is used once in the text, but `dup` uses it twice:
 
 ```
-> let dup (n : [2] Int) : Int = n + n in \(y : Int) -> dup y
+> let dup (n : [2] Int) : Int = n + n in \(y : [1] Int) -> dup y
 Error: usage mismatch
    │ ╰── y has grade 1, but is used 2 times
 > let dup (n : [2] Int) : Int = n + n in \(y : [2] Int) -> dup y
@@ -566,12 +590,18 @@ Error: usage mismatch
 ```
 
 This applies to function arguments too. Applying `f` twice needs `f`
-twice:
+twice, and the inner `f x` is handed to a function that may use its
+argument any number of times, so it needs `x` (and that `f`) as often:
 
 ```
 > \(f : [2] Int -> Int) (x : Int) -> f (f x)
-: (f : [2] Int -> Int) -> (x : Int) -> Int
+Error: usage mismatch
+   │ ╰── f has grade 2, but is used 1..∞ times
+> \(f : [2] (x : [1] Int) -> Int) (x : [1] Int) -> f (f x)
+: (f : [2] (x : [1] Int) -> Int) -> (x : [1] Int) -> Int
 ```
+
+[Working out grades](#working-out-grades) takes this further.
 
 ### A term isn't charged for its types
 
@@ -827,9 +857,9 @@ Bindings in one `let` can refer to each other, in any order. A signature
 can go on a line of its own, as at the top level:
 
 ```
-> let twice : {a : Type} -> (a -> a) [2] -> a -> a
-    twice [f] x = f (f x)
- in twice [\n -> n + 1] 0
+> let twice : {a : Type} -> (a -> a) -> a -> a
+    twice f x = f (f x)
+ in twice (\n -> n + 1) 0
 
 2 : Int
 ```
@@ -884,15 +914,15 @@ type signature**, because its type can't be worked out from a definition
 that uses it:
 
 ```
-> fib : (n : [] Int) -> Int ! Div
+> fib : Int -> Int ! Div
 fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)
 
-fib : (n : [] Int) -> Int ! Div
+fib : Int -> Int ! Div
 > fib 20
 6765 : Int
 ```
 
-(`n` is used three times, hence the `[]`.) The `! Div` says that `fib`
+The `! Div` says that `fib`
 might never finish, as far as the checker can see: it recurs on an `Int`,
 and nothing takes an `Int` apart the way matching takes apart a data
 type. A recursion that goes on taking its argument apart is known to
@@ -941,7 +971,7 @@ definition might run any number of times, so anything it mentions from
 outside is used without restriction:
 
 ```
-> \(x : Int) -> let loop : Int -> Int ! Div = \n -> loop (n + x) in loop 1
+> \(x : [1] Int) -> let loop : Int -> Int ! Div = \n -> loop (n + x) in loop 1
 Error: usage mismatch
    │ ╰── x has grade 1, but is used an unrestricted number of times
 ```
@@ -964,7 +994,7 @@ linear variable doesn't allow:
 ```
 > \(b : Bool) (x : Int) -> if b then x else x + 1
 : (b : Bool) -> (x : Int) -> Int
-> \(b : Bool) (x : Int) -> if b then x else 0
+> \(b : Bool) (x : [1] Int) -> if b then x else 0
 Error: usage mismatch
    │ ╰── x has grade 1, but is used 0..1 times
 ```
@@ -1006,8 +1036,9 @@ Error: name not in scope: Circle
 in scope: `Nil` and `::`, `Nothing` and `Just`, `Err` and `Ok`. A program's
 own `use Maybe.*` puts its own `Maybe`'s ahead of them.)
 
-A constructor takes the type's parameters implicitly and its fields
-linearly. Take a value apart with `case`, one alternative per constructor,
+A constructor takes the type's parameters implicitly, and its fields as a
+binder that says nothing takes its argument (see [Fields keep their
+grade](#fields-keep-their-grade)). Take a value apart with `case`, one alternative per constructor,
 each naming the fields:
 
 ```
@@ -1037,9 +1068,9 @@ alternative and not the other, so it has to be allowed to go unused —
 - A `case` must cover every case. Its patterns can be much more than a
   constructor and its fields: see [Pattern matching](#pattern-matching).
 - What comes out of a constructor has the grade of what it came out of:
-  a linear value's fields are linear. A field to be used otherwise is a
-  box, `Maybe (Int [2])`, or comes out of a value with a grade that
-  allows it.
+  in a linear module, a linear value's fields are linear. A field to be
+  used otherwise is a box, `Maybe (Int [2])`, or comes out of a value
+  with a grade that allows it.
 
 ### What a data type may hold
 
@@ -1169,6 +1200,79 @@ third : {a : Type} -> {b : Type} -> {c : Type} -> (t : [0..1] (a, b, c)) -> c
 `Std.Tuple` has the functions on them: `fst`, `snd`, `swap`, `curry`,
 `uncurry`, ...
 
+### Records
+
+A record is a type with one constructor whose fields have names. It is
+built with them, in any order, read with `.`, and matched by them:
+
+```
+> record Point = { x : Int, y : Int }
+
+Point : Type
+Point.Point : (x : Int) -> (y : Int) -> Point
+Point.x : (self : [0..1] Point) -> Int
+Point.y : (self : [0..1] Point) -> Int
+> Point { y = 2, x = 1 }
+Point 1 2 : Point
+> norm : Point -> Int
+norm p = p.x * p.x + p.y * p.y
+
+norm : Point -> Int
+> norm (Point { x = 3, y = 4 })
+25 : Int
+> first : (p : [0..1] Point) -> Int
+first (Point { x = a }) = a
+
+first : (p : [0..1] Point) -> Int
+> first (Point { x = 7, y = 8 })
+7 : Int
+```
+
+Each field is a function under the type, as the constructor is:
+`Point.x p` is what `p.x` means. Reading one field drops the others, so the
+record is taken with `[0..1]`, and `norm`, which reads two, takes it as a
+binder that says nothing does, with `[]`. A field is found by its name among the records in scope; where two
+have one of that name, write which, `Point.x p`. A field not named in a
+pattern is matched by anything.
+
+`{ p | x = v }` is `p` with `x` replaced: a new record, and `p` as it was.
+The old `x` is dropped, so `p` has to be something that may be: `[0..1]` or
+`[]`, as `moved`'s is.
+
+```
+> record Point = { x : Int, y : Int }
+
+Point : Type
+Point.Point : (x : Int) -> (y : Int) -> Point
+Point.x : (self : [0..1] Point) -> Int
+Point.y : (self : [0..1] Point) -> Int
+> moved : Point -> Point
+moved p = { p | x = p.x + 10 }
+
+moved : Point -> Point
+> moved (Point { x = 1, y = 2 })
+Point 11 2 : Point
+```
+
+A field's type may mention the fields before it, which makes a record a
+dependent pair with names, and keeps its fields consistent by its type:
+
+```
+> use Std.Num.Nat (Nat)
+use Std.Num.Nat.Nat.*
+use Std.Collections.Vec (Vec)
+> record Sized = { size : Nat, items : Vec size Int }
+
+Sized : Type
+Sized.Sized : (size : Nat) -> (items : Vec size Int) -> Sized
+Sized.size : (self : [0..1] Sized) -> Nat
+Sized.items : (self : [0..1] Sized) -> Vec (size self) Int
+> (Sized { size = S (S Z), items = #[1, 2] }).items
+Cons 1 (Cons 2 Nil) : Vec (S (S Z)) Int
+> Sized { size = S Z, items = #[1, 2] }
+Error: type mismatch
+```
+
 ### Arrays
 
 `#[a; b; c]`, with semicolons, is an **array**: its elements side by side
@@ -1210,10 +1314,10 @@ runtime tells by its reference count. Reading an element drops the rest,
 so the array is taken with `[0..1]`, and one used twice is a `[]` value:
 
 ```
-> sumTo : (xs : [] Array Int) -> Int
+> sumTo : Array Int -> Int
 sumTo xs = arrayLen xs + arrayGet xs 0
 
-sumTo : (xs : [] Array Int) -> Int
+sumTo : Array Int -> Int
 > sumTo #[40; 2]
 42 : Int
 ```
@@ -1236,17 +1340,17 @@ its fields; an argument pattern with fields of its own is parenthesised,
 as in Haskell.
 
 ```
-> fact : (n : [] Int) -> Int ! Div
+> fact : Int -> Int ! Div
 fact 0 = 1
 fact n = n * fact (n - 1)
 
-fact : (n : [] Int) -> Int ! Div
+fact : Int -> Int ! Div
 > fact 10
 3628800 : Int
 ```
 
 Looking at an argument is a use of it, so `fact` uses `n` once to see
-whether it is `0` and then twice more: hence `[]`. (And it recurs on an
+whether it is `0` and then twice more, which `n`, saying nothing, allows. (And it recurs on an
 `Int`, hence `! Div`: see [Div](#div).)
 
 Constructor patterns nest as deep as you like, and `::` works in patterns
@@ -1259,18 +1363,18 @@ use Nat.*
 Nat : Type
 Nat.Z : Nat
 Nat.S : Nat -> Nat
-> half : (n : [] Nat) -> Nat
+> half : Nat -> Nat
 half (S (S n)) = S (half n)
 half _ = Z
 
-half : (n : [] Nat) -> Nat
+half : Nat -> Nat
 > half (S (S (S (S (S Z)))))
 S (S Z) : Nat
-> second : (xs : [] List Int) -> Int
+> second : List Int -> Int
 second (_ :: y :: _) = y
 second _ = 0
 
-second : (xs : [] List Int) -> Int
+second : List Int -> Int
 > second (1 :: 2 :: 3 :: Nil)
 2 : Int
 ```
@@ -1287,13 +1391,13 @@ for the rest of the program: there are no type classes yet.)
 equation:
 
 ```
-> sign : (n : [] Int) -> Int
+> sign : Int -> Int
 sign n
   | n < 0 = 0 - 1
   | n == 0 = 0
   | otherwise = 1
 
-sign : (n : [] Int) -> Int
+sign : Int -> Int
 > sign (0 - 5) + 10 * sign 7
 9 : Int
 ```
@@ -1301,13 +1405,13 @@ sign : (n : [] Int) -> Int
 A `case` takes the same patterns, and guards written with `->`:
 
 ```
-> classify : (xs : [] List Int) -> Int
+> classify : List Int -> Int
 classify xs = case xs of
   Nil -> 0
   x :: _ | x < 0 -> 1
   _ -> 2
 
-classify : (xs : [] List Int) -> Int
+classify : List Int -> Int
 > classify (0 - 1 :: Nil)
 1 : Int
 ```
@@ -1330,11 +1434,16 @@ both : Bool -> Bool -> Int
 
 ### Fields keep their grade
 
-What comes out of a value has that value's grade. A linear `Nat` has a
-linear field, and a linear field has to be used:
+What comes out of a value has that value's grade, times the grade its
+constructor took it at. A constructor takes a field that says nothing as
+any binder does: once in a [linear module](#linear-modules), and `[]`
+elsewhere, where what comes out of a value can be used freely. In a linear
+module, then, a linear `Nat` has a linear field, and a linear field has to
+be used:
 
 ```
-> data Nat = Z | S Nat
+> @linear
+data Nat = Z | S Nat
 use Nat.*
 
 Nat : Type
@@ -1621,16 +1730,16 @@ types](#computing-in-types)) has to say so, on the arrow its recursion
 goes round:
 
 ```
-> count : (n : [] Int) -> Int
+> count : Int -> Int
 count n = if n == 0 then 0 else count (n - 1)
 
 Error: count may not terminate
    │ ╰── no argument gets smaller on every round of its recursion, so it has the effect Div
-count : (n : [] Int) -> Int
-> count : (n : [] Int) -> Int ! Div
+count : Int -> Int
+> count : Int -> Int ! Div
 count n = if n == 0 then 0 else count (n - 1)
 
-count : (n : [] Int) -> Int ! Div
+count : Int -> Int ! Div
 > count 3
 0 : Int
 ```
@@ -1648,10 +1757,10 @@ attribute `@terminating` says so, on the line before its signature:
 
 ```
 > @terminating
-countdown : (n : [] Int) -> Int
+countdown : Int -> Int
 countdown n = if n < 1 then 0 else countdown (n - 1)
 
-countdown : (n : [] Int) -> Int
+countdown : Int -> Int
 > countdown 3
 0 : Int
 ```
@@ -1669,10 +1778,10 @@ it, so a type with `Div` in it might never finish being checked, and a
 type with any other effect would not be the same type twice:
 
 ```
-> count : (n : [] Int) -> Int ! Div
+> count : Int -> Int ! Div
 count n = if n == 0 then 0 else count (n - 1)
 
-count : (n : [] Int) -> Int ! Div
+count : Int -> Int ! Div
 > data IEq : Int -> Int -> Type where
   IRefl : IEq x x
 use IEq.*
@@ -1788,10 +1897,10 @@ value when the computation finishes instead:
 
 Fail : Effect
 fail : () -> Int ! Fail
-> safeDiv : (a : [] Int) -> (b : [] Int) -> Int ! Fail
+> safeDiv : Int -> Int -> Int ! Fail
 safeDiv a b = if b == 0 then fail () else a / b
 
-safeDiv : (a : [] Int) -> (b : [] Int) -> Int ! Fail
+safeDiv : Int -> Int -> Int ! Fail
 > handle safeDiv 7 0 with
   return x -> x
   fail _ k -> 0
@@ -1868,10 +1977,10 @@ ask : () -> Int ! Ask
 sum3 u = ask () + ask () + ask ()
 
 sum3 : () -> Int ! Ask
-> twice : (f : [] (() -> Int ! e)) -> Int ! e
+> twice : (() -> Int ! e) -> Int ! e
 twice f = f () + f ()
 
-twice : {e : Effect} -> (f : [] () -> Int ! e) -> Int ! e
+twice : {e : Effect} -> (() -> Int ! e) -> Int ! e
 > handle twice sum3 with
   ask _ k -> k 1
 
@@ -1895,17 +2004,17 @@ flip : () -> Bool ! Choose
 pick u = if flip () then 1 else 10
 
 pick : () -> Int ! Choose
-> twice : (f : [] (() -> Int ! e)) -> Int ! e
+> twice : (() -> Int ! e) -> Int ! e
 twice f = f () + f ()
 
-twice : {e : Effect} -> (f : [] () -> Int ! e) -> Int ! e
+twice : {e : Effect} -> (() -> Int ! e) -> Int ! e
 > handle twice pick with
   flip _ k -> k True + k False
 Error: these effects may be resumed more than once
-> twiceM : {e : Effect []} -> (f : [] (() -> Int ! e)) -> Int ! e
+> twiceM : {e : Effect []} -> (() -> Int ! e) -> Int ! e
 twiceM f = f () + f ()
 
-twiceM : {e : Effect []} -> (f : [] () -> Int ! e) -> Int ! e
+twiceM : {e : Effect []} -> (() -> Int ! e) -> Int ! e
 > handle twiceM pick with
   flip _ k -> k True + k False
 
@@ -2016,10 +2125,10 @@ carry on can handle it. Its message is a `String`, and so linear: a
 handler does something with it.
 
 ```
-> half : (n : [] Int) -> Int ! Abort
+> half : Int -> Int ! Abort
 half n = if n % 2 == 0 then n / 2 else abort "odd"
 
-half : (n : [] Int) -> Int ! Abort
+half : Int -> Int ! Abort
 > handle half 7 with
   abort m k -> let u = putErr m in 0
 
@@ -2362,15 +2471,19 @@ A module and its type share a name, so its constructors are
 3 : Int
 ```
 
-Linearity runs through it all. A function takes what it uses once as it
-is, what it may drop or only looks at with `[0..1]`, and what it uses many
-times with `[]`. `map` calls its function for each element, so takes it
-with `[]`, and uses each element once, so takes the list as it is: the
-list's cells are freed as `map` goes. `length` drops the elements, so
-takes the list with `[0..1]`. `filter` looks at an element and then keeps
-it, which is twice, so it is given a test of a `[]` argument and a list
-whose elements can be used so; `filterMap`, whose function gives the
-element back if it is kept, is the one for a list used once.
+Grades run through it all. The library is a [linear
+module](#linear-modules), so it can hold resources: a function takes what
+it uses once at `1`, what it may drop or only looks at with `[0..1]`, and
+what it uses many times with `[]`. `length` drops the elements, so takes
+the list with `[0..1]`. A function you hand it fits whatever grades its
+own arguments have: `map` calls its function for each element, so takes
+it with `[]`, and gives it each element at a grade of its own, `r`, which
+is the grade `map` takes the list with. Mapping a function that uses its
+argument once takes the list once, and its cells are freed as `map` goes;
+mapping one that says nothing of its argument (`[]`) takes the list with
+`[]`. A fold hands what its function made back to that function, so takes
+it, the start and the list with `[]`; [Working out
+grades](#working-out-grades) shows why.
 
 Where a type can say more, it does. A vector's length is in its type, so
 indexing it with a `Fin` of that length cannot fail, and two vectors
@@ -2416,7 +2529,7 @@ use Std.Num.Nat.Nat.*
 use Std.Eq (Eq)
 use Std.Dec (isYes)
 > plusComm
-: (n : [] Nat) -> (m : [] Nat) -> Eq Nat (plus n m) (plus m n)
+: (n : Nat) -> (m : Nat) -> Eq Nat (plus n m) (plus m n)
 > three : Eq (plus (S Z) (S (S Z))) (plus (S (S Z)) (S Z))
 three = plusComm (S Z) (S (S Z))
 
@@ -2435,10 +2548,10 @@ grows a tree of 32-element chunks underneath:
 
 ```
 > use Std.Collections.Vector (Vector, pushBack, empty, range, foldl, get, len)
-> grow : (v : [] Vector Int) -> (x : [] Int) -> Vector Int
+> grow : Vector Int -> Int -> Vector Int
 grow v x = pushBack v (x * x)
 
-grow : (v : [] Vector Int) -> (x : [] Int) -> Vector Int
+grow : Vector Int -> Int -> Vector Int
 > get (foldl grow empty (range 0 100)) 99
 Just 9801 : Maybe Int
 ```
@@ -2448,10 +2561,10 @@ Exceptions, state and generators are effects with handlers, as in
 
 ```
 > use Std.Exn (Exn, throw, toResult)
-> safeDiv : (a : [] Int) -> (b : [] Int) -> Int ! Exn String
+> safeDiv : Int -> Int -> Int ! Exn String
 safeDiv a b = if b == 0 then throw "divide by zero" else a / b
 
-safeDiv : (a : [] Int) -> (b : [] Int) -> Int ! Exn String
+safeDiv : Int -> Int -> Int ! Exn String
 > toResult (\(u : ()) -> safeDiv 7 0)
 Err "divide by zero" : Result String Int
 ```
@@ -2496,7 +2609,7 @@ Error: usage mismatch
    │ ╰── x has grade 2, but is used once
 ```
 
-The box *itself* is an ordinary linear value: `b` is used once, by being
+The box *itself* is an ordinary value: `b` is used once, by being
 opened. A parameter can be opened on the spot with the pattern `[x]`, in a
 lambda or an equation. So a function that ignores its argument, or
 duplicates it, can be written honestly by asking for a box:
@@ -2574,10 +2687,14 @@ expected; `1 + 1` is otherwise an `Int`.)
 
 So a function can take one as an argument, and be generic in how often
 something is used. `app` works for a function of any grade `r`, as long
-as it is handed a box good for `r` uses:
+as it is handed a box good for `r` uses. (A box is handed on here to a
+function that takes it once, which is what a [linear
+module](#linear-modules) says when nothing else is said: these sessions
+start with `@linear`.)
 
 ```
-> app : {a b : Type} -> {r : Grade} -> (a [r] -> b) -> a [r] -> b
+> @linear
+app : {a b : Type} -> {r : Grade} -> (a [r] -> b) -> a [r] -> b
 app f [x] = f [x]
 
 app : {a : Type} -> {b : Type} -> {r : Grade} -> (a [r] -> b) -> a [r] -> b
@@ -2587,7 +2704,7 @@ copy [x] = x + x
 copy : Int [2] -> Int
 > app copy [4]
 8 : Int
-> \(y : Int) -> app copy [y]
+> \(y : [1] Int) -> app copy [y]
 Error: usage mismatch
    │ ╰── y has grade 1, but is used 2 times
 ```
@@ -2596,7 +2713,8 @@ Usage is counted symbolically. Calling `f` twice on `[x]` uses `x` `2 * r`
 times, and `r + r` is the same grade:
 
 ```
-> twice : {r : Grade} -> (Int [r] -> Int) [2] -> Int [r + r] -> Int
+> @linear
+twice : {r : Grade} -> (Int [r] -> Int) [2] -> Int [r + r] -> Int
 twice [f] [x] = f [x] + f [x]
 
 twice : {r : Grade} -> (Int [r] -> Int) [2] -> Int [2 * r] -> Int
@@ -2611,6 +2729,205 @@ Grade expressions are compared up to the laws of arithmetic (`r + r` is
 `2 * r`, `r * s` is `s * r`), and a usage fits a grade term by term: `r`
 fits `r + (0..1)`. There is no cleverer reasoning than that — Granule hands
 such questions to an SMT solver; Idyll doesn't.
+
+## Working out grades
+
+Idyll checks the grades you write; it doesn't find them for you. A
+first-order function's can be read off by counting, but a higher-order or
+recursive one takes a little algebra: some grades are *given* — what the
+functions it is handed do with their arguments — and the rest follow from
+them. Five rules are enough, and they are the ones the checker counts by:
+
+1. A variable written once is used once, and uses add up.
+2. An argument handed to a parameter of grade `s` is used `s` times over:
+   everything in it is used `s` times as often.
+3. Only one alternative of an `if`, a `case` or a set of equations runs,
+   so a variable is used *either* way: the range that covers each.
+4. A field has the grade of the value it came out of.
+5. A recursive call is a call like any other: it uses what it is given at
+   the grades of its own signature — the grades being worked out.
+
+The answer is then the smallest grade that allows every use, which you
+find by writing down what each use demands of it and solving.
+
+### `map`
+
+```
+map f Nil = Nil
+map f (x :: xs) = f x :: map f xs
+```
+
+What `f` does with its argument is up to `f`: call it `r`. That is the
+given. Call the list's grade, which is wanted, `g`. Then `x` is handed to
+`f`, so used `r` times (rule 2), and `xs` is handed to `map`, so used `g`
+times (rule 5). Both are fields of the list (rule 4), so both have its
+grade `g`: it must allow `r`, and `g`, and `g = r` is the smallest that
+does. `f` is called once for each element, of a list of any length: `[]`.
+
+```
+> map : {a b : Type} -> {r : Grade} -> (f : [] ((x : [r] a) -> b)) -> (xs : [r] List a) -> List b
+map f Nil = Nil
+map f (x :: xs) = f x :: map f xs
+
+map : {a : Type} -> {b : Type} -> {r : Grade} -> (f : (x : [r] a) -> b) -> (xs : [r] List a) -> List b
+> map (\x -> x + x) #[1, 2, 3]
+2 :: 4 :: 6 :: Nil : List Int
+```
+
+`r` is settled at each use, by the function passed: a linear one makes
+`map` take the list once, and one that says nothing, `[]`.
+
+### Functions of functions
+
+`compose f g x = f (g x)`. Given: `f` uses its argument `s` times and `g`
+uses its `r` times. `g x` is handed to `f`, so it is used `s` times (rule
+2): `g` is used `s` times, and `x`, which `g` uses `r` times each time, is
+used `s * r` times.
+
+```
+> compose : {a b c : Type} -> {r s : Grade} -> (f : (y : [s] b) -> c) -> (g : [s] ((x : [r] a) -> b)) -> (x : [s * r] a) -> c
+compose f g x = f (g x)
+
+compose : {a : Type} -> {b : Type} -> {c : Type} -> {r : Grade} -> {s : Grade} -> (f : (y : [s] b) -> c) -> (g : [s] (x : [r] a) -> b) -> (x : [r * s] a) -> c
+```
+
+`twice f x = f (f x)` hands `f x` to `f`: so `f` is used once outside and
+`r` times inside, `1 + r` in all, and `x` is used `r * r` times. Guess
+`[2]` for `f`, as the text has it twice, and the checker says what it
+counted:
+
+```
+> twice : {a : Type} -> {r : Grade} -> (f : [2] ((x : [r] a) -> a)) -> (x : [r * r] a) -> a
+twice f x = f (f x)
+
+Error: usage mismatch
+   │ ╰── f has grade 2, but is used 1 + r times
+twice : {a : Type} -> {r : Grade} -> (f : [2] (x : [r] a) -> a) -> (x : [r * r] a) -> a
+> twice : {a : Type} -> {r : Grade} -> (f : [1 + r] ((x : [r] a) -> a)) -> (x : [r * r] a) -> a
+twice f x = f (f x)
+
+twice : {a : Type} -> {r : Grade} -> (f : [1 + r] (x : [r] a) -> a) -> (x : [r * r] a) -> a
+```
+
+`Std.Function` has both, so.
+
+### `foldr`
+
+```
+foldr f z Nil = z
+foldr f z (x :: xs) = f x (foldr f z xs)
+```
+
+Given: `f` uses an element `r` times and the accumulator `s` times,
+`(x : [r] a) -> (acc : [s] b) -> b`. Wanted: `z`'s grade, `g`, and the
+list's, `h`.
+
+`z` is used once by the first equation. In the second it is handed to
+`foldr`, which uses it `g` times (rule 5), inside what `f` takes as its
+accumulator, `s` times (rule 2): `s * g` times. One equation runs (rule
+3), so `g` must allow both:
+
+```
+1 ⊑ g        s * g ⊑ g
+```
+
+The smallest `g` that does is written `s*`: `1`, or `s`, or `s * s`, or
+any longer chain of `s`es — `z` is used once at the bottom of the fold,
+and each level above it multiplies that by `s`. Likewise `x` is used `r`
+times, and the rest of the list is handed to `foldr` (`h`) inside the
+accumulator (`s`); both are fields (rule 4), so `h` must allow `r` and
+`s * h`, and the smallest that does is `r * s*`. `f` is `[]`. So:
+
+```
+foldr : (f : [] ((x : [r] a) -> (acc : [s] b) -> b)) -> (z : [s*] b) -> (xs : [r * s*] List a) -> b
+```
+
+| `s`, the accumulator's | `s*`, the start's |
+| ---------------------- | ----------------- |
+| `0` | `0..1` |
+| `0..1` | `0..1` |
+| `1` | `1` |
+| `2` | `1..∞` |
+| `[]` | `[]` |
+
+Idyll can't write `s*`, so a fold picks an `s`. With `1`, a linear
+accumulator, the start is used once and the list `r` times:
+
+```
+> foldr : {a b : Type} -> {r : Grade} -> (f : [] ((x : [r] a) -> (acc : [1] b) -> b)) -> (z : [1] b) -> (xs : [r] List a) -> b
+foldr f z Nil = z
+foldr f z (x :: xs) = f x (foldr f z xs)
+
+foldr : {a : Type} -> {b : Type} -> {r : Grade} -> (f : (x : [r] a) -> (acc : [1] b) -> b) -> (z : [1] b) -> (xs : [r] List a) -> b
+> foldr (\x acc -> x + acc) 0 #[1, 2, 3]
+6 : Int
+```
+
+Guess the start's grade to be the accumulator's, and the list's to be the
+element's, and the checker counts what two levels of fold need of each:
+
+```
+> foldr2 : {a b : Type} -> {r : Grade} -> (f : [] ((x : [r] a) -> (acc : [2] b) -> b)) -> (z : [2] b) -> (xs : [r] List a) -> b
+foldr2 f z Nil = z
+foldr2 f z (x :: xs) = f x (foldr2 f z xs)
+
+Error: usage mismatch
+   │ ╰── xs has grade r, but is used 2 * r times
+Error: usage mismatch
+   │ ╰── z has grade 2, but is used 1..4 times
+foldr2 : {a : Type} -> {b : Type} -> {r : Grade} -> (f : (x : [r] a) -> (acc : [2] b) -> b) -> (z : [2] b) -> (xs : [r] List a) -> b
+```
+
+`Std.Collections.List.foldr` picks `s = []`, so that any function fits
+it, and then everything is `[]`.
+
+### `all`
+
+```
+all p Nil = True
+all p (x :: xs) = if p x then all p xs else False
+```
+
+Given: `p` uses its argument `r` times. Wanted: the list's grade, `h`.
+`x` is handed to `p`, so used `r` times. (What `p x` gives is a `Bool`,
+which the `if` looks at once.) The rest of the list is handed to `all`
+(`h`) in one branch and dropped in the other (`0`): `all` stops at the
+first element that fails. So `h` must allow `r`, `h` and `0`, and the
+smallest that does is `(0..1) * r`, anything from none up to `r`.
+
+```
+> all : {a : Type} -> {r : Grade} -> (p : [] ((x : [r] a) -> Bool)) -> (xs : [(0..1) * r] List a) -> Bool
+all p Nil = True
+all p (x :: xs) = if p x then all p xs else False
+
+all : {a : Type} -> {r : Grade} -> (p : (x : [r] a) -> Bool) -> (xs : [(0..1) * r] List a) -> Bool
+> all (\x -> 0 < x) #[1, 2, 3]
+True : Bool
+> allOf : {a : Type} -> {r : Grade} -> (p : [] ((x : [r] a) -> Bool)) -> (xs : [r] List a) -> Bool
+allOf p Nil = True
+allOf p (x :: xs) = if p x then allOf p xs else False
+
+Error: usage mismatch
+allOf : {a : Type} -> {r : Grade} -> (p : (x : [r] a) -> Bool) -> (xs : [r] List a) -> Bool
+```
+
+### In Granule
+
+These are Granule's grades, and Granule checks the same types, with an
+SMT solver where Idyll compares term by term. There `s*` can be said, by
+its two laws, as constraints on a grade variable `g`:
+
+```
+foldr : forall {a b : Type, r s g : Interval (Ext Nat)}
+  . {(1 : Interval (Ext Nat)) <= g, (s * g) <= g, (1 : Interval (Ext Nat)) <= r}
+  => (a [r] -> b [s] -> b) [0..∞] -> b [g] -> (List a) [r * g] -> b
+```
+
+Granule accepts this at each `s` of the table, with its `s*` for `g`, and
+rejects it with anything less; and it takes `all` at `(0..1) * r` and not
+at `r`. It also asks for one thing more, the last constraint: matching the
+list looks at it, which is a use, so its grade must allow one. Idyll
+doesn't ask that yet (see [What's missing](#whats-missing)).
 
 ## Grades in types
 
@@ -2881,7 +3198,7 @@ carries on after an error, so one input can report several problems.
 | `unsolved metavariable` | a type, an implicit argument or a box's grade couldn't be inferred; add an annotation |
 | `found hole` (warning) | a `_` the checker filled in, and what it filled it with |
 | `unsolved hole` | a `_` nothing determines |
-| `usage mismatch` | a variable is used a different number of times than its grade allows; see [Linearity and grades](#linearity-and-grades) |
+| `usage mismatch` | a variable is used a different number of times than its grade allows; see [Grades](#grades) |
 | `binder grade does not match the expected function type` | a lambda's `(x : [2] t)` disagrees with the grade in the type it's being checked against |
 | `a type-level grade needs a function type to check it against` | `\(x : (s, r) t) -> ..` with no signature; see [Grades in types](#grades-in-types) |
 | `empty grade range` | `lo..hi` with `lo` greater than `hi` |
@@ -2941,6 +3258,8 @@ input can still be checked.
 | `Console`, `Fs`, `Process`, `Random`, `Time`, `Test`, `Abort` | the world's effects, which the runtime handles; see [The world and `main`](#the-world-and-main) |
 | `Maybe a`, `Result e a` | `Nothing`, `Just x`; `Err e`, `Ok x` |
 | `(a, b)`, `(a, b, c)` | a tuple: the prelude's `Pair a b`, nesting to the right; in a term, a pattern or a type |
+| `record P = { x : Int, y : Int }` | a record: a type of one constructor with named fields, each of which may mention those before it |
+| `P { x = 1, y = 2 }`, `p.x`, `{ p \| x = 3 }`, `P { x = a }` | a record built, read, updated, and matched |
 | `case e of C x -> a; D -> b` | take a value apart; alternatives in a column, or in braces |
 | `case e of p \| g -> a` | an alternative with a guard |
 | `f (C x) 0 = e` <br> `f _ n = e` | a definition by equations, tried in order |
@@ -3080,9 +3399,17 @@ These aren't implemented yet. This section shrinks as they land.
 - **More of the standard library.** Meadow's has maps, sets, sorting
   by trait, string operations and records; `Std` waits for traits, records
   and characters. Its equality is for values in `Type` only (two types can't
-  be said equal), and a function from it given a function must match its
-  grades exactly: `List.map` takes a function of a linear argument, so a
-  function written to use its argument twice is not accepted.
+  be said equal). Where one grade covers what a function hands on (the
+  elements `map` gives its function) it is generic in it; where none does
+  (what a fold gives back to its function), it takes `[]`, so there is no
+  fold of a linear accumulator: that wants the grade `s*` of [Working out
+  grades](#working-out-grades), which Idyll can't write.
+- **Matching through a grade variable.** Matching a value looks at it,
+  which is a use, so a function that matches on an argument of grade `r`
+  needs `r` to allow one (Granule says so with a constraint, `1 <= r`).
+  Idyll checks this when the grade is a number, as a value of grade `0`
+  can't be matched, but not yet when it is a variable: given `r = 0` such
+  a function would look at a value that isn't there.
 - **Universe polymorphism.** Levels are numbers; there are no level
   variables. So a data type always lives in `Type`, and `List`, for one,
   only holds types in `Type`.
