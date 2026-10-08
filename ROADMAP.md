@@ -1,7 +1,7 @@
 # Roadmap
 
 Where Idyll is going next, and in what order. Most of it is bringing over
-features from [Meadow](https://github.com/mcdearman/meadow), rethought for a
+features from [Meadow](https://github.com/meadow-lang/meadow), rethought for a
 dependently typed, graded language: Meadow is an ML with Hindley–Milner
 inference, row-polymorphic records, algebraic effects and a full toolchain,
 and most of what makes it pleasant to use carries over.
