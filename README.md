@@ -4,6 +4,14 @@ The official implementation of the Idyll programming language
 
 New to the language? Start with the [tutorial](TUTORIAL.md).
 
+## AI disclosure
+
+Idyll is written with AI coding agents: Anthropic's Claude, through Claude Code.
+Most of the code, the tests, the documentation and the commit messages in this
+repository were written by an agent, under the direction of the project's
+author, who decides the design and what goes in. Read it, and rely on it, with
+that in mind.
+
 ## Goals
 
 - Pure functional programming
