@@ -1,0 +1,147 @@
+-- Idyll's tokens, read as the Rust lexer (`compiler/idyllic-lexer`) reads
+-- them.
+--
+-- The Rust lexer is logos; this is Scythe, its port. What logos decides by
+-- priority -- a keyword over a name, a punctuation mark over an operator --
+-- Scythe decides by the order the variants are written in, so they are
+-- written in that order: keywords and punctuation first, the general
+-- patterns (names, operators) last. The longest match still wins, so
+-- `letter` is a name and `->>` an operator.
+--
+-- Nothing is skipped: spaces, newlines and comments are tokens, so a tree
+-- built from these keeps every byte, and the layout step can see where each
+-- line starts.
+
+use Scythe (lexer!, Lexed, token, start, stop)
+use Std.Collections.Vector as V
+use Std.Result.Result.*
+use Std.Maybe.Maybe.*
+
+@derive(Lexer)
+@pub data Raw
+  = @regex("[ \t]+") Space
+  | @regex("\r\n|\n|\r") Newline
+  | @regex("--[^\n\r]*") Comment
+  | @token("mod") Mod
+  | @token("use") Use
+  | @token("data") Data
+  | @token("type") Type
+  | @token("Type") TypeUpper
+  | @token("let") Let
+  | @token("in") In
+  | @token("where") Where
+  | @token("effect") Effect
+  | @token("handle") Handle
+  | @token("with") With
+  | @token("do") Do
+  | @token("case") Case
+  | @token("of") Of
+  | @token("if") If
+  | @token("then") Then
+  | @token("else") Else
+  | @token("inf") Inf
+  -- (a `@regex`: Scythe's `@token` does not match a character of more
+  -- than one byte)
+  | @regex("∞") Infinity
+  | @token("(") LParen
+  | @token(")") RParen
+  | @token("{") LBrace
+  | @token("}") RBrace
+  | @token("[") LBracket
+  | @token("]") RBracket
+  | @token("!") Bang
+  | @token("#") Hash
+  | @token("\\") BackSlash
+  | @token(":") Colon
+  | @token(";") Semi
+  | @token(",") Comma
+  | @token(".") Period
+  | @token("=") Equals
+  | @token("<-") LArrow
+  | @token("->") RArrow
+  | @token("=>") RFatArrow
+  | @token("|") Bar
+  | @token("_") Underscore
+  | @token("@") At
+  | @regex("0b[01]+") Binary String
+  | @regex("0o[0-7]+") Octal String
+  | @regex("0x[0-9A-Fa-f]+") Hexadecimal String
+  | @regex("[1-9][0-9]*|0") Decimal String
+  | @regex("\"([^\"\\\\\n\r]|\\\\[^\n\r])*\"") Str String
+  | @regex("'([^'\\\\\n\r]|\\\\[^\n\r])'") Char String
+  | @regex("[A-Z][A-Za-z0-9_']*(\\.[A-Z][A-Za-z0-9_']*)+") QualUpper String
+  | @regex("[A-Z][A-Za-z0-9_']*(\\.[A-Z][A-Za-z0-9_']*)*\\.[_a-z][A-Za-z0-9_']*") QualLower String
+  | @regex("[A-Z][A-Za-z0-9_']*") UpperIdent String
+  | @regex("[_a-z][A-Za-z0-9_']*") LowerIdent String
+  | @regex(":[!$%&*+./<=>?@|\\\\~:^`\\-]+") ConOpIdent String
+  | @regex("[!$%&*+./<=>?@|\\\\~:^`\\-]+") OpIdent String
+
+-- Every token of `input`, as the Rust lexer reads them: where nothing
+-- matches, what the machine read before it stopped -- at least a character
+-- -- is an error, `Err` with its text, and lexing goes on after it.
+@pub fun lexed (input : String) : [Lexed (Result String Raw)] = lexedFrom input 0 []
+
+fun lexedFrom (input : String) (at : Int) (sofar : [Lexed (Result String Raw)]) : [Lexed (Result String Raw)] =
+  match nextRaw input at with
+  | Ok None -> sofar
+  | Ok (Just l) -> lexedFrom input (stop l) (V.pushBack sofar (Lexed (Ok (token l)) (start l) (stop l)))
+  | Err _ ->
+      let reached = reachRaw input at in
+      let upto = if reached > at then reached else at + charWidth input at in
+      lexedFrom input upto (V.pushBack sofar (Lexed (Err (stringSlice input at upto)) at upto))
+
+-- The bytes of the character starting at byte `at`, by its first byte.
+fun charWidth (input : String) (at : Int) : Int =
+  let b = toInt (stringByteAt input at) in
+  if b < 128 then 1 else if b < 224 then 2 else if b < 240 then 3 else 4
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+-- The tokens of `src`, without the spaces between them.
+fun kinds (src : String) : [Raw] =
+  match lexRaw src with
+  | Ok ls -> V.filter (\t -> match t with | Raw.Space -> False | _ -> True) (V.map token ls)
+  | Err _ -> []
+
+@test fun keywordsBeatNamesAndTheLongestMatchWins () =
+  assertEq
+    (kinds "let letter in inside")
+    [Raw.Let, Raw.LowerIdent "letter", Raw.In, Raw.LowerIdent "inside"]
+    "a keyword, and a name that starts with one"
+
+@test fun punctuationBeatsOperators () =
+  assertEq
+    (kinds "-> ->> :: : . .e")
+    [Raw.RArrow, Raw.OpIdent "->>", Raw.ConOpIdent "::", Raw.Colon, Raw.Period, Raw.Period, Raw.LowerIdent "e"]
+    "an arrow is not an operator, but a longer run is"
+
+@test fun aQualifiedNameIsOneToken () =
+  assertEq
+    (kinds "Nat.Z Std.List.map p.x")
+    [Raw.QualUpper "Nat.Z", Raw.QualLower "Std.List.map", Raw.LowerIdent "p", Raw.Period, Raw.LowerIdent "x"]
+    "upper-case segments, then a last one either way; a record's field is not"
+
+@test fun newlinesAndCommentsAreKept () =
+  assertEq
+    (kinds "x -- note\ny")
+    [Raw.LowerIdent "x", Raw.Comment, Raw.Newline, Raw.LowerIdent "y"]
+    "so layout can see each line, and nothing is lost"
+
+@test fun literals () =
+  let a = assertEq (kinds "42 0x2A") [Raw.Decimal "42", Raw.Hexadecimal "0x2A"] "numbers" in
+  let b = assertEq (kinds "'c'") [Raw.Char "'c'"] "a character" in
+  let c1 = assertEq (kinds "\"hi\"") [Raw.Str "\"hi\""] "a plain string" in
+  let c = assertEq (kinds "\"hi\\n\"") [Raw.Str "\"hi\\n\""] "a string with an escape, as written" in
+  assertEq (kinds "∞") [Raw.Infinity] "the infinite grade"
+
+@test fun aBadCharacterIsAnErrorAndLexingGoesOn () =
+  let a = assertEq
+    (V.map token (lexed "x ¬ y"))
+    [Ok (Raw.LowerIdent "x"), Ok Raw.Space, Err "¬", Ok Raw.Space, Ok (Raw.LowerIdent "y")]
+    "a character no token starts with" in
+  assertEq
+    (V.map token (lexed "x = \"open"))
+    [Ok (Raw.LowerIdent "x"), Ok Raw.Space, Ok Raw.Equals, Ok Raw.Space, Err "\"open"]
+    "a string never closed: as far as the machine read"

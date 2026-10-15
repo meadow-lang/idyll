@@ -1,0 +1,552 @@
+-- Layout: Idyll's offside rule, turning indentation into the braces and
+-- semicolons the grammar reads. A port of `compiler/idyllic-layout`.
+--
+-- The grammar's tokens (`Token`) are the lexer's (`Raw`), less its spaces,
+-- newlines and comments, plus the three this step inserts: a virtual `{`
+-- where a block opens, `;` where a line of it starts, and `}` where it ends.
+-- `foldToken` is the lexer `syntax!` is given: it lexes, lays out, and hands
+-- the tokens on, each with the bytes it covers. A virtual token covers none:
+-- it stands where the block's or the line's first token starts, so that the
+-- tokens stay in order, as a tree of them must be.
+--
+-- The rule, as the Rust pass has it:
+--
+-- - `where`, `of` and `with` open a block, closed by dedenting; `let` opens
+--   one that `in` also closes, and `do` one that `where` does. (So a `let`
+--   inside a `case` alternative needs braces: the `in` closes the
+--   alternative's block.) A block's column is its first token's.
+-- - A line starting at the innermost block's column is a new item of it
+--   (`;`); further right, it goes on with the line before; further left, the
+--   block has ended (`}`), and perhaps more than one.
+-- - A block written with explicit braces is left alone, and so is a sequence
+--   literal, `#[ … ]`, whose `]` closes any block opened inside it.
+-- - A block must open further right than the one it is in, except one that
+--   `where`, `of` or `with` opens with nothing further right: that is empty.
+
+use Idyll.Lex (Raw, lexed)
+use Scythe (token, start, stop)
+use Std.Collections.Vector as V
+use Std.Maybe.Maybe.*
+use Std.Result.Result.*
+
+-- The grammar's tokens: the lexer's, with what the layout step inserts.
+@pub data Token
+  = Mod
+  | Use
+  | Data
+  | Type
+  | TypeUpper
+  | Let
+  | In
+  | Where
+  | Effect
+  | Handle
+  | With
+  | Do
+  | Case
+  | Of
+  | If
+  | Then
+  | Else
+  | Inf
+  | Infinity
+  | LParen
+  | RParen
+  | LBrace
+  | RBrace
+  | LBracket
+  | RBracket
+  | Bang
+  | Hash
+  | BackSlash
+  | Colon
+  | Semi
+  | Comma
+  | Period
+  | Equals
+  | LArrow
+  | RArrow
+  | RFatArrow
+  | Bar
+  | Underscore
+  | At
+  | Binary String
+  | Octal String
+  | Hexadecimal String
+  | Decimal String
+  | Str String
+  | Char String
+  | QualUpper String
+  | QualLower String
+  | UpperIdent String
+  | LowerIdent String
+  | ConOpIdent String
+  | OpIdent String
+  | VLBrace
+  | VSemi
+  | VRBrace
+  -- what the lexer could not read, as written
+  | Error String
+
+-- The grammar's token for a lexer's one; nothing for a space, a newline or
+-- a comment.
+@pub fun fromRaw (r : Raw) : Maybe Token =
+  match r with
+  | Raw.Space -> None
+  | Raw.Newline -> None
+  | Raw.Comment -> None
+  | Raw.Mod -> Just Token.Mod
+  | Raw.Use -> Just Token.Use
+  | Raw.Data -> Just Token.Data
+  | Raw.Type -> Just Token.Type
+  | Raw.TypeUpper -> Just Token.TypeUpper
+  | Raw.Let -> Just Token.Let
+  | Raw.In -> Just Token.In
+  | Raw.Where -> Just Token.Where
+  | Raw.Effect -> Just Token.Effect
+  | Raw.Handle -> Just Token.Handle
+  | Raw.With -> Just Token.With
+  | Raw.Do -> Just Token.Do
+  | Raw.Case -> Just Token.Case
+  | Raw.Of -> Just Token.Of
+  | Raw.If -> Just Token.If
+  | Raw.Then -> Just Token.Then
+  | Raw.Else -> Just Token.Else
+  | Raw.Inf -> Just Token.Inf
+  | Raw.Infinity -> Just Token.Infinity
+  | Raw.LParen -> Just Token.LParen
+  | Raw.RParen -> Just Token.RParen
+  | Raw.LBrace -> Just Token.LBrace
+  | Raw.RBrace -> Just Token.RBrace
+  | Raw.LBracket -> Just Token.LBracket
+  | Raw.RBracket -> Just Token.RBracket
+  | Raw.Bang -> Just Token.Bang
+  | Raw.Hash -> Just Token.Hash
+  | Raw.BackSlash -> Just Token.BackSlash
+  | Raw.Colon -> Just Token.Colon
+  | Raw.Semi -> Just Token.Semi
+  | Raw.Comma -> Just Token.Comma
+  | Raw.Period -> Just Token.Period
+  | Raw.Equals -> Just Token.Equals
+  | Raw.LArrow -> Just Token.LArrow
+  | Raw.RArrow -> Just Token.RArrow
+  | Raw.RFatArrow -> Just Token.RFatArrow
+  | Raw.Bar -> Just Token.Bar
+  | Raw.Underscore -> Just Token.Underscore
+  | Raw.At -> Just Token.At
+  | Raw.Binary s -> Just (Token.Binary s)
+  | Raw.Octal s -> Just (Token.Octal s)
+  | Raw.Hexadecimal s -> Just (Token.Hexadecimal s)
+  | Raw.Decimal s -> Just (Token.Decimal s)
+  | Raw.Str s -> Just (Token.Str s)
+  | Raw.Char s -> Just (Token.Char s)
+  | Raw.QualUpper s -> Just (Token.QualUpper s)
+  | Raw.QualLower s -> Just (Token.QualLower s)
+  | Raw.UpperIdent s -> Just (Token.UpperIdent s)
+  | Raw.LowerIdent s -> Just (Token.LowerIdent s)
+  | Raw.ConOpIdent s -> Just (Token.ConOpIdent s)
+  | Raw.OpIdent s -> Just (Token.OpIdent s)
+
+-- A token as the Rust compiler's `:ir tokens` writes it: its text, and the
+-- virtual ones as «{» «;» «}».
+@pub fun shown (t : Token) : String =
+  match t with
+  | Token.Mod -> "mod"
+  | Token.Use -> "use"
+  | Token.Data -> "data"
+  | Token.Type -> "type"
+  | Token.TypeUpper -> "Type"
+  | Token.Let -> "let"
+  | Token.In -> "in"
+  | Token.Where -> "where"
+  | Token.Effect -> "effect"
+  | Token.Handle -> "handle"
+  | Token.With -> "with"
+  | Token.Do -> "do"
+  | Token.Case -> "case"
+  | Token.Of -> "of"
+  | Token.If -> "if"
+  | Token.Then -> "then"
+  | Token.Else -> "else"
+  | Token.Inf -> "inf"
+  | Token.Infinity -> "∞"
+  | Token.LParen -> "("
+  | Token.RParen -> ")"
+  | Token.LBrace -> "{"
+  | Token.RBrace -> "}"
+  | Token.LBracket -> "["
+  | Token.RBracket -> "]"
+  | Token.Bang -> "!"
+  | Token.Hash -> "#"
+  | Token.BackSlash -> "\\"
+  | Token.Colon -> ":"
+  | Token.Semi -> ";"
+  | Token.Comma -> ","
+  | Token.Period -> "."
+  | Token.Equals -> "="
+  | Token.LArrow -> "<-"
+  | Token.RArrow -> "->"
+  | Token.RFatArrow -> "=>"
+  | Token.Bar -> "|"
+  | Token.Underscore -> "_"
+  | Token.At -> "@"
+  | Token.Binary s -> s
+  | Token.Octal s -> s
+  | Token.Hexadecimal s -> s
+  | Token.Decimal s -> s
+  | Token.Str s -> s
+  | Token.Char s -> s
+  | Token.QualUpper s -> s
+  | Token.QualLower s -> s
+  | Token.UpperIdent s -> s
+  | Token.LowerIdent s -> s
+  | Token.ConOpIdent s -> s
+  | Token.OpIdent s -> s
+  | Token.VLBrace -> "«{»"
+  | Token.VSemi -> "«;»"
+  | Token.VRBrace -> "«}»"
+  | Token.Error text -> text
+
+-- A laid-out token, and the bytes it covers.
+@pub record Laid = {
+  token : Token,
+  from : Int,
+  to : Int
+}
+
+-- What laying out a source comes to: its tokens, and what was wrong, each
+-- at the byte it was found at.
+@pub record Layout = {
+  tokens : [Laid],
+  problems : [(Int, String)]
+}
+
+-- --- where each token is --------------------------------------------------------
+
+-- A token the step reads: the lexer's, the bytes it covers, and its column,
+-- counted in bytes from 1 at the start of its line.
+-- A token the lexer read, or `Err` what it could not.
+record At = {
+  raw : Result String Raw,
+  from : Int,
+  to : Int,
+  col : Int
+}
+
+-- The lexer's tokens, with their columns, less spaces and comments.
+fun located (ls : [a]) : [At] =
+  match V.foldl located1 ([], 0) ls with
+  | (ats, _) -> ats
+
+fun located1 (acc : ([At], Int)) l =
+  match acc with
+  | (ats, lineStart) ->
+      (match token l with
+       | Ok Raw.Space -> acc
+       | Ok Raw.Comment -> acc
+       | Ok Raw.Newline -> (V.pushBack ats (At { raw = Ok Raw.Newline, from = start l, to = stop l, col = 0 }), stop l)
+       | r -> (V.pushBack ats (At { raw = r, from = start l, to = stop l, col = start l - lineStart + 1 }), lineStart))
+
+fun isNewline (a : At) : Bool = match a.raw with | Ok Raw.Newline -> True | _ -> False
+
+fun isLBrace (a : At) : Bool = match a.raw with | Ok Raw.LBrace -> True | _ -> False
+
+-- --- heralds --------------------------------------------------------------------
+
+-- What closes a block, besides dedenting: `in` a `let`'s, `where` a `do`'s,
+-- and nothing a `where`'s, an `of`'s or a `with`'s.
+data Closer = ByIn | ByWhere | Never
+
+fun herald (r : Result String Raw) : Maybe Closer =
+  match r with
+  | Ok Raw.Let -> Just Closer.ByIn
+  | Ok Raw.Do -> Just Closer.ByWhere
+  | Ok Raw.Where -> Just Closer.Never
+  | Ok Raw.Of -> Just Closer.Never
+  | Ok Raw.With -> Just Closer.Never
+  | _ -> None
+
+fun byKeyword (c : Closer) : Bool = match c with | Closer.Never -> False | _ -> True
+
+fun closes (r : Result String Raw) (c : Closer) : Bool =
+  match (r, c) with
+  | (Ok Raw.In, Closer.ByIn) -> True
+  | (Ok Raw.Where, Closer.ByWhere) -> True
+  | _ -> False
+
+-- --- marking --------------------------------------------------------------------
+
+-- The tokens, with where each block opens (its column, its closer, and the
+-- byte its `{` stands at) and where each line starts (its column, and its
+-- first token's byte).
+data Mark
+  = Tok At
+  | Opens Int Closer Int
+  | Indent Int Int
+
+-- After each herald, where its block opens, at its first token's column.
+fun blocks (ts : [At]) (i : Int) (out : [Mark]) : [Mark] =
+  match V.get ts i with
+  | None -> out
+  | Just t ->
+      let out = V.pushBack out (Mark.Tok t) in
+      (match herald t.raw with
+       | None -> blocks ts (i + 1) out
+       | Just closer ->
+           let opens =
+             match V.get ts (i + 1) with
+             | None -> byKeyword closer
+             | Just n -> not (isLBrace n)
+           in
+           if not opens then blocks ts (i + 1) out
+           else
+             let j = pastNewlines ts (i + 1) in
+             (match V.get ts j with
+              | None -> blocks ts j (V.pushBack out (Mark.Opens 0 closer t.to))
+              | Just first ->
+                  let out = V.pushBack out (Mark.Opens first.col closer first.from) in
+                  -- `let`/`do` look at their block's first token again,
+                  -- which may itself be a herald; `where`/`of`/`with` take
+                  -- it as read
+                  if byKeyword closer then blocks ts j out
+                  else blocks ts (j + 1) (V.pushBack out (Mark.Tok first))))
+
+fun pastNewlines (ts : [At]) (j : Int) : Int =
+  match V.get ts j with
+  | Just t if isNewline t -> pastNewlines ts (j + 1)
+  | _ -> j
+
+-- Each newline, as where the next line starts and its column; a newline
+-- that ends the input or a blank line starts nothing.
+fun indents (ms : [Mark]) (i : Int) (out : [Mark]) : [Mark] =
+  match V.get ms i with
+  | None -> out
+  | Just (Mark.Tok t) if isNewline t ->
+      (match V.get ms (i + 1) with
+       | Just (Mark.Tok u) if not (isNewline u) ->
+           indents ms (i + 2) (V.pushBack (V.pushBack out (Mark.Indent u.col u.from)) (Mark.Tok u))
+       | _ -> indents ms (i + 1) out)
+  | Just m -> indents ms (i + 1) (V.pushBack out m)
+
+-- --- laying out -----------------------------------------------------------------
+
+-- An open block: the column its lines start at, or 0 for one written with
+-- braces (or a sequence literal's), which dedenting does not close.
+record Ctx = {
+  column : Int,
+  closer : Closer,
+  -- opened by `#[`, and closed by its `]`
+  seq : Bool,
+  -- the plain `[`s opened in it and not yet closed
+  brackets : Int
+}
+
+record State = {
+  stack : List Ctx,
+  out : [Laid],
+  problems : [(Int, String)],
+  -- where the input ends: what is still open closes there
+  finish : Int
+}
+
+fun explicit (c : Ctx) : Bool = c.column == 0
+
+fun emit (st : State) (t : Token) (at : Int) : State =
+  { st | out = V.pushBack st.out (Laid { token = t, from = at, to = at }) }
+
+fun emitTok (st : State) (a : At) : State =
+  match (match a.raw with | Ok r -> fromRaw r | Err text -> Just (Token.Error text)) with
+  | Just t -> { st | out = V.pushBack st.out (Laid { token = t, from = a.from, to = a.to }) }
+  | None -> st
+
+fun problem (st : State) (at : Int) (message : String) : State =
+  { st | problems = V.pushBack st.problems (at, message) }
+
+fun pushed (st : State) (column : Int) (closer : Closer) : State =
+  { st | stack = Ctx { column, closer, seq = False, brackets = 0 } :: st.stack }
+
+fun popped (st : State) : State =
+  match st.stack with
+  | _ :: rest -> { st | stack = rest }
+  | [;] -> st
+
+fun run (ms : [Mark]) (i : Int) (st : State) : State =
+  match V.get ms i with
+  | None -> closeAll st
+  | Just (Mark.Indent col at) -> step ms (indent st col at ms i)
+  | Just (Mark.Opens col closer at) -> step ms (open st col closer at ms i)
+  | Just (Mark.Tok t) -> step ms (tok st t ms i)
+
+fun step (ms : [Mark]) (next : (Int, State)) : State = match next with | (i, st) -> run ms i st
+
+-- Where a line starts: against the innermost block's column, a new item of
+-- it, a line going on, or the block ended -- and perhaps more than one.
+fun indent (st : State) (col : Int) (at : Int) (ms : [Mark]) (i : Int) : (Int, State) =
+  match st.stack with
+  | [;] -> (i + 1, st)
+  | ctx :: rest ->
+      if col == ctx.column then (i + 1, emit st Token.VSemi at)
+      else if col > ctx.column then (i + 1, st)
+      else
+        let closed = { (emit st Token.VRBrace at) | stack = rest } in
+        (match V.get ms (i + 1) with
+         -- the keyword that also closes the block ended belongs right after
+         -- its `}`
+         | Just (Mark.Tok t) if closes t.raw ctx.closer -> (i + 2, emitTok closed t)
+         | _ -> indent closed col at ms i)
+
+-- Where a block opens: further right than the block it is in.
+fun open (st : State) (col : Int) (closer : Closer) (at : Int) (ms : [Mark]) (i : Int) : (Int, State) =
+  match st.stack with
+  | ctx :: _ if col > ctx.column -> (i + 1, pushed (emit st Token.VLBrace at) col closer)
+  -- nothing further right: an empty block, and what follows is a new line
+  -- of the one around it -- but a `let`'s or a `do`'s must hold something
+  | _ :: _ if not (byKeyword closer) -> indent (emit (emit st Token.VLBrace at) Token.VRBrace at) col at ms i
+  | ctx :: _ ->
+      ( i + 1,
+        popped
+          (problem st at "nested layout context: expected indentation greater than ${show ctx.column}, but got ${show col}") )
+  | [;] if col > 0 -> (i + 1, pushed (emit st Token.VLBrace at) col closer)
+  | [;] -> indent (emit (emit st Token.VLBrace at) Token.VRBrace at) col at ms i
+
+fun nextTok (ms : [Mark]) (i : Int) : Maybe At =
+  match V.get ms i with
+  | Just (Mark.Tok t) -> Just t
+  | _ -> None
+
+-- Any other token: braces, brackets, the keyword closing a block, or itself.
+fun tok (st : State) (t : At) (ms : [Mark]) (i : Int) : (Int, State) =
+  match t.raw with
+  | Ok Raw.RBrace -> closeExplicit st t ms i
+  | Ok Raw.LBrace -> (i + 1, pushed (emitTok st t) 0 Closer.Never)
+  | Ok Raw.Hash ->
+      (match nextTok ms (i + 1) with
+       | Just lb if isLBracket lb ->
+           (i + 2, { (emitTok (emitTok st t) lb) | stack = Ctx { column = 0, closer = Closer.Never, seq = True, brackets = 0 } :: st.stack })
+       | _ -> (i + 1, emitTok st t))
+  | Ok Raw.LBracket -> (i + 1, emitTok (bracketOpened st) t)
+  | Ok Raw.RBracket -> (i + 1, emitTok (closeBracket st t.from) t)
+  | r ->
+      (match (herald r, nextTok ms (i + 1)) with
+       -- `let {` / `do {`: written out by hand, but its keyword still closes it
+       | (Just closer, Just lb) if byKeyword closer and isLBrace lb ->
+           (i + 2, pushed (emitTok (emitTok st t) lb) 0 closer)
+       | _ ->
+           (match st.stack with
+            | ctx :: rest if not (explicit ctx) and closes r ctx.closer ->
+                (i + 1, emitTok { (emit st Token.VRBrace t.from) | stack = rest } t)
+            | _ -> (i + 1, emitTok st t)))
+
+fun isLBracket (a : At) : Bool = match a.raw with | Ok Raw.LBracket -> True | _ -> False
+
+fun bracketOpened (st : State) : State =
+  match st.stack with
+  | top :: rest -> { st | stack = { top | brackets = top.brackets + 1 } :: rest }
+  | [;] -> st
+
+-- A `]` closes the innermost `[` still open; a sequence literal's closes the
+-- blocks opened inside it too.
+fun closeBracket (st : State) (at : Int) : State =
+  match st.stack with
+  | top :: rest if top.brackets > 0 -> { st | stack = { top | brackets = top.brackets - 1 } :: rest }
+  | _ -> closeLiteral st at
+
+-- The layout blocks above the innermost explicit one closed, and it too, if
+-- it is a sequence literal with no `[` of its own still open.
+fun closeLiteral (st : State) (at : Int) : State =
+  match literalBelow st.stack with
+  | True -> unwindLiteral st at
+  | False -> st
+
+fun literalBelow (stack : List Ctx) : Bool =
+  match stack with
+  | [;] -> False
+  | c :: rest -> if explicit c then c.seq and c.brackets == 0 else literalBelow rest
+
+fun unwindLiteral (st : State) (at : Int) : State =
+  match st.stack with
+  | c :: rest -> if explicit c then { st | stack = rest } else unwindLiteral { (emit st Token.VRBrace at) | stack = rest } at
+  | [;] -> st
+
+-- `}` closes a block written with braces; a `let {`'s closing keyword may
+-- come right after it.
+fun closeExplicit (st : State) (t : At) (ms : [Mark]) (i : Int) : (Int, State) =
+  match st.stack with
+  | ctx :: rest if explicit ctx and not (byKeyword ctx.closer) -> (i + 1, { (emitTok st t) | stack = rest })
+  | ctx :: rest if explicit ctx ->
+      (match nextTok ms (i + 1) with
+       | Just kw if closes kw.raw ctx.closer -> (i + 2, { (emitTok (emitTok st t) kw) | stack = rest })
+       | _ -> (i + 1, problem st t.from "unexpected closing brace"))
+  | _ -> (i + 1, problem st t.from "unexpected closing brace")
+
+-- At the end of the input, every layout block closes; one written with
+-- braces that never saw its `}` is a mistake, and stops it.
+fun closeAll (st : State) : State =
+  match st.stack with
+  | [;] -> st
+  | ctx :: rest ->
+      if explicit ctx then problem st st.finish "not inside a layout context at end of input"
+      else closeAll { (emit st Token.VRBrace st.finish) | stack = rest }
+
+-- --- the step -------------------------------------------------------------------
+
+-- `input` laid out: the grammar's tokens, and what was wrong.
+@pub fun layout (input : String) : Layout =
+      let ats = located (lexed input) in
+      let ms = indents (blocks ats 0 []) 0 [] in
+      let finish = match V.last ats with | Just a -> a.to | None -> 0 in
+      let first = Ctx { column = 1, closer = Closer.Never, seq = False, brackets = 0 } in
+      let st = run ms 0 (State { stack = first :: [;], out = [Laid { token = Token.VLBrace, from = 0, to = 0 }], problems = [], finish }) in
+      Layout { tokens = st.out, problems = st.problems }
+
+-- The tokens of `input`, to `f` in turn with the bytes each covers: the
+-- lexer `syntax!` reads Idyll with.
+@pub fun foldToken f acc (input : String) =
+  Ok (V.foldl (\a (t : Laid) -> f a t.token t.from t.to) acc (layout input).tokens)
+
+-- `input`'s tokens, laid out, as `:ir tokens` shows them, on one line.
+@pub fun dumped (input : String) : String =
+  V.foldl (\s (t : Laid) -> if s == "" then shown t.token else s ++ " " ++ shown t.token) "" (layout input).tokens
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+@test fun aProgramIsOneBlockOfLines () =
+  assertEq
+    (dumped "double : Int -> Int\ndouble n = n * 2\n")
+    "«{» double : Int -> Int «;» double n = n * 2 «}»"
+    "a line each, at the top block's column"
+
+@test fun whereAndOfOpenBlocksAtTheirFirstToken () =
+  assertEq
+    (dumped "effect Ask where\n  ask : () -> Int\n\nx = case y of\n  Z -> 1\n  S n -> 2\n")
+    "«{» effect Ask where «{» ask : ( ) -> Int «}» «;» x = case y of «{» Z -> 1 «;» S n -> 2 «}» «}»"
+    "a block for each, closed by the dedent"
+
+@test fun inClosesALetsBlock () =
+  assertEq
+    (dumped "let x = 1\n    y = 2\n in x + y")
+    "«{» let «{» x = 1 «;» y = 2 «}» in x + y «}»"
+    "the `in` closes the block, wherever it is"
+
+@test fun aLetOnOneLine () =
+  assertEq (dumped "let x = 1 in x") "«{» let «{» x = 1 «}» in x «}»" "and on one line"
+
+@test fun layoutIsSuspendedInASequence () =
+  assertEq
+    (dumped "xs = #[1,\n  2,\n3]\n")
+    "«{» xs = # [ 1 , 2 , 3 ] «}»"
+    "lines inside `#[ … ]` are not items"
+
+@test fun bracesAreLeftAlone () =
+  assertEq
+    (dumped "let { x = 1; y = 2 } in x")
+    "«{» let { x = 1 ; y = 2 } in x «}»"
+    "a block written out by hand"
+
+@test fun anEmptyWhereBlock () =
+  assertEq (dumped "data Void where\nx = 1\n") "«{» data Void where «{» «}» «;» x = 1 «}»" "nothing further right"
+
+@test fun aContinuationLine () =
+  assertEq (dumped "f x =\n  x + 1\n") "«{» f x = x + 1 «}»" "further right goes on with the line"

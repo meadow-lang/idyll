@@ -1,0 +1,20 @@
+[package]
+name = "Idyll"
+version = "0.1.0"
+
+# Idyll's compiler, written in Meadow with Lingua: the front end, which
+# emits Cut for Meadow's back end, and a CEK machine on Idyll's Core, which
+# is what an Idyll program means. The Rust compiler in compiler/ is the
+# reference it is checked against, pass by pass, until it takes over.
+
+[dependencies]
+Lingua = { git = "https://github.com/meadow-lang/Lingua.git", rev = "011b01323a61304209ce7db5b79c0aec3865b666" }
+Scythe = { git = "https://github.com/meadow-lang/Scythe.git", branch = "master" }
+
+# Bytecode, on the JIT, while iterating.
+[profile.debug]
+runtime = "glade"
+
+# Native, for the test suites.
+[profile.release]
+runtime = "silo"

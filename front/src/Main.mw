@@ -1,0 +1,29 @@
+-- Idyll's compiler, in Meadow.
+--
+-- Its passes, each a module, each checked against the Rust compiler in
+-- compiler/ on the same programs (`compiler/idyllic/tests/front.rs`):
+--
+--   Lex      the tokens, as the Rust lexer (`idyllic-lexer`) reads them
+--   Layout   the offside rule: virtual braces and semicolons
+--            (`idyllic-layout`)
+--
+-- Run as `Idyll <pass> <file>...`, it writes each file's dump for the pass,
+-- each after a line `== <file>`: what the differential tests compare with
+-- the Rust compiler's.
+
+use Idyll.Layout (dumped)
+use Std.Collections.Vector as V
+use Std.Result.Result.*
+use Std.Maybe.Maybe.*
+
+fun main () =
+  let args = argv () in
+  match V.get args 0 with
+  | Just "tokens" -> V.foldl (\u f -> dumpTokens f) () (V.drop args 1)
+  | _ -> writeError "usage: Idyll tokens <file>...\n"
+
+fun dumpTokens (file : String) =
+  let u = writeOutput "== ${file}\n" in
+  match readToString file with
+  | Ok text -> writeOutput "${dumped text}\n"
+  | Err e -> writeOutput "(could not read it: ${e})\n"
