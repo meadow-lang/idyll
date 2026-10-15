@@ -606,6 +606,43 @@ Work split: each session changes only its own repository.
 same answers as the back end's reference interpreter, and Meadow builds and
 passes its tests against the separated back end.
 
+## The compiler in Meadow: `front/`
+
+**Decided 2026-10-15** (Chris): Idyll's compiler is written again in Meadow,
+with [Lingua](https://github.com/meadow-lang/Lingua), as the package
+`front/`. It lowers to Cut (`docs/CUT.md` in the Meadow repository) and
+emits it, so that Meadow's Glade and Silo run what it makes. A CEK machine on
+Idyll's Core, written in Meadow, is the reference the compiler is checked
+against: what a program means is what it does there. The plan was worked
+out with the Meadow session, after MeadowBoot (Meadow's own compiler, in
+Meadow): a thin slice end to end first, then wider.
+
+Each pass is checked against the Rust compiler's on the same programs, as
+MeadowBoot's are against the Rust Meadow compiler: `front/` writes what a
+pass made as text, the Rust compiler the same, and
+`compiler/idyllic/tests/front.rs` compares them on every program of the
+corpora (`compiler/idyllic/tests/corpus/`), the prelude, and every `.idl`
+file of the repository: 791 programs.
+
+- [x] **Tokens and layout** (`Lex`, `Layout`): every program agrees, token
+  for token.
+- [x] **Parsing** (`Syntax`, a `syntax!` grammar; `Parse`, its tree read as
+  `idyllic-ast`): every program agrees, the 165 that parse and the 626 that
+  do not. The grammar is LL, so where the Rust parser backtracks it reads
+  one form for several and works out afterwards which it was.
+- [ ] Error messages compared, not only whether there is one; Nettle for
+  them.
+- [ ] Renaming, then types: simple ones first, then dependent types, case
+  trees, termination, grades and effects.
+- [ ] Core, and the CEK machine on it.
+- [ ] Cut: lowered and written out, run with `meadow cut` on Glade and Silo,
+  first on a dozen of the corpus's programs. (A shared Meadow package for
+  building Cut is coming from the Meadow repository.)
+- [ ] CI, with MeadowBoot's prerelease for the `meadow` it needs.
+
+*Done when:* `front/` compiles the corpus and the tutorial to Cut that Glade
+and Silo run with the answers the CEK machine gives.
+
 ## Not porting
 
 - **`meadow-infer`**: Idyll's bidirectional elaborator replaces Hindley–Milner

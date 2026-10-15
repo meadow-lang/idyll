@@ -6,12 +6,18 @@
 --   Lex      the tokens, as the Rust lexer (`idyllic-lexer`) reads them
 --   Layout   the offside rule: virtual braces and semicolons
 --            (`idyllic-layout`)
+--   Syntax   the grammar, and the lossless tree Lingua parses it into
+--   Parse    that tree read as the Rust parser's abstract syntax (`Ast`,
+--            `idyllic-parser`)
 --
 -- Run as `Idyll <pass> <file>...`, it writes each file's dump for the pass,
 -- each after a line `== <file>`: what the differential tests compare with
 -- the Rust compiler's.
 
 use Idyll.Layout (dumped)
+use Idyll.Syntax (parseIdyll)
+use Idyll.Parse as Parse
+use Lingua.Green (dump)
 use Std.Collections.Vector as V
 use Std.Result.Result.*
 use Std.Maybe.Maybe.*
@@ -19,11 +25,22 @@ use Std.Maybe.Maybe.*
 fun main () =
   let args = argv () in
   match V.get args 0 with
-  | Just "tokens" -> V.foldl (\u f -> dumpTokens f) () (V.drop args 1)
-  | _ -> writeError "usage: Idyll tokens <file>...\n"
+  | Just "tokens" -> V.foldl (\u f -> each f dumpTokens) () (V.drop args 1)
+  | Just "tree" -> V.foldl (\u f -> each f dumpTree) () (V.drop args 1)
+  | Just "parse" -> V.foldl (\u f -> each f Parse.dumped) () (V.drop args 1)
+  | _ -> writeError "usage: Idyll (tokens | tree | parse) <file>...\n"
 
-fun dumpTokens (file : String) =
+-- `file`'s dump, under a line naming it.
+fun each (file : String) dumpOf =
   let u = writeOutput "== ${file}\n" in
   match readToString file with
-  | Ok text -> writeOutput "${dumped text}\n"
+  | Ok text -> writeOutput "${dumpOf text}\n"
   | Err e -> writeOutput "(could not read it: ${e})\n"
+
+fun dumpTokens (text : String) : String = dumped text
+
+-- The lossless tree, drawn, after what the parser said was wrong with it.
+fun dumpTree (text : String) : String =
+  match parseIdyll text with
+  | (g, errs) ->
+      V.foldl (\s e -> match e with | (at, msg) -> s ++ "error at ${show at}: ${msg}\n") "" errs ++ dump display g

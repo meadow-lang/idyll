@@ -1,0 +1,204 @@
+-- Idyll's grammar: what Lingua makes a parser of (`syntax!`), and a lossless
+-- tree of any input, laid out (`Layout.foldToken` is its lexer).
+--
+-- The parser is an automaton worked out when this file is compiled: each
+-- choice a test of the next few tokens, nothing tried and taken back. The
+-- Rust parser (`idyllic-parser`) does take things back -- it is chumsky's --
+-- and where it does, this grammar reads one form for several, and `Parse`
+-- works out afterwards which it was, as the Rust parser would have:
+--
+-- * A declaration, a signature and an expression begin alike: an item is a
+--   term, then perhaps a `! row`, then perhaps `= e` or guards. `f x = e` is
+--   an equation, `f : a` a signature, `Z + m = m` an operator's equation,
+--   `f Nil impossible` an equation with nothing to say, and anything else
+--   the program's expression.
+-- * A pattern is read as a term -- `Cons x xs`, `x :: xs`, `(a, b)` -- and
+--   read again as the pattern it is. So the term grammar also has what only
+--   patterns say: `x@p` and `.e`.
+-- * A binder, `(x y : [2] a)`, is a term in parentheses -- names applied to
+--   each other, annotated -- and its grades the start of the annotation.
+--   `(x : a) -> b` is a dependent function because what is before its arrow
+--   is binders and nothing else.
+-- * Operators are read as chains, `a + b * c` flat; `Parse` groups them as
+--   the Rust parser's levels do.
+-- * `{ … }` in a term is one form for an effect row, a record update and an
+--   implicit binder.
+--
+-- `record` is a keyword only before a capital (`context`): it is a name
+-- anywhere else, as it is to the Rust lexer.
+
+use Lingua (syntax!)
+use Idyll.Layout (Token, foldToken)
+
+@pub syntax! {
+  pub Idyll
+  lexer Token
+  tokens {
+    "mod" = Mod,
+    "use" = Use,
+    "data" = Data,
+    "type" = Type,
+    "Type" = TypeUpper,
+    "let" = Let,
+    "in" = In,
+    "where" = Where,
+    "effect" = Effect,
+    "handle" = Handle,
+    "with" = With,
+    "do" = Do,
+    "case" = Case,
+    "of" = Of,
+    "if" = If,
+    "then" = Then,
+    "else" = Else,
+    "inf" = Inf,
+    "infinity" = Infinity,
+    "(" = LParen,
+    ")" = RParen,
+    "{" = LBrace,
+    "}" = RBrace,
+    "[" = LBracket,
+    "]" = RBracket,
+    "!" = Bang,
+    "#" = Hash,
+    "\\" = BackSlash,
+    ":" = Colon,
+    ";" = Semi,
+    "," = Comma,
+    "." = Period,
+    "=" = Equals,
+    "<-" = LArrow,
+    "->" = RArrow,
+    "=>" = RFatArrow,
+    "|" = Bar,
+    "_" = Underscore,
+    "@" = At,
+    "binary" = Binary _,
+    "octal" = Octal _,
+    "hexadecimal" = Hexadecimal _,
+    "decimal" = Decimal _,
+    "string" = Str _,
+    "char" = Char _,
+    "qual_upper" = QualUpper _,
+    "qual_lower" = QualLower _,
+    "upper" = UpperIdent _,
+    "lower" = LowerIdent _,
+    "conop" = ConOpIdent _,
+    "op" = OpIdent _,
+    "vlbrace" = VLBrace,
+    "vsemi" = VSemi,
+    "vrbrace" = VRBrace,
+    "error" = Error _
+  }
+  context {
+    "record" = LowerIdent "record" before UpperIdent _
+  }
+  grammar {
+    File = "vlbrace" entries:Entry* "vrbrace"
+    Entry = Item | Sep
+    Sep = sep:(";" | "vsemi")
+
+    -- --- items ---
+
+    Item = attrs:AttrLine* body:ItemBody
+    ItemBody = DataDecl | RecordDecl | EffectDecl | UseDecl | Line
+
+    AttrLine = "@" name:"lower" args:AttrArgs? sep:(";" | "vsemi")?
+    AttrArgs = "(" args:(AttrArg ("," AttrArg)*)? ")"
+    AttrArg = key:"lower" value:AttrValue?
+    AttrValue = "=" name:CtorName
+
+    -- an equation, a signature, or the program's expression
+    Line = lhs:Term eff:Effects? rhs:Rhs?
+    Effects = "!" row:Row
+    Rhs = Plain | Guards
+    Plain = "=" body:Term
+    Guards = guards:(Guard Guard*)
+    Guard = "|" cond:Term "=" body:Term
+
+    DataDecl = "data" name:"upper" params:Atom* kind:Kind? body:DataBody?
+    Kind = ":" ty:Term
+    DataBody = Ctors | CtorSigs
+    Ctors = "=" ctors:(Ctor ("|" Ctor)*)
+    Ctor = name:CtorName fields:Atom*
+    CtorName = PlainCtor | ParenCtor
+    PlainCtor = name:"upper"
+    ParenCtor = "(" name:("upper" | "conop") ")"
+    CtorSigs = "where" open:("{" | "vlbrace") entries:SigEntry* close:("}" | "vrbrace")
+    SigEntry = CtorSig | Sep
+    CtorSig = name:CtorName ":" ty:Term
+
+    RecordDecl = "record" name:"upper" params:Atom* "=" "{" fields:(FieldDecl ("," FieldDecl)* ","?)? "}"
+    FieldDecl = name:"lower" ":" ty:Term
+
+    EffectDecl = "effect" name:"upper" params:Atom* body:EffectBody
+    EffectBody = OpBlock | EffectAlias
+    OpBlock = "where" open:("{" | "vlbrace") entries:OpEntry* close:("}" | "vrbrace")
+    OpEntry = OpSig | Sep
+    OpSig = attr:OpAttr? name:"lower" ":" ty:Term
+    OpAttr = "@" name:"lower"
+    EffectAlias = "=" row:Row
+
+    UseDecl = "use" path:("upper" | "qual_upper") glob:"op"? alias:UseAlias? names:UseNames?
+    UseAlias = "lower" name:"upper"
+    UseNames = "(" names:(UseName ("," UseName)*)? ")"
+    UseName = name:("lower" | "upper") | "(" op:("op" | "conop") ")"
+
+    -- --- terms ---
+
+    Term = Lam | LetE | CaseE | IfE | HandleE | Op
+
+    Lam = "\\" binders:(Atom Atom*) "->" body:Term
+    LetE = "let" open:("{" | "vlbrace") entries:LetEntry* close:("}" | "vrbrace") "in" body:Term
+    LetEntry = Line | Sep
+    CaseE = "case" scrutinee:Term "of" open:("{" | "vlbrace") entries:AltEntry* close:("}" | "vrbrace")
+    AltEntry = Alt | Sep
+    Alt = pat:Chain rhs:AltRhs?
+    AltRhs = AltPlain | AltGuards
+    AltPlain = "->" body:Term
+    AltGuards = guards:(AltGuard AltGuard*)
+    AltGuard = "|" cond:Chain "->" body:Term
+    IfE = "if" cond:Term "then" yes:Term "else" no:Term
+    HandleE = "handle" body:Term "with" open:("{" | "vlbrace") entries:ClauseEntry* close:("}" | "vrbrace")
+    ClauseEntry = Clause | Sep
+    Clause = op:"lower" params:ClauseParam* "->" body:Term
+    ClauseParam = name:("lower" | "_")
+
+    -- a chain of operators, then perhaps an annotation or an arrow
+    Op = chain:Chain tail:OpTail?
+    OpTail = Annot | Arrow
+    Annot = ":" ty:Term
+    Arrow = "->" result:Term eff:Effects?
+    Chain = first:App links:Link*
+    Link = op:("op" | "conop") operand:App
+    App = atoms:(Atom Atom*)
+
+    Atom = Name | Number | StrLit | CharLit | Hole | TypeA | InfA | OpName | Paren | BoxA | SeqA
+      | Braced | RecordLit | DotA
+    -- `x@p`, a pattern's, is a name with a pattern after it
+    Name = name:("lower" | "upper" | "qual_upper" | "qual_lower") as:AsTail?
+    AsTail = "@" pat:Atom
+    Number = value:("decimal" | "hexadecimal" | "octal" | "binary")
+    StrLit = "string"
+    CharLit = "char"
+    Hole = "_"
+    TypeA = "Type"
+    InfA = "infinity"
+    OpName = "(" op:("op" | "conop") ")"
+    Paren = "(" items:(Term ("," Term)*)? ")"
+    BoxA = "[" inner:Term? "]"
+    SeqA = "#" "[" first:Term? rest:SeqRest* "]"
+    SeqRest = sep:("," | ";") item:Term?
+    Braced = "{" items:(Term ("," Term)*) rest:BraceRest? "}"
+    BraceRest = "|" (fields:FieldVals | tail:Term)
+    FieldVals = fields:(FieldVal ("," FieldVal)* ","?)
+    FieldVal = name:"lower" "=" value:Term
+    RecordLit = name:("upper" | "qual_upper") "{" fields:FieldVals? "}"
+    DotA = "." target:Atom
+
+    -- an effect row: `{Log, Div | e}`, or one effect, `State Int` (a braced
+    -- one is an atom of its own), or none, `{}`
+    Row = EmptyRow | App
+    EmptyRow = "{" "}"
+  }
+}

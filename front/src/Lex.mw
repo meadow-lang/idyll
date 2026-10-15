@@ -87,8 +87,16 @@ fun lexedFrom (input : String) (at : Int) (sofar : [Lexed (Result String Raw)]) 
   | Ok (Just l) -> lexedFrom input (stop l) (V.pushBack sofar (Lexed (Ok (token l)) (start l) (stop l)))
   | Err _ ->
       let reached = reachRaw input at in
-      let upto = if reached > at then reached else at + charWidth input at in
+      let upto = if reached > at then boundary input reached else at + charWidth input at in
       lexedFrom input upto (V.pushBack sofar (Lexed (Err (stringSlice input at upto)) at upto))
+
+-- The first character boundary from byte `at` on: where the machine stopped
+-- may be inside a character.
+fun boundary (input : String) (at : Int) : Int =
+  if at >= stringByteLength input then at
+  else
+    let b = toInt (stringByteAt input at) in
+    if b >= 128 and b < 192 then boundary input (at + 1) else at
 
 -- The bytes of the character starting at byte `at`, by its first byte.
 fun charWidth (input : String) (at : Int) : Int =
