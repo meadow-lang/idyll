@@ -1,0 +1,987 @@
+-- Name resolution: the parser's tree (`Ast`) to the renamed one (`Hir`), as
+-- `compiler/idyllic-rename` does it, for a module and the prelude.
+--
+-- * Every name a use refers to is resolved to the unique its binder was
+--   given; every binder gets a fresh one, with lexical scoping (a binder's
+--   annotation does not see the name it binds; a group of declarations is
+--   recursive).
+-- * Signatures are paired with their equations. One equation of variables
+--   is a lambda; anything else is a `Match` of the equations.
+-- * The lower-case names a signature mentions that nothing binds are bound
+--   in front of it, implicitly: `Vec n a -> a` is `{n} {a} -> Vec n a -> a`.
+-- * Records are taken apart: a literal is its constructor applied to the
+--   fields in order, `e.x` the one record in scope with an `x`'s
+--   projection, an update a `case` that builds it again.
+-- * Sequence literals and patterns are taken apart into `SeqCons`/`SeqNil`.
+--
+-- One thing it does differently: a name brought into a module by more than
+-- one `use`, or by a `use` and the module itself, keeps every unique it
+-- could stand for, for the checker to choose between by type (ROADMAP,
+-- phase 3). The Rust renamer lets the last `use` win.
+--
+-- What is wrong is collected (`problems`), not said, for now: the rename test
+-- compares only whether there was anything.
+
+use Idyll.Ast (Icit, Grade, Literal, Term, Param, Pat, Rhs, Alt, Clause, Decl, Ctor, Data, OpSig, Effect, Use, Program)
+use Idyll.Hir (Ident, Pattern, Bind, Group, CtorShape, CtorDecl, DataDecl, OpDecl, EffectDecl, NativeDecl, HandleClause, Module)
+use Idyll.Hir as H
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as Hm
+use Std.Collections.HashMap (HashMap)
+use Std.String as S
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+use Std.Sort (sortOn)
+
+-- A scope: each name, with the uniques it may stand for (a binder's, one).
+type Scope = HashMap String [Int]
+
+record Rn = {
+  -- innermost last; the first is the builtins'
+  scopes : Ref [Scope],
+  -- where the module's own scope is, once one is entered: the one under it
+  -- is what its `use`s bring, and the two are one layer
+  ownAt : Ref Int,
+  next : Ref Int,
+  problems : Ref [String],
+  -- each data type's constructors, by its unique
+  ctors : Ref (HashMap Int [(String, Int)]),
+  typeNames : Ref (HashMap Int String),
+  -- a type whose constructor has its name, and that constructor
+  twins : Ref (HashMap Int Int),
+  -- each record's fields, by its type's unique: each one's projection
+  fields : Ref (HashMap Int [(String, Int)]),
+  effectOps : Ref (HashMap Int [(String, Int)]),
+  terminating : Ref [Int],
+  -- whether the module is linear: an unannotated binder is `[1]`
+  linear : Ref Bool,
+  -- whether what is being renamed is a type
+  inType : Ref Bool,
+  -- the scopes under the module's: the builtins' and the prelude's
+  base : Ref [Scope],
+  -- `use M as C`
+  aliases : Ref (HashMap String Int),
+  -- what the module gives, for `use Main (x)`
+  exports : Ref (HashMap String Int)
+}
+
+-- The package a lone module is the root of.
+def package = "Main"
+
+-- The builtins and the primitive operations, as `idyllic-builtins` reserves
+-- them: the uniques below the program's.
+def builtins : [String] =
+  ["Unit", "Int", "Bool", "String", "Grade", "Effect", "Div", "+", "*", "-", "<", "==", "/", "%", "++"]
+
+fun new () =
+  let global = V.foldl (\m i -> Hm.insert (V.getOr "" builtins i) [i] m) Hm.empty (V.range 0 (V.len builtins)) in
+  Rn {
+    scopes = newRef [global],
+    ownAt = newRef (0 - 1),
+    next = newRef (V.len builtins),
+    problems = newRef [],
+    ctors = newRef Hm.empty,
+    typeNames = newRef Hm.empty,
+    twins = newRef Hm.empty,
+    fields = newRef Hm.empty,
+    effectOps = newRef Hm.empty,
+    terminating = newRef [],
+    linear = newRef False,
+    inType = newRef False,
+    base = newRef [],
+    aliases = newRef Hm.empty,
+    exports = newRef Hm.empty
+  }
+
+fun bad (r : Rn) (why : String) = setRef r.problems (V.pushBack (getRef r.problems) why)
+
+fun fresh (r : Rn) =
+  let u = getRef r.next in
+  let w = setRef r.next (u + 1) in
+  u
+
+fun distinct (us : [Int]) : [Int] = V.foldl (\acc u -> if V.elem u acc then acc else V.pushBack acc u) [] us
+
+-- Change the innermost scope.
+fun onTop (r : Rn) f =
+  let scopes = getRef r.scopes in
+  setRef r.scopes (V.pushBack (V.popBack scopes) (f (M.unwrapOr Hm.empty (V.last scopes))))
+
+-- Run `f` in a fresh innermost scope.
+fun scoped (r : Rn) f =
+  let w = setRef r.scopes (V.pushBack (getRef r.scopes) Hm.empty) in
+  let x = f () in
+  let v = setRef r.scopes (V.popBack (getRef r.scopes)) in
+  x
+
+-- Rename what `f` renames as a type, or as a term.
+fun withType (r : Rn) (on : Bool) f =
+  let outer = getRef r.inType in
+  let w = setRef r.inType on in
+  let x = f () in
+  let v = setRef r.inType outer in
+  x
+
+fun asType (r : Rn) f = withType r True f
+
+fun asTerm (r : Rn) f = withType r False f
+
+-- Bind `name` in the innermost scope; a second binding of a name in one
+-- scope is a duplicate. `_` binds a slot nothing can refer to.
+fun bindName (r : Rn) (name : String) =
+  let u = fresh r in
+  if name == "_" then Ident.Ident [u] name
+  else
+    let top = M.unwrapOr Hm.empty (V.last (getRef r.scopes)) in
+    let w = if Hm.member name top then bad r "duplicate binding of ${name}" else () in
+    let v = onTop r (\s -> Hm.insert name [u] s) in
+    Ident.Ident [u] name
+
+-- What `name` may stand for here: the innermost scope that has it. The
+-- module's own names and what its `use`s bring are one layer.
+fun lookup (r : Rn) (name : String) : [Int] ! { Mut | e } =
+  let scopes = getRef r.scopes in
+  let own = getRef r.ownAt in
+  let at = V.find (\i -> Hm.member name (V.getOr Hm.empty scopes i)) (V.reverse (V.range 0 (V.len scopes))) in
+  match at with
+  | None -> []
+  | Just i ->
+      let found = Hm.getOr [] name (V.getOr Hm.empty scopes i) in
+      if i == own and own > 0 then distinct (V.append found (Hm.getOr [] name (V.getOr Hm.empty scopes (own - 1))))
+      else found
+
+fun known (r : Rn) (name : String) : Bool ! { Mut | e } = not (V.isEmpty (lookup r name))
+
+-- What a name that found `u` stands for: a type and the constructor of its
+-- name are one name, the type in a type and the constructor elsewhere.
+fun asWritten (r : Rn) (u : Int) : Int ! { Mut | e } =
+  let twins = getRef r.twins in
+  let pair =
+    match Hm.lookup u twins with
+    | Just c -> Just (u, c)
+    | None -> V.find (\p -> snd p == u) (Hm.toVec twins)
+  in
+  match pair with
+  | Just (t, c) -> if getRef r.inType then t else c
+  | None -> u
+
+fun noteTwin (r : Rn) (ty : Int) =
+  let name = Hm.getOr "" ty (getRef r.typeNames) in
+  match V.find (\c -> fst c == name) (Hm.getOr [] ty (getRef r.ctors)) with
+  | Just (_, c) -> setRef r.twins (Hm.insert ty c (getRef r.twins))
+  | None -> ()
+
+-- A use of `name`.
+fun useName (r : Rn) (name : String) =
+  if name == "(,)" then tuple r
+  else if S.contains "." name and stringByteLength name > 1 then useQualified r name
+  else
+    let found = lookup r name in
+    let w =
+      if V.isEmpty found then
+        if V.isEmpty (constructorTypes r name) then bad r "name not in scope: ${name}"
+        else bad r "a constructor lives under its type: ${name}"
+      else ()
+    in
+    Ident.Ident (V.map (asWritten r) found) name
+
+-- The prelude's `Pair`, which a tuple is made of.
+fun tuple (r : Rn) =
+  let found = V.find (\s -> Hm.member "Pair" s) (V.reverse (getRef r.base)) in
+  match found with
+  | Just s -> Ident.Ident (V.map (asWritten r) (Hm.getOr [] "Pair" s)) "Pair"
+  | None ->
+      let w = bad r "name not in scope: Pair" in
+      Ident.Ident [] "Pair"
+
+-- The types in scope with a constructor of this name.
+fun constructorTypes (r : Rn) (name : String) : [String] ! { Mut | e } =
+  V.concatMap
+    (\entry ->
+      match entry with
+      | (d, cs) ->
+          if V.any (\c -> fst c == name) cs then
+            match Hm.lookup d (getRef r.typeNames) with
+            | Just t -> if V.elem d (lookup r t) then [t] else []
+            | None -> []
+          else [])
+    (Hm.toVec (getRef r.ctors))
+
+-- What a dotted path names.
+data Target = Module Int | Name Int
+
+-- What a dotted path names: a module, or a name in one or in scope, then a
+-- type's constructor or a record's field.
+fun resolvePath (r : Rn) (segments : [String]) : Maybe Target ! { Mut | e } =
+  let first = V.getOr "" segments 0 in
+  let start =
+    match Hm.lookup first (getRef r.aliases) with
+    | Just m -> Just (Target.Module m)
+    | None ->
+        (match V.head (lookup r first) with
+         | Just u -> Just (Target.Name u)
+         | None ->
+             if first == package and getRef r.ownAt > 0 then Just (Target.Module 0)
+             else
+               let w = bad r "no module or type ${first}" in
+               None)
+  in
+  V.foldl
+    (\at seg ->
+      match at with
+      | None -> None
+      | Just (Target.Module m) ->
+          (match Hm.lookup seg (getRef r.exports) with
+           | Just u -> Just (Target.Name u)
+           | None ->
+               let w = bad r "${package} has no ${seg}" in
+               None)
+      | Just (Target.Name u) ->
+          (match Hm.lookup u (getRef r.ctors) with
+           | None ->
+               let w = bad r "${seg}: not something with constructors" in
+               None
+           | Just cs ->
+               (match V.find (\c -> fst c == seg) cs with
+                | Just (_, c) -> Just (Target.Name c)
+                | None ->
+                    (match V.find (\f -> fst f == seg) (Hm.getOr [] u (getRef r.fields)) with
+                     | Just (_, p) -> Just (Target.Name p)
+                     | None ->
+                         let w = bad r "no constructor ${seg}" in
+                         None))))
+    start
+    (V.drop segments 1)
+
+-- `Nat.Z`, `Main.double`: a name, from wherever its path says.
+fun useQualified (r : Rn) (name : String) =
+  let segments = S.split "." name in
+  let last = M.unwrapOr "" (V.last segments) in
+  match resolvePath r segments with
+  | Just (Target.Name u) -> Ident.Ident [u] last
+  | Just (Target.Module _) ->
+      let w = bad r "${name} is a module" in
+      Ident.Ident [] last
+  | None -> Ident.Ident [] last
+
+-- Bring a name into the module's scope from elsewhere (naming an effect
+-- brings its operations): beside what is there already, not over it.
+fun import (r : Rn) (name : String) (unique : Int) =
+  let ops = Hm.getOr [] unique (getRef r.effectOps) in
+  let scopes = getRef r.scopes in
+  let at = V.len scopes - 2 in
+  let imports =
+    V.foldl
+      (\s p -> match p with | (x, u) -> Hm.insert x (distinct (V.append (Hm.getOr [] x s) [u])) s)
+      (V.getOr Hm.empty scopes at)
+      (V.append [(name, unique)] ops)
+  in
+  setRef r.scopes (V.set scopes at imports)
+
+-- `use M`, `use M (a, b)`, `use T.*`, `use T (C)`.
+fun renameUse (r : Rn) (u : Use) =
+  match resolvePath r u.path with
+  | None -> ()
+  | Just (Target.Module m) ->
+      let v = match u.alias with | Just a -> setRef r.aliases (Hm.insert a m (getRef r.aliases)) | None -> () in
+      let wanted =
+        match u.names with
+        | Just ns -> ns
+        | None -> if M.isNone u.alias or u.glob then V.map fst (sortOn fst (Hm.toVec (getRef r.exports))) else []
+      in
+      V.foldl
+        (\acc x ->
+          match Hm.lookup x (getRef r.exports) with
+          | Just e -> import r x e
+          | None -> bad r "${package} has no ${x}")
+        ()
+        wanted
+  | Just (Target.Name t) ->
+      let last = M.unwrapOr "" (V.last u.path) in
+      match Hm.lookup t (getRef r.ctors) with
+      | None -> if u.glob or M.isSome u.names then bad r "${last} has no constructors to bring" else import r last t
+      | Just cs ->
+          if M.isSome u.alias then bad r "only a module takes an alias"
+          else
+            let wanted =
+              if u.glob then V.map fst cs
+              else
+                match u.names with
+                | Just ns -> ns
+                | None ->
+                    let w = if V.len u.path > 1 then import r last t else () in
+                    []
+            in
+            V.foldl
+              (\acc x ->
+                match V.find (\c -> fst c == x) cs with
+                | Just (_, c) -> import r x c
+                | None -> bad r "no constructor ${x}")
+              ()
+              wanted
+
+-- --- records -----------------------------------------------------------------
+
+-- A record type's fields, in order, by the name it is written with.
+fun recordNamed (r : Rn) (name : String) (report : Bool) : Maybe [String] ! { Mut | e } =
+  let ty = asType r (\u -> useName r name) in
+  let fs = M.andThen (\u -> Hm.lookup u (getRef r.fields)) (V.head (identUniques ty)) in
+  match fs with
+  | Just f -> Just (V.map fst f)
+  | None ->
+      let w = if report and not (V.isEmpty (identUniques ty)) then bad r "${name} is not a record" else () in
+      None
+
+fun identUniques (x : Ident) : [Int] = match x with | Ident.Ident us _ -> us
+
+-- What is given for each field, in the order the fields are declared.
+fun inFieldOrder (r : Rn) (recordName : String) (fields : [String]) (given : [(String, a)]) (report : Bool) : [Maybe a] ! { Mut | e } =
+  let u =
+    if report then
+      V.foldl
+        (\acc i ->
+          match V.get given i with
+          | Just (f, _) ->
+              if not (V.elem f fields) then bad r "${recordName} has no field ${f}"
+              else if V.any (\g -> fst g == f) (V.take given i) then bad r "the field ${f} is given twice"
+              else ()
+          | None -> ())
+        ()
+        (V.range 0 (V.len given))
+    else ()
+  in
+  V.map (\f -> M.map snd (V.find (\g -> fst g == f) given)) fields
+
+-- `Point { x = 1, y = 2 }`: the constructor, given each field in order.
+fun recordLiteral (r : Rn) (name : String) (values : [(String, Term)]) : Maybe Term ! { Mut | e } =
+  match recordNamed r name True with
+  | None -> None
+  | Just fields ->
+      let ordered = inFieldOrder r name fields values True in
+      if V.any M.isNone ordered then
+        let w = bad r "${name} is built with every one of its fields" in
+        None
+      else Just (V.foldl (\f v -> match v with | Just e -> Term.App f e | None -> f) (Term.Var name) ordered)
+
+-- `Point { x = p }`: the constructor's pattern, `_` for a field not named.
+fun recordPattern (r : Rn) (name : String) (given : [(String, Pat)]) (report : Bool) : Maybe Pat ! { Mut | e } =
+  match recordNamed r name report with
+  | None -> None
+  | Just fields -> Just (Pat.Con name (V.map (\p -> M.unwrapOr Pat.Wild p) (inFieldOrder r name fields given report)))
+
+-- The records in scope with each of `wanted`'s fields, by name.
+fun recordsWith (r : Rn) (wanted : [String]) : [(String, [String])] ! { Mut | e } =
+  sortOn
+    fst
+    (V.concatMap
+       (\entry ->
+         match entry with
+         | (t, fs) ->
+             if V.all (\w -> V.any (\f -> fst f == w) fs) wanted then
+               match Hm.lookup t (getRef r.typeNames) with
+               | Just n -> if V.elem t (lookup r n) then [(n, V.map fst fs)] else []
+               | None -> []
+             else [])
+       (Hm.toVec (getRef r.fields)))
+
+fun theRecordWith (r : Rn) (wanted : [String]) : Maybe (String, [String]) ! { Mut | e } =
+  let found = recordsWith r wanted in
+  if V.len found == 1 then V.head found
+  else
+    let w =
+      if V.isEmpty found then bad r "no record in scope has ${S.join ", " wanted}"
+      else bad r "several records have ${S.join ", " wanted}"
+    in
+    None
+
+-- `e.x`: the projection of the one record in scope with an `x`.
+fun projection (r : Rn) (e : Term) (field : String) : Maybe Term ! { Mut | e } =
+  M.map (\rf -> match rf with | (recName, _) -> Term.App (Term.Var "${recName}.${field}") e) (theRecordWith r [field])
+
+-- `{ e | x = v }`: `e` taken apart and built again, with `v` for `x`.
+fun recordUpdate (r : Rn) (e : Term) (values : [(String, Term)]) : Maybe Term ! { Mut | e } =
+  match theRecordWith r (V.map fst values) with
+  | None -> None
+  | Just (recName, fields) ->
+      let ordered = inFieldOrder r recName fields values True in
+      let kept = \f -> "#" ++ f in
+      let pats =
+        V.map
+          (\i ->
+            match V.get ordered i with
+            | Just (Just _) -> Pat.Wild
+            | _ -> Pat.Bind (Param.Param (kept (V.getOr "" fields i)) False None None))
+          (V.range 0 (V.len fields))
+      in
+      let rebuilt =
+        V.foldl
+          (\acc i ->
+            let value = match V.get ordered i with | Just (Just v) -> v | _ -> Term.Var (kept (V.getOr "" fields i)) in
+            Term.App acc value)
+          (Term.Var recName)
+          (V.range 0 (V.len fields))
+      in
+      Just (Term.Case e [Alt.Alt (Pat.Con recName pats) (Rhs.Plain rebuilt)])
+
+-- --- terms -------------------------------------------------------------------
+
+fun renameGrades (r : Rn) (g : Grade) =
+  match g with
+  | Grade.Grade s t -> H.grade (renameTerm r s) (M.map (\x -> renameTerm r x) t)
+
+fun gradeOne () = H.grade (H.lit (Literal.Int 1)) None
+
+fun unresolved () = H.var (Ident.Ident [] "_")
+
+fun renameTerm (r : Rn) (t : Term) =
+  match t with
+  | Term.Type -> H.universe ()
+  | Term.Hole -> H.hole ()
+  | Term.Inf -> H.inf ()
+  | Term.Lit l -> H.lit l
+  -- `otherwise` is `True`, unless something else is called that
+  | Term.Var x -> if x == "otherwise" and not (known r x) then H.lit (Literal.Bool True) else H.var (useName r x)
+  | Term.App f a ->
+      let f2 = renameTerm r f in
+      H.app f2 (renameTerm r a)
+  | Term.Ann e ty ->
+      let e2 = renameTerm r e in
+      H.ann e2 (asType r (\u -> renameTerm r ty))
+  | Term.Range a b ->
+      let a2 = renameTerm r a in
+      H.range a2 (renameTerm r b)
+  | Term.Eff b e ->
+      let b2 = renameTerm r b in
+      H.eff b2 (renameTerm r e)
+  | Term.Row ls tail ->
+      let ls2 = V.map (\l -> renameTerm r l) ls in
+      H.row ls2 (M.map (\x -> renameTerm r x) tail)
+  | Term.Handle body clauses ->
+      let body2 = renameTerm r body in
+      H.handled
+        body2
+        (V.map
+           (\c ->
+             match c with
+             | Clause.Clause op xs e ->
+                 -- `return` is not a name
+                 let op2 = if op != "return" then Just (useName r op) else None in
+                 scoped r (\u ->
+                   let params = V.map (\x -> bindName r x) xs in
+                   HandleClause.HandleClause op2 params (renameTerm r e)))
+           clauses)
+  | Term.Pi x icit g dom cod ->
+      -- neither the domain nor the grades see the name bound
+      let grade =
+        match g with
+        | Just gr -> Just (renameGrades r gr)
+        | None -> if getRef r.linear and icit == Icit.Explicit then Just (gradeOne ()) else None
+      in
+      let dom2 = asType r (\u -> renameTerm r dom) in
+      scoped r (\u ->
+        let x2 = M.map (\n -> bindName r n) x in
+        H.pi x2 icit grade dom2 (asType r (\v -> renameTerm r cod)))
+  | Term.Lam p body ->
+      scoped r (\u ->
+        let bp = bindParam r p in
+        wrapParam r bp (renameTerm r body))
+  | Term.BoxIntro e -> H.boxed (renameTerm r e)
+  | Term.LetBox x e body ->
+      let e2 = renameTerm r e in
+      scoped r (\u ->
+        let x2 = bindName r x in
+        H.letBox x2 e2 (renameTerm r body))
+  | Term.Let ds body ->
+      scoped r (\u ->
+        let bs = renameDecls r ds in
+        H.letIn [Group.Rec bs] (renameTerm r body))
+  | Term.ArrayLit es -> H.arrayLit (V.map (\e -> renameTerm r e) es)
+  | Term.RecordLit name values ->
+      (match recordLiteral r name values with
+       | Just built -> renameTerm r built
+       | None -> unresolved ())
+  | Term.Proj e f ->
+      (match projection r e f with
+       | Just read -> renameTerm r read
+       | None -> unresolved ())
+  | Term.Update e values ->
+      (match recordUpdate r e values with
+       | Just rebuilt -> renameTerm r rebuilt
+       | None -> unresolved ())
+  | Term.Seq es ->
+      let items = V.map (\e -> renameTerm r e) es in
+      V.foldr (\h tl -> H.seqCons h tl) (H.seqNil ()) items
+  | Term.Case e alts ->
+      let e2 = renameTerm r e in
+      H.caseOf e2 (V.map (\a -> match a with | Alt.Alt p rhs -> renameClause r [p] None rhs) alts)
+
+-- A signature: the lower-case names it mentions that nothing binds are bound
+-- in front of it, implicitly, in order of appearance, their types left to
+-- the checker.
+fun renameSig (r : Rn) (ty : Term) =
+  let free = freeVars ty [] (\x -> known r x) [] in
+  scoped r (\u ->
+    let bound = V.map (\x -> bindName r x) free in
+    let body = asType r (\v -> renameTerm r ty) in
+    V.foldr (\x acc -> H.pi (Just x) Icit.Implicit None (H.omitted ()) acc) body bound)
+
+-- One equation or alternative: its patterns bind names for the rest of it,
+-- all of them before any `.e` is renamed; then the right-hand side, under a
+-- result type if one was written.
+fun renameClause (r : Rn) (pats : [Pat]) (resultTy : Maybe Term) (rhs : Rhs) =
+  scoped r (\u ->
+    let names = newRef [] in
+    let v = V.foldl (\acc p -> bindPattern r p names) () pats in
+    let pats2 = V.map (\p -> renamePattern r p names) pats in
+    let annotate =
+      \e ->
+        let body = renameTerm r e in
+        match resultTy with
+        | Just ty -> H.ann body (asType r (\w -> renameTerm r ty))
+        | None -> body
+    in
+    let rhs2 =
+      match rhs with
+      | Rhs.Plain e -> H.plain (annotate e)
+      | Rhs.Guarded gs ->
+          H.guarded
+            (V.map
+               (\g ->
+                 match g with
+                 | (c, e) ->
+                     let c2 = renameTerm r c in
+                     (c2, annotate e))
+               gs)
+      | Rhs.Impossible -> H.impossible ()
+    in
+    H.clause pats2 rhs2)
+
+-- Bind a pattern's names, in order, onto `names`.
+fun bindPattern (r : Rn) (p : Pat) (names : Ref [Ident]) =
+  match p with
+  | Pat.Bind (Param.Param x _ _ _) -> setRef names (V.pushBack (getRef names) (bindName r x))
+  | Pat.As x q ->
+      let w = setRef names (V.pushBack (getRef names) (bindName r x)) in
+      bindPattern r q names
+  | Pat.Con _ ps -> V.foldl (\acc q -> bindPattern r q names) () ps
+  | Pat.Seq ps -> V.foldl (\acc q -> bindPattern r q names) () ps
+  | Pat.Record name fs ->
+      (match recordPattern r name fs False with
+       | Just d -> bindPattern r d names
+       | None -> ())
+  | _ -> ()
+
+-- The next of the names `bindPattern` bound.
+fun nextName (names : Ref [Ident]) =
+  let ns = getRef names in
+  let w = setRef names (V.drop ns 1) in
+  M.unwrapOr (Ident.Ident [] "_") (V.head ns)
+
+-- A pattern, taking the names `bindPattern` bound for it.
+fun renamePattern (r : Rn) (p : Pat) (names : Ref [Ident]) =
+  match p with
+  | Pat.Bind (Param.Param _ unbox g ty) ->
+      let w = if unbox or M.isSome g or M.isSome ty then bad r "this pattern needs a single equation of variables" else () in
+      Pattern.Var (nextName names)
+  | Pat.As _ q ->
+      let x = nextName names in
+      Pattern.As x (renamePattern r q names)
+  | Pat.Con c ps ->
+      let c2 = asTerm r (\u -> useName r c) in
+      Pattern.Con c2 (V.map (\q -> renamePattern r q names) ps)
+  | Pat.Record name fs ->
+      (match recordPattern r name fs True with
+       | Just d -> renamePattern r d names
+       | None -> Pattern.Wild)
+  | Pat.Wild -> Pattern.Wild
+  | Pat.Lit l -> Pattern.Lit l
+  | Pat.Dot e -> Pattern.Dot (asTerm r (\u -> renameTerm r e))
+  | Pat.Seq ps ->
+      let items = V.map (\q -> renamePattern r q names) ps in
+      V.foldr (\h tl -> Pattern.SeqCons h tl) Pattern.SeqNil items
+
+-- --- declarations ------------------------------------------------------------
+
+-- Each data type's name, and its constructors' under it.
+fun bindDatas (r : Rn) (datas : [Data]) =
+  V.map
+    (\(d : Data) ->
+      let name = bindName r d.name in
+      let cs =
+        V.foldl
+          (\acc c ->
+            match c with
+            | (cname, _) ->
+                let w = if V.any (\x -> fst x == cname) acc then bad r "duplicate binding of ${cname}" else () in
+                V.pushBack acc (cname, fresh r))
+          []
+          d.ctors
+      in
+      let u = H.uniqueOf name in
+      let w1 = setRef r.ctors (Hm.insert u cs (getRef r.ctors)) in
+      let w2 = setRef r.typeNames (Hm.insert u d.name (getRef r.typeNames)) in
+      let w3 = noteTwin r u in
+      (name, V.map (\c -> match c with | (x, cu) -> Ident.Ident [cu] x) cs))
+    datas
+
+-- A data type's or an effect's parameters: each kind may mention the
+-- parameters before it.
+fun typeParams (r : Rn) (ps : [(String, Maybe Term)]) =
+  V.map
+    (\p ->
+      match p with
+      | (x, k) ->
+          let k2 = M.map (\t -> asType r (\u -> renameTerm r t)) k in
+          (bindName r x, k2))
+    ps
+
+fun renameDatas (r : Rn) (datas : [Data]) (names : [(Ident, [Ident])]) =
+  V.map
+    (\pair ->
+      match pair with
+      | ((d : Data), (name, ctorNames)) ->
+          scoped r (\u ->
+            let params = typeParams r d.params in
+            let kind = M.map (\k -> asType r (\v -> renameTerm r k)) d.kind in
+            let ctors =
+              V.map
+                (\j ->
+                  let cname = V.getOr (Ident.Ident [] "_") ctorNames j in
+                  match V.get d.ctors j with
+                  | Just (_, Ctor.Fields ts) -> CtorDecl.CtorDecl cname (CtorShape.Fields (V.map (\t -> asType r (\v -> renameTerm r t)) ts))
+                  | Just (_, Ctor.Sig ty) -> CtorDecl.CtorDecl cname (CtorShape.Sig (renameSig r ty))
+                  | None -> CtorDecl.CtorDecl cname (CtorShape.Fields []))
+                (V.range 0 (V.len d.ctors))
+            in
+            let own =
+              \c ->
+                match V.find (\x -> fst x == c) (Hm.getOr [] (H.uniqueOf name) (getRef r.ctors)) with
+                | Just (_, cu) -> Ident.Ident [cu] c
+                | None ->
+                    let w = bad r "${d.name} has no constructor ${c}" in
+                    Ident.Ident [] c
+            in
+            let seq = M.map (\s -> match s with | (nil, cons) -> (own nil, own cons)) d.seq in
+            DataDecl { name, params, kind, ctors, seq, linear = getRef r.linear }))
+    (V.zip datas names)
+
+fun renameEffect (r : Rn) (e : Effect) (names : (Ident, [Ident])) =
+  match names with
+  | (name, opNames) ->
+      scoped r (\u ->
+        let params = typeParams r e.params in
+        let ops =
+          V.map
+            (\j ->
+              match V.get e.ops j with
+              | Just (OpSig.OpSig _ ty many) -> OpDecl.OpDecl (V.getOr (Ident.Ident [] "_") opNames j) (renameSig r ty) many
+              | None -> OpDecl.OpDecl (Ident.Ident [] "_") (H.hole ()) False)
+            (V.range 0 (V.len e.ops))
+        in
+        EffectDecl { name, params, ops })
+
+-- A binder, its name bound in the innermost scope after its annotation is
+-- renamed. An unboxing one, `[x]`, also has the box it receives, which
+-- nothing can name.
+data BoundParam g t = BoundParam Ident (Maybe Ident) (Maybe g) (Maybe t)
+
+fun bindParam (r : Rn) (p : Param) =
+  match p with
+  | Param.Param x unbox g ty ->
+      let grade = M.map (\gr -> renameGrades r gr) g in
+      let ty2 = M.map (\t -> asType r (\u -> renameTerm r t)) ty in
+      let name = bindName r x in
+      let boxed = if unbox then Just (Ident.Ident [fresh r] x) else None in
+      BoundParam.BoundParam name boxed grade ty2
+
+-- `\x -> body`, or `\[x] -> body`, which is `\b -> let [x] = b in body`.
+fun wrapParam (r : Rn) p body =
+  match p with
+  | BoundParam.BoundParam name boxed grade ty ->
+      (match boxed with
+       | None -> H.lam name grade ty body
+       | Just b -> H.lam b None None (H.letBox name (H.var b) body))
+
+-- A definition: its equations, its name bound, and its signature.
+record Def = {
+  eqs : [Decl],
+  name : Ident,
+  sig : Maybe Term
+}
+
+fun renameDecls (r : Rn) (ds : [Decl]) = renameDefs r (bindDecls r ds)
+
+-- Pair signatures with equations, and bind each name a block defines.
+-- Equations of one name in a row are one definition, if they have patterns
+-- to tell them apart.
+fun bindDecls (r : Rn) (ds : [Decl]) : [Def] ! { Mut | e } =
+  let sigs =
+    V.foldl
+      (\acc d ->
+        match d with
+        | Decl.Sig x ty ->
+            let w = if V.any (\s -> fst s == x) acc then bad r "duplicate binding of ${x}" else () in
+            V.pushBack acc (x, ty)
+        | _ -> acc)
+      []
+      ds
+  in
+  let groups =
+    V.foldl
+      (\(acc : [[Decl]]) d ->
+        match d with
+        | Decl.Def x ps _ _ ->
+            let continues =
+              match M.andThen V.head (V.last acc) with
+              | Just (Decl.Def f qs _ _) -> f == x and not (V.isEmpty qs) and not (V.isEmpty ps)
+              | _ -> False
+            in
+            if continues then V.pushBack (V.popBack acc) (V.pushBack (M.unwrapOr [] (V.last acc)) d)
+            else V.pushBack acc [d]
+        | _ -> acc)
+      []
+      ds
+  in
+  let defs =
+    V.map
+      (\eqs ->
+        let x = match V.head eqs with | Just (Decl.Def f _ _ _) -> f | _ -> "_" in
+        let ident = bindName r x in
+        Def { eqs, name = ident, sig = M.map snd (V.find (\s -> fst s == x) sigs) })
+      groups
+  in
+  let defined = V.map (\(d : Def) -> H.textOf d.name) defs in
+  let w = V.foldl (\acc s -> if V.elem (fst s) defined then acc else bad r "the signature for ${fst s} has no definition") () sigs in
+  defs
+
+fun renameDefs (r : Rn) (defs : [Def]) = V.map (\d -> renameDef r d) defs
+
+fun simplePat (p : Pat) : Bool =
+  match p with
+  | Pat.Bind _ -> True
+  | Pat.Wild -> True
+  | _ -> False
+
+fun renameDef (r : Rn) (dfn : Def) =
+  match V.head dfn.eqs with
+  | Just (Decl.Def _ params inline rhs) ->
+      -- `x : a = e` is a signature written inline; anywhere else an inline
+      -- type is the result's
+      let inlineSig = M.isNone dfn.sig and M.isSome inline and V.isEmpty params and V.len dfn.eqs == 1 in
+      let sig = if inlineSig then inline else dfn.sig in
+      let resultTy = if inlineSig then None else inline in
+      let ty = M.map (\t -> renameSig r t) sig in
+      (match rhs with
+       | Rhs.Plain body if V.len dfn.eqs == 1 and V.all simplePat params ->
+           let ps =
+             V.map (\p -> match p with | Pat.Bind q -> q | _ -> Param.Param "_" False None None) params
+           in
+           scoped r (\u ->
+             let v = scopeQuantified r ty in
+             let built =
+               scoped r (\w ->
+                 let bps = V.map (\p -> bindParam r p) ps in
+                 let b = renameTerm r body in
+                 let b2 = match resultTy with | Just t -> H.ann b (asType r (\x -> renameTerm r t)) | None -> b in
+                 V.foldr (\bp acc -> wrapParam r bp acc) b2 bps)
+             in
+             H.bind dfn.name ty built (getRef r.linear))
+       | _ -> renameMatch r dfn ty)
+  | _ -> H.bind dfn.name None (H.hole ()) False
+
+-- A definition by matching: each equation a clause.
+fun renameMatch (r : Rn) (dfn : Def) ty =
+  scoped r (\u ->
+    let v = scopeQuantified r ty in
+    let clauses =
+      V.map
+        (\d ->
+          match d with
+          | Decl.Def _ pats resultTy rhs -> renameClause r pats resultTy rhs
+          | _ -> H.clause [] (H.impossible ()))
+        dfn.eqs
+    in
+    H.bind dfn.name ty (H.matching clauses) (getRef r.linear))
+
+-- What a signature quantifies over scopes over the equation.
+fun scopeQuantified (r : Rn) ty =
+  match ty with
+  | Just t -> V.foldl (\acc x -> onTop r (\s -> Hm.insert (H.textOf x) [H.uniqueOf x] s)) () (H.quantified t)
+  | None -> ()
+
+-- The lower-case names `t` mentions that are neither bound in it nor
+-- `known`, in order of first appearance.
+fun freeVars (t : Term) (bound : [String]) known (out : [String]) : [String] ! { Mut | e } =
+  let go = \u o -> freeVars u bound known o in
+  let under = \x u o -> match x with | Just n -> freeVars u (V.pushBack bound n) known o | None -> go u o in
+  let grades =
+    \g o ->
+      match g with
+      | Just (Grade.Grade s rr) -> (match rr with | Just x -> go x (go s o) | None -> go s o)
+      | None -> o
+  in
+  match t with
+  | Term.Var x ->
+      let b = if stringByteLength x > 0 then toInt (stringByteAt x 0) else 0 in
+      let lower = (b >= 97 and b <= 122) or b == 95 in
+      if lower and not (V.elem x bound) and not (V.elem x out) and not (known x) and x != "otherwise" then V.pushBack out x
+      else out
+  | Term.Pi x _ g dom cod -> under x cod (go dom (grades g out))
+  | Term.Lam (Param.Param x _ g ty) body ->
+      let o1 = grades g out in
+      let o2 = match ty with | Just tt -> go tt o1 | None -> o1 in
+      under (Just x) body o2
+  | Term.App f a -> go a (go f out)
+  | Term.Ann f a -> go a (go f out)
+  | Term.Range f a -> go a (go f out)
+  | Term.Eff f a -> go a (go f out)
+  | Term.Row ls tail -> V.foldl (\o l -> go l o) out (V.append ls (match tail with | Just x -> [x] | None -> []))
+  | Term.BoxIntro e -> go e out
+  | Term.Seq es -> V.foldl (\o e -> go e o) out es
+  | Term.ArrayLit es -> V.foldl (\o e -> go e o) out es
+  | Term.RecordLit _ vs -> V.foldl (\o v -> go (snd v) o) out vs
+  | Term.Proj e _ -> go e out
+  | Term.Update e vs -> V.foldl (\o v -> go (snd v) o) (go e out) vs
+  | Term.LetBox x e body -> under (Just x) body (go e out)
+  | Term.Let ds body ->
+      let names = V.concatMap (\d -> match d with | Decl.Def x _ _ _ -> [x] | _ -> []) ds in
+      freeVars body (V.append bound names) known out
+  | Term.Case e _ -> go e out
+  | Term.Handle e _ -> go e out
+  | _ -> out
+
+-- --- programs ----------------------------------------------------------------
+
+-- What binding a program's names leaves to do.
+record Bound = {
+  datas : [Data],
+  dataNames : [(Ident, [Ident])],
+  effectNames : [(Ident, [Ident])],
+  defs : [Def],
+  natives : [(Ident, Term)]
+}
+
+-- The names a program declares, `decls` its declarations (or a `let`'s), all
+-- in the innermost scope.
+fun bindProgram (r : Rn) (prog : Program) (decls : [Decl]) : Bound ! { Mut | e } =
+  let effectNames =
+    V.map
+      (\(e : Effect) ->
+        let name = bindName r e.name in
+        let ops = V.map (\o -> match o with | OpSig.OpSig x _ _ -> bindName r x) e.ops in
+        let w = setRef r.effectOps (Hm.insert (H.uniqueOf name) (V.map (\o -> (H.textOf o, H.uniqueOf o)) ops) (getRef r.effectOps)) in
+        (name, ops))
+      prog.effects
+  in
+  let dataNames = bindDatas r prog.datas in
+  let natives = V.concatMap (\d -> match d with | Decl.Native x ty -> [(bindName r x, ty)] | _ -> []) decls in
+  let defs = bindDecls r decls in
+  -- a record's fields, by their projections, which the parser named `Point.x`
+  let w1 =
+    V.foldl
+      (\acc i ->
+        match (V.get prog.datas i, V.get dataNames i) with
+        | (Just (d : Data), Just (name, _)) ->
+            (match d.fields with
+             | Just fs ->
+                 let top = M.unwrapOr Hm.empty (V.last (getRef r.scopes)) in
+                 let found =
+                   V.concatMap
+                     (\f -> match Hm.lookup "${d.name}.${f}" top with | Just ps -> [(f, V.getOr 0 ps 0)] | None -> [])
+                     fs
+                 in
+                 setRef r.fields (Hm.insert (H.uniqueOf name) found (getRef r.fields))
+             | None -> acc)
+        | _ -> acc)
+      ()
+      (V.range 0 (V.len prog.datas))
+  in
+  let w2 =
+    V.foldl
+      (\acc (d : Def) ->
+        if V.elem (H.textOf d.name) prog.terminating then setRef r.terminating (V.pushBack (getRef r.terminating) (H.uniqueOf d.name))
+        else acc)
+      ()
+      defs
+  in
+  Bound { datas = prog.datas, dataNames, effectNames, defs, natives }
+
+-- What a program says, its names bound and its `use`s taken.
+fun renameProgram (r : Rn) (prog : Program) (b : Bound) =
+  let datas = renameDatas r b.datas b.dataNames in
+  let effects =
+    V.map
+      (\i ->
+        match (V.get prog.effects i, V.get b.effectNames i) with
+        | (Just e, Just names) -> renameEffect r e names
+        | _ -> EffectDecl { name = Ident.Ident [] "_", params = [], ops = [] })
+      (V.range 0 (V.len prog.effects))
+  in
+  let natives = V.map (\n -> match n with | (x, ty) -> NativeDecl.NativeDecl x (renameSig r ty)) b.natives in
+  let binds = renameDefs r b.defs in
+  (datas, effects, natives, binds)
+
+-- What the module gives, for `use Main (x)`.
+fun export (r : Rn) (b : Bound) =
+  let names =
+    V.concat [
+      V.map fst b.dataNames,
+      V.concatMap (\en -> match en with | (n, ops) -> V.append [n] ops) b.effectNames,
+      V.map (\(d : Def) -> d.name) b.defs,
+      V.map fst b.natives
+    ]
+  in
+  V.foldl (\acc x -> setRef r.exports (Hm.insert (H.textOf x) (H.uniqueOf x) (getRef r.exports))) () names
+
+-- Rename a whole program, one module, after the prelude: its declarations
+-- the top-level bindings and its expression, if any, the body. A program
+-- that is nothing but `let ... in body` is those declarations and that body.
+@pub fun renameModule (prog : Program) (prelude : Program) : (Module, [String]) ! { Mut | e } =
+  let r = new () in
+  let w1 = setRef r.scopes (V.append (getRef r.scopes) [Hm.empty, Hm.empty]) in
+  let w2 = setRef r.linear prelude.linear in
+  let pb = bindProgram r prelude prelude.decls in
+  let w3 = V.foldl (\acc u -> renameUse r u) () prelude.uses in
+  match renameProgram r prelude pb with
+  | (pdatas, peffects, pnatives, pbinds) ->
+      let w4 = setRef r.linear False in
+      let w5 = setRef r.base (getRef r.scopes) in
+      let first = getRef r.next in
+      let parts =
+        match (V.isEmpty prog.decls, prog.body) with
+        | (True, Just (Term.Let ds body)) -> (ds, Just body)
+        | _ -> (prog.decls, prog.body)
+      in
+      (match parts with
+       | (decls, body) ->
+           let w6 = setRef r.scopes (V.append (getRef r.base) [Hm.empty, Hm.empty]) in
+           let w7 = setRef r.ownAt (V.len (getRef r.base) + 1) in
+           let w8 = setRef r.linear prog.linear in
+           let b = bindProgram r prog decls in
+           let w9 = export r b in
+           -- twice, as the Rust renamer takes them, and only the second time
+           -- says what is wrong
+           let mark = V.len (getRef r.problems) in
+           let w10 = V.foldl (\acc u -> renameUse r u) () prog.uses in
+           let w11 = setRef r.problems (V.take (getRef r.problems) mark) in
+           let w12 = V.foldl (\acc u -> renameUse r u) () prog.uses in
+           (match renameProgram r prog b with
+            | (datas, effects, natives, binds) ->
+                let body2 = M.map (\e -> renameTerm r e) body in
+                let own = M.unwrapOr Hm.empty (V.last (getRef r.scopes)) in
+                let main = M.andThen V.head (Hm.lookup "main" own) in
+                let groups = V.map (\bs -> Group.Rec bs) (V.filter (\bs -> not (V.isEmpty bs)) [pbinds, binds]) in
+                let m =
+                  Module {
+                    datas = V.append pdatas datas,
+                    effects = V.append peffects effects,
+                    natives = V.append pnatives natives,
+                    groups,
+                    body = body2,
+                    main,
+                    first,
+                    terminating = getRef r.terminating,
+                    linearBody = prog.linear
+                  }
+                in
+                (m, getRef r.problems)))

@@ -775,10 +775,15 @@ file of the repository: 791 programs.
   one form for several and works out afterwards which it was.
 - [ ] Error messages compared, not only whether there is one; Nettle for
   them.
-- [ ] Renaming, with a name several `use`s bring in kept as its
-  candidates for the checker to choose between (phase 3); then types:
-  simple ones first, then dependent types, case trees, termination, grades
-  and effects.
+- [x] **Renaming** (`Rename`, to `Hir`), for a module after the prelude:
+  every program agrees with `idyllic-rename`, binder for binder (the test
+  renumbers both sides' uniques by first appearance), the prelude included.
+  A name several `use`s bring in keeps each candidate for the checker to
+  choose between (phase 3), where the Rust renamer lets the last win; no
+  program of the corpus meets the difference yet. Left: packages of several
+  modules, and dependencies.
+- [ ] Types: simple ones first, then dependent types, case trees,
+  termination, grades and effects.
 - [ ] Core, and the CEK machine on it.
 - [ ] Cut: lowered and written out, run with `meadow cut` on Glade and Silo,
   first on a dozen of the corpus's programs. Cut is built with

@@ -88,13 +88,17 @@ fn idl_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// What `front/`'s `pass` writes for each program: its programs written to
-/// files of a directory of the test's own, and `Idyll <pass> <files>` run on
-/// them once, its output cut at each `== <file>` line.
-fn dumps(pass: &str, programs: &[(String, String)]) -> Result<Vec<String>, String> {
+/// What `front/` writes for each program, run as `Idyll <args> <files>`:
+/// its programs written to files of a directory of the test's own (with
+/// `extra` files beside them, which `args` may name), and front/ run on them
+/// once, its output cut at each `== <file>` line.
+fn dumps(args: &[&str], extra: &[(&str, &str)], programs: &[(String, String)]) -> Result<Vec<String>, String> {
     let exe = front()?;
-    let dir = std::env::temp_dir().join(format!("idyll-front-{pass}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("idyll-front-{}-{}", args[0], std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    for (name, text) in extra {
+        std::fs::write(dir.join(name), text).map_err(|e| e.to_string())?;
+    }
     let files: Vec<String> = programs
         .iter()
         .map(|(name, src)| {
@@ -107,7 +111,7 @@ fn dumps(pass: &str, programs: &[(String, String)]) -> Result<Vec<String>, Strin
     // length it may not pass
     let mut text = String::new();
     for batch in files.chunks(200) {
-        let out = Command::new(&exe).arg(pass).args(batch).current_dir(&dir).output().map_err(|e| e.to_string())?;
+        let out = Command::new(&exe).args(args).args(batch).current_dir(&dir).output().map_err(|e| e.to_string())?;
         if !out.status.success() {
             let _ = std::fs::remove_dir_all(&dir);
             return Err(format!("front/ failed:\n{}", String::from_utf8_lossy(&out.stderr)));
@@ -170,8 +174,15 @@ fn first_difference(ours: &str, theirs: &str) -> String {
 
 /// Compare `front/`'s dump of each program with this compiler's.
 fn agree(pass: &str, ours: impl Fn(&str) -> String) {
+    agree_with(&[pass], &[], ours, |d| d.to_string());
+}
+
+/// The same, with `front/` run as `Idyll <args>`, `extra` files beside the
+/// programs, and both dumps put through `canon` before they are compared.
+fn agree_with(args: &[&str], extra: &[(&str, &str)], ours: impl Fn(&str) -> String, canon: impl Fn(&str) -> String) {
+    let pass = args[0];
     let programs = corpus();
-    let theirs = match dumps(pass, &programs) {
+    let theirs = match dumps(args, extra, &programs) {
         Ok(d) => d,
         Err(why) if why.starts_with("no meadow") => {
             eprintln!("{why}: front/ was not checked");
@@ -183,8 +194,13 @@ fn agree(pass: &str, ours: impl Fn(&str) -> String) {
         .iter()
         .zip(&theirs)
         .filter_map(|((name, src), theirs)| {
-            let ours = ours(src);
-            (ours != *theirs).then(|| format!("{name}: {}", first_difference(&ours, theirs)))
+            let (ours, theirs) = (canon(&ours(src)), canon(theirs));
+            // `IDYLL_FRONT_SHOW=handwritten-0003` shows both dumps of a
+            // program (several, separated by commas)
+            if std::env::var("IDYLL_FRONT_SHOW").is_ok_and(|v| v.split(',').any(|n| n == name)) {
+                eprintln!("--- {name}, {pass}, here:\n{ours}\n--- front/:\n{theirs}");
+            }
+            (ours != theirs).then(|| format!("{name}: {}", first_difference(&ours, &theirs)))
         })
         .collect();
     let errors = theirs.iter().filter(|d| *d == "(error)").count();
@@ -206,6 +222,217 @@ fn the_tokens_and_their_layout_agree() {
 #[test]
 fn the_parses_agree() {
     agree("parse", parsed);
+}
+
+#[test]
+fn the_renames_agree() {
+    let source = idyllic::pipeline::PRELUDE;
+    let prelude = program(source).expect("the prelude parses");
+    agree_with(
+        &["rename", "--prelude", "_prelude.txt"],
+        &[("_prelude.txt", source)],
+        |src| renamed(&prelude, src),
+        renumbered,
+    );
+}
+
+// --- the rename, written out --------------------------------------------------
+//
+// As `front/src/Hir.mw` writes it: the program's own part of the module, a line
+// for each declaration, every name `text@unique`. `renumbered` then numbers
+// the uniques in the order they first appear, on both sides, so that what is
+// compared is which use is of which binder, not how each renamer counts.
+
+/// `src` parsed, if the lexer, the layout and the parser have nothing to say.
+fn program(src: &str) -> Option<idyllic_ast::Program> {
+    let lexed = idyllic_lexer::tokenize(src);
+    let laid = idyllic_layout::layout(&LineIndex::new(src), &lexed.tokens);
+    if !lexed.diagnostics.is_empty() || !laid.errors.is_empty() {
+        return None;
+    }
+    idyllic_parser::parse(src.len(), &laid.tokens).ok()
+}
+
+/// What this compiler's renamer makes of `src`, after the prelude, written
+/// out.
+fn renamed(prelude: &idyllic_ast::Program, src: &str) -> String {
+    let Some(p) = program(src) else { return "(error)".to_string() };
+    let result = idyllic_rename::rename_module(&p, prelude);
+    if !result.errors.is_empty() {
+        return "(error)".to_string();
+    }
+    h::module(&result.module)
+}
+
+/// Each `@123` numbered by where its number first appears: `@0`, `@1`, ...
+fn renumbered(dump: &str) -> String {
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut out = String::with_capacity(dump.len());
+    let mut chars = dump.chars().peekable();
+    while let Some(c) = chars.next() {
+        out.push(c);
+        if c == '@' {
+            let mut digits = String::new();
+            while let Some(d) = chars.peek().copied().filter(char::is_ascii_digit) {
+                digits.push(d);
+                chars.next();
+            }
+            if !digits.is_empty() {
+                let n = seen.len();
+                out.push_str(&seen.entry(digits).or_insert(n).to_string());
+            }
+        }
+    }
+    out
+}
+
+mod h {
+    use idyllic_hir::*;
+
+    fn sx<S: AsRef<str>>(parts: impl IntoIterator<Item = S>) -> String {
+        let parts: Vec<String> = parts.into_iter().map(|s| s.as_ref().to_string()).collect();
+        format!("({})", parts.join(" "))
+    }
+
+    fn opt<T>(m: &Option<T>, f: impl Fn(&T) -> String) -> String {
+        m.as_ref().map_or("-".to_string(), f)
+    }
+
+    fn flag(yes: &str, b: bool) -> String {
+        if b { yes } else { "-" }.to_string()
+    }
+
+    fn with<S: Into<String>>(head: impl IntoIterator<Item = S>, rest: Vec<String>) -> String {
+        sx(head.into_iter().map(Into::into).chain(rest))
+    }
+
+    fn ident(x: &Ident) -> String {
+        match x.unique {
+            Some(u) => format!("{}@{u}", x.text),
+            None => format!("{}@?", x.text),
+        }
+    }
+
+    fn grade(g: &GradeAnn) -> String {
+        sx(["grade".into(), term(&g.subject), opt(&g.in_type, |t| term(t))])
+    }
+
+    fn term(t: &Term) -> String {
+        match &t.kind {
+            TermKind::Type => "Type".into(),
+            TermKind::Var(x) => ident(x),
+            TermKind::Lit(l) => super::w::literal(l),
+            TermKind::Pi(x, icit, g, dom, cod) => sx([
+                "pi".into(),
+                opt(x, ident),
+                if *icit == Icit::Explicit { "e" } else { "i" }.into(),
+                opt(g, grade),
+                term(dom),
+                term(cod),
+            ]),
+            TermKind::Lam(x, g, ty, body) => sx(["lam".into(), ident(x), opt(g, grade), opt(ty, |t| term(t)), term(body)]),
+            TermKind::App(f, a) => sx(["app".into(), term(f), term(a)]),
+            TermKind::Ann(e, ty) => sx(["ann".into(), term(e), term(ty)]),
+            TermKind::Hole => "_".into(),
+            TermKind::BoxIntro(e) => sx(["box".into(), term(e)]),
+            TermKind::Inf => "inf".into(),
+            TermKind::Range(a, b) => sx(["range".into(), term(a), term(b)]),
+            TermKind::LetBox(x, e, body) => sx(["letbox".into(), ident(x), term(e), term(body)]),
+            TermKind::Let(gs, body) => sx(["let".into(), sx(gs.iter().map(group)), term(body)]),
+            TermKind::Case(e, cs) => with(["case".to_string(), term(e)], cs.iter().map(clause).collect()),
+            TermKind::Match(cs) => with(["match"], cs.iter().map(clause).collect()),
+            TermKind::Omitted => "?".into(),
+            TermKind::Eff(b, e) => sx(["eff".into(), term(b), term(e)]),
+            TermKind::Row(ls, tail) => sx(["row".into(), sx(ls.iter().map(term)), opt(tail, |t| term(t))]),
+            TermKind::Handle(e, cs) => with(["handle".to_string(), term(e)], cs.iter().map(handle_clause).collect()),
+            TermKind::SeqNil => "nil".into(),
+            TermKind::SeqCons(h, tl) => sx(["cons".into(), term(h), term(tl)]),
+            TermKind::ArrayLit(es) => with(["array"], es.iter().map(term).collect()),
+        }
+    }
+
+    fn handle_clause(c: &HandleClause) -> String {
+        sx(["clause".into(), opt(&c.op, ident), sx(c.params.iter().map(ident)), term(&c.body)])
+    }
+
+    fn clause(c: &Clause) -> String {
+        sx(["clause".into(), sx(c.pats.iter().map(pattern)), rhs(&c.rhs)])
+    }
+
+    fn rhs(r: &Rhs) -> String {
+        match r {
+            Rhs::Plain(e) => sx(["=".into(), term(e)]),
+            Rhs::Guarded(gs) => with(["guards"], gs.iter().map(|(c, e)| sx([term(c), term(e)])).collect()),
+            Rhs::Impossible => "impossible".into(),
+        }
+    }
+
+    fn pattern(p: &Pattern) -> String {
+        match &p.kind {
+            PatKind::Var(x) => ident(x),
+            PatKind::Wild => "_".into(),
+            PatKind::Lit(l) => super::w::literal(l),
+            PatKind::Con(c, ps) => with(["con".to_string(), ident(c)], ps.iter().map(pattern).collect()),
+            PatKind::As(x, q) => sx(["as".into(), ident(x), pattern(q)]),
+            PatKind::Dot(e) => sx(["dot".into(), term(e)]),
+            PatKind::SeqNil => "pnil".into(),
+            PatKind::SeqCons(ps) => with(["pcons"], ps.iter().map(pattern).collect()),
+        }
+    }
+
+    fn bind(b: &Bind, terminating: &std::collections::HashSet<usize>) -> String {
+        let vouched = b.name.unique.is_some_and(|u| terminating.contains(&u));
+        sx(["bind".into(), ident(&b.name), opt(&b.ty, term), term(&b.rhs), flag("linear", b.linear), flag("terminating", vouched)])
+    }
+
+    fn group(g: &BindGroup) -> String {
+        let none = Default::default();
+        match g {
+            BindGroup::NonRec(b) => sx(["nonrec".into(), bind(b, &none)]),
+            BindGroup::Rec(bs) => with(["rec"], bs.iter().map(|b| bind(b, &none)).collect()),
+        }
+    }
+
+    fn type_param((x, k): &(Ident, Option<Term>)) -> String {
+        sx([ident(x), opt(k, term)])
+    }
+
+    fn data(d: &DataDecl) -> String {
+        let ctor = |c: &CtorDecl| match &c.shape {
+            CtorShape::Fields(ts) => sx([ident(&c.name), with(["fields"], ts.iter().map(term).collect())]),
+            CtorShape::Sig(ty) => sx([ident(&c.name), sx(["sig".into(), term(ty)])]),
+        };
+        sx([
+            "data".into(),
+            ident(&d.name),
+            sx(d.params.iter().map(type_param)),
+            opt(&d.kind, term),
+            sx(d.ctors.iter().map(ctor)),
+            opt(&d.seq, |(n, c)| sx(["seq".into(), ident(n), ident(c)])),
+            flag("linear", d.linear),
+        ])
+    }
+
+    fn effect(e: &EffectDecl) -> String {
+        let op = |o: &OpDecl| sx(["op".into(), ident(&o.name), flag("many", o.many), term(&o.ty)]);
+        sx(["effect".into(), ident(&e.name), sx(e.params.iter().map(type_param)), sx(e.ops.iter().map(op))])
+    }
+
+    /// The program's own part of a module, a line each: data types, effects,
+    /// natives, bindings, then the body, `main` and whether it is linear.
+    pub fn module(m: &Module) -> String {
+        let own = |x: &Ident| x.unique.is_some_and(|u| u >= m.uniques.0);
+        let mut lines: Vec<String> = Vec::new();
+        lines.extend(m.datas.iter().filter(|d| own(&d.name)).map(data));
+        lines.extend(m.effects.iter().filter(|e| own(&e.name)).map(effect));
+        lines.extend(m.natives.iter().filter(|n| own(&n.name)).map(|n| sx(["native".into(), ident(&n.name), term(&n.ty)])));
+        let binds = m.groups.iter().flat_map(|g| g.binds());
+        lines.extend(binds.filter(|b| own(&b.name)).map(|b| bind(b, &m.terminating)));
+        lines.extend(m.body.iter().map(|e| sx(["body".into(), term(e)])));
+        lines.extend(m.main.iter().map(|u| sx(["main".to_string(), format!("main@{u}")])));
+        lines.push(sx(["linear", if m.linear_body { "true" } else { "false" }]));
+        lines.join("\n")
+    }
 }
 
 // --- the parse, written out ---------------------------------------------------
@@ -262,7 +489,7 @@ mod w {
         String::from_utf8(out).expect("escaping keeps UTF-8 whole")
     }
 
-    fn literal(l: &Lit) -> String {
+    pub fn literal(l: &Lit) -> String {
         match l {
             Lit::Unit => "(lit ())".into(),
             Lit::Int(n) => format!("(lit {n})"),
