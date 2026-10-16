@@ -153,6 +153,10 @@ impl Checker {
     /// open for more (`?e := {Log | ?t}`), so that what else is passed may
     /// add to it: `compose logged addAsk` is at `{Ask, Log}`.
     pub(super) fn effects_fit(&mut self, l: Lvl, effects: Rc<Value>, allowed: Rc<Value>) -> bool {
+        // a row with an error in it has been reported already
+        if self.row_has_error(&effects) || self.row_has_error(&allowed) {
+            return true;
+        }
         let (e, a) = (self.row_parts(&effects), self.row_parts(&allowed));
         // an effect with parameters is the allowed one of the same head,
         // if there is just one (`Throw String` is the `Throw ?e` allowed):
@@ -213,6 +217,11 @@ impl Checker {
 
     /// A row as a message shows it: without the row variables made only to
     /// keep it open for more, which nothing has filled.
+    pub(super) fn row_has_error(&self, row: &Rc<Value>) -> bool {
+        let parts = self.row_parts(row);
+        parts.labels.iter().chain(&parts.tails).any(|(_, v)| matches!(**v, Value::Error))
+    }
+
     pub(super) fn shown_row(&self, row: Rc<Value>) -> Rc<Value> {
         let parts = self.row_parts(&row);
         let kept = parts.labels.into_iter().chain(parts.tails).map(|(_, v)| v).filter(|v| match &**v {

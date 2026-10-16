@@ -225,6 +225,10 @@ impl Checker {
     /// differ only in those (`State ?s` and `State s`) are first unified
     /// with each other, and the rows compared again.
     fn unify_rows_pairing(&mut self, l: Lvl, t: Rc<Value>, u: Rc<Value>, pair: bool) -> bool {
+        // a row with an error in it has been reported already
+        if self.row_has_error(&t) || self.row_has_error(&u) {
+            return true;
+        }
         if pair {
             let (a, b) = (self.row_parts(&t), self.row_parts(&u));
             let extra = |x: &super::value::Row, y: &super::value::Row| -> Vec<Rc<Value>> {

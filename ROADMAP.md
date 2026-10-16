@@ -241,11 +241,14 @@ it drops the tail), and so are sequence literals.
     still to be found on one side are made one first.
 
   (`compiler/idyllic/tests/effects.rs`, TUTORIAL.md's *Functions with
-  different effects*, a tour step.) Still to confirm with the back end:
-  that opening a row costs nothing at run time under Cut's evidence
-  encoding. Meadow's runtimes find a handler when an operation is
-  performed, so a function compiled for `{Log}` runs under `{Ask, Log}`
-  as it is.
+  different effects*, a tour step.) It costs nothing at run time, as
+  the Meadow session confirmed from `docs/CUT.md`'s *Evidence*. Evidence
+  is one hidden list of the handlers in scope, searched by an operation's
+  key, so a function lowered for `{Log}` runs under `{Ask, Log}` as it is.
+  And the lowering, not Idyll, builds evidence. What Idyll must keep
+  checking is kinds: a row variable of kind `Effect` takes no effect
+  resumed more than once, however it comes to be filled. It is checked
+  that way still, and said once.
 - [~] **Graded continuations**. The grade of `k` is inferred from each clause
   (`0`, `1`, `0..1`, more), and every grade works: Idyll's AxCut machine
   keeps the handlers in force on a stack of its own, and a resumption is an

@@ -116,6 +116,18 @@ fn functions_with_different_effects_compose() {
         &format!("{effects}{named}both : Int -> Int ! Log\nboth n = compose logged addAsk n\n"),
         &["effects not allowed: this has the effects {Ask, Log}, but its type allows Log"],
     );
+    // A row variable of kind `Effect` still takes no effect resumed more
+    // than once, however it is filled, and says so once; one bound at
+    // `Effect []` takes it.
+    let choose = "effect Choose where\n  @many flip : () -> Bool\n\npick : Int -> Int ! Choose\npick n = if flip () then n else 0\n\n";
+    rejects(
+        &format!("{effects}{named}{choose}both : Int -> Int ! {{Ask, Choose}}\nboth n = compose pick addAsk n\n"),
+        &["these effects may be resumed more than once: the implicit argument e stands for effects resumed at most once, and Choose has an operation declared @many"],
+    );
+    accepts(&format!(
+        "{effects}{named}{choose}composeM : {{e : Effect []}} -> (f : b -> c ! e) -> (g : a -> b ! e) -> (x : a) -> c ! e\n\
+         composeM f g x = f (g x)\n\nboth : Int -> Int ! {{Ask, Choose}}\nboth n = composeM pick addAsk n\n"
+    ));
 }
 
 #[test]
