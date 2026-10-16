@@ -104,6 +104,26 @@ and the tour has steps for it.
   Idyll's own code in Meadow (`front/`). Chris, 2026-10-16.
 - **Attributes go on a line of their own**, above what they are on, as a
   matter of style (`@pub` then `data T ..`); the inline form still parses.
+- **A long signature is set out an entry a line** (Chris, 2026-10-16), as
+  Haskell sets out one led by `::`. The name is alone on its line. The
+  first entry comes after a colon pushed in three spaces, and each one
+  after it after an arrow pushed in two. So the colon stands under the
+  `>` of the arrows, and every type starts in the same column. The result
+  is on a line of its own, last, with its effects:
+
+  ```
+  compose
+     : {a b c : Type}
+    -> {r s : Grade}
+    -> (f : (y : [s] b) -> c ! e)
+    -> (g : [s] ((x : [r] a) -> b ! e))
+    -> (x : [s * r] a)
+    -> c ! e
+  compose f g x = f (g x)
+  ```
+
+  A signature that fits on one line stays on one. The formatter (phase
+  6) breaks one that does not this way, and strips trailing spaces.
 
 ## Phase 0: Groundwork
 
@@ -541,7 +561,8 @@ and a `Map` built with one `Ord` is rejected when used with another.
 
 - [ ] **`@test` functions and `idyll test`**, with Meadow's name filtering,
   built on the `Test` effect.
-- [ ] **The formatter** (`meadow-fmt`, adapted to Idyll's layout rules).
+- [ ] **The formatter** (`meadow-fmt`, adapted to Idyll's layout rules),
+  breaking a long signature as the principles above set it out.
 - [ ] **The language server** (`meadow-lsp`). Joining the renamer's span
   table with the checker's type table gives type-on-hover almost for free.
 - [ ] **The VS Code extension** (`editors/vscode`).
