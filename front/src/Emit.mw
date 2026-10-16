@@ -1,0 +1,27 @@
+-- Emitting Cut, the back end's IR (`docs/CUT.md` in the Meadow repository),
+-- which `meadow cut` runs on Glade and Silo. Every piece of Cut front/ makes
+-- is built here, with the Cut package MeadowBoot uses too: nothing else
+-- builds Cut or writes its text.
+--
+-- For now it holds the smallest program there is, so that the package, its
+-- Lingua and `meadow cut` are known to fit together; the lowering of Idyll's
+-- Core comes once there is a Core.
+
+use Cut as C
+
+-- A program whose answer is the string "hi".
+@pub fun hello () : String =
+  runSt (\() ->
+    let out = C.builder () in
+    let body = C.give out C.nowhere (C.str out C.nowhere "hi") (C.cont out C.nowhere "k") in
+    let main = C.defDecl out C.nowhere "app:Main/main" [] [C.param out C.nowhere "k" "ptr"] body in
+    C.text (C.finished out (C.file out C.nowhere "app:Main/main" "str" [main])))
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertTrue)
+use Std.String as S
+
+@test fun theSmallestProgramIsWritten () =
+  let text = hello () in
+  assertTrue (S.contains "app:Main/main" text and S.contains "\"hi\"" text) text
