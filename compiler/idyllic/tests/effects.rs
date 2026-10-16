@@ -93,6 +93,31 @@ fn a_row_variable_takes_what_it_is_given() {
 // Div
 // ---------------------------------------------------------------------------
 
+/// Two functions with different effects, given to one with one row for
+/// both: the row is what they do between them. A function with fewer
+/// effects fits where more are allowed, and a row variable is not fixed by
+/// the first thing it meets.
+#[test]
+fn functions_with_different_effects_compose() {
+    let effects = "effect Ask where\n  ask : () -> Int\n\neffect Log where\n  log : Int -> ()\n\n\
+                   compose : {a b c : Type} -> {r s : Grade} -> (f : (y : [s] b) -> c ! e) -> (g : [s] ((x : [r] a) -> b ! e)) -> (x : [s * r] a) -> c ! e\n\
+                   compose f g x = f (g x)\n\n";
+    let named = "addAsk : Int -> Int ! Ask\naddAsk n = n + ask ()\n\nlogged : Int -> Int ! Log\nlogged n = let u = log n in n\n\n";
+    // named, as they are; wrapped in lambdas; and with rows of their own
+    accepts(&format!("{effects}{named}both : Int -> Int ! {{Ask, Log}}\nboth n = compose logged addAsk n\n"));
+    accepts(&format!("{effects}{named}both : Int -> Int ! {{Ask, Log}}\nboth n = compose (\\y -> logged y) (\\x -> addAsk x) n\n"));
+    let open = "addAsk : Int -> Int ! {Ask | e}\naddAsk n = n + ask ()\n\nlogged : Int -> Int ! {Log | e}\nlogged n = let u = log n in n\n\n";
+    accepts(&format!("{effects}{open}both : Int -> Int ! {{Ask, Log}}\nboth n = compose logged addAsk n\n"));
+    // with no signature, the row found is what they do, and no more
+    let out = accepts(&format!("{effects}{named}both n = compose logged addAsk n\n\nboth"));
+    assert_eq!(out.body_type.as_deref(), Some("(n : Int) -> Int ! {Ask, Log}"));
+    // and what they do is still checked against what is allowed
+    rejects(
+        &format!("{effects}{named}both : Int -> Int ! Log\nboth n = compose logged addAsk n\n"),
+        &["effects not allowed: this has the effects {Ask, Log}, but its type allows Log"],
+    );
+}
+
 #[test]
 fn a_recursion_the_checker_cannot_see_end_needs_div() {
     rejects(

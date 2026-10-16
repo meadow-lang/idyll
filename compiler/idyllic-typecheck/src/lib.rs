@@ -976,6 +976,11 @@ pub struct Checker {
     /// a meta nothing had solved (see [`Checker::postpone`]): tried again
     /// once the definition it is in has been checked.
     postponed: Vec<Postponed>,
+    /// The row variables made to keep a solved row open for more (see
+    /// [`Checker::sibling`]): closed to the empty row when the top-level
+    /// definition they were made in has been checked, if nothing filled
+    /// them. Each with how many arguments it is applied to.
+    opened: Vec<(MetaVar, usize)>,
 }
 
 /// What is known about a constructor.  At run time it is its `tag` and its
@@ -1142,6 +1147,7 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         globals: HashMap::new(),
         lets: 0,
         postponed: Vec::new(),
+        opened: Vec::new(),
     };
     let ctx = Ctx::initial(&tc);
     let ctx = tc.import(&ctx, deps);
@@ -1190,6 +1196,7 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
     let body_type = body.as_ref().map(|(_, ty)| ty.clone());
     tc.report_holes();
     tc.retry_postponed(true);
+    tc.close_opened();
     tc.close_rows();
     tc.report_unsolved_metas();
     // the prelude's own definitions, which come first
@@ -1440,6 +1447,19 @@ impl Checker {
     /// A row variable nothing ever constrained stands for no more effects:
     /// there is nothing else it could be found to be.  Solved so, rather
     /// than reported unsolved.
+    /// Close the row variables made to keep rows open (see
+    /// [`Checker::sibling`]) that nothing filled: a definition's effects are
+    /// then what it was found to do, and no more.
+    fn close_opened(&mut self) {
+        for (m, n) in std::mem::take(&mut self.opened) {
+            let MetaEntry::Unsolved(info) = &self.metas[m] else { continue };
+            let info = info.clone();
+            let none = (0..n).fold(Rc::new(Core::Row(Vec::new(), Vec::new())), |body, _| Rc::new(Core::Lam("_".into(), body)));
+            let solution = self.eval(&Default::default(), &none);
+            self.metas[m] = MetaEntry::Solved(solution, info);
+        }
+    }
+
     fn close_rows(&mut self) {
         for m in 0..self.metas.len() {
             let MetaEntry::Unsolved(info) = &self.metas[m] else { continue };

@@ -221,33 +221,31 @@ it drops the tail), and so are sequence literals.
   result type depends on it, or passed at grade `0`. A type that would
   escape a `let` whose right-hand side is effectful is rejected until
   phase 4 gives us dependent pairs.
-- [ ] **Composing functions with different effects** (Chris, 2026-10-16).
-  Std's `compose` gives `f` and `g` one row `e`, which is right, as in
-  Koka. But today `compose logged addAsk`, with `logged : Int -> Int ! Log`
-  and `addAsk : Int -> Int ! Ask`, is rejected where `{Ask, Log}` is
-  allowed: `e` is fixed to `Log` at the first argument, and `Ask` then
-  does not fit. Wrapping both in lambdas, or giving them open rows
-  (`{Log | e}`), fails too. There are three gaps:
+- [x] **Composing functions with different effects** (Chris, 2026-10-16).
+  `compose`'s one row `e`, for `f` and `g` both, is right, as in Koka. Now
+  `compose logged addAsk`, with `logged : Int -> Int ! Log` and
+  `addAsk : Int -> Int ! Ask`, checks at `{Ask, Log}`: named, in lambdas,
+  or with rows of their own. Three changes:
+  - **A function with fewer effects fits where more are allowed**:
+    `subtype` takes a function type to be covariant in its row, and a pure
+    result fits any row. Grades that are not known outright are unified
+    there, and no longer turn the whole comparison into one.
+  - **A row variable is not fixed by the first thing it meets**: what it
+    is solved with keeps a fresh row variable at its end
+    (`?e := {Log | ?t}`). What nothing filled is closed to the empty row
+    once the top-level definition is checked, before its type is
+    recorded, so a definition's row is what it does and no more; a
+    message leaves such variables out.
   - **Two open rows unify through a fresh tail**, as in Leijen's row
-    unification: `{Log | ?a} = {Ask | ?b}` gives `?a := {Ask | ?t}` and
-    `?b := {Log | ?t}`. Today only one side may be open.
-  - **A function with fewer effects fits where more are allowed.** A
-    function type is covariant in its row. So a function value checked
-    against a function type has its row opened with a fresh tail, as
-    Koka's `open` does, and `Int -> Int ! Log` fits
-    `Int -> Int ! {Ask, Log}`. A lambda's body already fits this way.
-  - **A row variable is not fixed by the first thing that mentions it.**
-    The type wanted for the result is consulted before the arguments,
-    where there is one (`e := {Ask, Log}` from `both`'s signature), and
-    otherwise a row variable is the union of what has to fit in it.
+    unification (`{Log | ?a} =? {Ask | ?b}`), and several row variables
+    still to be found on one side are made one first.
 
-  To confirm with the back end: opening a row costs nothing at run time.
-  Meadow's runtimes find a handler when an operation is performed, so a
-  function compiled for `{Log}` runs under `{Ask, Log}` as it is. Check
-  this against Cut's evidence encoding.
-
-  *Done when:* `compose logged addAsk` checks at `{Ask, Log}`, written
-  as it is above, with the named functions as they are.
+  (`compiler/idyllic/tests/effects.rs`, TUTORIAL.md's *Functions with
+  different effects*, a tour step.) Still to confirm with the back end:
+  that opening a row costs nothing at run time under Cut's evidence
+  encoding. Meadow's runtimes find a handler when an operation is
+  performed, so a function compiled for `{Log}` runs under `{Ask, Log}`
+  as it is.
 - [~] **Graded continuations**. The grade of `k` is inferred from each clause
   (`0`, `1`, `0..1`, more), and every grade works: Idyll's AxCut machine
   keeps the handlers in force on a stack of its own, and a resumption is an
@@ -544,6 +542,33 @@ and a `Map` built with one `Ord` is rejected when used with another.
 - [ ] **The language server** (`meadow-lsp`). Joining the renamer's span
   table with the checker's type table gives type-on-hover almost for free.
 - [ ] **The VS Code extension** (`editors/vscode`).
+- [ ] **Named holes, for type-driven development** (Chris, 2026-10-16), as
+  Idris and Agda have them. `_` is a hole the checker fills in, as it does
+  today. `?name` is a goal left for later:
+  - it is reported with its type and its context: the variables in scope,
+    each with its type and the grade still left of it;
+  - it is a warning, not an error, so a program with goals in it still
+    checks, and what is around them can be worked on;
+  - it may be run up to, and stops the program if it is reached.
+
+  The REPL lists the goals (`:goals`), proof search runs on one
+  (`:prove ?name`), and tactic mode opens on one and puts what it builds
+  in its place.
+- [ ] **A harness for agents** (Chris, 2026-10-16): an MCP server, or a
+  harness like it, so that an agent does type-driven development and
+  proofs as a person does at the REPL, but in structured form. It would:
+  - check a file, and answer with structured diagnostics;
+  - list the goals, each with its type and context;
+  - give the type at a place;
+  - run the finder's search by name or type;
+  - run proof search on a goal;
+  - drive tactic mode as a session: open a goal, apply a tactic, see the
+    goals left, undo, finish;
+  - fill a goal with a term, editing the source.
+
+  It is the same functions the REPL and the language server use: one
+  search, one proof search, one tactic engine in `front/`, three ways to
+  reach them. Its natural home is beside Lingua's `repl!` and `lsp!`.
 - [ ] **Searching and proving in the REPL**, for the REPL `front/` gets
   from Lingua's `repl!` (Chris, 2026-10-16). The Rust REPL already has
   the first two, which carry over; the third is new.

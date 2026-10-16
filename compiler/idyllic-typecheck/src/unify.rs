@@ -46,21 +46,51 @@ impl Checker {
             // uses) is wanted, as a constructor is passed to `map`. The
             // grade fits, the domains are the same, and the results are
             // compared in turn.
+            // And a function whose results have fewer effects than are
+            // allowed is one that may be called there: a function type is
+            // covariant in its row, as in Koka. So `Int -> Int ! Log` fits
+            // `Int -> Int ! {Ask, Log}`, and passing `logged` to `compose`
+            // leaves `compose`'s row open for what `addAsk` does.
             (
                 Value::Pi { name, icit: i1, grade: g1, in_type: t1, dom: d1, cod: c1 },
                 Value::Pi { icit: i2, grade: g2, in_type: t2, dom: d2, cod: c2, .. },
             ) if i1 == i2 => {
-                let (g1, g2) = (self.to_poly(self.force(g1.clone())).as_constant(), self.to_poly(self.force(g2.clone())).as_constant());
-                let (Some(g1), Some(g2)) = (g1, g2) else { return self.unify(l, actual, expected) };
-                if g1 == g2 || !g1.fits(g2) {
-                    return self.unify(l, actual, expected);
-                }
+                let known = |c: &mut Self, g: &Rc<Value>| c.to_poly(c.force(g.clone())).as_constant();
+                let grades = match (known(self, g1), known(self, g2)) {
+                    (Some(a), Some(b)) => a == b || a.fits(b),
+                    _ => self.unify(l, g1.clone(), g2.clone()),
+                };
                 let x = vvar(l, name.clone());
                 let (c1, c2) = (self.apply(c1, x.clone()), self.apply(c2, x));
-                self.unify(l, t1.clone(), t2.clone()) && self.unify(l, d1.clone(), d2.clone()) && self.subtype(l + 1, c1, c2)
+                grades && self.unify(l, t1.clone(), t2.clone()) && self.unify(l, d1.clone(), d2.clone()) && self.subtype(l + 1, c1, c2)
+            }
+            (Value::Comp(a, e1), Value::Comp(b, e2)) => {
+                let (a, b, e1, e2) = (a.clone(), b.clone(), e1.clone(), e2.clone());
+                self.subtype(l, a, b) && self.effects_fit(l, e1, e2)
+            }
+            // a pure result fits wherever effects are allowed
+            (a, Value::Comp(b, _)) if !matches!(a, Value::Flex(..)) => {
+                let b = b.clone();
+                self.subtype(l, actual.clone(), b)
             }
             _ => self.unify(l, actual, expected),
         }
+    }
+
+    /// A new row variable beside `tail`, which is one still to be found:
+    /// made where it was, so that it may stand for what `tail` may. What a
+    /// row variable is solved with keeps such a one at its end, open for
+    /// more: `?e := {Log | ?t}`, not `?e := Log`. Whatever is still open at
+    /// the end is closed to the empty row.
+    pub(super) fn sibling(&mut self, tail: &Rc<Value>) -> Option<Rc<Value>> {
+        let Value::Flex(m, sp) = &*self.force(tail.clone()) else { return None };
+        let (m, sp) = (*m, sp.clone());
+        let info = match &self.metas[m] {
+            MetaEntry::Unsolved(info) | MetaEntry::Solved(_, info) => info.clone(),
+        };
+        let fresh = self.new_meta(info.node, info.origin, info.ty);
+        self.opened.push((fresh, sp.len()));
+        Some(Rc::new(Value::Flex(fresh, sp)))
     }
 
     /// Decide whether two values are convertible, solving metas as needed.
@@ -242,6 +272,31 @@ impl Checker {
             let rest = self.row(la.into_iter().chain(ta));
             return self.unify(l, rest, tb[0].clone());
         }
+        // Several row variables still to be found on one side, and nothing
+        // else on it the other lacks... or effects too: they are made one
+        // (`?a := ?b`), which is enough for what they have to stand for
+        // between them, and the rows compared again.
+        let flex = |ts: &[Rc<Value>]| ts.len() > 1 && ts.iter().all(|t| matches!(**t, Value::Flex(..)));
+        if flex(&ta) || flex(&tb) {
+            let merge = |c: &mut Self, ts: &[Rc<Value>]| {
+                ts.len() < 2 || !ts.iter().all(|t| matches!(**t, Value::Flex(..))) || ts[1..].iter().all(|x| c.unify(l, x.clone(), ts[0].clone()))
+            };
+            return merge(self, &ta) && merge(self, &tb) && self.unify_rows_pairing(l, t, u, false);
+        }
+        // Each side has a row variable still to be found, and effects the
+        // other lacks: both are the other's effects and one fresh variable
+        // more, as in Leijen's row unification. `{Log | ?a} =? {Ask | ?b}`
+        // gives `?a := {Ask | ?t}` and `?b := {Log | ?t}`.
+        if let ([a_tail], [b_tail]) = (ta.as_slice(), tb.as_slice()) {
+            if matches!(**a_tail, Value::Flex(..)) && matches!(**b_tail, Value::Flex(..)) {
+                let (a_tail, b_tail) = (a_tail.clone(), b_tail.clone());
+                if let Some(fresh) = self.sibling(&a_tail) {
+                    let for_a = self.row(lb.into_iter().chain(std::iter::once(fresh.clone())));
+                    let for_b = self.row(la.into_iter().chain(std::iter::once(fresh)));
+                    return self.unify(l, a_tail, for_a) && self.unify(l, b_tail, for_b);
+                }
+            }
+        }
         false
     }
 
@@ -334,7 +389,7 @@ impl Checker {
             MetaOrigin::Hole => "this hole".to_string(),
             MetaOrigin::Inferred(desc) => desc.clone(),
         };
-        Some(TypeErrorKind::ManyEffectsInRow { what, row: self.quote(at, inst) })
+        Some(TypeErrorKind::ManyEffectsInRow { what, row: self.quote(at, self.shown_row(inst)) })
     }
 
     /// A lower bound on the universe a type lives in, given the types of the

@@ -142,17 +142,17 @@ impl Checker {
         if usage.is_unknown() || self.effects_fit(ctx.lvl, effects.clone(), allowed.clone()) {
             return;
         }
+        let (effects, allowed) = (self.shown_row(effects), self.shown_row(allowed));
         let (effects, allowed) = (self.quote(ctx.lvl, effects), self.quote(ctx.lvl, allowed));
         self.error(node, TypeErrorKind::EffectNotAllowed { effects, allowed });
     }
 
     /// `effects ⊆ allowed`.  A row variable of `allowed` that is still a
     /// metavariable takes whatever is missing, which is how the row of a
-    /// function passed to an effect-polymorphic one is learned.
+    /// function passed to an effect-polymorphic one is learned; and it stays
+    /// open for more (`?e := {Log | ?t}`), so that what else is passed may
+    /// add to it: `compose logged addAsk` is at `{Ask, Log}`.
     pub(super) fn effects_fit(&mut self, l: Lvl, effects: Rc<Value>, allowed: Rc<Value>) -> bool {
-        if matches!(*self.force(allowed.clone()), Value::Flex(..)) {
-            return self.unify(l, allowed, effects);
-        }
         let (e, a) = (self.row_parts(&effects), self.row_parts(&allowed));
         // an effect with parameters is the allowed one of the same head,
         // if there is just one (`Throw String` is the `Throw ?e` allowed):
@@ -182,19 +182,44 @@ impl Checker {
         if missing.is_empty() {
             return true;
         }
-        let flex: Vec<Rc<Value>> =
+        let mut flex: Vec<Rc<Value>> =
             a.tails.iter().filter(|(_, v)| matches!(**v, Value::Flex(..))).map(|(_, v)| v.clone()).collect();
+        // several row variables of `allowed` still to be found are made one,
+        // which is enough to take what is missing
+        if flex.len() > 1 {
+            let first = flex[0].clone();
+            if !flex[1..].iter().all(|x| self.unify(l, x.clone(), first.clone())) {
+                return false;
+            }
+            flex.truncate(1);
+        }
         match (flex.as_slice(), missing.as_slice()) {
             ([tail], _) => {
-                let rest = self.row(missing.into_iter());
-                self.unify(l, tail.clone(), rest)
+                let tail = tail.clone();
+                let open = self.sibling(&tail);
+                let rest = self.row(missing.into_iter().chain(open));
+                self.unify(l, tail, rest)
             }
-            // What is missing is a row variable still to be found, such as
-            // what resuming a handler does, used inside a function: it may
-            // be what is allowed here, and no more.
-            ([], [missing]) if matches!(**missing, Value::Flex(..)) => self.unify(l, missing.clone(), allowed),
+            // What is missing is row variables still to be found, such as
+            // what resuming a handler does, used inside a function (and the
+            // tails that what they were solved with left open): each may be
+            // what is allowed here, and no more.
+            ([], _) if missing.iter().all(|m| matches!(**m, Value::Flex(..))) => {
+                missing.into_iter().all(|m| self.unify(l, m, allowed.clone()))
+            }
             _ => false,
         }
+    }
+
+    /// A row as a message shows it: without the row variables made only to
+    /// keep it open for more, which nothing has filled.
+    pub(super) fn shown_row(&self, row: Rc<Value>) -> Rc<Value> {
+        let parts = self.row_parts(&row);
+        let kept = parts.labels.into_iter().chain(parts.tails).map(|(_, v)| v).filter(|v| match &**v {
+            Value::Flex(m, _) => !self.opened.iter().any(|(o, _)| o == m),
+            _ => true,
+        });
+        self.row(kept)
     }
 
     /// A row, checked to be one, of either kind.
@@ -480,6 +505,12 @@ impl Checker {
                         (rhs, vsig, usage)
                     }
                 };
+                // what it left open is closed before its type is recorded,
+                // which is then what it was found to do
+                if self.lets == 0 {
+                    self.retry_postponed(false);
+                    self.close_opened();
+                }
                 let quoted = self.quote(ctx.lvl, ty.clone());
                 self.record(b.id, quoted);
                 // A definition with effects has a value only at run time: two
@@ -581,6 +612,10 @@ impl Checker {
             let (next, p, w) = self.check_group(&ctx, g);
             // what had to wait for the rest of the definition to be known
             self.retry_postponed(false);
+            // and at the top level, the rows it left open are closed
+            if self.lets == 0 {
+                self.close_opened();
+            }
             ctx = next;
             pending.push(p);
             wraps.push(w);

@@ -2023,6 +2023,49 @@ twiceM : {e : Effect []} -> (() -> Int ! e) -> Int ! e
 
 (Handlers are deep, so each `flip` in `twiceM` tries both answers.)
 
+### Functions with different effects
+
+One row variable is enough for a function that runs two others. `compose f g`
+does what `f` does and what `g` does, so its row is both of theirs, and `e`
+is that row wherever it is used. A function with fewer effects fits where
+more are allowed, so `compose` takes a function that logs and one that
+asks, and is then at `{Ask, Log}`:
+
+```
+> effect Ask where
+  ask : () -> Int
+
+Ask : Effect
+ask : () -> Int ! Ask
+> effect Log where
+  log : Int -> ()
+
+Log : Effect
+log : Int -> () ! Log
+> addAsk : Int -> Int ! Ask
+addAsk n = n + ask ()
+
+addAsk : Int -> Int ! Ask
+> logged : Int -> Int ! Log
+logged n = let u = log n in n
+
+logged : Int -> Int ! Log
+> compose : (f : b -> c ! e) -> (g : a -> b ! e) -> (x : a) -> c ! e
+compose f g x = f (g x)
+
+compose : {b : Type} -> {c : Type} -> {e : Effect} -> {a : Type} -> (f : b -> c ! e) -> (g : a -> b ! e) -> (x : a) -> c ! e
+> both n = compose logged addAsk n
+
+both : (n : Int) -> Int ! {Ask, Log}
+> handle (handle both 1 with { ask _ k -> k 10 }) with { log _ k -> k () }
+
+11 : Int
+```
+
+With no signature, `both`'s row is what it was found to do: `{Ask, Log}`,
+and no more. Given a signature, what it does still has to fit:
+`both : Int -> Int ! Log` is an error, since `addAsk` asks.
+
 ### Naming a row
 
 `effect App = {Log, Ask}` names a row, to write in a signature as any

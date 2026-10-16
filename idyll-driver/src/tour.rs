@@ -777,6 +777,26 @@ twice f = f () + f ()"),
         ],
     },
     Step {
+        title: "Different effects, one row",
+        section: Section::Effects,
+        text: &[
+            "One row variable is enough for a function that runs two others:",
+            "`compose f g` does what each does, and a function with fewer",
+            "effects fits where more are allowed. `sum3` asks and `noisy`",
+            "logs, so composing them is at `{Ask, Log}`.",
+        ],
+        examples: &[
+            ok("effect Log where
+  log : () -> ()"),
+            ok("noisy : Int -> Int ! Log
+noisy n = let u = log () in n"),
+            ok("compose : (f : b -> c ! e) -> (g : a -> b ! e) -> (x : a) -> c ! e
+compose f g x = f (g x)"),
+            ok("both u = compose noisy sum3 u"),
+            ok("handle (handle both () with { ask _ k -> k 1 }) with { log _ k -> k () }"),
+        ],
+    },
+    Step {
         title: "Resumed more than once",
         section: Section::Effects,
         text: &[
