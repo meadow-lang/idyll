@@ -808,6 +808,28 @@ and Silo run with the answers the CEK machine gives.
 
 Not in Meadow, but they will come up along the way:
 
+- **Termination measures** (Chris, 2026-10-16). The termination checker
+  accepts a recursive call only when an argument is a piece matched out of
+  the one before. So a loop that counts an index up to a bound cannot be
+  shown to end: Std's 41 `@terminating`s are nearly all
+  `mapFrom f xs (i + 1) ..` under `i < arrayLen xs`, and are promised, not
+  proved. A *measure* is a quantity that shrinks at every recursive call,
+  and cannot shrink forever: here `arrayLen xs - i`. In three steps:
+  1. **The counting loop, recognised.** A call under a guard `i < b`, with
+     `i + 1` for `i` and `b` unchanged, is accepted with nothing written.
+     The guard also rules out `i + 1` wrapping. Std's `@terminating`s go,
+     the ones this does not cover excepted.
+  2. **A measure written down**, `@decreasing (arrayLen xs - i)` on the
+     signature. At each recursive call, the measure must be smaller and
+     must have been positive, given the guards in scope. A small decision
+     procedure for linear integer arithmetic proves that: counting down,
+     `hi - lo` in a binary search, two indices meeting.
+  3. **A proof given by hand**, where arithmetic is not enough: an ordinary
+     term, since types can say it, at grade `0`, so it costs nothing at
+     run time.
+
+  What none of these covers stays `@terminating`, or says `Div`.
+
 - **A `Nat` as a grade** (Chris, 2026-10-16), as Granule has it, where a
   vector's length and a grade are both `Nat`s. Granule's `StdLib/Vec.gr`
   gives the function `map` takes the grade `[n]`, since it is called once
