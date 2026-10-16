@@ -97,6 +97,11 @@ and the tour has steps for it.
   type, a constructor's fields) and the constructor in a term or a
   pattern; a path is whichever it leads to, `Pair.Pair` the constructor and
   `Std.Tuple.Pair` the type. Decided with Chris, 2026-10-02.
+- **Constructors are namespaced under their types, and not prefixed**, as
+  in Meadow: `data Term = Var Ident | App Term Term`, written `Term.Var`
+  (or `Var`, after `use Term.*`), never `TermVar` or `MkTerm`. The type's
+  name is the prefix the namespace already gives. The same style holds for
+  Idyll's own code in Meadow (`front/`). Chris, 2026-10-16.
 - **Attributes go on a line of their own**, above what they are on, as a
   matter of style (`@pub` then `data T ..`); the inline form still parses.
 
@@ -310,6 +315,30 @@ examples need strings to take apart first (`Std.Yield` is the generators).
   `module M where` inside a file, and saying which package a type is from
   when two of one name meet. (`compiler/idyllic/tests/modules.rs`,
   `packages.rs`)
+- [ ] **One name from several `use`s, chosen by type**, as Meadow does
+  it, after Idris (Chris, 2026-10-16). Today a later `use` of a name
+  silently replaces an earlier one. Instead, a module's own top-level
+  names and what its `use`s bring in are one layer, where a clash is an
+  *overload*: the renamer keeps every candidate, and the elaborator takes
+  the one whose type fits where the name is used. Meadow's rules
+  (`buildtools/meadow/tests/overloading.rs`) carry over:
+  - a value or a constructor is chosen by what is wanted where it is used,
+    a pattern by its scrutinee's type, and names whose choices hang on
+    each other are chosen together;
+  - a local shadows rather than overloads, and so does the prelude:
+    defining your own `map` should not make every `map` a question;
+  - no candidate fitting, or more than one still fitting once the
+    definition is checked, is an error that lists the candidates and
+    where each is from;
+  - two definitions of one name in one module are still an error.
+
+  What dependent types add: elaboration is bidirectional, with
+  metavariables, which is Idris's setting. So each candidate is elaborated
+  against the type wanted, and the ones that fail are dropped. While the
+  choice hangs on an unsolved metavariable, it is postponed, as a
+  constraint is. A name in a type is chosen before that type is computed
+  with, so conversion never meets an undecided name. The renamer in
+  `front/` keeps candidates from the start.
 - [~] **The build system in `idyll-driver/`**, ported from Meadow's
   `buildtools/meadow`, same design: `Idyll.toml` (packages, `[dependencies]`,
   `[profile.*]`, `[workspace]` with patterns, `exclude`, `default-members`,
@@ -426,6 +455,34 @@ from what `idyll.lock` pinned.
   unify instead of silently breaking its invariants.
 - [ ] **Integer types, floating point, `Show`/`Eq`/`Ord`, and string
   interpolation**, which all wait on traits.
+- [ ] **Arithmetic is a trait, so it works on `Nat` in types** (Chris,
+  2026-10-16). `+`, `*` and the rest become a trait's methods: `Int`'s
+  instance is the primitives, and `Nat`'s is `plus` and `times`. This is
+  Idris's `Num`. Then a length is written as it is said:
+
+  ```
+  append : {n m : Nat} -> {a : Type} -> Vec n a -> Vec m a -> Vec (n + m) a
+  append Nil ys = ys
+  append (Cons x xs) ys = Cons x (append xs ys)
+  ```
+
+  For that to check, the instance has to compute in types. `n + m` at
+  `Nat` is the canonical instance's method, which unfolds to `plus n m`,
+  so `Vec (Z + m) a` and `Vec m a` are the same type, and `plusComm` can
+  be stated with `+`. Instance search is settled when the term is
+  elaborated, never left to conversion, and an instance is transparent.
+  The search is erased where the type is erased.
+
+  Later, `n + 1` at `Nat` needs a literal to be read at the type wanted,
+  through the trait as Idris's `fromInteger` does. A run-time `Nat`'s
+  `+` is still `plus`: unary, and slow.
+
+  This is a trait, not the overloading of one name across `use`s (phase
+  3). The prelude is shadowed rather than overloaded, so a module's own
+  `+` for `Nat` would hide `Int`'s.
+
+  *Done when:* the `append` above checks, Std's `Nat` proofs are stated
+  with `+`, and `Int` arithmetic costs what it does today.
 
 Meadow's `RUNTIME.md` section *Traits are dictionaries, and then they are
 not* is worth reading when the optimiser gets to removing dictionary passing.
@@ -460,6 +517,92 @@ and a `Map` built with one `Ord` is rejected when used with another.
 - [ ] **The language server** (`meadow-lsp`). Joining the renamer's span
   table with the checker's type table gives type-on-hover almost for free.
 - [ ] **The VS Code extension** (`editors/vscode`).
+- [ ] **Searching and proving in the REPL**, for the REPL `front/` gets
+  from Lingua's `repl!` (Chris, 2026-10-16). The Rust REPL already has
+  the first two, which carry over; the third is new.
+  - **A finder like Hoogle**: Ctrl-F searches by name, fuzzily, or by type.
+    A type query finds what fits it up to the order of arguments,
+    instantiation, implicits and grades, the closest first. Today's
+    `find.rs` is the model.
+  - **Proof search**: `:prove T`, and `?` in the finder, proposing terms
+    from the goal's shape and showing only what the checker accepts
+    (today's `prove.rs`). It needs a time limit, and a way to stop it.
+  - **A tactic mode**: `:tactic` (or a hole, `?name`) opens a goal. Tactics
+    refine it until nothing is left, at which point the term built is
+    checked and handed back to be put in the program. The goal is shown
+    as its context and its type. Its tactics: `intro`, `exact`, `apply`,
+    `refine` with holes, `cases` and `induction` (dependent matching, so
+    the cases are the checker's), `rewrite` along `Eq`, `search` (proof
+    search, above), and `undo`.
+
+  What Lingua's `repl!` needs for these, as the Lingua session would build
+  it (2026-10-16; none of it started, and Meadow's REPL wants the first
+  three too):
+  - **`search`**: the finder calls `db -> Int -> String -> [Found]` on
+    every keystroke, and shows what the language ranks. `Found` holds a
+    name, a signature, where it is from, a doc, the text to put in, and
+    an entry to run first (a `use`). Lingua exports its fuzzy ranker for
+    name queries. The language says which queries are types, and searches
+    a cached index of declarations in the database. **Written**: Lingua
+    PR 19 (`finder-search`, a401c9e), open, waiting on Chris. Its hits
+    are `Lingua.Repl.Hit name kind from doc insert before`, and
+    `ranked`/`declared` are the fuzzy ranking for name queries.
+  - **`Reply.Edit text`**: a command puts text on the line to edit. This
+    needs LineEditor to start an entry from given text.
+  - **`status`**: a pane redrawn after every entry, for the goal.
+  - **Modes**: named sub-prompts with their own eval, grammar, completion
+    and commands. `Reply.Mode` enters one, and `Reply.Back term` leaves it,
+    handing the term back. Tactics are a small `syntax!` grammar. The goal
+    stack is an input of the database.
+
+  Proposed to the Lingua session in place of a hook per feature (Chris,
+  2026-10-16): **panes** and **modes**, two separate things.
+  - **A pane** is a pop-up a language declares: how it opens (a key or a
+    `:` command), its state, a key function (go on, put text on the line,
+    enter text, or close) and a Doodle drawing. The finder becomes Lingua's
+    own pane, with `search` as its query. `:ir`, proof search's results
+    and docs would be Idyll's panes, written in `front/`.
+  - **A mode** is a whole REPL state, such as the tactic mode: a sub-prompt
+    with `repl!`'s own features, its own panes and history. A command
+    enters it, and leaving hands text back. Modes stack, and a mode's
+    *standing* pane (the goal) stays on screen.
+
+  Agreed with the Lingua session, which builds them in this order: panes,
+  with the finder moved onto them; then modes; then standing panes. A
+  pane's state is packed behind closures (`pane open key draw` gives an
+  `Opened` with `key` and `draw`), so each pane keeps a state type of its
+  own. `Put` carries an entry to run first, as `search`'s hits do. A pane
+  opens from a key, or from a command with `Reply.Open`. `Reply.Edit` and
+  `Reply.Back` need LineEditor to start an entry from given text. A
+  standing pane is reprinted above the prompt until LineEditor draws a
+  footer.
+
+  **Panes are written**: Lingua PR 20, stacked on PR 19, with LineEditor
+  PR 5 (`readEntryFrom`, 0.2.2) for putting text back on the line. PR 19
+  is queued to merge and PR 20 follows; LineEditor PR 5 is not merged yet. `| panes = idyllPanes` takes `[(opening, pane)]`,
+  where an opening is a key (`"ctrl-x"`) or a command (`":ir"`), and each
+  pane is `Lingua.Repl.pane open key draw`. Until LineEditor 0.2.2, what a
+  pane opened by a command puts on the line is entered instead. Modes are
+  next.
+
+  **Modes are written** too: Lingua PR 21. Search, panes and modes are all
+  merged (Lingua 833e1a5, with LineEditor 0.2.2); `front/` moves to it
+  when it grows a REPL, and once Cut has moved its Lingua there too. A mode is a `repl!` written `for Session mode`, with
+  `repl!`'s own features plus `start` (set up the goal from the text) and
+  `status` (written above every line: the context and the goal's type);
+  modes nest. A command enters one with `Reply.Mode "tactic" goal`, and the
+  mode's `:done` answers `Reply.Back term`, so the next entry below starts
+  with the term, ready to edit. The goal stack is a database input. Left:
+  a status drawn in a fixed place (a footer in LineEditor) and a standing
+  pane, not only status text. `Reply.Edit` now puts text at the start of
+  the next entry, and a pane opened by a command does the same with what
+  it puts.
+
+  Proof search is the `search` callback noticing `?`, and a `:prove`
+  command. It checks a deadline (`Std.Time.monotonic`) between candidates
+  until `repl!` can interrupt a running entry. One search function in
+  `front/` serves the finder, `:prove`, and a code action on a hole in an
+  editor, through `lsp!`'s `requests`.
 
 *Done when:* `idyll test` runs a package's tests, and hovering in VS Code
 shows a type.
@@ -632,12 +775,17 @@ file of the repository: 791 programs.
   one form for several and works out afterwards which it was.
 - [ ] Error messages compared, not only whether there is one; Nettle for
   them.
-- [ ] Renaming, then types: simple ones first, then dependent types, case
-  trees, termination, grades and effects.
+- [ ] Renaming, with a name several `use`s bring in kept as its
+  candidates for the checker to choose between (phase 3); then types:
+  simple ones first, then dependent types, case trees, termination, grades
+  and effects.
 - [ ] Core, and the CEK machine on it.
 - [ ] Cut: lowered and written out, run with `meadow cut` on Glade and Silo,
-  first on a dozen of the corpus's programs. (A shared Meadow package for
-  building Cut is coming from the Meadow repository.)
+  first on a dozen of the corpus's programs. Cut is built with
+  [`meadow-lang/Cut`](https://github.com/meadow-lang/Cut), a package of its
+  own that MeadowBoot depends on too (Chris, 2026-10-16), all of it in
+  `front/src/Emit.mw`; so far the smallest program, which runs on Glade and
+  Silo.
 - [ ] CI, with MeadowBoot's prerelease for the `meadow` it needs.
 
 *Done when:* `front/` compiles the corpus and the tutorial to Cut that Glade
@@ -655,6 +803,28 @@ and Silo run with the answers the CEK machine gives.
 
 Not in Meadow, but they will come up along the way:
 
+- **A `Nat` as a grade** (Chris, 2026-10-16), as Granule has it, where a
+  vector's length and a grade are both `Nat`s. Granule's `StdLib/Vec.gr`
+  gives the function `map` takes the grade `[n]`, since it is called once
+  for each element:
+
+  ```
+  map : {n : Nat} -> {a b : Type} -> (f : [n] (a -> b)) -> (v : [1] Vec n a) -> Vec n b
+  ```
+
+  Std's `map`, `foldr` and `foldl` say `[]` for it today, which is true
+  but less than they know. That needs two things:
+  - **A `Nat` read as a grade where a grade is wanted**, `n` as `n..n`:
+    `Z` is `0`, `S m` is `m + 1`.
+  - **The grade algebra to see through it**, which comes with the first.
+    In `map`'s `Cons` case, `f` is used once and then `m` times by the
+    recursive call, which must make `S m`. So `1 + m` and `S m` have to
+    be the same grade. Grades are already normalised as polynomials, so
+    a `Nat` variable becomes one more variable in them.
+
+  A grade that is a `Nat` is exact. `[n]` says exactly `n` uses, so the
+  grade checks of `map` and `foldr` count the recursion exactly, not up
+  to `∞`.
 - **Grade approximation**: accepting an `a [1]` where an `a [0..1]` is
   wanted. (A function's parameter is approximated already: `(x : [1] a) ->
   b` is accepted where `(x : [] a) -> b` is wanted.)
