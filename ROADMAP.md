@@ -221,6 +221,33 @@ it drops the tail), and so are sequence literals.
   result type depends on it, or passed at grade `0`. A type that would
   escape a `let` whose right-hand side is effectful is rejected until
   phase 4 gives us dependent pairs.
+- [ ] **Composing functions with different effects** (Chris, 2026-10-16).
+  Std's `compose` gives `f` and `g` one row `e`, which is right, as in
+  Koka. But today `compose logged addAsk`, with `logged : Int -> Int ! Log`
+  and `addAsk : Int -> Int ! Ask`, is rejected where `{Ask, Log}` is
+  allowed: `e` is fixed to `Log` at the first argument, and `Ask` then
+  does not fit. Wrapping both in lambdas, or giving them open rows
+  (`{Log | e}`), fails too. There are three gaps:
+  - **Two open rows unify through a fresh tail**, as in Leijen's row
+    unification: `{Log | ?a} = {Ask | ?b}` gives `?a := {Ask | ?t}` and
+    `?b := {Log | ?t}`. Today only one side may be open.
+  - **A function with fewer effects fits where more are allowed.** A
+    function type is covariant in its row. So a function value checked
+    against a function type has its row opened with a fresh tail, as
+    Koka's `open` does, and `Int -> Int ! Log` fits
+    `Int -> Int ! {Ask, Log}`. A lambda's body already fits this way.
+  - **A row variable is not fixed by the first thing that mentions it.**
+    The type wanted for the result is consulted before the arguments,
+    where there is one (`e := {Ask, Log}` from `both`'s signature), and
+    otherwise a row variable is the union of what has to fit in it.
+
+  To confirm with the back end: opening a row costs nothing at run time.
+  Meadow's runtimes find a handler when an operation is performed, so a
+  function compiled for `{Log}` runs under `{Ask, Log}` as it is. Check
+  this against Cut's evidence encoding.
+
+  *Done when:* `compose logged addAsk` checks at `{Ask, Log}`, written
+  as it is above, with the named functions as they are.
 - [~] **Graded continuations**. The grade of `k` is inferred from each clause
   (`0`, `1`, `0..1`, more), and every grade works: Idyll's AxCut machine
   keeps the handlers in force on a stack of its own, and a resumption is an
