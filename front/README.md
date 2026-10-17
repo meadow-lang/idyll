@@ -21,7 +21,7 @@ does, how it is checked, and why it is built the way it is.
 | Grammar | `Syntax.mw` | done: a Lingua `syntax!` grammar |
 | Parsing | `Parse.mw`, `Ast.mw` | done: agrees with the Rust parser on every program |
 | Renaming | `Rename.mw`, `Hir.mw` | done for one module after the prelude; packages not yet |
-| Types | `Grade.mw`, ... | started: the grade algebra |
+| Types | `Grade.mw`, `Core.mw`, `Value.mw`, `Tc.mw`, `Eval.mw`, `Unify.mw` | the machinery is in; elaboration is next |
 | Core and the CEK machine | | not started |
 | Cut | `Emit.mw` | the Cut package is wired in; only the smallest program so far |
 
@@ -191,8 +191,35 @@ every program:
   disagreements, failing only on a disagreement. Coverage then grows slice
   by slice, visibly.
 
-`Grade.mw` is done: the semiring of use counts (`0`, `1`, `0..1`, `1..∞`,
-`0..∞`, exact counts), with its laws as tests.
+What is in so far is the machinery the elaborator stands on, each piece a
+port of its Rust module with tests of its own:
+
+- **`Grade.mw`** (`grade.rs`): the semiring of use counts (`0`, `1`,
+  `0..1`, `1..∞`, `0..∞`, exact counts), with its laws as tests.
+- **`Core.mw`** (`core.rs`): the elaborated terms, with de Bruijn indices,
+  and the builtins (`Int`, `Bool`, ... and the primitive operators). Its
+  printer is the Rust one exactly (`{a : Type} -> a -> a`,
+  `(_ : [1] Int) -> Int`, `(Int, Bool, String)`, `Int ! {Ask, Log}`),
+  because the differential tests compare printed types. Rust switches
+  linear printing with a thread-local; here it is a parameter.
+- **`Value.mw`** (`value.rs`): values, closures, and stuck terms as a head
+  and its spine; grade polynomials (so `r + r` and `2 * r` are one
+  polynomial), and effect rows as sorted sets.
+- **`Tc.mw`**: the checker's state, chiefly the metacontext (each
+  metavariable unsolved or solved, with where it came from and its type).
+- **`Eval.mw`** (`eval.rs`): evaluation and reading back (`quote`),
+  primitives computing on literals, `case` choosing its alternative, and
+  `force`, which looks a metavariable's solution up wherever one is met.
+- **`Unify.mw`** (`unify.rs`): pattern unification. A metavariable applied
+  to distinct variables is solved as a function of them (with the occurs
+  and scope checks); grades compare as polynomials; two open rows meet
+  through a fresh tail; and `subtype`, which lets a smaller universe, a
+  function using its argument less, or one with fewer effects stand where
+  more is allowed.
+
+Not in yet: recursive definitions unfolding in types (Rust's
+`transparent`, which comes with the termination checker), and the
+elaborator itself.
 
 ### Cut
 

@@ -32,11 +32,15 @@ use Std.Maybe.Maybe.*
   -- definition), by its unique
   constants : Ref (HashMap Int Value),
   -- what is wrong, a line each, for now
-  problems : Ref [String]
+  problems : Ref [String],
+  -- the row variables made to keep a solved row open for more, each with
+  -- how many arguments it is applied to: closed to the empty row when the
+  -- definition they were made in has been checked, if nothing filled them
+  opened : Ref [(Int, Int)]
 }
 
 @pub fun new () =
-  Tc { metas = newRef [], constants = newRef Hm.empty, problems = newRef [] }
+  Tc { metas = newRef [], constants = newRef Hm.empty, problems = newRef [], opened = newRef [] }
 
 @pub fun problem (tc : Tc) (why : String) = setRef tc.problems (V.pushBack (getRef tc.problems) why)
 
