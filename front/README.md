@@ -22,7 +22,7 @@ does, how it is checked, and why it is built the way it is.
 | Parsing | `Parse.mw`, `Ast.mw` | done: agrees with the Rust parser on every program |
 | Renaming | `Rename.mw`, `Hir.mw` | done for one module after the prelude; packages not yet |
 | Dependency order | `Scc.mw` | done |
-| Types | `Check.mw`, `Elab.mw`, `Decl.mw`, `Positivity.mw`, `Ctx.mw`, `Usage.mw`, and the machinery under them | first slice: agrees on every program it handles (256); `case`, matching, recursion, handlers, sequences and arrays next |
+| Types | `Check.mw`, `Elab.mw`, `Matching.mw`, `Termination.mw`, `Decl.mw`, `Positivity.mw`, `Ctx.mw`, `Usage.mw`, and the machinery under them | agrees on every program it handles (356 of 392); handlers, sequences and arrays next |
 | Core and the CEK machine | | not started |
 | Cut | `Emit.mw` | the Cut package is wired in; only the smallest program so far |
 
@@ -271,10 +271,45 @@ uniques the renamer reserves for them.
 types they say, their bodies not checked, since this checker cannot check
 everything they use yet. Only the effect alias `Eff`, a row, is checked.
 
-**The first slice** handles everything but `case` (and so `if`), matching,
-recursion, handlers, sequence and array literals, and names that several
-`use`s bring in. The next slices take these in order: matching, with
-`if`; recursion with the termination checker; handlers.
+**Matching** (`Matching.mw`, `matching.rs`) turns equations and `case`
+alternatives into case trees, with dependent matching, after Cockx and
+Abel's *Elaborating Dependent (Co)pattern Matching*. Each equation is a
+problem: patterns waiting to be matched. The first problem decides:
+
+- while it has patterns for arguments not bound yet, the function type's
+  next argument is bound, for each problem's next pattern;
+- once its patterns are all names, or constructors that agree with what
+  they are matched against, it has won, and its right-hand side is checked
+  with its names bound;
+- a constructor that disagrees drops the equation;
+- a constructor matched against a variable is where the tree branches:
+  for each constructor of the variable's type, its arguments become new
+  variables, and the variable is unified with it applied to them, and the
+  type's indices with the constructor's.
+
+That unification solves the context's own variables (not metavariables):
+matching `xs : Vec n a` against `Cons x rest` defines `n` as `S m`,
+everywhere it occurs, the goal included. Two different constructors mean
+the case cannot happen, so `head : Vec (S n) a -> a` needs no `Nil` case.
+Missing cases and unreachable equations are reported. `if` is a `case` on
+`Bool`. The fields a split binds are used as often as the value was, times
+their own grade (once, for a data type's fields).
+
+**Termination** (`Termination.mw`, `termination.rs`). Each recursive
+group's case trees are examined with the size-change principle, as Agda
+does: every recursive call is summarised by how its arguments relate to
+the caller's parameters (smaller, because a split took it out of one; the
+same; or unknown), and the group terminates if every loop of calls,
+composed with itself until nothing new appears, makes some parameter
+smaller. This covers structural recursion, mutual recursion and
+lexicographic orders like Ackermann's. A group that terminates becomes
+*transparent*: from then on it unfolds in types, when its case tree can
+choose a right-hand side (`Eval.unfold`), so `first (Sigma x y)` is `x` in
+`second`'s type. A group that may not terminate must say `! Div`, or be
+vouched for with `@terminating` (`MayNotTerminate` otherwise).
+
+**Not in yet**: handlers, sequence and array literals, and names that
+several `use`s bring in (overloading). Those are the next slices.
 
 The machinery underneath, each piece a port of its Rust module with tests
 of its own:
