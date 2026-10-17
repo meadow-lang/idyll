@@ -906,6 +906,20 @@ Not in Meadow, but they will come up along the way:
 
   What none of these covers stays `@terminating`, or says `Div`.
 
+- **Grades suggested, not demanded** (Chris, 2026-10-16). The checker
+  checks the grades it is given and works none out. Writing an exact count
+  means knowing the body, so most signatures say `[]` and give up what an
+  exact one says. Instead, the checker works out the tightest grade each
+  binder needs, which is TUTORIAL.md's *Working out grades* done
+  mechanically: the given grades of what a function is handed, and the
+  smallest solution of what each use demands. It offers that grade as a
+  suggestion, a code action in an editor and `:grades` in the REPL:
+  "`x` is used exactly once: this could be `[1]`". Nothing is required, and
+  a signature changes only when it is taken up. The everyday grades stay
+  `0`, `1`, `0..1` and `[]`. Exact counts come from types (a `Nat` as a
+  grade, below) and from these suggestions, which also give proof search
+  the precise goals that let grades prune it (Hughes and Orchard,
+  synthesis from graded types, 2020).
 - **A `Nat` as a grade** (Chris, 2026-10-16), as Granule has it, where a
   vector's length and a grade are both `Nat`s. Granule's `StdLib/Vec.gr`
   gives the function `map` takes the grade `[n]`, since it is called once
