@@ -104,6 +104,9 @@ use Std.Maybe.Maybe.*
   -- the recursive definitions, for running the program: each one's unique,
   -- how many slots the context it was defined in had, and its body
   recDefs : Ref [(Int, Int, Core)],
+  -- those of them defined inside another definition
+  localRecs : Ref [Int],
+  recNames : Ref (HashMap Int String),
   -- the natives, by unique: which each is, and how many erased arguments
   -- come before the ones it takes at run time
   nativeInfo : Ref (HashMap Int (String, Int)),
@@ -135,6 +138,8 @@ use Std.Maybe.Maybe.*
     transparent = newRef Hm.empty,
     terminating = newRef [],
     recDefs = newRef [],
+    localRecs = newRef [],
+    recNames = newRef Hm.empty,
     nativeInfo = newRef Hm.empty,
     natives = newRef Hm.empty,
     positive = newRef Hm.empty

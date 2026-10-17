@@ -24,7 +24,7 @@ does, how it is checked, and why it is built the way it is.
 | Dependency order | `Scc.mw` | done |
 | Types | `Check.mw`, `Elab.mw`, `Matching.mw`, `Termination.mw`, `Handlers.mw`, `Sequences.mw`, `Decl.mw`, `Positivity.mw`, `Ctx.mw`, `Usage.mw`, and the machinery under them | done for one module: agrees on every program that gets this far (392) |
 | The CEK machine | `Cek.mw`, `World.mw` | done: the same answer, in the same number of steps, as `idyll-eval` on every program that runs (211) |
-| Cut | `Emit.mw` | the Cut package is wired in; only the smallest program so far |
+| Cut | `Lower.mw`, `Typer.mw`, `Prune.mw`, `CutAst.mw`, `Emit.mw` | done: the same Cut as `idyllic-cut` on every program that lowers (212) |
 
 "Every program" means 1082 programs: the test corpora in
 `compiler/idyllic/tests/corpus/`, the prelude, every `.idl` file in the
@@ -47,6 +47,7 @@ meadow run . -- tree file.idl                 # Lingua's lossless tree, drawn
 meadow run . -- rename --prelude p.idl f.idl  # the renamed tree (HIR)
 meadow run . -- types --prelude p.idl f.idl   # each declaration's type, and the errors
 meadow run . -- run --prelude p.idl f.idl     # its answer, steps and output, on the CEK machine
+meadow run . -- cut --prelude p.idl f.idl     # its Cut, which `meadow cut` runs
 meadow build --release                        # native, into target/release/native/silo/
 ```
 
@@ -97,6 +98,13 @@ For the passes so far:
   what it printed and what it wrote as errors. The step counts agreeing
   is what says the two machines are the same machine, not just two that
   get the same answers.
+
+- **cut**: the program's Cut, as text. The two printers lay it out
+  differently, and the Rust lowering takes the recursive definitions in a
+  hash map's order, so it names things differently from run to run; so
+  both sides are made canonical before they are compared: no whitespace,
+  the names the lowering made (`k_23`) numbered afresh in each declaration,
+  and the declarations sorted.
 
 A program that uses something the pass in front/ does not handle yet comes
 out `(unsupported: case, recursion)`; the test counts these and compares
@@ -405,10 +413,52 @@ system, environment and clock operations are not in yet.
 
 ### Cut
 
-`Emit.mw` will be the one module that builds Cut, with
-[meadow-lang/Cut](https://github.com/meadow-lang/Cut), the package MeadowBoot
-uses too. So far it builds the smallest program there is, which `meadow cut`
-runs on Glade and on Silo. Lowering waits for Core.
+Cut is the IR of the back end Idyll shares with Meadow: a sequent
+calculus, typed only by how values are represented, which `meadow cut`
+lowers to AxCut and runs on Glade or compiles natively with Silo. Its
+definition is `docs/CUT.md` in the Meadow repository.
+
+**Lowering** (`Lower.mw`, `compiler/idyllic-cut/src/lower.rs`). Each
+top-level definition becomes a `def` if it is a function and a `val` if
+not, and the expression becomes the entry, a `def` with nothing but its
+continuation. Terms are lowered in continuation-passing style: a term and
+the consumer its value goes to make a statement, and an argument is
+computed into a variable first, so arguments are computed left to right
+before the call. What erasure promised is kept: an argument of grade `0`
+is never computed and a binder of grade `0` is no parameter, except that a
+type parameter becomes a descriptor parameter and a type argument a
+descriptor, which tells a function generic in a type how its values are
+represented. A function value is codata, an object with one method,
+`apply`; a partial application is an object waiting for the rest. A
+recursive definition inside another is lifted out to a `def` of its own,
+what it uses of where it was defined becoming its first parameters. A
+handler becomes Cut's `handle`, an operation `perform`, a resumption an
+object called with `resume`.
+
+Every binder needs a representation, which comes from its type. The
+elaborated program does not say the types, so `Typer.mw` (`typer.rs`)
+works them out again from the checker's state, by normalisation by
+evaluation, as checking did. Before lowering, `Prune.mw` (`prune.rs`)
+leaves out the definitions nothing live uses (most of the prelude).
+
+The runtimes print only strings, so the lowering also writes code that
+turns the program's answer into text as the REPL shows it: a `def` per
+data type in the answer's type, `#show ..` and `#atom ..` for when it is a
+field, one per array type, the prelude's `showInt` for integers, and
+`#escape` for strings. A native the runtime has no primitive for
+(`arrayToList`, the mutable arrays) becomes a `def` of the program's own,
+built of the array primitives it does have.
+
+**Emitting** (`Emit.mw`). The lowering makes Cut as plain data
+(`CutAst.mw`, as `idyllic-cut`'s lib.rs has it), which is easy to build
+inside out and share between branches; `Emit.mw` then builds it with
+[meadow-lang/Cut](https://github.com/meadow-lang/Cut), the package
+MeadowBoot uses too, and writes its text. Nothing else in front/ builds
+Cut's nodes or writes Cut's text.
+
+A program front/ lowers runs: `double 21` gives `42` on Glade. Programs
+with handlers wait on a fix in Meadow's lowering of Cut to AxCut (meadow
+PR 11).
 
 ## Dependencies
 
@@ -416,7 +466,9 @@ runs on Glade and on Silo. Lowering waits for Core.
   pinned at the revision the Cut package pins, since Cut's builders take
   Lingua's source positions and two Lingua revisions in one build would be two
   types of them.
-- **Cut**: building Cut.
+- **Cut**: building Cut and writing its text (rev d12a905, which has the
+  roles and native sections, effect variables on definitions, and `@many`
+  operations).
 
 ## Meadow lessons
 

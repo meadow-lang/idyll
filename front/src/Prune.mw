@@ -1,0 +1,134 @@
+-- Leaving out what a program never uses:
+-- `compiler/idyllic-typecheck/src/prune.rs`.
+--
+-- Every program carries the prelude's definitions, most of which it never
+-- calls. A top-level definition whose value is pure (a function, a literal,
+-- a constructor applied to such) that nothing live refers to can be left
+-- out; so can a recursive definition nothing live calls. What is live is
+-- found from the program's expression and every impure top-level
+-- definition, following references: to top-level definitions by their
+-- level, to recursive ones by their unique. Erased parts refer to nothing.
+--
+-- A definition left out keeps its `let`, with a type for its value, which
+-- is nothing at run time; so the levels of everything else are unchanged.
+
+use Idyll.Core (Core, Note, CaseAlt, OpClause)
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as Hm
+use Std.Collections.HashMap (HashMap)
+use Std.Maybe.Maybe.*
+
+-- Whether a term is a value without running anything.
+@pub fun isPureValue (ctors : HashMap Int c) (c : Core) : Bool =
+  match c with
+  | Core.Lam _ _ -> True
+  | Core.Lit _ -> True
+  | Core.Var _ _ -> True
+  | Core.Prim _ -> True
+  | Core.Opaque _ _ -> True
+  | Core.Runtime Note.Erased _ -> True
+  | Core.Runtime _ inner -> isPureValue ctors inner
+  | Core.BoxIntro inner -> isPureValue ctors inner
+  | Core.App _ _ ->
+      let (head, args) = spine c [] in
+      (match head with
+       | Core.Opaque u _ -> Hm.member u ctors and V.all (\a -> isPureValue ctors a) args
+       | _ -> False)
+  | _ -> False
+
+fun spine (c : Core) (args : [Core]) : (Core, [Core]) =
+  match c with
+  | Core.App f a -> spine f (V.append [a] args)
+  | _ -> (c, args)
+
+-- The program with the top-level definitions nothing live uses left out,
+-- and the uniques of the recursive definitions that are live. `toplevel`
+-- is the unique of each top-level `let`; `recDefs` each recursive
+-- definition's unique, level and body; `roots` live whatever uses them.
+@pub fun prune (program : Core) (toplevel : [Int]) (recDefs : [(Int, Int, Core)]) (ctors : HashMap Int c) (roots : [Int]) : (Core, [Int]) =
+  let base = 15 in
+  let (lets, body) = peel program (V.len toplevel) [] in
+  let recs = V.foldl (\m d -> match d with | (u, l, c) -> Hm.insert u (l, c) m) Hm.empty recDefs in
+  let pureOnes = V.map (\l -> match l with | (_, rhs) -> isPureValue ctors rhs) lets in
+  let liveLets0 = V.map (\i -> not (V.getOr True pureOnes i) or V.elem (V.getOr (0 - 1) toplevel i) roots) (V.range 0 (V.len lets)) in
+  let work0 =
+    V.append
+      [(base + V.len lets, body)]
+      (V.concatMap (\i -> if V.getOr False liveLets0 i then [(base + i, snd (V.getOr ("", Core.Error) lets i))] else []) (V.range 0 (V.len lets)))
+  in
+  let rootRecs = V.filter (\d -> match d with | (u, _, _) -> V.elem u roots) recDefs in
+  let liveRecs0 = V.map (\d -> match d with | (u, _, _) -> u) rootRecs in
+  let work1 = V.append work0 (V.map (\d -> match d with | (_, l, c) -> (l, c)) rootRecs) in
+  let (liveLets, liveRecs) = visit work1 base lets recs liveLets0 liveRecs0 in
+  let pruned =
+    V.foldl
+      (\acc il ->
+        match il with
+        | ((x, rhs), live) -> Core.Let x (if live then rhs else Core.Type 0) acc)
+      body
+      (V.reverse (V.zip lets liveLets))
+  in
+  (pruned, liveRecs)
+
+fun peel (c : Core) (n : Int) (acc : [(String, Core)]) : ([(String, Core)], Core) =
+  if V.len acc >= n then (acc, c)
+  else
+    match c with
+    | Core.Let x rhs rest -> peel rest n (V.pushBack acc (x, rhs))
+    | _ -> (acc, c)
+
+fun visit (work : [(Int, Core)]) (base : Int) (lets : [(String, Core)]) recs (liveLets : [Bool]) (liveRecs : [Int]) : ([Bool], [Int]) =
+  match V.last work with
+  | None -> (liveLets, liveRecs)
+  | Just (at, c) ->
+      let rest = V.take work (V.len work - 1) in
+      let (levels, opaques) = references c at 0 ([], []) in
+      let (ll, w2) =
+        V.foldl
+          (\acc l ->
+            match acc with
+            | (live, w) ->
+                let i = l - base in
+                if i >= 0 and i < V.len lets and not (V.getOr True live i) then
+                  (V.set live i True, V.pushBack w (base + i, snd (V.getOr ("", Core.Error) lets i)))
+                else acc)
+          (liveLets, rest)
+          levels
+      in
+      let (lr, w3) =
+        V.foldl
+          (\acc u ->
+            match acc with
+            | (live, w) ->
+                (match Hm.lookup u recs with
+                 | Just (l, d) -> if V.elem u live then acc else (V.pushBack live u, V.pushBack w (l, d))
+                 | None -> acc))
+          (liveRecs, w2)
+          opaques
+      in
+      visit w3 base lets recs ll lr
+
+-- The levels (in a context of `at` variables, `depth` binders in) and the
+-- constants a term refers to, outside its erased parts.
+fun references (c : Core) (at : Int) (depth : Int) (acc : ([Int], [Int])) : ([Int], [Int]) =
+  let go = \x d a -> references x at d a in
+  match c with
+  | Core.Var i _ ->
+      if i >= depth then
+        let l = at - (i - depth + 1) in
+        (match acc with | (ls, os) -> if l >= 0 and not (V.elem l ls) then (V.pushBack ls l, os) else acc)
+      else acc
+  | Core.Opaque u _ -> (match acc with | (ls, os) -> if V.elem u os then acc else (ls, V.pushBack os u))
+  | Core.Runtime Note.Erased _ -> acc
+  | Core.Lam _ b -> go b (depth + 1) acc
+  | Core.Let _ e b -> go b (depth + 1) (go e depth acc)
+  | Core.App a b -> go b depth (go a depth acc)
+  | Core.BoxIntro a -> go a depth acc
+  | Core.Unbox a -> go a depth acc
+  | Core.Runtime _ a -> go a depth acc
+  | Core.Case s alts ->
+      V.foldl (\a2 alt -> match alt with | CaseAlt.CaseAlt _ _ vars body -> go body (depth + V.len vars) a2) (go s depth acc) alts
+  | Core.Handle b r ops ->
+      V.foldl (\a2 op -> match op with | OpClause.OpClause _ _ _ body -> go body depth a2) (go r depth (go b depth acc)) ops
+  -- types, grades and rows are erased
+  | _ -> acc

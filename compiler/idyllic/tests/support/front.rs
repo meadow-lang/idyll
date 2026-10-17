@@ -204,6 +204,8 @@ pub fn agree_with(args: &[&str], extra: &[(&str, &str)], ours: impl Fn(&str) -> 
     let errors = theirs.iter().filter(|d| *d == "(error)").count();
     let idle = theirs.iter().filter(|d| *d == "(no expression)").count();
     let idle = if idle > 0 { format!(", {idle} with nothing to run") } else { String::new() };
+    let unlowered = theirs.iter().filter(|d| d.starts_with("(not lowered")).count();
+    let idle = if unlowered > 0 { format!("{idle}, {unlowered} not lowered by either") } else { idle };
     eprintln!("{pass}: {} programs, {errors} of them an error to front/, {unsupported} not handled by it yet{idle}", programs.len());
     assert!(
         differ.is_empty(),

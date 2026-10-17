@@ -75,6 +75,95 @@ fn the_types_agree() {
     );
 }
 
+#[test]
+fn the_cut_agrees() {
+    let source = idyllic::pipeline::PRELUDE;
+    let prelude = program(source).expect("the prelude parses");
+    agree_with(&["cut", "--prelude", "_prelude.txt"], &[("_prelude.txt", source)], |src| cut(&prelude, src), cut_canonical);
+}
+
+// --- the Cut, written out ------------------------------------------------------
+//
+// Both compilers' Cut as its text (`front/` builds it with the Cut package,
+// this compiler with its own printer), compared once canonical: with no
+// whitespace, which the two printers lay out differently; with the names
+// the lowering made (`k_23`, `d_a_4`) numbered afresh in each declaration in
+// the order they appear, since this compiler lowers the recursive
+// definitions in a hash map's order, and so numbers them differently from
+// run to run; and with the declarations sorted, for the same reason.
+
+/// What this compiler lowers `src` to, after the prelude, as Cut's text.
+fn cut(prelude: &idyllic_ast::Program, src: &str) -> String {
+    let Some(p) = program(src) else { return "(error)".to_string() };
+    let result = idyllic_rename::rename_module(&p, prelude);
+    if !result.errors.is_empty() {
+        return "(error)".to_string();
+    }
+    let module = idyllic_scc::scc_module(result.module);
+    let mut checked = idyllic_typecheck::check_module(&module, result.spans.len(), false, &[]);
+    if !checked.errors.is_empty() {
+        return "(error)".to_string();
+    }
+    match idyllic_cut::lower::lower(&mut checked, "Main") {
+        Ok(program) => program.to_string(),
+        Err(why) => format!("(not lowered: {})", why.join("; ")),
+    }
+}
+
+/// A Cut text in the canonical form described above.
+fn cut_canonical(text: &str) -> String {
+    if text.starts_with('(') {
+        return text.to_string();
+    }
+    let starts = ["data ", "roles {", "native {", "effect ", "val ", "def "];
+    let (mut header, mut decls): (Vec<&str>, Vec<Vec<&str>>) = (Vec::new(), Vec::new());
+    for line in text.lines() {
+        if starts.iter().any(|s| line.starts_with(s)) {
+            decls.push(vec![line]);
+        } else if let Some(d) = decls.last_mut() {
+            d.push(line);
+        } else {
+            header.push(line);
+        }
+    }
+    let squeeze = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    let mut out: Vec<String> = decls.iter().map(|d| renamed_fresh(&squeeze(&d.join("\n")))).collect();
+    out.sort();
+    let mut all = vec![squeeze(&header.join("\n"))];
+    all.extend(out);
+    all.join("\n")
+}
+
+/// Each name of the form `hint_123` numbered by where it first appears:
+/// `#0`, `#1`, ...
+fn renamed_fresh(decl: &str) -> String {
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let chars: Vec<char> = decl.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    while i < chars.len() {
+        if word(chars[i]) && (i == 0 || !word(chars[i - 1])) {
+            let start = i;
+            while i < chars.len() && word(chars[i]) {
+                i += 1;
+            }
+            let w: String = chars[start..i].iter().collect();
+            let fresh = w.rsplit_once('_').is_some_and(|(h, n)| !h.is_empty() && !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+            if fresh {
+                let n = seen.len();
+                out.push_str(&format!("#{}", seen.entry(w).or_insert(n)));
+            } else {
+                out.push_str(&w);
+            }
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 // --- the types, written out ---------------------------------------------------
 //
 // As `front/src/Check.mw` writes them: a line each, sorted, for each of the

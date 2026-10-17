@@ -181,3 +181,15 @@ fun unknownInfo (i : Info) : Bool = i != Info.Defined
   match infoAt ctx lvl with
   | Just i -> unknownInfo i
   | None -> False
+
+-- The context as it was when it had `lvl` slots: the outermost of these.
+@pub fun prefix (ctx : Ctx) (lvl : Int) : Ctx =
+  if lvl >= ctx.lvl then ctx
+  else
+    {
+      ctx |
+      lvl = lvl,
+      env = Va.envDrop ctx.env (ctx.lvl - lvl),
+      binders = V.take ctx.binders lvl,
+      splits = Hm.fromVec (V.filter (\kv -> fst kv < lvl) (Hm.toVec ctx.splits))
+    }

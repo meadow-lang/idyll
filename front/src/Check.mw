@@ -23,7 +23,9 @@ use Idyll.Ctx (Ctx)
 use Idyll.Ctx as X
 use Idyll.Elab (Pending, effectsOf, enterGroups, infer, retryPostponed, closeOpened, closeRows, reportHoles, reportUnsolved, keyOf, wrapLets)
 use Idyll.Decl (initial, declareNatives, declareEffects, declareDatas, declareOps)
-use Idyll.Hir (Module, Group, Bind, Ident, DataDecl)
+use Idyll.Hir (Module, Group, Bind, Ident, DataDecl, CtorDecl, EffectDecl, OpDecl)
+use Std.Collections.HashMap as Hm
+use Std.Collections.HashMap (HashMap)
 use Idyll.Hir as H
 use Std.Collections.Vector as V
 use Std.String as S
@@ -41,7 +43,17 @@ fun bindsOf (g : Group) : [Bind] =
 -- declared; the type of the module's expression; and the elaborated
 -- program, the expression under the top-level definitions as `let`s, in
 -- the context of the builtins and the primitives.
-@pub data Checked = Checked Tc (Maybe Core) (Maybe Core)
+@pub record Checked = {
+  tc : Tc,
+  bodyType : Maybe Core,
+  program : Maybe Core,
+  -- the unique of each top-level `let` of the program, outermost first
+  toplevel : [Int],
+  -- every name the module and the prelude declare, by unique: the package
+  -- it is in, and its path there (`Nat.Z`, `Console.putStr`)
+  symbols : HashMap Int (String, String),
+  linear : Bool
+}
 
 -- The module checked, and written as the differential test compares it:
 -- `(unsupported: ..)` if it uses what this checker cannot check yet; or
@@ -49,8 +61,8 @@ fun bindsOf (g : Group) : [Bind] =
 -- (`name : type`), the type of its expression (`body : type`), and the
 -- kinds of the errors found (`error: Mismatch`).
 @pub fun checkModule (m : Module) : String ! { Mut | e } =
-  match checked m with
-  | Checked.Checked tc body _ -> dump tc m body
+  let c = checked m in
+  dump c.tc m c.bodyType
 
 @pub fun checked (m : Module) : Checked ! { Mut | e } =
   let tc = T.new () in
@@ -94,7 +106,41 @@ fun bindsOf (g : Group) : [Bind] =
   let w4 = closeOpened tc in
   let w5 = closeRows tc in
   let w6 = reportUnsolved tc in
-  Checked.Checked tc (M.map snd body) (M.map (\b -> wrapLets (fst b) lets) body)
+  -- the unique of each top-level `let`: each group that made one
+  let toplevel =
+    V.concatMap
+      (\gw -> match gw with | (Group.NonRec b, Just _) -> [H.uniqueOf b.name] | _ -> [])
+      (V.zip m.groups lets)
+  in
+  Checked {
+    tc,
+    bodyType = M.map snd body,
+    program = M.map (\b -> wrapLets (fst b) lets) body,
+    toplevel,
+    symbols = symbolsOf m,
+    linear = m.linearBody
+  }
+
+-- Every name declared, by unique: its package (the prelude's, or `Main`,
+-- which a lone module is) and its path there.
+fun symbolsOf (m : Module) : HashMap Int (String, String) =
+  let pkg = \x -> if H.uniqueOf x < m.first then "Prelude" else "Main" in
+  let add = \acc x path -> Hm.insert (H.uniqueOf x) (pkg x, path) acc in
+  let withDatas =
+    V.foldl
+      (\acc (d : DataDecl) ->
+        V.foldl (\a c -> match c with | CtorDecl.CtorDecl x _ -> add a x (H.textOf d.name ++ "." ++ H.textOf x)) (add acc d.name (H.textOf d.name)) d.ctors)
+      Hm.empty
+      m.datas
+  in
+  let withEffects =
+    V.foldl
+      (\acc (e : EffectDecl) ->
+        V.foldl (\a o -> match o with | OpDecl.OpDecl x _ _ -> add a x (H.textOf e.name ++ "." ++ H.textOf x)) (add acc e.name (H.textOf e.name)) e.ops)
+      withDatas
+      m.effects
+  in
+  V.foldl (\acc (b : Bind) -> add acc b.name (H.textOf b.name)) withEffects (V.concatMap bindsOf m.groups)
 
 -- The effects the runtime handles: the prelude's `Eff`, or failing that,
 -- `Div`.

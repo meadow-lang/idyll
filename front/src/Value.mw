@@ -93,6 +93,18 @@ fun listGet (l : List Value) (i : Int) : Maybe Value =
 
 @pub fun envLen (e : Env) : Int = match e with | Env.Env l -> listLen l 0
 
+-- The environment without its `n` innermost values.
+@pub fun envDrop (e : Env) (n : Int) : Env =
+  match e with
+  | Env.Env l -> Env.Env (listDrop l n)
+
+fun listDrop (l : List Value) (n : Int) : List Value =
+  if n <= 0 then l
+  else
+    match l with
+    | [;] -> l
+    | _ :: rest -> listDrop rest (n - 1)
+
 -- The values of an environment, outermost first: by level.
 @pub fun envValues (e : Env) : [Value] = match e with | Env.Env l -> V.reverse (V.fromList l)
 

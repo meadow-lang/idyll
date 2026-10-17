@@ -16,6 +16,9 @@
 --            under them; `idyllic-typecheck`)
 --   Run      the reference interpreter, a CEK machine on the checked Core
 --            (`Cek`, `World`; `idyll-eval`)
+--   Cut      the checked Core lowered to Cut (`Lower`, with `Typer` and
+--            `Prune`; `idyllic-cut`) and written with the Cut package
+--            (`Emit`)
 --
 -- Run as `Idyll <pass> <file>...`, it writes each file's dump for the pass,
 -- each after a line `== <file>`: what the differential tests compare with
@@ -30,6 +33,11 @@ use Std.String as S
 use Std.Maybe as M
 use Idyll.Scc (sccModule)
 use Idyll.Check (checkModule, checked, Checked)
+use Idyll.Typer as Ty
+use Idyll.Prune as Pr
+use Idyll.CutAst as Ca
+use Idyll.Lower as Lo
+use Idyll.Emit as Em
 use Idyll.Cek as Cek
 use Idyll.World as W
 use Idyll.Core as C
@@ -55,6 +63,16 @@ fun main () =
                  | Err _ -> writeError "the prelude does not parse\n")
             | Err e -> writeError "could not read the prelude: ${e}\n")
        | _ -> writeError "usage: Idyll rename --prelude <file> <file>...\n")
+  | Just "cut" ->
+      (match (V.get args 1, V.get args 2) with
+       | (Just "--prelude", Just path) ->
+           (match readToString path with
+            | Ok text ->
+                (match Parse.parsed text with
+                 | Ok prelude -> V.foldl (\u f -> each f (cutOf prelude)) () (V.drop args 3)
+                 | Err _ -> writeError "the prelude does not parse\n")
+            | Err e -> writeError "could not read the prelude: ${e}\n")
+       | _ -> writeError "usage: Idyll cut --prelude <file> <file>...\n")
   | Just "run" ->
       (match (V.get args 1, V.get args 2) with
        | (Just "--prelude", Just path) ->
@@ -125,14 +143,13 @@ fun ran prelude (text : String) : String ! { Mut | e } =
        | (m, problems) ->
            if not (V.isEmpty problems) then "(error)"
            else
-             (match checked (sccModule m) with
-              | Checked.Checked tc _ program ->
-                  if not (V.isEmpty (getRef tc.unsupported)) then "(unsupported)"
-                  else if not (V.isEmpty (getRef tc.errors)) then "(error)"
-                  else
-                    (match program with
-                     | None -> "(no expression)"
-                     | Just core -> runCore tc core)))
+             (let c = checked (sccModule m) in
+              if not (V.isEmpty (getRef c.tc.unsupported)) then "(unsupported)"
+              else if not (V.isEmpty (getRef c.tc.errors)) then "(error)"
+              else
+                (match c.program with
+                 | None -> "(no expression)"
+                 | Just core -> runCore c.tc core)))
 
 fun runCore tc core : String ! { Mut | e } =
   let w = W.captured () in
@@ -147,3 +164,21 @@ fun runCore tc core : String ! { Mut | e } =
     let printed = if getRef w.output == "" then [] else ["printed: " ++ C.literalShown (Literal.Str (getRef w.output))] in
     let errors = if getRef w.errors == "" then [] else ["errors: " ++ C.literalShown (Literal.Str (getRef w.errors))] in
     S.join "\n" (V.concat [outcome, printed, errors])
+
+-- A program lowered to Cut, as its text: `(error)` if it does not check,
+-- `(not lowered: ..)` with why, if it cannot be.
+fun cutOf prelude (text : String) : String ! { Mut | e } =
+  match Parse.parsed text with
+  | Err _ -> "(error)"
+  | Ok prog ->
+      (match renameModule prog prelude with
+       | (m, problems) ->
+           if not (V.isEmpty problems) then "(error)"
+           else
+             (let c = checked (sccModule m) in
+              if not (V.isEmpty (getRef c.tc.unsupported)) then "(unsupported)"
+              else if not (V.isEmpty (getRef c.tc.errors)) then "(error)"
+              else
+                (match Lo.lower c "Main" with
+                 | Ok p -> Em.programText p
+                 | Err whys -> "(not lowered: " ++ S.join "; " whys ++ ")")))
