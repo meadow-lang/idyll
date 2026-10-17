@@ -1,0 +1,61 @@
+-- The type checker's state: the metacontext, and what else checking a
+-- program keeps, as `Checker` holds it in `compiler/idyllic-typecheck`.
+--
+-- Solving a metavariable must change what every value that mentions it
+-- means at once, which a cell of the metacontext gives: `Eval.force` looks a
+-- solution up whenever it meets a metavariable's head.
+
+use Idyll.Value (Value)
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as Hm
+use Std.Collections.HashMap (HashMap)
+use Std.Maybe.Maybe.*
+
+-- Where a metavariable came from: a hole the program wrote, or something
+-- the checker had to work out, said in words for a message.
+@pub data Origin = Hole | Inferred String
+
+-- The type of a metavariable, in the context it was made in: the name and
+-- type of every slot of that context, the levels of the bound variables it
+-- is applied to, and its type.
+@pub data MetaTy = MetaTy [(String, Value)] [Int] Value
+
+-- A metavariable: where it was made (a node of the HIR), where it came
+-- from, and its type if that is known.
+@pub data MetaInfo = MetaInfo Int Origin (Maybe MetaTy)
+
+@pub data Meta = Unsolved MetaInfo | Solved Value MetaInfo
+
+@pub record Tc = {
+  metas : Ref [Meta],
+  -- the type of every constant (a data type, a constructor, a recursive
+  -- definition), by its unique
+  constants : Ref (HashMap Int Value),
+  -- what is wrong, a line each, for now
+  problems : Ref [String]
+}
+
+@pub fun new () =
+  Tc { metas = newRef [], constants = newRef Hm.empty, problems = newRef [] }
+
+@pub fun problem (tc : Tc) (why : String) = setRef tc.problems (V.pushBack (getRef tc.problems) why)
+
+-- A new metavariable, unsolved.
+@pub fun newMeta (tc : Tc) (info : MetaInfo) =
+  let ms = getRef tc.metas in
+  let w = setRef tc.metas (V.pushBack ms (Meta.Unsolved info)) in
+  V.len ms
+
+@pub fun meta (tc : Tc) (m : Int) : Maybe Meta ! { Mut | e } = V.get (getRef tc.metas) m
+
+@pub fun solve (tc : Tc) (m : Int) (v : Value) =
+  let ms = getRef tc.metas in
+  match V.get ms m with
+  | Just (Meta.Unsolved info) -> setRef tc.metas (V.set ms m (Meta.Solved v info))
+  | Just (Meta.Solved _ info) -> setRef tc.metas (V.set ms m (Meta.Solved v info))
+  | None -> ()
+
+@pub fun infoOf (entry : Meta) : MetaInfo =
+  match entry with
+  | Meta.Unsolved i -> i
+  | Meta.Solved _ i -> i

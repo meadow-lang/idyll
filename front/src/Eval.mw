@@ -1,0 +1,345 @@
+-- Normalisation by evaluation, as `compiler/idyllic-typecheck/src/eval.rs`
+-- has it: evaluating Core to values, and reading values back (`quote`).
+--
+-- These consult the metacontext: a `Flex` value whose metavariable has
+-- since been solved is no longer stuck, and `force` is what makes that
+-- visible. Everything that looks at a value's head forces it first.
+
+use Idyll.Ast (Icit, Literal)
+use Idyll.Core (Core, CaseAlt, Head, OpClause, Builtin, Prim)
+use Idyll.Core as C
+use Idyll.Value (Value, Elim, Env, Closure, Row, Poly)
+use Idyll.Value as Va
+use Idyll.Grade (Grade)
+use Idyll.Grade as G
+use Idyll.Tc (Tc, Meta)
+use Idyll.Tc as T
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+-- Expand a value's head until it is no longer a solved metavariable, a
+-- primitive that can now compute, or arithmetic that can be redone.
+@pub fun force (tc : Tc) (v : Value) : Value ! { Mut | e } =
+  match v with
+  | Value.Flex m sp ->
+      (match T.meta tc m with
+       | Just (Meta.Solved sol _) -> force tc (applySpine tc sol sp)
+       | _ -> v)
+  | Value.Prim p args ->
+      (match reducePrim tc p args with
+       | Just r -> force tc r
+       | None -> v)
+  | Value.Stuck h sp ->
+      (match force tc h with
+       | Value.Prim _ _ -> v
+       | _ -> force tc (applySpine tc h sp))
+  | Value.Grade p -> if isStale tc p then Va.polyValue (renormalise tc p) else v
+  | Value.GradeRange lo hi -> gradeRange tc lo hi
+  | Value.Row (Row.Row ls ts) ->
+      let stale = V.any (\kv -> fst kv != effectKey tc (snd kv)) (V.append ls ts) in
+      if stale then row tc (V.map snd (V.append ls ts)) else v
+  | Value.Comp t e ->
+      (match force tc e with
+       | Value.Row r -> if Va.rowIsEmpty r then t else v
+       | _ -> v)
+  | _ -> v
+
+-- How many arguments a primitive takes.
+fun arity (p : Prim) : Int = 2
+
+-- A saturated primitive whose arguments are all literals, computed;
+-- nothing if it is still stuck. No laws are used: `n + 0` stays.
+fun reducePrim (tc : Tc) (p : Prim) (args : [Value]) : Maybe Value ! { Mut | e } =
+  if V.len args != arity p then None
+  else
+    match (p, force tc (V.getOr Value.Error args 0), force tc (V.getOr Value.Error args 1)) with
+    | (Prim.StrAppend, Value.Lit (Literal.Str a), Value.Lit (Literal.Str b)) -> Just (Value.Lit (Literal.Str (a ++ b)))
+    | (_, Value.Lit (Literal.Int a), Value.Lit (Literal.Int b)) -> M.map (\l -> Value.Lit l) (onInts p a b)
+    | _ -> None
+
+-- A primitive on two `Int`s: 64 bits, wrapping; nothing for a division by
+-- zero, which is stuck in a type.
+fun onInts (p : Prim) (a : Int) (b : Int) : Maybe Literal =
+  match p with
+  | Prim.IntAdd -> Just (Literal.Int (a + b))
+  | Prim.IntMul -> Just (Literal.Int (a * b))
+  | Prim.IntSub -> Just (Literal.Int (a - b))
+  | Prim.IntDiv -> if b == 0 then None else Just (Literal.Int (a / b))
+  | Prim.IntMod -> if b == 0 then None else Just (Literal.Int (a % b))
+  | Prim.IntLt -> Just (Literal.Bool (a < b))
+  | Prim.IntEq -> Just (Literal.Bool (a == b))
+  | Prim.StrAppend -> None
+
+-- Instantiate a closure.
+@pub fun apply (tc : Tc) (cl : Closure) (v : Value) : Value ! { Mut | e } =
+  match cl with
+  | Closure.Closure env body -> eval tc (Va.push env v) body
+
+@pub fun vapp (tc : Tc) (f : Value) (a : Value) : Value ! { Mut | e } =
+  match f with
+  | Value.Lam _ cl -> apply tc cl a
+  | Value.Prim p args ->
+      if V.len args < arity p then
+        let args2 = V.pushBack args a in
+        M.unwrapOr (Value.Prim p args2) (reducePrim tc p args2)
+      else stuck f (Elim.App a)
+  | _ -> stuck f (Elim.App a)
+
+-- `unbox [v]` is `v`; otherwise it waits on the head.
+@pub fun vunbox (tc : Tc) (v : Value) : Value =
+  match v with
+  | Value.BoxIntro inner -> inner
+  | _ -> stuck v Elim.Unbox
+
+-- An elimination waiting on a stuck head; on anything else it is ill-typed
+-- (and reported), so an error.
+fun stuck (head : Value) (elim : Elim) : Value =
+  match head with
+  | Value.Flex m sp -> Value.Flex m (V.pushBack sp elim)
+  | Value.Rigid l n sp -> Value.Rigid l n (V.pushBack sp elim)
+  | Value.Opaque u n sp -> Value.Opaque u n (V.pushBack sp elim)
+  | Value.Stuck h sp -> Value.Stuck h (V.pushBack sp elim)
+  | Value.Prim _ _ -> Value.Stuck head [elim]
+  | _ -> Value.Error
+
+@pub fun applySpine (tc : Tc) (head : Value) (sp : [Elim]) : Value ! { Mut | e } =
+  V.foldl
+    (\acc e ->
+      match e with
+      | Elim.App a -> vapp tc acc a
+      | Elim.Unbox -> vunbox tc acc
+      | Elim.Case env alts -> vcase tc acc env alts)
+    head
+    sp
+
+-- Evaluate a term in an environment. Total: what is ill-typed gives an
+-- error value, since the checker goes on after reporting.
+@pub fun eval (tc : Tc) (env : Env) (c : Core) : Value ! { Mut | e } =
+  match c with
+  | Core.Type n -> Value.Type n
+  | Core.LitTy b -> Value.LitTy b
+  | Core.Lit l -> Value.Lit l
+  | Core.Prim p -> Value.Prim p []
+  | Core.Error -> Value.Error
+  | Core.Var i _ -> M.unwrapOr Value.Error (Va.envGet env i)
+  | Core.Opaque u n -> Value.Opaque u n []
+  | Core.Meta m ->
+      (match T.meta tc m with
+       | Just (Meta.Solved sol _) -> sol
+       | _ -> Value.Flex m [])
+  | Core.Pi name icit g r dom cod -> Value.Pi name icit (eval tc env g) (eval tc env r) (eval tc env dom) (Closure.Closure env cod)
+  | Core.Lam x b -> Value.Lam x (Closure.Closure env b)
+  | Core.App f a ->
+      let fv = eval tc env f in
+      vapp tc fv (eval tc env a)
+  | Core.BoxTy g a -> Value.BoxTy (eval tc env g) (eval tc env a)
+  | Core.GradeLit g -> Va.polyValue (Va.polyConstant g)
+  | Core.GradeAdd a b -> Va.polyValue (Va.polyAdd (toPoly tc (eval tc env a)) (toPoly tc (eval tc env b)))
+  | Core.GradeMul a b -> Va.polyValue (Va.polyMul (toPoly tc (eval tc env a)) (toPoly tc (eval tc env b)))
+  | Core.GradeRange a b -> gradeRange tc (eval tc env a) (eval tc env b)
+  | Core.BoxIntro e -> Value.BoxIntro (eval tc env e)
+  | Core.Unbox e -> vunbox tc (eval tc env e)
+  | Core.Runtime _ inner -> eval tc env inner
+  | Core.Comp t e -> comp tc (eval tc env t) (eval tc env e)
+  | Core.Row ls ts -> row tc (V.map (\x -> eval tc env x) (V.append ls ts))
+  | Core.Handle _ _ _ -> Value.Handle env c
+  | Core.Case s alts -> vcase tc (eval tc env s) env alts
+  | Core.Let _ e body -> eval tc (Va.push env (eval tc env e)) body
+
+-- Read a value back into Core, in a context of `l` slots. Solved
+-- metavariables are expanded on the way, so what comes out mentions only
+-- unsolved ones.
+@pub fun quote (tc : Tc) (l : Int) (v : Value) : Core ! { Mut | e } =
+  match force tc v with
+  | Value.Type n -> Core.Type n
+  | Value.LitTy b -> Core.LitTy b
+  | Value.Lit x -> Core.Lit x
+  | Value.Error -> Core.Error
+  | Value.Flex m sp -> quoteSpine tc l (Core.Meta m) sp
+  | Value.Rigid k n sp -> quoteSpine tc l (Core.Var (l - k - 1) n) sp
+  | Value.Opaque u n sp -> quoteSpine tc l (Core.Opaque u n) sp
+  | Value.Prim p args -> V.foldl (\acc a -> Core.App acc (quote tc l a)) (Core.Prim p) args
+  | Value.Stuck h sp -> quoteSpine tc l (quote tc l h) sp
+  | Value.Pi name icit g r dom cod ->
+      Core.Pi name icit (quote tc l g) (quote tc l r) (quote tc l dom) (quote tc (l + 1) (apply tc cod (Va.vvar l name)))
+  | Value.Lam x b -> Core.Lam x (quote tc (l + 1) (apply tc b (Va.vvar l x)))
+  | Value.BoxTy g a -> Core.BoxTy (quote tc l g) (quote tc l a)
+  | Value.Grade p -> polyCore tc p (\a -> quote tc l a)
+  | Value.GradeRange lo hi -> Core.GradeRange (quote tc l lo) (quote tc l hi)
+  | Value.BoxIntro e -> Core.BoxIntro (quote tc l e)
+  | Value.Comp t e -> Core.Comp (quote tc l t) (quote tc l e)
+  | Value.Handle env (Core.Handle body ret ops) ->
+      let part = \c -> quote tc l (eval tc env c) in
+      Core.Handle (part body) (part ret) (V.map (\o -> match o with | OpClause.OpClause u n k b -> OpClause.OpClause u n k (part b)) ops)
+  | Value.Handle _ c -> c
+  | Value.Row (Row.Row ls ts) -> Core.Row (V.map (\kv -> quote tc l (snd kv)) ls) (V.map (\kv -> quote tc l (snd kv)) ts)
+
+fun quoteSpine (tc : Tc) (l : Int) (head : Core) (sp : [Elim]) : Core ! { Mut | e } =
+  V.foldl
+    (\acc e ->
+      match e with
+      | Elim.App a -> Core.App acc (quote tc l a)
+      | Elim.Unbox -> Core.Unbox acc
+      | Elim.Case env alts -> Core.Case acc (V.map (\alt -> quoteAlt tc l env alt) alts))
+    head
+    sp
+
+-- An alternative read back: its body run on fresh variables.
+fun quoteAlt (tc : Tc) (l : Int) (env : Env) (alt : CaseAlt) : CaseAlt ! { Mut | e } =
+  match alt with
+  | CaseAlt.CaseAlt h name vars body ->
+      let inner = V.foldl (\acc i -> Va.push acc (Va.vvar (l + i) (V.getOr "_" vars i))) env (V.range 0 (V.len vars)) in
+      CaseAlt.CaseAlt h name vars (quote tc (l + V.len vars) (eval tc inner body))
+
+-- `case v of alts`: the alternative for `v`'s constructor, its fields for
+-- the variables; if `v` is not a constructor yet, wait.
+@pub fun vcase (tc : Tc) (v : Value) (env : Env) (alts : [CaseAlt]) : Value ! { Mut | e } =
+  let fv = force tc v in
+  match choose fv alts with
+  | Just (CaseAlt.CaseAlt _ _ _ body, fields) -> eval tc (V.foldl (\e f -> Va.push e f) env fields) body
+  | None -> stuck fv (Elim.Case env alts)
+
+-- The alternative for a value, and its fields: the last of its arguments,
+-- one a variable of the alternative.
+fun choose (v : Value) (alts : [CaseAlt]) : Maybe (CaseAlt, [Value]) =
+  match v with
+  | Value.Lit (Literal.Bool b) ->
+      M.map (\a -> (a, [])) (V.find (\a -> match a with | CaseAlt.CaseAlt h _ _ _ -> h == Head.BoolLit b) alts)
+  | Value.Opaque u _ sp ->
+      (match V.find (\a -> match a with | CaseAlt.CaseAlt h _ _ _ -> h == Head.Con u) alts with
+       | Just (CaseAlt.CaseAlt h n vars body) ->
+           let k = V.len vars in
+           if V.len sp < k then None
+           else
+             let args = V.drop sp (V.len sp - k) in
+             let fields = V.concatMap (\e -> match e with | Elim.App f -> [f] | _ -> []) args in
+             if V.len fields == k then Just (CaseAlt.CaseAlt h n vars body, fields) else None
+       | None -> None)
+  | _ -> None
+
+-- --- rows --------------------------------------------------------------------
+
+-- A row, from effects, row variables and other rows, in any order and with
+-- any repeats.
+@pub fun row (tc : Tc) (items : [Value]) : Value ! { Mut | e } = Va.rowValue (rowInto tc (Row.Row [] []) items)
+
+fun rowInto (tc : Tc) (r : Row) (items : [Value]) : Row ! { Mut | e } = V.foldl (\acc i -> rowItem tc acc i) r items
+
+fun rowItem (tc : Tc) (r : Row) (item : Value) : Row ! { Mut | e } =
+  match force tc item with
+  | Value.Row (Row.Row ls ts) -> rowInto tc r (V.map snd (V.append ls ts))
+  -- a variable of type `Effect` stands for a whole row
+  | Value.Rigid l n sp -> Va.rowInsert r (effectKey tc (Value.Rigid l n sp)) (Value.Rigid l n sp) True
+  | Value.Flex m sp -> Va.rowInsert r (effectKey tc (Value.Flex m sp)) (Value.Flex m sp) True
+  | fv -> Va.rowInsert r (effectKey tc fv) fv False
+
+-- A printed form of an effect, the same for two only if they are the same,
+-- every solved metavariable in it expanded.
+@pub fun effectKey (tc : Tc) (v : Value) : String ! { Mut | e } =
+  let spine =
+    \sp ->
+      S.join
+        ""
+        (V.map (\e -> match e with | Elim.App a -> " (" ++ effectKey tc a ++ ")" | Elim.Unbox -> " Unbox" | Elim.Case _ _ -> " Case") sp)
+  in
+  match force tc v with
+  | Value.Rigid l _ sp -> "v" ++ padded l ++ spine sp
+  | Value.Flex m sp -> "?" ++ padded m ++ spine sp
+  | Value.Opaque u _ sp -> "c" ++ padded u ++ spine sp
+  | fv -> Va.atomKey fv
+
+fun padded (n : Int) : String =
+  let s = show n in
+  S.repeat "0" (20 - stringByteLength s) ++ s
+
+-- A row's effects and row variables.
+@pub fun rowParts (tc : Tc) (v : Value) : Row ! { Mut | e } = rowInto tc (Row.Row [] []) [v]
+
+-- `b ! e`, which is `b` when `e` is empty.
+@pub fun comp (tc : Tc) (t : Value) (e : Value) : Value ! { Mut | e } =
+  match force tc e with
+  | Value.Row r -> if Va.rowIsEmpty r then t else Value.Comp t e
+  | _ -> Value.Comp t e
+
+-- A type and the effects of computing it.
+@pub fun splitComp (tc : Tc) (v : Value) : (Value, Value) ! { Mut | e } =
+  match force tc v with
+  | Value.Comp t e -> (t, e)
+  | _ -> (v, Va.emptyRow ())
+
+-- --- grades ------------------------------------------------------------------
+
+-- A grade value as a polynomial: its normal form, or itself as an atom.
+@pub fun toPoly (tc : Tc) (v : Value) : Poly ! { Mut | e } =
+  match force tc v with
+  | Value.Grade p -> p
+  | fv -> Va.polyAtom fv
+
+-- Whether an atom has been solved since the polynomial was built: its key
+-- would be different now.
+fun isStale (tc : Tc) (p : Poly) : Bool ! { Mut | e } =
+  V.any (\t -> match t with | (atoms, _) -> V.any (\a -> Va.atomKey (force tc a) != Va.atomKey a) atoms) (Va.polyTerms p)
+
+-- A polynomial rebuilt from its atoms' meanings now.
+@pub fun renormalise (tc : Tc) (p : Poly) : Poly ! { Mut | e } =
+  V.foldl
+    (\sum t ->
+      match t with
+      | (atoms, g) -> Va.polyAdd sum (V.foldl (\acc a -> Va.polyMul acc (toPoly tc a)) (Va.polyConstant g) atoms))
+    (Va.polyZero ())
+    (Va.polyTerms p)
+
+-- `lo..hi`: a constant between constants (an error if empty, which the
+-- elaborator reports), and otherwise waiting.
+@pub fun gradeRange (tc : Tc) (lo : Value) (hi : Value) : Value ! { Mut | e } =
+  let (lp, hp) = (toPoly tc lo, toPoly tc hi) in
+  match (Va.asConstant lp, Va.asConstant hp) with
+  | (Just a, Just b) ->
+      (match G.range a b with
+       | Just g -> Va.polyValue (Va.polyConstant g)
+       | None -> Value.Error)
+  | _ -> Value.GradeRange (Va.polyValue lp) (Va.polyValue hp)
+
+-- A polynomial read back as a sum of products, given how to read an atom.
+@pub fun polyCore (tc : Tc) (p : Poly) atom : Core ! { Mut | e } =
+  let terms = Va.polyTerms (renormalise tc p) in
+  let products =
+    V.map
+      (\t ->
+        match t with
+        | (atoms, g) ->
+            -- a coefficient of one goes unwritten, unless it is all there is
+            let start = if V.isEmpty atoms or g != G.one then Just (C.grade g) else None in
+            let product =
+              V.foldl (\acc a -> match acc with | None -> Just (atom a) | Just q -> Just (Core.GradeMul q (atom a))) start atoms
+            in
+            M.unwrapOr (C.grade G.zero) product)
+      terms
+  in
+  match V.head products with
+  | None -> C.grade G.zero
+  | Just first -> V.foldl (\s q -> Core.GradeAdd s q) first (V.drop products 1)
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+fun normal (c : Core) : String ! { Mut | e } =
+  let tc = T.new () in
+  C.shown False (quote tc 0 (eval tc (Va.emptyEnv ()) c))
+
+@test fun betaReducesAndPrimitivesCompute () =
+  let three = Core.Lit (Literal.Int 3) in
+  let id = Core.Lam "x" (Core.Var 0 "x") in
+  let a = assertEq (normal (Core.App id three)) "3" "a lambda applied" in
+  let sum = Core.App (Core.App (Core.Prim Prim.IntAdd) (Core.Lit (Literal.Int 2))) three in
+  let b = assertEq (normal sum) "5" "a primitive on literals" in
+  let open = Core.Lam "n" (Core.App (Core.App (Core.Prim Prim.IntAdd) (Core.Var 0 "n")) three) in
+  assertEq (normal open) "\\n -> n + 3" "and stuck on a variable, read back under its binder"
+
+@test fun aCaseChoosesItsAlternative () =
+  let alts = [CaseAlt.CaseAlt (Head.BoolLit True) "True" [] (Core.Lit (Literal.Int 1)), CaseAlt.CaseAlt (Head.BoolLit False) "False" [] (Core.Lit (Literal.Int 0))] in
+  let cmp = Core.App (Core.App (Core.Prim Prim.IntLt) (Core.Lit (Literal.Int 1))) (Core.Lit (Literal.Int 2)) in
+  assertEq (normal (Core.Case cmp alts)) "1" "1 < 2, so the first"
