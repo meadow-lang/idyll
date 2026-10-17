@@ -90,7 +90,7 @@ Traits, more of the standard library and the tooling are still to come. The
 | `compiler/`    | The Rust compiler, `idyllic`, a crate per pass: lexer, layout, parser, renamer, type checker, the AxCut and Cut lowerings, LLVM |
 | `idyll-eval/`  | The reference interpreter the Rust compiler is tested against                       |
 | `idyll-driver/`| The `idyll` command: the REPL, its tour, and the build system                       |
-| `front/`       | The compiler in Meadow, with Lingua                                                 |
+| `front/`       | The compiler in Meadow, with Lingua; [front/README.md](front/README.md) explains it |
 | `lib/Std/`     | The standard library                                                                |
 | `rts/`         | The C runtime for native code, until Glade and Silo replace it                      |
 | `cut-corpus/`, `axcut-corpus/` | Every runnable test program, as Cut and as AxCut, with its expected output |
@@ -114,7 +114,8 @@ The Meadow compiler in `front/` needs
 [Meadow](https://github.com/meadow-lang/meadow) installed. Then
 `meadow test` runs its tests, and `meadow run . -- parse file.idl` prints a
 program's syntax tree. `compiler/idyllic/tests/front.rs` checks it against
-the Rust compiler.
+the Rust compiler. [front/README.md](front/README.md) explains how it works,
+pass by pass.
 
 ## AI disclosure
 
