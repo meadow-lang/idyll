@@ -22,7 +22,7 @@ use Idyll.Value (Value, Elim)
 use Idyll.Value as Va
 use Idyll.Grade (Grade)
 use Idyll.Grade as G
-use Idyll.Tc (Tc)
+use Idyll.Tc (Tc, CtorInfo)
 use Idyll.Tc as T
 use Idyll.Eval (force, apply, eval, quote, toPoly)
 use Idyll.Unify (sortOf)
@@ -96,7 +96,8 @@ fun underParams (params : [(Ident, Maybe Term)]) (ks : [Core]) (ty : Core) (grad
             in
             let ty = underParams d.params ks kind G.default Icit.Explicit in
             let w = declare tc d.name (H.textOf d.name) ty in
-            let w2 = setRef tc.datas (Hm.insert (H.uniqueOf d.name) True (getRef tc.datas)) in
+            let ctors = V.map (\ct -> match ct with | CtorDecl.CtorDecl x _ -> H.uniqueOf x) d.ctors in
+            let w2 = setRef tc.datas (Hm.insert (H.uniqueOf d.name) ctors (getRef tc.datas)) in
             (declareConstant tc c d.name (eval tc c.env ty), V.pushBack kinds (ks, indices)))
       (ctx, [])
       datas
@@ -119,10 +120,11 @@ fun underParams (params : [(Ident, Maybe Term)]) (ks : [Core]) (ty : Core) (grad
 fun declareCtors (tc : Tc) (ctx : Ctx) (d : DataDecl) (ks : [Core]) (indices : Int) : (Ctx, [(Int, Value)]) ! { Mut | e } =
   -- the parameters again, now that the type itself is in scope
   let params = bindParams tc ctx d.params ks in
+  let n = V.len d.params in
   V.foldl
-    (\acc ctor ->
-      match (acc, ctor) with
-      | ((c, fieldsSoFar), CtorDecl.CtorDecl x shape) ->
+    (\acc tagged ->
+      match (acc, tagged) with
+      | ((c, fieldsSoFar), (tag, CtorDecl.CtorDecl x shape)) ->
           let declared =
             match shape with
             | CtorShape.Fields fields ->
@@ -137,9 +139,11 @@ fun declareCtors (tc : Tc) (ctx : Ctx) (d : DataDecl) (ks : [Core]) (indices : I
            | Just (ty0, implicit, fields, found) ->
                let ty = eval tc c.env (underParams d.params ks ty0 G.zero Icit.Implicit) in
                let w = declare tc d.name (H.textOf d.name ++ "." ++ H.textOf x) (quote tc c.lvl ty) in
+               let info = CtorInfo.CtorInfo (H.textOf x) (H.uniqueOf d.name) tag (n + implicit) fields in
+               let w2 = setRef tc.ctors (Hm.insert (H.uniqueOf x) info (getRef tc.ctors)) in
                (declareConstant tc c x ty, V.append fieldsSoFar found)))
     (ctx, [])
-    d.ctors
+    (V.zip (V.range 0 (V.len d.ctors)) d.ctors)
 
 -- How many function types a type starts with, and what it ends in.
 fun telescopeEnd (tc : Tc) (lvl : Int) (ty : Value) : (Int, Value) ! { Mut | e } =

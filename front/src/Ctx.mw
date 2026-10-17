@@ -33,10 +33,13 @@ use Std.Maybe.Maybe.*
   lvl : Int,
   env : Env,
   binders : [Binder],
-  names : HashMap Int Entry
+  names : HashMap Int Entry,
+  -- the slots matching has split: the constructor each turned out to be,
+  -- and the slots of that constructor's arguments
+  splits : HashMap Int (Int, [Int])
 }
 
-@pub fun empty () : Ctx = Ctx { lvl = 0, env = Va.emptyEnv (), binders = [], names = Hm.empty }
+@pub fun empty () : Ctx = Ctx { lvl = 0, env = Va.emptyEnv (), binders = [], names = Hm.empty, splits = Hm.empty }
 
 @pub fun extend (ctx : Ctx) (unique : Maybe Int) (hint : String) (ty : Value) (info : Info) (value : Value) : Ctx =
   let names =
@@ -44,12 +47,7 @@ use Std.Maybe.Maybe.*
     | Just u -> Hm.insert u (Entry.Local ctx.lvl) ctx.names
     | None -> ctx.names
   in
-  Ctx {
-    lvl = ctx.lvl + 1,
-    env = Va.push ctx.env value,
-    binders = V.pushBack ctx.binders (Binder.Binder info hint ty unique None),
-    names
-  }
+  { ctx | lvl = ctx.lvl + 1, env = Va.push ctx.env value, binders = V.pushBack ctx.binders (Binder.Binder info hint ty unique None), names = names }
 
 fun uniqueOf (x : Ident) : Maybe Int =
   let u = H.uniqueOf x in
@@ -129,3 +127,57 @@ fun unknownInfo (i : Info) : Bool = i != Info.Defined
 -- The name and type of every slot, by level.
 @pub fun types (ctx : Ctx) : [(String, Value)] =
   V.map (\b -> match b with | Binder.Binder _ n ty _ _ -> (n, ty)) ctx.binders
+
+-- A binder no name refers to yet, charged to `key`, with its grade.
+@pub fun bindKeyed (ctx : Ctx) (key : Int) (hint : String) (ty : Value) (grade : Maybe Value) : Ctx =
+  let next = extend ctx None hint ty Info.Bound (Va.vvar ctx.lvl hint) in
+  { next | binders = V.set next.binders ctx.lvl (Binder.Binder Info.Bound hint ty (Just key) grade) }
+
+-- Let `x` name the slot at `lvl`.
+@pub fun alias (ctx : Ctx) (x : Ident) (lvl : Int) : Ctx =
+  match uniqueOf x with
+  | Just u -> { ctx | names = Hm.insert u (Entry.Local lvl) ctx.names }
+  | None -> ctx
+
+-- The value in a slot.
+@pub fun value (ctx : Ctx) (lvl : Int) : Value =
+  match Va.envGet ctx.env (ctx.lvl - lvl - 1) with
+  | Just v -> v
+  | None -> Value.Error
+
+@pub fun typeAt (ctx : Ctx) (lvl : Int) : Value =
+  match V.get ctx.binders lvl with
+  | Just (Binder.Binder _ _ ty _ _) -> ty
+  | None -> Value.Error
+
+@pub fun keyAt (ctx : Ctx) (lvl : Int) : Maybe Int =
+  match V.get ctx.binders lvl with
+  | Just (Binder.Binder _ _ _ k _) -> k
+  | None -> None
+
+@pub fun gradeAt (ctx : Ctx) (lvl : Int) : Maybe Value =
+  match V.get ctx.binders lvl with
+  | Just (Binder.Binder _ _ _ _ g) -> g
+  | None -> None
+
+-- A slot with its type replaced, and made a definition if `defined`.
+@pub fun refined (ctx : Ctx) (lvl : Int) (ty : Value) (defined : Bool) : Ctx =
+  match V.get ctx.binders lvl with
+  | Just (Binder.Binder i n _ k g) ->
+      { ctx | binders = V.set ctx.binders lvl (Binder.Binder (if defined then Info.Defined else i) n ty k g) }
+  | None -> ctx
+
+-- The slot a name refers to, if it is a variable nothing has defined.
+@pub fun boundSlot (ctx : Ctx) (x : Ident) : Maybe Int =
+  match uniqueOf x with
+  | None -> None
+  | Just u ->
+      (match Hm.lookup u ctx.names with
+       | Just (Entry.Local l) -> if (match infoAt ctx l with | Just i -> unknownInfo i | None -> False) then Just l else None
+       | _ -> None)
+
+-- Whether the types know nothing of a slot's value.
+@pub fun unknownAt (ctx : Ctx) (lvl : Int) : Bool =
+  match infoAt ctx lvl with
+  | Just i -> unknownInfo i
+  | None -> False

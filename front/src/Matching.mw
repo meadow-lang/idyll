@@ -1,0 +1,944 @@
+-- The match compiler: `compiler/idyllic-typecheck/src/matching.rs`.
+-- Equations and `case` alternatives elaborated to case trees, with
+-- dependent matching, after Cockx & Abel, "Elaborating Dependent
+-- (Co)pattern Matching" (ICFP 2018), without copatterns.
+--
+-- A definition by equations is a list of problems, one per equation:
+-- patterns waiting to be matched. The first problem decides what happens:
+--
+-- * while it has patterns for arguments not bound yet, the goal must be a
+--   function type, and its argument is bound, for every problem's next
+--   pattern to be matched against (`intro`);
+-- * once each pattern is a name, or a constructor or literal that agrees
+--   with what it is matched against, it has won: its right-hand side is
+--   checked, its names bound (`leaf`);
+-- * a constructor that disagrees drops the equation;
+-- * a constructor or literal matched against a variable is where the tree
+--   branches (`split`): for each constructor of the variable's type, its
+--   arguments become new variables, and the variable is unified with the
+--   constructor applied to them, and the type's indices with the
+--   constructor's.
+--
+-- That unification (`unifyIndices`) solves the context's own variables,
+-- not metavariables: matching `xs : Vec n a` against `Cons x rest` defines
+-- `n` as `S m`, in the goal and in every other type. Where it finds two
+-- different constructors, the case cannot happen and needs no alternative.
+--
+-- A variable split on is used as a scrutinee is, once; its fields come out
+-- with its grade times theirs (a data type's fields are linear, so with
+-- its grade). A name in a pattern is another name for the slot it matched.
+
+use Idyll.Ast (Icit, Literal)
+use Idyll.Core (Core, Builtin, Prim, Note, Head, CaseAlt)
+use Idyll.Core as C
+use Idyll.Value (Value, Elim, Env, Closure, Poly)
+use Idyll.Value as Va
+use Idyll.Grade (Grade)
+use Idyll.Grade as G
+use Idyll.Tc (Tc, Meta, CtorInfo)
+use Idyll.Tc as T
+use Idyll.Eval (force, apply, eval, quote, toPoly, splitComp)
+use Idyll.Unify (unify)
+use Idyll.Usage (Usage)
+use Idyll.Usage as U
+use Idyll.Ctx (Ctx, Info)
+use Idyll.Ctx as X
+use Idyll.Elab (check, infer, insert, freshMeta, closeEffects, leaveKey, leaveBinder, lam, gradeFits, defaultGrade, mentions, keyOf, effectsOf)
+use Idyll.Hir (Term, Ident, Clause, Pattern, Rhs)
+use Idyll.Hir as H
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as Hm
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+-- What a pattern is matched against: a slot of the context, or a part of a
+-- value unification worked out, with its type (a name for one is erased:
+-- only the types know it).
+data Target = Slot Int | Val Value Value
+
+-- One equation on its way through: the clause, its position, its patterns
+-- for arguments not bound yet, its patterns and what they are matched
+-- against, its names settled, and its dot patterns.
+data Problem = Problem Clause Int [Pattern] [(Pattern, Target)] [(Ident, Target)] [(Term, Target)]
+
+data How = ByCon | ByLit Literal
+
+data Step = Done | Fails | Splits Int How | Failed
+
+-- Unifying a constructor's indices with a variable's: possible (the
+-- context with what was learned, and the substitution), impossible, or no
+-- telling.
+data Unified = Refined Ctx (Maybe Env) | Absurd | Stuck Value Value
+
+-- What one match finds out along the way.
+record Matcher = {
+  used : Ref [Bool],
+  missing : Ref [String],
+  -- the slots of what is matched, and their types before any matching
+  args : Ref [Int],
+  argTypes : Ref [Value],
+  -- the slots matching bound that no pattern named
+  unnamed : Ref [Int],
+  -- something was wrong, and has been reported: coverage and usage then
+  -- say nothing
+  failed : Ref Bool
+}
+
+fun fail (m : Matcher) = setRef m.failed True
+
+fun lvlOf (c : Ctx) : Int = c.lvl
+
+fun failedNow (m : Matcher) : Bool ! { Mut | e } = getRef m.failed
+
+fun nothing () : (Core, Usage) = (Core.Error, U.unknown ())
+
+fun gradeValue (g : Grade) : Value = Va.polyValue (Va.polyConstant g)
+
+fun vecOf (m : Maybe a) : [a] =
+  match m with
+  | Just x -> [x]
+  | None -> []
+
+fun clauseOf (p : Problem) : Clause = match p with | Problem.Problem c _ _ _ _ _ -> c
+
+fun patsOf (c : Clause) : [Pattern] = match c with | Clause.Clause ps _ -> ps
+
+fun rhsOf (c : Clause) : Rhs = match c with | Clause.Clause _ r -> r
+
+fun isImpossible (r : Rhs) : Bool = match r with | Rhs.Impossible -> True | _ -> False
+
+-- The pattern under any as-patterns.
+fun peel (p : Pattern) : Pattern =
+  match p with
+  | Pattern.As _ q -> peel q
+  | _ -> p
+
+fun ctorOf (tc : Tc) (c : Int) : CtorInfo ! { Mut | e } =
+  M.unwrapOr (CtorInfo.CtorInfo "?" (0 - 1) 0 0 0) (T.ctorInfo tc c)
+
+fun isCtor (tc : Tc) (c : Int) : Bool ! { Mut | e } = M.isSome (T.ctorInfo tc c)
+
+-- --- entry points ------------------------------------------------------------------
+
+-- A function defined by equations, against its type.
+@pub fun elabMatch (tc : Tc) (ctx : Ctx) (clauses : [Clause]) (goal : Value) : (Core, Usage) ! { Mut | e } =
+  let arity = match V.head clauses with | Just c -> V.len (patsOf c) | None -> 0 in
+  let problems =
+    V.concatMap
+      (\i ->
+        match V.get clauses i with
+        | Just c ->
+            if V.len (patsOf c) == arity then [Problem.Problem c i (patsOf c) [] [] []]
+            else
+              let w = T.error tc "ClauseArity" in
+              []
+        | None -> [])
+      (V.range 0 (V.len clauses))
+  in
+  -- without the equation dropped, coverage would be wrong
+  runMatch tc ctx clauses problems goal [] (V.len problems < V.len clauses)
+
+-- A function defined by equations, with no signature: its type found from
+-- them, starting from how many arguments it takes.
+@pub fun inferMatch (tc : Tc) (ctx : Ctx) (clauses : [Clause]) : (Core, Value, Usage) ! { Mut | e } =
+  let arity = match V.head clauses with | Just c -> V.len (patsOf c) | None -> 0 in
+  let (under, doms) =
+    V.foldl
+      (\acc i ->
+        match acc with
+        | (u, ds) ->
+            let d = freshMeta tc u "the type of this argument" in
+            (X.bind u None "x" (eval tc u.env d), V.pushBack ds d))
+      (ctx, [])
+      (V.range 0 arity)
+  in
+  let cod = freshMeta tc under "the result type of this function" in
+  let effects = freshMeta tc under "the effects of this function" in
+  let ty =
+    V.foldl
+      (\acc dom -> Core.Pi "_" Icit.Explicit (C.grade G.default) (C.grade G.defaultInType) dom acc)
+      (Core.Comp cod effects)
+      (V.reverse doms)
+  in
+  let tyV = eval tc ctx.env ty in
+  let (core, usage) = elabMatch tc ctx clauses tyV in
+  (core, tyV, usage)
+
+-- `case scrutinee of clauses`. A variable is matched where it is, so the
+-- match refines it; anything else is bound to a slot of its own first.
+@pub fun caseOf (tc : Tc) (ctx : Ctx) (scrutinee : Term) (clauses : [Clause]) (expected : Maybe Value) : (Core, Value, Usage) ! { Mut | e } =
+  let (sC0, sTy0, sU) = infer tc ctx scrutinee in
+  let (sC, sTy) = insert tc ctx sC0 sTy0 in
+  match force tc sTy with
+  | Value.Error -> (Core.Error, Value.Error, U.unknown ())
+  | _ ->
+      let goal =
+        match expected with
+        | Just ty -> ty
+        | None -> eval tc ctx.env (freshMeta tc ctx "the type of this case")
+      in
+      let problems =
+        \slot ->
+          V.concatMap
+            (\i -> match V.get clauses i with | Just c -> [Problem.Problem c i [] (V.map (\p -> (p, Target.Slot slot)) (patsOf c)) [] []] | None -> [])
+            (V.range 0 (V.len clauses))
+      in
+      -- `if 1 then ..`: said about the condition, once
+      let boolPattern =
+        V.any (\c -> match M.map peel (V.head (patsOf c)) with | Just (Pattern.Lit (Literal.Bool _)) -> True | _ -> False) clauses
+      in
+      let notBool = boolPattern and not (unify tc ctx.lvl sTy (Value.LitTy Builtin.Bool)) in
+      if notBool then
+        let w = T.error tc "Mismatch" in
+        let w2 = abandon tc goal in
+        (Core.Error, Value.Error, U.unknown ())
+      else
+        let variable =
+          match scrutinee with
+          | Term.Var x -> X.boundSlot ctx x
+          | _ -> None
+        in
+        (match variable with
+         | Just k ->
+             let (core, usage) = runMatch tc ctx clauses (problems k) goal [k] False in
+             (core, goal, usage)
+         | None ->
+             let key = T.freshKey tc in
+             -- a value with nothing inside is looked at once, which is all
+             -- a match does with it
+             let grade = if fieldless tc sTy then Just (gradeValue G.one) else None in
+             let ctx2 = X.bindKeyed ctx key "_" sTy grade in
+             let (core, usage) = runMatch tc ctx2 clauses (problems ctx.lvl) goal [ctx.lvl] False in
+             let (n, rest) = U.take usage (Just key) in
+             (Core.Let "_" sC core, goal, U.add rest (U.scale sU n)))
+
+fun runMatch (tc : Tc) (ctx : Ctx) (clauses : [Clause]) (problems : [Problem]) (goal : Value) (args : [Int]) (failed : Bool) : (Core, Usage) ! { Mut | e } =
+  let m =
+    Matcher {
+      used = newRef (V.replicate (V.len clauses) False),
+      missing = newRef [],
+      args = newRef args,
+      argTypes = newRef (V.map (\k -> X.typeAt ctx k) args),
+      unnamed = newRef [],
+      failed = newRef failed
+    }
+  in
+  let (core, usage) = tree tc m ctx problems goal in
+  if failedNow m then
+    let w = abandon tc goal in
+    (core, U.unknown ())
+  else
+    let w = if V.isEmpty (getRef m.missing) then () else T.error tc "MissingCases" in
+    let w2 =
+      V.foldl
+        (\acc i ->
+          match V.get clauses i with
+          | Just c ->
+              if not (V.getOr True (getRef m.used) i) and not (isImpossible (rhsOf c)) and plausible tc ctx m c then T.error tc "UnreachableClause"
+              else ()
+          | None -> ())
+        ()
+        (V.range 0 (V.len clauses))
+    in
+    (core, usage)
+
+-- --- the tree ---------------------------------------------------------------------
+
+fun tree (tc : Tc) (m : Matcher) (ctx : Ctx) (problems : [Problem]) (goal : Value) : (Core, Usage) ! { Mut | e } =
+  match V.head problems with
+  | None ->
+      let w = setRef m.missing (V.pushBack (getRef m.missing) "case") in
+      nothing ()
+  | Just first ->
+      (match first with
+       | Problem.Problem _ _ pending _ _ _ ->
+           if not (V.isEmpty pending) then intro tc m ctx problems goal
+           else
+             let (step, p) = simplify tc ctx first in
+             let rest = V.drop problems 1 in
+             (match step with
+              | Step.Done -> leaf tc m ctx p rest goal
+              | Step.Splits k how -> split tc m ctx (V.append [p] rest) goal k how
+              | Step.Fails -> tree tc m ctx rest goal
+              | Step.Failed ->
+                  let w = fail m in
+                  tree tc m ctx rest goal))
+
+-- Bind the next argument, for every problem's next pattern.
+fun intro (tc : Tc) (m : Matcher) (ctx : Ctx) (problems : [Problem]) (goal0 : Value) : (Core, Usage) ! { Mut | e } =
+  let goal = force tc goal0 in
+  match goal with
+  | Value.Pi name icit grade _ dom cod ->
+      let key = T.freshKey tc in
+      let lvl = ctx.lvl in
+      -- named after the first equation to name it (an implicit argument has
+      -- no pattern)
+      let named =
+        if icit != Icit.Explicit then None
+        else
+          V.foldl
+            (\acc p ->
+              match acc with
+              | Just x -> Just x
+              | None ->
+                  (match p with
+                   | Problem.Problem _ _ pending _ _ _ ->
+                       (match V.head pending with
+                        | Just (Pattern.Var x) -> Just (H.textOf x)
+                        | Just (Pattern.As x _) -> Just (H.textOf x)
+                        | _ -> None)))
+            None
+            problems
+      in
+      let w = if M.isNone named and name == "_" then setRef m.unnamed (V.pushBack (getRef m.unnamed) lvl) else () in
+      let hint = match named with | Just x -> x | None -> if name != "_" then name else "x" in
+      let ctx2 = X.bindKeyed ctx key hint dom (Just grade) in
+      let problems2 =
+        if icit == Icit.Explicit then
+          let w2 = setRef m.args (V.pushBack (getRef m.args) lvl) in
+          let w3 = setRef m.argTypes (V.pushBack (getRef m.argTypes) dom) in
+          V.map
+            (\p ->
+              match p with
+              | Problem.Problem c i pending cs bs ds ->
+                  (match V.head pending with
+                   | Just pat -> Problem.Problem c i (V.drop pending 1) (V.pushBack cs (pat, Target.Slot lvl)) bs ds
+                   | None -> p))
+            problems
+        else problems
+      in
+      let (codV, effects) = splitComp tc (apply tc cod (Va.vvar lvl hint)) in
+      let (body, usage0) = tree tc m ctx2 problems2 codV in
+      -- after an error, what was used is anyone's guess
+      let usage = if failedNow m then U.unknown () else usage0 in
+      -- what the equations do is what calling the function does
+      let u1 = closeEffects tc ctx2 usage effects in
+      let u2 = leaveKey tc ctx2 (Just key) grade u1 False in
+      (lam tc ctx hint grade dom body, u2)
+  -- not known to be a function yet: made one
+  | Value.Flex _ _ ->
+      let dom = eval tc ctx.env (freshMeta tc ctx "the type of this argument") in
+      let ctxArg = X.bind ctx None "x" dom in
+      let codC = freshMeta tc ctxArg "the result type of this function" in
+      let effects = freshMeta tc ctxArg "the effects of this function" in
+      let pi = Value.Pi "x" Icit.Explicit (gradeValue G.default) (gradeValue G.defaultInType) dom (Closure.Closure ctx.env (Core.Comp codC effects)) in
+      if unify tc ctx.lvl goal pi then intro tc m ctx problems pi else tooManyPatterns tc m
+  | Value.Error ->
+      let w = fail m in
+      nothing ()
+  | _ -> tooManyPatterns tc m
+
+fun tooManyPatterns (tc : Tc) (m : Matcher) : (Core, Usage) ! { Mut | e } =
+  let w = T.error tc "TooManyPatterns" in
+  let w2 = fail m in
+  nothing ()
+
+-- Settle what can be settled of a problem's patterns, left to right, until
+-- one waits on a variable or disagrees.
+fun simplify (tc : Tc) (ctx : Ctx) (p : Problem) : (Step, Problem) ! { Mut | e } =
+  match p with
+  | Problem.Problem clause index pending constraints bindings dots ->
+      (match V.head constraints with
+       | None -> (Step.Done, p)
+       | Just (pat, target) ->
+           let rest = V.drop constraints 1 in
+           let again = \cs bs ds -> simplify tc ctx (Problem.Problem clause index pending cs bs ds) in
+           (match pat with
+            | Pattern.Var x -> again rest (V.pushBack bindings (x, target)) dots
+            | Pattern.Wild -> again rest bindings dots
+            | Pattern.As x q -> again (V.append [(q, target)] rest) (V.pushBack bindings (x, target)) dots
+            | Pattern.Dot e -> again rest bindings (V.pushBack dots (e, target))
+            | Pattern.Lit (Literal.Str _) ->
+                let w = T.error tc "StringPattern" in
+                (Step.Failed, p)
+            | Pattern.Lit lit ->
+                let want = Value.LitTy (C.literalBuiltin lit) in
+                let ty = targetType ctx target in
+                if not (unify tc ctx.lvl ty want) then
+                  let w = T.error tc "Mismatch" in
+                  (Step.Failed, p)
+                else
+                  (match lit with
+                   | Literal.Unit -> again rest bindings dots
+                   | _ ->
+                       (match force tc (targetValue ctx target) with
+                        | Value.Lit l -> if l == lit then again rest bindings dots else (Step.Fails, p)
+                        | Value.Rigid k _ [] ->
+                            let how = match lit with | Literal.Bool _ -> How.ByCon | _ -> How.ByLit lit in
+                            (Step.Splits k how, p)
+                        | v -> (cannotSplit tc v, p)))
+            | Pattern.Con c args ->
+                let us = H.uniquesOf c in
+                if V.len us != 1 then
+                  -- the renamer reported an unknown name already; and a
+                  -- name several `use`s give is not chosen between yet
+                  let w = if V.len us > 1 then T.cannot tc "overloading" else () in
+                  (Step.Failed, p)
+                else
+                  let cu = V.getOr 0 us 0 in
+                  (match T.ctorInfo tc cu with
+                   | None ->
+                       let w = T.error tc "NotAConstructor" in
+                       (Step.Failed, p)
+                   | Just (CtorInfo.CtorInfo _ dt _ _ fields) ->
+                       (match force tc (targetType ctx target) with
+                        | Value.Error -> (Step.Failed, p)
+                        | Value.Opaque d _ _ ->
+                            if d != dt then
+                              let w = T.error tc "NotAConstructorOf" in
+                              (Step.Failed, p)
+                            else if V.len args != fields then
+                              let w = T.error tc "WrongFieldCount" in
+                              (Step.Failed, p)
+                            else
+                              (match force tc (targetValue ctx target) with
+                               | Value.Opaque c2 _ sp ->
+                                   if not (isCtor tc c2) then (cannotSplit tc (Value.Opaque c2 "" sp), p)
+                                   else if c2 != cu then (Step.Fails, p)
+                                   else
+                                     let fs = fieldTargets tc ctx target cu sp in
+                                     again (V.append (V.zip args fs) rest) bindings dots
+                               | Value.Rigid k _ [] -> (Step.Splits k How.ByCon, p)
+                               | v -> (cannotSplit tc v, p))
+                        | _ ->
+                            let w = T.error tc "NotAConstructorOf" in
+                            (Step.Failed, p)))
+            | Pattern.SeqNil ->
+                let w = T.cannot tc "sequences" in
+                (Step.Failed, p)
+            | Pattern.SeqCons _ _ ->
+                let w = T.cannot tc "sequences" in
+                (Step.Failed, p)))
+
+-- Whether a clause no case reached at least makes sense, as far as its
+-- outermost patterns go: a constructor of another type is an error, not an
+-- unreachable clause.
+fun plausible (tc : Tc) (ctx : Ctx) (m : Matcher) (clause : Clause) : Bool ! { Mut | e } =
+  V.foldl
+    (\ok pt ->
+      if not ok then False
+      else
+        match pt with
+        | (pat, ty) ->
+            (match peel pat with
+             | Pattern.Con c _ ->
+                 let u = H.uniqueOf c in
+                 if u < 0 then False
+                 else
+                   (match T.ctorInfo tc u with
+                    | None ->
+                        let w = T.error tc "NotAConstructor" in
+                        False
+                    | Just (CtorInfo.CtorInfo _ dt _ _ _) ->
+                        (match force tc ty with
+                         | Value.Opaque d _ _ ->
+                             if d == dt then True
+                             else
+                               let w = T.error tc "NotAConstructorOf" in
+                               False
+                         | _ ->
+                             let w = T.error tc "NotAConstructorOf" in
+                             False))
+             | _ -> True))
+    True
+    (V.zip (patsOf clause) (getRef m.argTypes))
+
+fun cannotSplit (tc : Tc) (v : Value) : Step ! { Mut | e } =
+  let w = match v with | Value.Error -> () | _ -> T.error tc "CannotSplit" in
+  Step.Failed
+
+-- What a constructor value's fields are matched as: the slots a split bound
+-- for them, if a split made it this constructor; otherwise its arguments.
+fun fieldTargets (tc : Tc) (ctx : Ctx) (target : Target) (c : Int) (sp : [Elim]) : [Target] ! { Mut | e } =
+  let params = match ctorOf tc c with | CtorInfo.CtorInfo _ _ _ ps _ -> ps in
+  let fromSplit =
+    match target with
+    | Target.Slot k ->
+        (match Hm.lookup k ctx.splits with
+         | Just (c2, slots) -> if c2 == c then Just (V.map (\l -> Target.Slot l) (V.drop slots params)) else None
+         | None -> None)
+    | _ -> None
+  in
+  match fromSplit with
+  | Just ts -> ts
+  | None ->
+      (match Hm.lookup c (getRef tc.constants) with
+       | Just cty -> argTargets tc params 0 cty sp []
+       | None -> [])
+
+fun argTargets (tc : Tc) (params : Int) (i : Int) (cty : Value) (sp : [Elim]) (acc : [Target]) : [Target] ! { Mut | e } =
+  match V.head sp with
+  | Just (Elim.App arg) ->
+      (match force tc cty with
+       | Value.Pi _ _ _ _ dom cod ->
+           let t =
+             match force tc arg with
+             | Value.Rigid l _ [] -> Target.Slot l
+             | _ -> Target.Val arg dom
+           in
+           argTargets tc params (i + 1) (apply tc cod arg) (V.drop sp 1) (if i >= params then V.pushBack acc t else acc)
+       | _ -> acc)
+  | _ -> acc
+
+fun targetValue (ctx : Ctx) (t : Target) : Value =
+  match t with
+  | Target.Slot k -> X.value ctx k
+  | Target.Val v _ -> v
+
+fun targetType (ctx : Ctx) (t : Target) : Value =
+  match t with
+  | Target.Slot k -> X.typeAt ctx k
+  | Target.Val _ ty -> ty
+
+-- The first problem has won: its right-hand side checked, with its names
+-- bound.
+fun leaf (tc : Tc) (m : Matcher) (ctx : Ctx) (p : Problem) (rest : [Problem]) (goal : Value) : (Core, Usage) ! { Mut | e } =
+  match p with
+  | Problem.Problem clause index _ _ bindings dots ->
+      let w = setRef m.used (V.set (getRef m.used) index True) in
+      (match rhsOf clause with
+       | Rhs.Impossible ->
+           (match emptySplit tc m ctx with
+            | Just found -> found
+            | None ->
+                let w2 = T.error tc "NotImpossible" in
+                let w3 = fail m in
+                nothing ())
+       | rhs ->
+           let (inner, lets) =
+             V.foldl
+               (\acc b ->
+                 match (acc, b) with
+                 | ((c, ls), (x, Target.Slot k)) -> (X.alias c x k, ls)
+                 -- known only to the types, and so erased
+                 | ((c, ls), (x, Target.Val v ty)) ->
+                     let core = Core.Runtime Note.Erased (quote tc c.lvl v) in
+                     (X.define c x ty v, V.pushBack ls (x, core)))
+               (ctx, [])
+               bindings
+           in
+           let w2 =
+             V.foldl
+               (\acc d ->
+                 match d with
+                 | (e, target) ->
+                     let ty = targetType inner target in
+                     -- never run, and so it must be pure
+                     let (eC, notRun) = check tc inner e ty in
+                     (match effectsOf tc notRun with
+                      | Just _ -> T.error tc "ImpureType"
+                      | None ->
+                          let given = eval tc inner.env eC in
+                          if unify tc inner.lvl (targetValue inner target) given then () else T.error tc "DotMismatch"))
+               ()
+               dots
+           in
+           let (body, usage) =
+             match rhs with
+             | Rhs.Plain e -> check tc inner e goal
+             | Rhs.Guarded gs -> guards tc m inner gs rest goal
+             | Rhs.Impossible -> nothing ()
+           in
+           let zero = gradeValue G.zero in
+           let u2 = V.foldl (\u l -> match l with | (x, _) -> leaveBinder tc inner x zero u False) usage (V.reverse lets) in
+           (V.foldl (\acc l -> match l with | (x, c) -> Core.Let (H.textOf x) c acc) body (V.reverse lets), u2))
+
+-- `| g = e | ..`: the first guard that holds; if none does, the clauses
+-- after this one.
+fun guards (tc : Tc) (m : Matcher) (ctx : Ctx) (gs : [(Term, Term)]) (rest : [Problem]) (goal : Value) : (Core, Usage) ! { Mut | e } =
+  match V.head gs with
+  | None -> tree tc m ctx rest goal
+  | Just (g, e) ->
+      let (gC, gU) = check tc ctx g (Value.LitTy Builtin.Bool) in
+      let (eC, eU) = check tc ctx e goal in
+      -- `otherwise`: nothing after it is needed
+      (match force tc (eval tc ctx.env gC) with
+       | Value.Lit (Literal.Bool True) -> (eC, U.add gU eU)
+       | _ ->
+           let (fC, fU) = guards tc m ctx (V.drop gs 1) rest goal in
+           let alts = [CaseAlt.CaseAlt (Head.BoolLit True) "True" [] eC, CaseAlt.CaseAlt (Head.BoolLit False) "False" [] fC] in
+           (Core.Case gC alts, U.add gU (U.join eU fU)))
+
+fun joined (acc : Maybe Usage) (u : Usage) : Maybe Usage =
+  match acc with
+  | None -> Just u
+  | Just v -> Just (U.join v u)
+
+-- Branch on the variable in slot `k`.
+fun split (tc : Tc) (m : Matcher) (ctx : Ctx) (problems : [Problem]) (goal : Value) (k : Int) (how : How) : (Core, Usage) ! { Mut | e } =
+  let scrutinee = Core.Var (ctx.lvl - k - 1) (X.nameAt ctx k) in
+  let used = splitUse tc ctx k in
+  match how with
+  | How.ByLit lit ->
+      let test = Core.App (Core.App (Core.Prim Prim.IntEq) scrutinee) (Core.Lit lit) in
+      let (yes, yesU) =
+        match unifyIndices tc ctx [(X.value ctx k, Value.Lit lit)] with
+        | Unified.Refined ctx2 sigma -> tree tc m ctx2 (resubstProblems tc ctx.lvl sigma problems) (refineGoal tc ctx.lvl sigma goal)
+        | _ -> nothing ()
+      in
+      -- the clauses that wanted this number here are out
+      let rest = V.filter (\p -> not (wantsLiteral tc ctx p k lit)) problems in
+      let (no, noU) = tree tc m ctx rest goal in
+      let alts = [CaseAlt.CaseAlt (Head.BoolLit True) "True" [] yes, CaseAlt.CaseAlt (Head.BoolLit False) "False" [] no] in
+      (Core.Case test alts, U.add used (U.join yesU noU))
+  | How.ByCon ->
+      (match force tc (X.typeAt ctx k) with
+       | Value.LitTy Builtin.Bool ->
+           let (alts, usage) =
+             V.foldl
+               (\acc b ->
+                 match acc with
+                 | (alts, usage) ->
+                     (match unifyIndices tc ctx [(X.value ctx k, Value.Lit (Literal.Bool b))] with
+                      | Unified.Refined ctx2 sigma ->
+                          let (body, u) = tree tc m ctx2 (resubstProblems tc ctx.lvl sigma problems) (refineGoal tc ctx.lvl sigma goal) in
+                          let name = if b then "True" else "False" in
+                          (V.pushBack alts (CaseAlt.CaseAlt (Head.BoolLit b) name [] body), joined usage u)
+                      | _ -> (alts, usage)))
+               ([], None)
+               [True, False]
+           in
+           (Core.Case scrutinee alts, U.add used (M.unwrapOr (U.none ()) usage))
+       | Value.Opaque d _ _ ->
+           (match Hm.lookup d (getRef tc.datas) with
+            | Just ctors -> splitData tc m ctx problems goal k scrutinee used ctors
+            | None -> notData tc m)
+       | Value.Error ->
+           let w = fail m in
+           nothing ()
+       | _ -> notData tc m)
+
+fun notData (tc : Tc) (m : Matcher) : (Core, Usage) ! { Mut | e } =
+  let w = T.error tc "NotADataType" in
+  let w2 = fail m in
+  nothing ()
+
+fun splitData (tc : Tc) (m : Matcher) (ctx : Ctx) (problems : [Problem]) (goal : Value) (k : Int) (scrutinee : Core) (used : Usage) (ctors : [Int]) : (Core, Usage) ! { Mut | e } =
+  let cases =
+    V.map
+      (\c ->
+        let hints = V.map (\i -> fieldHint tc ctx problems k c i) (V.range 0 (ctorArity tc c)) in
+        (c, instantiate tc ctx k c hints))
+      ctors
+  in
+  -- an erased value can be matched on when its type leaves it one
+  -- constructor it could be, or none: then there is nothing to look at
+  let possible = V.len (V.filter (\cs -> match cs with | (_, (_, _, Unified.Absurd)) -> False | _ -> True) cases) in
+  let forced = possible <= 1 and erasedSlot tc ctx k in
+  let (alts, usage) =
+    V.foldl
+      (\acc cs ->
+        match (acc, cs) with
+        | ((alts, usage), (c, (inner, delta, unified))) ->
+            (match unified with
+             | Unified.Absurd -> (alts, usage)
+             | Unified.Stuck a b ->
+                 let w = T.error tc "IndexUnificationStuck" in
+                 let w2 = fail m in
+                 (alts, usage)
+             | Unified.Refined ctx2 sigma ->
+                 let ctx3 = { ctx2 | splits = Hm.insert k (c, V.map (\dl -> match dl with | (l, _, _, _) -> l) delta) ctx2.splits } in
+                 let (body, u0) = tree tc m ctx3 (resubstProblems tc (lvlOf inner) sigma problems) (refineGoal tc (lvlOf inner) sigma goal) in
+                 let u = if failedNow m then U.unknown () else u0 in
+                 let u2 = V.foldl (\uu dl -> match dl with | (_, key, _, grade) -> leaveField tc ctx3 key grade uu) u (V.reverse delta) in
+                 let vars = V.map (\dl -> match dl with | (_, _, hint, _) -> hint) delta in
+                 let name = match ctorOf tc c with | CtorInfo.CtorInfo n _ _ _ _ -> n in
+                 (V.pushBack alts (CaseAlt.CaseAlt (Head.Con c) name vars body), joined usage u2)))
+      ([], None)
+      cases
+  in
+  let cased = Core.Case scrutinee alts in
+  let total = M.unwrapOr (U.none ()) usage in
+  if forced then (Core.Runtime Note.Forced cased, total) else (cased, U.add used total)
+
+-- Leaving the variable a constructor's argument became.
+fun leaveField (tc : Tc) (ctx : Ctx) (key : Int) (allowed : Value) (usage : Usage) : Usage ! { Mut | e } =
+  let (used, rest) = U.take usage (Just key) in
+  if U.isUnknown rest then rest
+  else if gradeFits tc ctx used allowed then rest
+  else
+    let w = T.error tc "FieldUsage" in
+    rest
+
+-- How often a slot may be used, if known; otherwise as an unannotated
+-- binder may be.
+fun slotGrade (tc : Tc) (ctx : Ctx) (k : Int) : Value ! { Mut | e } =
+  match X.gradeAt ctx k with
+  | Just g -> g
+  | None -> gradeValue (defaultGrade tc)
+
+-- Whether no value of a type has fields.
+fun fieldless (tc : Tc) (ty : Value) : Bool ! { Mut | e } =
+  match force tc ty with
+  | Value.LitTy _ -> True
+  | Value.Opaque d _ _ ->
+      (match Hm.lookup d (getRef tc.datas) with
+       | Just cs -> V.all (\c -> match ctorOf tc c with | CtorInfo.CtorInfo _ _ _ _ f -> f == 0) cs
+       | None -> False)
+  | _ -> False
+
+fun erasedSlot (tc : Tc) (ctx : Ctx) (k : Int) : Bool ! { Mut | e } =
+  match Va.asConstant (toPoly tc (slotGrade tc ctx k)) with
+  | Just g -> G.isZero g
+  | None -> False
+
+-- What splitting slot `k` uses of it: all of it, since its fields come out
+-- with its grade; and something even if it is erased, as looking is a use.
+fun splitUse (tc : Tc) (ctx : Ctx) (k : Int) : Usage ! { Mut | e } =
+  match X.keyAt ctx k with
+  | None -> U.none ()
+  | Just key ->
+      let grade = toPoly tc (slotGrade tc ctx k) in
+      (match Va.asConstant grade with
+       | Just g -> if G.isZero g then U.var key else U.scale (U.var key) grade
+       | None -> U.scale (U.var key) grade)
+
+fun ctorArity (tc : Tc) (c : Int) : Int ! { Mut | e } = match ctorOf tc c with | CtorInfo.CtorInfo _ _ _ ps fs -> ps + fs
+
+-- Bind the arguments of constructor `c` as new variables, and unify the
+-- variable in slot `k` with `c` applied to them, indices and all.
+fun instantiate (tc : Tc) (ctx : Ctx) (k : Int) (c : Int) (hints : [Maybe String]) : (Ctx, [(Int, Int, String, Value)], Unified) ! { Mut | e } =
+  let cty0 = M.unwrapOr Value.Error (Hm.lookup c (getRef tc.constants)) in
+  let whole = slotGrade tc ctx k in
+  let (inner, delta, cty) = telescope tc whole ctx [] cty0 hints in
+  match (force tc (X.typeAt ctx k), force tc cty) with
+  | (Value.Opaque _ _ indices, Value.Opaque _ _ result) ->
+      let apps = \sp -> V.concatMap (\e -> match e with | Elim.App a -> [a] | _ -> []) sp in
+      let spine = V.map (\dl -> match dl with | (l, _, hint, _) -> Elim.App (Va.vvar l hint)) delta in
+      let name = match ctorOf tc c with | CtorInfo.CtorInfo n _ _ _ _ -> n in
+      let eqs = V.pushBack (V.zip (apps indices) (apps result)) (X.value ctx k, Value.Opaque c name spine) in
+      (inner, delta, unifyIndices tc inner eqs)
+  | _ -> (inner, delta, Unified.Absurd)
+
+fun telescope (tc : Tc) (whole : Value) (inner : Ctx) (delta : [(Int, Int, String, Value)]) (cty : Value) (hints : [Maybe String]) : (Ctx, [(Int, Int, String, Value)], Value) ! { Mut | e } =
+  match V.head hints with
+  | None -> (inner, delta, cty)
+  | Just hint0 ->
+      (match force tc cty with
+       | Value.Pi name _ grade _ dom cod ->
+           let hint = match hint0 with | Just h -> h | None -> if name == "_" then "x" else name in
+           let key = T.freshKey tc in
+           let lvl = inner.lvl in
+           let g = Va.polyValue (Va.polyMul (toPoly tc grade) (toPoly tc whole)) in
+           let inner2 = X.bindKeyed inner key hint dom (Just g) in
+           telescope tc whole inner2 (V.pushBack delta (lvl, key, hint, g)) (apply tc cod (Va.vvar lvl hint)) (V.drop hints 1)
+       | _ -> (inner, delta, cty))
+
+-- A name for the `i`th argument of constructor `c`, from the first pattern
+-- that names it.
+fun fieldHint (tc : Tc) (ctx : Ctx) (problems : [Problem]) (k : Int) (c : Int) (i : Int) : Maybe String ! { Mut | e } =
+  let params = match ctorOf tc c with | CtorInfo.CtorInfo _ _ _ ps _ -> ps in
+  let constraints = V.concatMap (\p -> match p with | Problem.Problem _ _ _ cs _ _ -> cs) problems in
+  V.foldl
+    (\acc ct ->
+      match acc with
+      | Just x -> Just x
+      | None ->
+          (match ct with
+           | (pat, target) ->
+               if not (targetsSlot tc ctx target k) then None
+               else
+                 (match peel pat with
+                  | Pattern.Con c2 args ->
+                      if H.uniqueOf c2 != c or i < params then None
+                      else
+                        (match M.map peel (V.get args (i - params)) with
+                         | Just (Pattern.Var x) -> Just (H.textOf x)
+                         | _ -> None)
+                  | _ -> None)))
+    None
+    constraints
+
+fun targetsSlot (tc : Tc) (ctx : Ctx) (target : Target) (k : Int) : Bool ! { Mut | e } =
+  match force tc (targetValue ctx target) with
+  | Value.Rigid l _ [] -> l == k
+  | _ -> False
+
+-- Whether a problem needs slot `k` to be this number.
+fun wantsLiteral (tc : Tc) (ctx : Ctx) (p : Problem) (k : Int) (lit : Literal) : Bool ! { Mut | e } =
+  match p with
+  | Problem.Problem _ _ _ cs _ _ ->
+      V.any
+        (\ct ->
+          match ct with
+          | (pat, target) ->
+              (match peel pat with
+               | Pattern.Lit l -> l == lit and targetsSlot tc ctx target k
+               | _ -> False))
+        cs
+
+-- For `impossible`: a variable of a type none of whose constructors can be
+-- what it is, which a case with no alternatives disposes of.
+fun emptySplit (tc : Tc) (m : Matcher) (ctx : Ctx) : Maybe (Core, Usage) ! { Mut | e } =
+  let start = M.unwrapOr ctx.lvl (V.head (getRef m.args)) in
+  V.foldl
+    (\acc k ->
+      match acc with
+      | Just found -> Just found
+      | None ->
+          if not (X.unknownAt ctx k) then None
+          else
+            (match force tc (X.typeAt ctx k) with
+             | Value.Opaque d _ _ ->
+                 (match Hm.lookup d (getRef tc.datas) with
+                  | Just ctors ->
+                      let empty =
+                        V.all
+                          (\c ->
+                            match instantiate tc ctx k c (V.replicate (ctorArity tc c) None) with
+                            | (_, _, Unified.Absurd) -> True
+                            | _ -> False)
+                          ctors
+                      in
+                      if not empty then None
+                      else
+                        let cased = Core.Case (Core.Var (ctx.lvl - k - 1) (X.nameAt ctx k)) [] in
+                        if erasedSlot tc ctx k then Just (Core.Runtime Note.Forced cased, U.none ())
+                        else Just (cased, splitUse tc ctx k)
+                  | None -> None)
+             | _ -> None))
+    None
+    (V.reverse (V.range start ctx.lvl))
+
+-- --- unifying indices -------------------------------------------------------------
+
+-- Equations between values solved for the context's own variables, which
+-- matching is how they become known.
+fun unifyIndices (tc : Tc) (ctx : Ctx) (eqs : [(Value, Value)]) : Unified ! { Mut | e } =
+  solveIndices tc ctx eqs []
+
+fun asVar (ctx : Ctx) (v : Value) : Maybe Int =
+  match v with
+  | Value.Rigid x _ [] -> if X.unknownAt ctx x then Just x else None
+  | _ -> None
+
+fun solveIndices (tc : Tc) (ctx : Ctx) (work : [(Value, Value)]) (sigma : [(Int, Value)]) : Unified ! { Mut | e } =
+  let l = ctx.lvl in
+  match V.head work with
+  | None ->
+      if V.isEmpty sigma then Unified.Refined ctx None
+      else
+        let env = sigmaEnv ctx sigma in
+        Unified.Refined (refine tc ctx sigma env) (Just env)
+  | Just (a0, b0) ->
+      let more = V.drop work 1 in
+      let a = force tc (applySigma tc ctx sigma a0) in
+      let b = force tc (applySigma tc ctx sigma b0) in
+      (match (asVar ctx a, asVar ctx b) with
+       | (Just x, Just y) ->
+           if x == y then solveIndices tc ctx more sigma
+           -- two variables: the older one kept, the one likelier named
+           else if x > y then solveIndices tc ctx more (assign tc ctx sigma x b)
+           else solveIndices tc ctx more (assign tc ctx sigma y a)
+       | (Just x, None) -> oneVar tc ctx more sigma x b a b
+       | (None, Just x) -> oneVar tc ctx more sigma x a a b
+       | (None, None) ->
+           (match (a, b) with
+            | (Value.Opaque c1 _ s1, Value.Opaque c2 _ s2) ->
+                if isCtor tc c1 and isCtor tc c2 then
+                  if c1 != c2 then Unified.Absurd
+                  else
+                    let pairs = V.concatMap (\pr -> match pr with | (Elim.App x, Elim.App y) -> [(x, y)] | _ -> []) (V.zip s1 s2) in
+                    solveIndices tc ctx (V.append more pairs) sigma
+                else if unify tc l a b then solveIndices tc ctx more sigma
+                else Unified.Stuck a b
+            | (Value.Lit x, Value.Lit y) -> if x != y then Unified.Absurd else solveIndices tc ctx more sigma
+            | _ -> if unify tc l a b then solveIndices tc ctx more sigma else Unified.Stuck a b))
+
+fun oneVar (tc : Tc) (ctx : Ctx) (more : [(Value, Value)]) (sigma : [(Int, Value)]) (x : Int) (t : Value) (a : Value) (b : Value) : Unified ! { Mut | e } =
+  if not (mentions (quote tc ctx.lvl t) (ctx.lvl - x - 1)) then solveIndices tc ctx more (assign tc ctx sigma x t)
+  -- `n = S n`
+  else if rigidlyIn tc x t then Unified.Absurd
+  else Unified.Stuck a b
+
+fun rigidlyIn (tc : Tc) (x : Int) (t : Value) : Bool ! { Mut | e } =
+  match force tc t with
+  | Value.Rigid y _ sp -> y == x and V.isEmpty sp
+  | Value.Opaque c _ sp -> isCtor tc c and V.any (\e -> match e with | Elim.App a -> rigidlyIn tc x a | _ -> False) sp
+  | _ -> False
+
+-- `x := t` added, keeping the substitution idempotent.
+fun assign (tc : Tc) (ctx : Ctx) (sigma : [(Int, Value)]) (x : Int) (t : Value) : [(Int, Value)] ! { Mut | e } =
+  let single = sigmaEnv ctx [(x, t)] in
+  V.pushBack (V.map (\kv -> match kv with | (k, s) -> (k, eval tc single (quote tc ctx.lvl s))) sigma) (x, t)
+
+-- A substitution as an environment: each solved variable its solution,
+-- every other itself.
+fun sigmaEnv (ctx : Ctx) (sigma : [(Int, Value)]) : Env =
+  V.foldl
+    (\env k ->
+      let v = match V.find (\kv -> fst kv == k) sigma with | Just (_, s) -> s | None -> Va.vvar k (X.nameAt ctx k) in
+      Va.push env v)
+    (Va.emptyEnv ())
+    (V.range 0 ctx.lvl)
+
+fun applySigma (tc : Tc) (ctx : Ctx) (sigma : [(Int, Value)]) (v : Value) : Value ! { Mut | e } =
+  if V.isEmpty sigma then v else eval tc (sigmaEnv ctx sigma) (quote tc ctx.lvl v)
+
+-- The goal, in a case that learned `sigma`. A goal still a bare
+-- metavariable is an unannotated result type, left as it is.
+fun refineGoal (tc : Tc) (l : Int) (sigma : Maybe Env) (goal : Value) : Value ! { Mut | e } =
+  match force tc goal with
+  | Value.Flex _ _ -> goal
+  | _ -> resubst tc l sigma goal
+
+-- A result type left unsolved by a match that failed: an error, so it is
+-- not reported again as unsolved.
+fun abandon (tc : Tc) (ty : Value) =
+  match force tc ty with
+  | Value.Flex m _ ->
+      (match T.meta tc m with
+       | Just (Meta.Unsolved _) -> T.solve tc m Value.Error
+       | _ -> ())
+  | _ -> ()
+
+fun resubst (tc : Tc) (l : Int) (sigma : Maybe Env) (v : Value) : Value ! { Mut | e } =
+  match sigma with
+  | None -> v
+  | Just env -> eval tc env (quote tc l v)
+
+fun resubstProblems (tc : Tc) (l : Int) (sigma : Maybe Env) (problems : [Problem]) : [Problem] ! { Mut | e } =
+  match sigma with
+  | None -> problems
+  | Just _ ->
+      let target =
+        \t ->
+          match t with
+          | Target.Slot k -> Target.Slot k
+          | Target.Val v ty -> Target.Val (resubst tc l sigma v) (resubst tc l sigma ty)
+      in
+      V.map
+        (\p ->
+          match p with
+          | Problem.Problem c i pending cs bs ds ->
+              Problem.Problem
+                c
+                i
+                pending
+                (V.map (\x -> match x with | (pat, t) -> (pat, target t)) cs)
+                (V.map (\x -> match x with | (n, t) -> (n, target t)) bs)
+                (V.map (\x -> match x with | (e, t) -> (e, target t)) ds))
+        problems
+
+-- The context, having learned `sigma`: each solved variable defined as its
+-- solution, and every value and type that could mention one brought up to
+-- date. Slots before the first solved one stay as they are.
+fun refine (tc : Tc) (ctx : Ctx) (sigma : [(Int, Value)]) (env : Env) : Ctx ! { Mut | e } =
+  let first = V.foldl (\acc kv -> if fst kv < acc then fst kv else acc) ctx.lvl sigma in
+  let l = ctx.lvl in
+  let old = Va.envValues ctx.env in
+  let (next, newEnv) =
+    V.foldl
+    (\acc k ->
+      match acc with
+      | (c, newEnv) ->
+          let v = V.getOr Value.Error old k in
+          if k < first then (c, Va.push newEnv v)
+          else
+            let ty = eval tc env (quote tc l (X.typeAt ctx k)) in
+            let solved = V.any (\kv -> fst kv == k) sigma in
+            (X.refined c k ty solved, Va.push newEnv (eval tc env (quote tc l v))))
+      (ctx, Va.emptyEnv ())
+      (V.range 0 ctx.lvl)
+  in
+  { next | env = newEnv }

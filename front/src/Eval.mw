@@ -15,6 +15,7 @@ use Idyll.Grade as G
 use Idyll.Tc (Tc, Meta)
 use Idyll.Tc as T
 use Std.Collections.Vector as V
+use Std.Collections.HashMap as Hm
 use Std.String as S
 use Std.Maybe as M
 use Std.Maybe.Maybe.*
@@ -44,7 +45,36 @@ use Std.Maybe.Maybe.*
       (match force tc e with
        | Value.Row r -> if Va.rowIsEmpty r then t else v
        | _ -> v)
+  -- a recursive definition that terminates, applied to enough to choose a
+  -- right-hand side
+  | Value.Opaque u _ sp ->
+      (match unfold tc u sp with
+       | Just unfolded -> force tc unfolded
+       | None -> v)
   | _ -> v
+
+-- A transparent definition applied to `sp`, if its case tree can choose a
+-- right-hand side.
+fun unfold (tc : Tc) (u : Int) (sp : [Elim]) : Maybe Value ! { Mut | e } =
+  match Hm.lookup u (getRef tc.transparent) with
+  | None -> None
+  | Just (env0, arity, body) ->
+      if V.len sp < arity then None
+      else
+        let args = V.concatMap (\e -> match e with | Elim.App a -> [a] | _ -> []) (V.take sp arity) in
+        if V.len args < arity then None
+        else M.map (\v -> applySpine tc v (V.drop sp arity)) (evalTree tc (V.foldl Va.push env0 args) body)
+
+-- A case tree evaluated, or nothing where it cannot choose.
+fun evalTree (tc : Tc) (env : Env) (c : Core) : Maybe Value ! { Mut | e } =
+  match c with
+  | Core.Runtime _ inner -> evalTree tc env inner
+  | Core.Let _ e body -> evalTree tc (Va.push env (eval tc env e)) body
+  | Core.Case s alts ->
+      (match choose (force tc (eval tc env s)) alts with
+       | Just (CaseAlt.CaseAlt _ _ _ body, fields) -> evalTree tc (V.foldl Va.push env fields) body
+       | None -> None)
+  | _ -> Just (eval tc env c)
 
 -- How many arguments a primitive takes.
 fun arity (p : Prim) : Int = 2

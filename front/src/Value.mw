@@ -93,6 +93,9 @@ fun listGet (l : List Value) (i : Int) : Maybe Value =
 
 @pub fun envLen (e : Env) : Int = match e with | Env.Env l -> listLen l 0
 
+-- The values of an environment, outermost first: by level.
+@pub fun envValues (e : Env) : [Value] = match e with | Env.Env l -> V.reverse (V.fromList l)
+
 fun listLen (l : List Value) (n : Int) : Int =
   match l with
   | [;] -> n

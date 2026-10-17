@@ -35,6 +35,8 @@ use Idyll.Ctx (Ctx, Info)
 use Idyll.Ctx as X
 use Idyll.Hir (Term, Ident, Group, Bind, DataDecl, CtorDecl, CtorShape, EffectDecl, OpDecl, NativeDecl)
 use Idyll.Hir as H
+use Idyll.Matching (caseOf, inferMatch, elabMatch)
+use Idyll.Termination (checkTermination, arity)
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
 use Std.String as S
@@ -169,7 +171,7 @@ fun pure (tc : Tc) (usage : Usage) : Bool ! { Mut | e } =
 
 -- Where a lambda ends: its body's effects are what calling it does, and
 -- must be among those its type allows. Making a function has none.
-fun closeEffects (tc : Tc) (ctx : Ctx) (usage : Usage) (allowed : Value) : Usage ! { Mut | e } =
+@pub(pkg) fun closeEffects (tc : Tc) (ctx : Ctx) (usage : Usage) (allowed : Value) : Usage ! { Mut | e } =
   let effects = row tc (U.effectsOf usage) in
   let rest = U.withoutEffects usage in
   let w =
@@ -251,7 +253,7 @@ fun constant (tc : Tc) (g : Value) : Maybe Grade ! { Mut | e } = Va.asConstant (
 
 -- A lambda, noting for the back end how often its variable may be used and
 -- its type.
-fun lam (tc : Tc) (ctx : Ctx) (name : String) (grade : Value) (dom : Value) (body : Core) : Core ! { Mut | e } =
+@pub(pkg) fun lam (tc : Tc) (ctx : Ctx) (name : String) (grade : Value) (dom : Value) (body : Core) : Core ! { Mut | e } =
   Core.Runtime (Note.Binds (constant tc grade) (Just (quote tc ctx.lvl dom))) (Core.Lam name body)
 
 -- Something supplied `grade` times: none, and it is never computed.
@@ -286,7 +288,7 @@ fun fitsMeta (tc : Tc) (ctx : Ctx) (m : Int) (ty : Value) : Bool ! { Mut | e } =
 
 -- `used ⊑ allowed`, monomial by monomial; failing that, with a
 -- metavariable involved, the two made equal.
-fun gradeFits (tc : Tc) (ctx : Ctx) (used0 : Poly) (allowed0 : Value) : Bool ! { Mut | e } =
+@pub(pkg) fun gradeFits (tc : Tc) (ctx : Ctx) (used0 : Poly) (allowed0 : Value) : Bool ! { Mut | e } =
   let used = renormalise tc used0 in
   let allowed = toPoly tc allowed0 in
   if Va.asConstant allowed == Just G.any then True
@@ -301,7 +303,7 @@ fun gradeFits (tc : Tc) (ctx : Ctx) (used0 : Poly) (allowed0 : Value) : Bool ! {
 -- Leaving a binder: the uses of what is charged to `key` must fit its
 -- grade. `()` may be used less than its grade says: there is nothing to
 -- lose by dropping one.
-fun leaveKey (tc : Tc) (ctx : Ctx) (key : Maybe Int) (allowed : Value) (usage : Usage) (inType : Bool) : Usage ! { Mut | e } =
+@pub(pkg) fun leaveKey (tc : Tc) (ctx : Ctx) (key : Maybe Int) (allowed : Value) (usage : Usage) (inType : Bool) : Usage ! { Mut | e } =
   let (used, rest) = U.take usage key in
   if U.isUnknown rest then rest
   else if gradeFits tc ctx used allowed then rest
@@ -321,7 +323,7 @@ fun leaveKey (tc : Tc) (ctx : Ctx) (key : Maybe Int) (allowed : Value) (usage : 
       let w = T.error tc "UsageMismatch" in
       rest
 
-fun leaveBinder (tc : Tc) (ctx : Ctx) (x : Ident) (allowed : Value) (usage : Usage) (inType : Bool) : Usage ! { Mut | e } =
+@pub(pkg) fun leaveBinder (tc : Tc) (ctx : Ctx) (x : Ident) (allowed : Value) (usage : Usage) (inType : Bool) : Usage ! { Mut | e } =
   leaveKey tc ctx (keyOf x) allowed usage inType
 
 -- --- bindings ----------------------------------------------------------------------
@@ -341,7 +343,7 @@ fun checkAgainstSig (tc : Tc) (ctx : Ctx) (rhs : Term) (sig : Term) (vsig : Valu
   | _ -> check tc ctx rhs fsig
 
 -- An unannotated binder's grade: unrestricted, or once in a linear module.
-fun defaultGrade (tc : Tc) : Grade ! { Mut | e } = if getRef tc.linear then G.one else G.default
+@pub(pkg) fun defaultGrade (tc : Tc) : Grade ! { Mut | e } = if getRef tc.linear then G.one else G.default
 
 -- One group, in the mode of the module it was written in: the context with
 -- its bindings, what it owes, and how to bind it again in Core.
@@ -404,16 +406,75 @@ fun checkGroupIn (tc : Tc) (ctx : Ctx) (group : Group) : (Ctx, Pending, Maybe (S
       in
       (bound, Pending.NonRec (keyOf b.name) usage, Just (H.textOf b.name, rhs))
   | Group.Rec bs ->
-      let w = T.cannot tc "recursion" in
-      let ctxRec =
-        V.foldl
-          (\c (b : Bind) ->
-            let ty = match b.ty with | Just sig -> (match signature tc ctx sig with | (_, _, v) -> v) | None -> Value.Error in
-            declareConstant tc c b.name ty)
-          ctx
+      -- every member needs a signature: there is nothing else to check the
+      -- recursive uses against
+      let sigs =
+        V.map
+          (\(b : Bind) ->
+            match b.ty with
+            | None ->
+                let w = T.error tc "RecursiveBindingNeedsSignature" in
+                Value.Error
+            | Just sig -> snd (checkType tc ctx sig))
           bs
       in
-      (ctxRec, Pending.Rec (V.map (\(b : Bind) -> keyOf b.name) bs) (U.unknown ()), None)
+      -- each a constant, so that unification cannot unfold one forever
+      let ctxRec = V.foldl (\c bt -> match bt with | (b, ty) -> declareConstant tc c (nameOf b) ty) ctx (V.zip bs sigs) in
+      let checked = V.map (\bt -> match bt with | (b, ty) -> checkMember tc ctxRec b ty) (V.zip bs sigs) in
+      let rhs = V.foldl (\acc cu -> U.add acc (snd cu)) (U.none ()) checked in
+      let members = V.map (\bc -> match bc with | (b, (core, _)) -> (H.uniqueOf (nameOf b), core)) (V.zip bs checked) in
+      -- if they terminate they may compute in types from here on; if they may
+      -- not, they must say so, unless `@terminating` says they end after all
+      let w =
+        if checkTermination tc ctxRec members then ()
+        else
+          V.foldl
+            (\acc bct ->
+              match bct with
+              | ((b, ty), (core, _)) ->
+                  let u = H.uniqueOf (nameOf b) in
+                  if V.elem u (getRef tc.terminating) then ()
+                  else if declaresDiv tc ctxRec.lvl ty (arity core) then ()
+                  else T.error tc "MayNotTerminate")
+            ()
+            (V.zip (V.zip bs sigs) checked)
+      in
+      (ctxRec, Pending.Rec (V.map (\(b : Bind) -> keyOf b.name) bs) rhs, None)
+
+fun nameOf (b : Bind) : Ident = b.name
+
+-- Whether a type says `! Div` where a call with `arity` arguments gets to.
+fun declaresDiv (tc : Tc) (lvl : Int) (ty : Value) (n : Int) : Bool ! { Mut | e } =
+  match force tc ty with
+  | Value.Error -> True
+  | _ ->
+      let walked =
+        V.foldl
+          (\acc i ->
+            match acc with
+            | None -> None
+            | Just (t, r) ->
+                (match force tc t with
+                 | Value.Pi name _ _ _ _ cod -> Just (splitComp tc (apply tc cod (Va.vvar (lvl + i) name)))
+                 | _ -> None))
+          (Just (ty, Va.emptyRow ()))
+          (V.range 0 n)
+      in
+      (match walked with
+       | Just (_, r) ->
+           n > 0 and (match rowParts tc r with | Row.Row ls _ -> V.any (\kv -> match snd kv with | Value.LitTy Builtin.Div -> True | _ -> False) ls)
+       | None -> False)
+
+-- One member of a recursive group, against its signature: its Core and
+-- usage.
+fun checkMember (tc : Tc) (ctxRec : Ctx) (b : Bind) (ty : Value) : (Core, Usage) ! { Mut | e } =
+  let (core, usage) =
+    match b.ty with
+    | Just sig -> checkAgainstSig tc ctxRec b.rhs sig ty
+    | None -> check tc ctxRec b.rhs ty
+  in
+  let w = if getRef tc.lets == 0 then declare tc b.name (H.textOf b.name) (quote tc ctxRec.lvl ty) else () in
+  (core, usage)
 
 -- The prelude's own definitions, which this checker takes as given: each
 -- at the type its signature says, its body unchecked. (One with no
@@ -678,8 +739,8 @@ fun leaveGroups (usage : Usage) (pending : [Pending]) : Usage =
   | Term.Omitted ->
       let ty = freshValue tc ctx "the type of this" in
       (freshMetaWith tc ctx (Origin.Inferred "this") (Just ty), ty, U.none ())
-  | Term.Case _ _ -> unsupported tc "case"
-  | Term.Match _ -> unsupported tc "matching"
+  | Term.Case s cs -> caseOf tc ctx s cs None
+  | Term.Match cs -> inferMatch tc ctx cs
   | Term.Handle _ _ -> unsupported tc "handlers"
   | Term.SeqNil -> unsupported tc "sequences"
   | Term.SeqCons _ _ -> unsupported tc "sequences"
@@ -867,8 +928,10 @@ fun checkAgainst (tc : Tc) (ctx : Ctx) (t : Term) (expected : Value) : (Core, Us
            let (bC, _) = checkGrade tc ctx b in
            ((if op == Prim.IntAdd then Core.GradeAdd aC bC else Core.GradeMul aC bC), U.none ())
        | None -> fallback tc ctx t expected)
-  | (Term.Case _ _, _) -> unsupportedCheck tc "case"
-  | (Term.Match _, _) -> unsupportedCheck tc "matching"
+  | (Term.Case s cs, _) ->
+      let (core, _, usage) = caseOf tc ctx s cs (Just expected) in
+      (core, usage)
+  | (Term.Match cs, _) -> elabMatch tc ctx cs expected
   | (Term.Handle _ _, _) -> unsupportedCheck tc "handlers"
   | (Term.SeqNil, _) -> unsupportedCheck tc "sequences"
   | (Term.SeqCons _ _, _) -> unsupportedCheck tc "sequences"

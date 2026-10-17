@@ -45,6 +45,7 @@ fun bindsOf (g : Group) : [Bind] =
 -- kinds of the errors found (`error: Mismatch`).
 @pub fun checkModule (m : Module) : String ! { Mut | e } =
   let tc = T.new () in
+  let w0 = setRef tc.terminating m.terminating in
   let ctx0 = initial tc in
   -- native types first, which the data types and effects may mention; and
   -- native operations last, as their types may mention those

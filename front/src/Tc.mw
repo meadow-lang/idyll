@@ -5,7 +5,7 @@
 -- means at once, which a cell of the metacontext gives: `Eval.force` looks a
 -- solution up whenever it meets a metavariable's head.
 
-use Idyll.Value (Value)
+use Idyll.Value (Value, Env)
 use Idyll.Core (Core)
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
@@ -37,6 +37,12 @@ use Std.Maybe.Maybe.*
 -- for good, one being stuck on a metavariable applied to something.
 @pub data Postponed = Postponed Int Value Value
 
+-- What is known of a constructor: its name, its data type's unique, its
+-- position among the type's constructors, how many erased arguments come
+-- first (the type's parameters, then its own implicit ones), and how many
+-- fields follow.
+@pub data CtorInfo = CtorInfo String Int Int Int Int
+
 @pub record Tc = {
   metas : Ref [Meta],
   -- the type of every constant (a data type, a constructor, a recursive
@@ -67,7 +73,17 @@ use Std.Maybe.Maybe.*
   declared : Ref [(Int, String, Core)],
   -- the data types and native types, by unique, and for each, which of its
   -- parameters it uses strictly positively
-  datas : Ref (HashMap Int Bool),
+  datas : Ref (HashMap Int [Int]),
+  ctors : Ref (HashMap Int CtorInfo),
+  -- the unique the next slot no name refers to is charged to, counting down
+  -- from where no name's unique is
+  nextKey : Ref Int,
+  -- the recursive definitions found to terminate, which unfold in types
+  -- when their case trees can choose: where each was defined, how many
+  -- arguments it takes first, and its case tree under them
+  transparent : Ref (HashMap Int (Env, Int, Core)),
+  -- the definitions `@terminating` vouches for
+  terminating : Ref [Int],
   natives : Ref (HashMap Int Bool),
   positive : Ref (HashMap Int [Bool])
 }
@@ -87,6 +103,10 @@ use Std.Maybe.Maybe.*
     effects = newRef Hm.empty,
     declared = newRef [],
     datas = newRef Hm.empty,
+    ctors = newRef Hm.empty,
+    nextKey = newRef 4611686018427387903,
+    transparent = newRef Hm.empty,
+    terminating = newRef [],
     natives = newRef Hm.empty,
     positive = newRef Hm.empty
   }
@@ -118,3 +138,11 @@ use Std.Maybe.Maybe.*
   match entry with
   | Meta.Unsolved i -> i
   | Meta.Solved _ i -> i
+
+-- A fresh key, for a slot no name refers to.
+@pub fun freshKey (tc : Tc) : Int ! { Mut | e } =
+  let k = getRef tc.nextKey - 1 in
+  let w = setRef tc.nextKey k in
+  k
+
+@pub fun ctorInfo (tc : Tc) (c : Int) : Maybe CtorInfo ! { Mut | e } = Hm.lookup c (getRef tc.ctors)
