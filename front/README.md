@@ -456,7 +456,12 @@ inside out and share between branches; `Emit.mw` then builds it with
 MeadowBoot uses too, and writes its text. Nothing else in front/ builds
 Cut's nodes or writes Cut's text.
 
-A program front/ lowers runs: `double 21` gives `42` on Glade. Programs
+A method (a closure's `apply`, a handler clause) binds no representation
+variable of its own, as `docs/CUT.md` has it, so a closure taking a type
+parameter boxes that type's values (`any`) and passes `desc(any)` on.
+
+The Cut corpus (`cut-corpus/`, which `idyllic-cut` writes) runs on Glade:
+all its pure programs and those using the world's effects pass; programs
 with handlers wait on a fix in Meadow's lowering of Cut to AxCut (meadow
 PR 11).
 

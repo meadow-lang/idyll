@@ -617,6 +617,19 @@ fun bindParam (l : L) (env : LEnv) (x : String) (grade : Maybe Grade) (ty : Mayb
     let b = Binder.Binder v (rep env1 r) in
     (pushSlot env1 (Slot.SVar v), Just b, None)
 
+-- A method's parameter (a closure's, or a handler clause's): as
+-- `bindParam`, but a method binds no representation variable of its own
+-- (`docs/CUT.md`: only a `def`'s signature does), so a type parameter's
+-- values are boxed, `any`, and what it is a descriptor of is passed on as
+-- `desc(any)`.
+fun bindMethodParam (l : L) (env : LEnv) (x : String) (grade : Maybe Grade) (ty : Maybe Core) : (LEnv, Maybe Binder, Maybe (String, String)) ! { Mut | e } =
+  let (env2, b, rv) = bindParam l env x grade ty in
+  match rv with
+  | Just (a, _) ->
+      (match env2 with
+       | LEnv.LEnv slots scope -> (LEnv.LEnv (V.set slots (V.len slots - 1) (Slot.STypeVar None a)) scope, b, None))
+  | None -> (env2, b, rv)
+
 -- --- terms -----------------------------------------------------------------------------
 
 -- `c`'s value, given to `k`.
@@ -710,7 +723,7 @@ fun closure (l : L) (env : LEnv) (c : Core) : Prod ! { Mut | e } =
   match lambda c with
   | None -> Prod.Unit
   | Just (x, grade, ty, body) ->
-      let (inner, b, rv) = bindParam l env x grade ty in
+      let (inner, b, rv) = bindMethodParam l env x grade ty in
       (match b with
        | None ->
            -- erased: what it computes is the body's value itself
@@ -1102,7 +1115,7 @@ fun handled (l : L) (env : LEnv) (body : Core) (ret : Core) (clauses : [OpClause
   let (retX, retK, retS) =
     match lambda ret with
     | Just (x, grade, ty, rbody) ->
-        let (inner, b, rv) = bindParam l env x grade ty in
+        let (inner, b, rv) = bindMethodParam l env x grade ty in
         let kc = name l "k" in
         let s = term l inner rbody (Cons.KVar kc) in
         let xb = match b with | Just bb -> bb | None -> Binder.Binder (name l "x") Rep.Unit in
@@ -1131,7 +1144,7 @@ fun opArgs (l : L) (env : LEnv) (lam : Core) (n : Int) (params : [Binder]) : (LE
     match lambda lam with
     | None -> (env, lam, params)
     | Just (x, grade, ty, body) ->
-        let (env2, b, rv) = bindParam l env x grade ty in
+        let (env2, b, rv) = bindMethodParam l env x grade ty in
         opArgs l env2 body (n - 1) (V.append params (vecOf b))
 
 -- --- the table ---------------------------------------------------------------------------

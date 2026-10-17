@@ -1,8 +1,15 @@
 cut 0
 entry idyll:Main/"#entry"
-answer none
+answer str
+
+data idyll:Prelude/List <'a0> { Nil; "::"('a0, ptr) }
 
 data idyll:Prelude/DigitFuel { Spent; More(ptr) }
+
+roles {
+  nil = idyll:Prelude/List.Nil
+  cons = idyll:Prelude/List."::"
+}
 
 val idyll:Prelude/digitFuel : ptr =
   <idyll:Prelude/DigitFuel.Spent | μ̃ v_20: ptr.
@@ -83,8 +90,26 @@ def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) =
               idyll:Prelude/digitString(v_71; k_63)))))
   }>
 
-def idyll:Main/"#entry" (; k_75: ptr) =
-  <cocase {
-    apply(f_77: ptr; k_78: ptr) =>
-      <unit | k_78>
-  } | k_75>
+def idyll:Main/all <'a_76 = d_a_75> (d_a_75: desc, p_77: ptr, xs_78: ptr; k_79: ptr) =
+  <xs_78 | case {
+    idyll:Prelude/List.Nil =>
+      <true | k_79>;
+    idyll:Prelude/List."::"(x_80: 'a_76, xs_81: ptr) =>
+      <p_77 | apply(x_80; μ̃ v__82: bool.
+        prim if(v__82; μ̃ u_87: unit.
+          <false | k_79>, μ̃ u_88: unit.
+          idyll:Main/all(d_a_75, p_77, xs_81; k_79)))>
+  }>
+
+def idyll:Main/"#entry" (; k_89: ptr) =
+  <idyll:Prelude/List.Nil | μ̃ v_98: ptr.
+    <idyll:Prelude/List."::"(3, v_98) | μ̃ v_97: ptr.
+      <idyll:Prelude/List."::"(2, v_97) | μ̃ v_96: ptr.
+        <idyll:Prelude/List."::"(1, v_96) | μ̃ v_95: ptr.
+          idyll:Main/all(desc(i64), cocase {
+            apply(x_93: i64; k_94: ptr) =>
+              prim lt(0, x_93; k_94)
+          }, v_95; μ̃ answer_90: bool.
+            prim if(answer_90; μ̃ u_91: unit.
+              <"False" | k_89>, μ̃ u_92: unit.
+              <"True" | k_89>))>>>>

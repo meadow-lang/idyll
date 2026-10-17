@@ -2,14 +2,9 @@ cut 0
 entry idyll:Main/"#entry"
 answer str
 
-data idyll:Prelude/List <'a0> { Nil; "::"('a0, ptr) }
-
 data idyll:Prelude/DigitFuel { Spent; More(ptr) }
 
-roles {
-  nil = idyll:Prelude/List.Nil
-  cons = idyll:Prelude/List."::"
-}
+data idyll:Main/Nat { Z; S(ptr) }
 
 val idyll:Prelude/digitFuel : ptr =
   <idyll:Prelude/DigitFuel.Spent | μ̃ v_20: ptr.
@@ -72,41 +67,62 @@ def idyll:Prelude/showInt (n_52: i64; k_53: ptr) =
       idyll:Prelude/negativeDigits(idyll:Prelude/digitFuel, n_52; μ̃ v_58: str.
         prim concatStrings(["-", v_58]; k_53))))
 
-def idyll:Main/second (x_61: ptr; k_62: ptr) =
-  <x_61 | case {
-    idyll:Prelude/List.Nil =>
-      <0 | k_62>;
-    idyll:Prelude/List."::"(x_63: i64, x_64: ptr) =>
-      <x_64 | case {
-        idyll:Prelude/List.Nil =>
-          <0 | k_62>;
-        idyll:Prelude/List."::"(y_65: i64, x_66: ptr) =>
-          <y_65 | k_62>
+def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) =
+  <fuel_61 | case {
+    idyll:Prelude/DigitFuel.Spent =>
+      <"" | k_63>;
+    idyll:Prelude/DigitFuel.More(fuel_64: ptr) =>
+      prim sub(0, 10; μ̃ v_74: i64.
+        prim lt(v_74, n_62; μ̃ v__65: bool.
+          prim if(v__65; μ̃ u_72: unit.
+            prim div(n_62, 10; μ̃ v_70: i64.
+              idyll:Prelude/negativeDigits(fuel_64, v_70; μ̃ v_66: str.
+                prim mod(n_62, 10; μ̃ v_69: i64.
+                  prim sub(0, v_69; μ̃ v_68: i64.
+                    idyll:Prelude/digitString(v_68; μ̃ v_67: str.
+                      prim concatStrings([v_66, v_67]; k_63)))))), μ̃ u_73: unit.
+            prim sub(0, n_62; μ̃ v_71: i64.
+              idyll:Prelude/digitString(v_71; k_63)))))
+  }>
+
+def idyll:Main/half (x_75: ptr; k_76: ptr) =
+  <x_75 | case {
+    idyll:Main/Nat.Z =>
+      <idyll:Main/Nat.Z | k_76>;
+    idyll:Main/Nat.S(x_77: ptr) =>
+      <x_77 | case {
+        idyll:Main/Nat.Z =>
+          <idyll:Main/Nat.Z | k_76>;
+        idyll:Main/Nat.S(n_78: ptr) =>
+          idyll:Main/half(n_78; μ̃ v_79: ptr.
+            <idyll:Main/Nat.S(v_79) | k_76>)
       }>
   }>
 
-def idyll:Prelude/negativeDigits (fuel_67: ptr, n_68: i64; k_69: ptr) =
-  <fuel_67 | case {
-    idyll:Prelude/DigitFuel.Spent =>
-      <"" | k_69>;
-    idyll:Prelude/DigitFuel.More(fuel_70: ptr) =>
-      prim sub(0, 10; μ̃ v_80: i64.
-        prim lt(v_80, n_68; μ̃ v__71: bool.
-          prim if(v__71; μ̃ u_78: unit.
-            prim div(n_68, 10; μ̃ v_76: i64.
-              idyll:Prelude/negativeDigits(fuel_70, v_76; μ̃ v_72: str.
-                prim mod(n_68, 10; μ̃ v_75: i64.
-                  prim sub(0, v_75; μ̃ v_74: i64.
-                    idyll:Prelude/digitString(v_74; μ̃ v_73: str.
-                      prim concatStrings([v_72, v_73]; k_69)))))), μ̃ u_79: unit.
-            prim sub(0, n_68; μ̃ v_77: i64.
-              idyll:Prelude/digitString(v_77; k_69)))))
+def idyll:Main/"#atom Nat" (x_87: ptr; k_88: ptr) =
+  <x_87 | case {
+    idyll:Main/Nat.Z =>
+      idyll:Main/"#show Nat"(x_87; k_88);
+    idyll:Main/Nat.S(f_89: ptr) =>
+      idyll:Main/"#show Nat"(x_87; μ̃ s_90: str.
+        prim concatStrings(["(", s_90, ")"]; k_88))
+  }>
+
+def idyll:Main/"#show Nat" (x_83: ptr; k_84: ptr) =
+  <x_83 | case {
+    idyll:Main/Nat.Z =>
+      <"Z" | k_84>;
+    idyll:Main/Nat.S(f_85: ptr) =>
+      idyll:Main/"#atom Nat"(f_85; μ̃ s_86: str.
+        prim concatStrings(["S", " ", s_86]; k_84))
   }>
 
 def idyll:Main/"#entry" (; k_81: ptr) =
-  <idyll:Prelude/List.Nil | μ̃ v_87: ptr.
-    <idyll:Prelude/List."::"(3, v_87) | μ̃ v_86: ptr.
-      <idyll:Prelude/List."::"(2, v_86) | μ̃ v_85: ptr.
-        <idyll:Prelude/List."::"(1, v_85) | μ̃ v_84: ptr.
-          idyll:Main/second(v_84; μ̃ answer_82: i64.
-            idyll:Prelude/showInt(answer_82; k_81))>>>>
+  <idyll:Main/Nat.Z | μ̃ v_96: ptr.
+    <idyll:Main/Nat.S(v_96) | μ̃ v_95: ptr.
+      <idyll:Main/Nat.S(v_95) | μ̃ v_94: ptr.
+        <idyll:Main/Nat.S(v_94) | μ̃ v_93: ptr.
+          <idyll:Main/Nat.S(v_93) | μ̃ v_92: ptr.
+            <idyll:Main/Nat.S(v_92) | μ̃ v_91: ptr.
+              idyll:Main/half(v_91; μ̃ answer_82: ptr.
+                idyll:Main/"#show Nat"(answer_82; k_81))>>>>>>

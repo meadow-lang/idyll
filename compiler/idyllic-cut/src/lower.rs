@@ -589,6 +589,30 @@ impl Lower<'_> {
         }
     }
 
+    /// A method's parameter (a closure's, or a handler clause's): as
+    /// [`Self::bind_param`], but a method binds no representation variable
+    /// of its own (`docs/CUT.md`: only a `def`'s signature does), so a type
+    /// parameter's values are boxed, `any`, and what it is a descriptor of
+    /// is passed on as `desc(any)`.
+    fn bind_method_param(
+        &mut self,
+        env: &mut Env,
+        x: &str,
+        grade: Option<Grade>,
+        ty: Option<&Rc<Core>>,
+        params: &mut Vec<Binder>,
+        rep_vars: &mut Vec<(String, String)>,
+    ) {
+        let before = rep_vars.len();
+        self.bind_param(env, x, grade, ty, params, rep_vars);
+        if rep_vars.len() > before {
+            rep_vars.truncate(before);
+            if let Some(Slot::TypeVar(_, a)) = env.slots.last().cloned() {
+                *env.slots.last_mut().expect("just bound") = Slot::TypeVar(None, a);
+            }
+        }
+    }
+
     /// `c`'s value, given to `k`.
     fn term(&mut self, env: &Env, c: &Rc<Core>, k: Consumer) -> Statement {
         match &**c {
@@ -717,7 +741,7 @@ impl Lower<'_> {
         let Some((x, grade, ty, body)) = lambda(c) else { unreachable!("a closure is a lambda") };
         let mut inner = env.clone();
         let (mut params, mut rep_vars) = (Vec::new(), Vec::new());
-        self.bind_param(&mut inner, &x, grade, ty.as_ref(), &mut params, &mut rep_vars);
+        self.bind_method_param(&mut inner, &x, grade, ty.as_ref(), &mut params, &mut rep_vars);
         if params.is_empty() {
             // erased: what it computes is the body's value itself
             return match self.value(&inner, &body) {
@@ -1145,7 +1169,7 @@ impl Lower<'_> {
             }
             for _ in 0..arity {
                 let Some((x, grade, ty, body)) = lambda(&lam) else { break };
-                self.bind_param(&mut inner, &x, grade, ty.as_ref(), &mut params, &mut rep_vars);
+                self.bind_method_param(&mut inner, &x, grade, ty.as_ref(), &mut params, &mut rep_vars);
                 lam = body;
             }
             let Some((x, _, ty, body)) = lambda(&lam) else {
@@ -1168,7 +1192,7 @@ impl Lower<'_> {
             Some((x, grade, ty, body)) => {
                 let mut inner = env.clone();
                 let (mut params, mut rep_vars) = (Vec::new(), Vec::new());
-                self.bind_param(&mut inner, &x, grade, ty.as_ref(), &mut params, &mut rep_vars);
+                self.bind_method_param(&mut inner, &x, grade, ty.as_ref(), &mut params, &mut rep_vars);
                 let kc = self.name("k");
                 let s = self.term(&inner, &body, Consumer::Var(kc.clone()));
                 let x = params.pop().unwrap_or(Binder { name: self.name("x"), rep: Rep::Unit });
