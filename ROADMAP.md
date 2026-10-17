@@ -693,6 +693,38 @@ shows a type.
 - [ ] **A debugger** (Meadow's `dap/`).
 - [ ] **An installer**, `idyllup`, after Meadow's `meadowup`, once there is
   something to release.
+- [ ] **Low-level code: C's memory model as an effect, with its own
+  compiler** (Chris, 2026-10-17), as F*'s Low\* has it, compiled to C by
+  KaRaMeL, which HACL\* and EverCrypt are written in. Idyll stays high level:
+  this is a fenced-off part of it, provably safe, not a second way to write
+  everything. Five pieces:
+  - **A `Mem` effect**: stack frames and heap regions, `alloca`, `malloc`
+    and `free`, buffers whose lengths are in their types, reads and writes
+    through pointers, machine integers of fixed widths.
+  - **Linear handles.** `free` takes a buffer's handle at `[1]`, so a use
+    after a free, or two frees, is a type error with nothing to prove.
+  - **Proofs for the rest**, erased at grade `0`: that a buffer is live,
+    that two are disjoint, that an index is in bounds, which regions a
+    function modifies. They come as pre- and postconditions on `Mem`'s
+    operations, as Low\*'s do.
+  - **An SMT solver** discharges them, as Z3 does for F*: obligations
+    written out in SMT-LIB and given to Z3 or cvc5, as a process, with a
+    proof term by hand where the solver gives up. To decide: whether its
+    answers are trusted, as F* trusts Z3's, or checked through a
+    certificate. The same solver serves elsewhere: termination measures'
+    arithmetic (step 2, *Termination measures*), and grade constraints that
+    normal forms leave undecided.
+  - **The fragment, and its compiler.** A module marked for it (say
+    `@extract`) must be first-order, monomorphic once erased, closure-free,
+    and use only `Mem`'s data and machine integers. A back end of its own
+    lowers it to C or LLVM; `idyllic-llvm` is half of that already. Code in
+    it is called from the rest through a foreign interface; everything else
+    stays on Cut, Glade and Silo.
+
+  Rust-like borrowing in the core language (second-class `&` and `&mut`,
+  lifetimes as terms, permission tokens; discussed 2026-09-30 and
+  2026-10-16) is shelved behind this. It is still possible later, for
+  memory control in high-level code, if this proves not to be enough.
 
 ## Back ends: Glade and Silo, shared with Meadow
 
