@@ -381,6 +381,7 @@ fun native (name : String) : Maybe (Bool, Int) =
                  let u = H.uniqueOf x in
                  let w2 = setRef tc.natives (Hm.insert u True (getRef tc.natives)) in
                  let w4 = setRef tc.nativeNames (Hm.insert (H.textOf x) u (getRef tc.nativeNames)) in
+                 let w5 = setRef tc.nativeInfo (Hm.insert u (H.textOf x, params) (getRef tc.nativeInfo)) in
                  -- an array holds its elements, so mentions them only
                  -- positively: a data type may have itself in one
                  let w3 = if isType then setRef tc.positive (Hm.insert u (V.replicate ar True) (getRef tc.positive)) else () in

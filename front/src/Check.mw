@@ -21,7 +21,7 @@ use Idyll.Unify (unify, effectsFit)
 use Idyll.Usage (Usage)
 use Idyll.Ctx (Ctx)
 use Idyll.Ctx as X
-use Idyll.Elab (Pending, effectsOf, enterGroups, infer, retryPostponed, closeOpened, closeRows, reportHoles, reportUnsolved, keyOf)
+use Idyll.Elab (Pending, effectsOf, enterGroups, infer, retryPostponed, closeOpened, closeRows, reportHoles, reportUnsolved, keyOf, wrapLets)
 use Idyll.Decl (initial, declareNatives, declareEffects, declareDatas, declareOps)
 use Idyll.Hir (Module, Group, Bind, Ident, DataDecl)
 use Idyll.Hir as H
@@ -37,12 +37,22 @@ fun bindsOf (g : Group) : [Bind] =
   | Group.NonRec b -> [b]
   | Group.Rec bs -> bs
 
+-- A module checked: the checker's state, with every table of what was
+-- declared; the type of the module's expression; and the elaborated
+-- program, the expression under the top-level definitions as `let`s, in
+-- the context of the builtins and the primitives.
+@pub data Checked = Checked Tc (Maybe Core) (Maybe Core)
+
 -- The module checked, and written as the differential test compares it:
 -- `(unsupported: ..)` if it uses what this checker cannot check yet; or
 -- else, a line each, sorted, the program's declarations with their types
 -- (`name : type`), the type of its expression (`body : type`), and the
 -- kinds of the errors found (`error: Mismatch`).
 @pub fun checkModule (m : Module) : String ! { Mut | e } =
+  match checked m with
+  | Checked.Checked tc body _ -> dump tc m body
+
+@pub fun checked (m : Module) : Checked ! { Mut | e } =
   let tc = T.new () in
   let w0 = setRef tc.terminating m.terminating in
   let listOf = V.find (\(d : DataDecl) -> H.textOf d.name == "List" and H.uniqueOf d.name < m.first) m.datas in
@@ -76,7 +86,7 @@ fun bindsOf (g : Group) : [Bind] =
         let w = setRef tc.linear m.linearBody in
         let (core, ty, usage) = infer tc ctx e in
         let w2 = if mainFits == Just False then () else unhandled tc ctx usage world in
-        Just (quote tc ctx.lvl ty)
+        Just (core, quote tc ctx.lvl ty)
     | None -> None
   in
   let w2 = reportHoles tc in
@@ -84,7 +94,7 @@ fun bindsOf (g : Group) : [Bind] =
   let w4 = closeOpened tc in
   let w5 = closeRows tc in
   let w6 = reportUnsolved tc in
-  dump tc m body
+  Checked.Checked tc (M.map snd body) (M.map (\b -> wrapLets (fst b) lets) body)
 
 -- The effects the runtime handles: the prelude's `Eff`, or failing that,
 -- `Div`.

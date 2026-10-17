@@ -101,6 +101,12 @@ use Std.Maybe.Maybe.*
   transparent : Ref (HashMap Int (Env, Int, Core)),
   -- the definitions `@terminating` vouches for
   terminating : Ref [Int],
+  -- the recursive definitions, for running the program: each one's unique,
+  -- how many slots the context it was defined in had, and its body
+  recDefs : Ref [(Int, Int, Core)],
+  -- the natives, by unique: which each is, and how many erased arguments
+  -- come before the ones it takes at run time
+  nativeInfo : Ref (HashMap Int (String, Int)),
   natives : Ref (HashMap Int Bool),
   positive : Ref (HashMap Int [Bool])
 }
@@ -128,6 +134,8 @@ use Std.Maybe.Maybe.*
     nextKey = newRef 4611686018427387903,
     transparent = newRef Hm.empty,
     terminating = newRef [],
+    recDefs = newRef [],
+    nativeInfo = newRef Hm.empty,
     natives = newRef Hm.empty,
     positive = newRef Hm.empty
   }

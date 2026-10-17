@@ -476,6 +476,7 @@ fun checkMember (tc : Tc) (ctxRec : Ctx) (b : Bind) (ty : Value) : (Core, Usage)
     | None -> check tc ctxRec b.rhs ty
   in
   let w = if getRef tc.lets == 0 then declare tc b.name (H.textOf b.name) (quote tc ctxRec.lvl ty) else () in
+  let w2 = setRef tc.recDefs (V.pushBack (getRef tc.recDefs) (H.uniqueOf b.name, ctxRec.lvl, core)) in
   (core, usage)
 
 -- The groups of a `let`: what is defined there is local.

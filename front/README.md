@@ -23,7 +23,7 @@ does, how it is checked, and why it is built the way it is.
 | Renaming | `Rename.mw`, `Hir.mw` | done for one module after the prelude; packages not yet |
 | Dependency order | `Scc.mw` | done |
 | Types | `Check.mw`, `Elab.mw`, `Matching.mw`, `Termination.mw`, `Handlers.mw`, `Sequences.mw`, `Decl.mw`, `Positivity.mw`, `Ctx.mw`, `Usage.mw`, and the machinery under them | done for one module: agrees on every program that gets this far (392) |
-| Core and the CEK machine | | not started |
+| The CEK machine | `Cek.mw`, `World.mw` | done: the same answer, in the same number of steps, as `idyll-eval` on every program that runs (211) |
 | Cut | `Emit.mw` | the Cut package is wired in; only the smallest program so far |
 
 "Every program" means 1082 programs: the test corpora in
@@ -46,6 +46,7 @@ meadow run . -- parse file.idl                # the syntax tree, as S-expression
 meadow run . -- tree file.idl                 # Lingua's lossless tree, drawn
 meadow run . -- rename --prelude p.idl f.idl  # the renamed tree (HIR)
 meadow run . -- types --prelude p.idl f.idl   # each declaration's type, and the errors
+meadow run . -- run --prelude p.idl f.idl     # its answer, steps and output, on the CEK machine
 meadow build --release                        # native, into target/release/native/silo/
 ```
 
@@ -55,11 +56,13 @@ meadow build --release                        # native, into target/release/nati
 natively, runs it on every program, and compares what it writes with what
 the Rust compiler makes of the same program, written in the same form. A
 program whose two outputs differ is reported with its first difference.
-Run it with:
+The machine is held to the Rust reference interpreter the same way, by
+`idyll-eval/tests/front.rs`; both use the harness in
+`compiler/idyllic/tests/support/front.rs`. Run them with:
 
 ```sh
-cd compiler
-cargo test --release --test front -- --nocapture
+cd compiler && cargo test --release --test front -- --nocapture
+cd idyll-eval && cargo test --release --test front -- --nocapture
 ```
 
 It prints, for each pass, how many programs there are and how many are an
@@ -87,6 +90,13 @@ For the passes so far:
   (`body : Int`), and every error, by the name of its kind
   (`error: UsageMismatch`). Metavariables are numbered by first appearance,
   on both sides.
+
+- **run**: the answer as the REPL shows it (`answer: (1, True)`, or `-`
+  for a function or a type) and how many steps the machine took, or how
+  it stopped (`stopped: division by zero`, `stopped: out of fuel`); then
+  what it printed and what it wrote as errors. The step counts agreeing
+  is what says the two machines are the same machine, not just two that
+  get the same answers.
 
 A program that uses something the pass in front/ does not handle yet comes
 out `(unsupported: case, recursion)`; the test counts these and compares
@@ -354,6 +364,44 @@ of its own:
   grades compare as polynomials; two open rows meet through a fresh tail;
   and `subtype`, which lets a smaller universe, a function using its
   argument less, or one with fewer effects stand where more is allowed.
+
+### The CEK machine
+
+`Cek.mw` is `idyll-eval`, the reference interpreter: it says what a program
+computes, and the Cut that `front/` emits will be held to it. A state is a
+**C**ontrol (a term to evaluate in an environment, or a value being
+returned), an **E**nvironment, and a **K**ontinuation, a stack of frames
+saying what to do with a value once there is one. Each step takes a term
+apart, pushing a frame for what is left, or hands a value to the frame on
+top, so the machine is one loop and needs no deep recursion:
+
+```text
+eval  f a             E  K               ->  eval f  E        arg(a, E) : K
+ret   v               arg(a, E) : K      ->  eval a  E        call(v) : K
+ret   w               call(\x -> b, E') : K  ->  eval b  E', x = w   K
+eval  case e of alts  E  K               ->  eval e  E        case(alts, E) : K
+ret   C v..           case(alts, E) : K  ->  eval body  E, x.. = v..   K
+```
+
+What running Core means, rule by rule:
+
+- call by value, left to right;
+- types and grades are erased, and so is whatever the checker marked as
+  never used (an argument to a grade-`0` parameter is never computed, so
+  one that would loop does no harm);
+- a recursive definition is a constant, its body evaluated again in the
+  context it was defined in;
+- a solved metavariable stands for its solution;
+- integers are 64 bits and wrap.
+
+`handle` pushes a handler frame. Performing an operation looks down the
+stack for the nearest handler of it, and the frames above it, the handler
+included, become the resumption, a value the clause is given as `k`;
+resuming puts them back. An operation with no handler in the program is
+the world's (`World.mw`): a captured world, as tests use, which keeps what
+is printed, has no input, and draws its randomness from a fixed seed (the
+Rust world's SplitMix64), so a run is the same every time. Its file
+system, environment and clock operations are not in yet.
 
 ### Cut
 

@@ -1,0 +1,79 @@
+-- The world a program runs in: what the runtime does with the operations
+-- of the prelude's effects that the program does not handle itself, as
+-- `compiler/idyllic-world` does them for a captured world, the one tests
+-- run in. What it prints is kept, its input is empty, and its randomness
+-- comes from a fixed seed (SplitMix64, as the Rust world's), so that a run
+-- is the same every time.
+--
+-- The world's other operations (the file system, the environment, the
+-- clock) are not here yet; a program that performs one stops, saying so.
+
+use Std.Collections.Vector as V
+use Std.Maybe.Maybe.*
+
+-- An argument an operation reads, and what it answers.
+@pub data Arg = AInt Int | AStr String
+
+@pub data Answer = Unit | Int Int | Bool Bool | Str String | Con String Int [Answer] | Array [Answer]
+
+-- How a program can stop itself: `exit`, or a failed test.
+@pub data Stop = Exit Int | Failed String
+
+@pub record World = {
+  output : Ref String,
+  errors : Ref String,
+  seed : Ref Int,
+  -- the world's operations this one cannot do, if a program asked
+  missing : Ref [String]
+}
+
+@pub fun captured () : World ! { Mut | e } =
+  World { output = newRef "", errors = newRef "", seed = newRef 1592597873, missing = newRef [] }
+
+-- 0x9E3779B97F4A7C15 and SplitMix64's two multipliers, as signed integers.
+def gamma = 0 - 7046029254386353131
+
+def mixA = 0 - 4658895280553007687
+
+def mixB = 0 - 7723592293110705685
+
+fun nextRandom (w : World) : Int ! { Mut | e } =
+  let s = getRef w.seed + gamma in
+  let u = setRef w.seed s in
+  let z1 = bitXor s (s >>> 30) * mixA in
+  let z2 = bitXor z1 (z1 >>> 27) * mixB in
+  bitXor z2 (z2 >>> 31)
+
+fun nothing () : Answer = Answer.Con "Nothing" 0 []
+
+-- Do one of the world's operations; nothing if it is not one this world
+-- does.
+@pub fun perform (w : World) (op : String) (args : [Arg]) : Maybe (Result Stop Answer) ! { Mut | e } =
+  let str = match V.get args 0 with | Just (Arg.AStr s) -> s | _ -> "" in
+  let int = \i -> match V.get args i with | Just (Arg.AInt n) -> n | _ -> 0 in
+  if op == "putStr" then
+    let u = setRef w.output (getRef w.output ++ str) in
+    Just (Ok Answer.Unit)
+  else if op == "putErr" then
+    let u = setRef w.errors (getRef w.errors ++ str) in
+    Just (Ok Answer.Unit)
+  else if op == "readLine" then Just (Ok (nothing ()))
+  else if op == "nextInt" or op == "nextSeed" then Just (Ok (Answer.Int (nextRandom w)))
+  else if op == "intBetween" then
+    let (lo, hi) = (int 0, int 1) in
+    -- as the native runtime does it, in unsigned arithmetic
+    if hi <= lo then Just (Ok (Answer.Int lo))
+    else
+      let span = toUInt64 (hi - lo) in
+      Just (Ok (Answer.Int (toInt (toUInt64 lo + toUInt64 (nextRandom w) % span))))
+  else if op == "exit" then Just (Err (Stop.Exit (int 0)))
+  else if op == "argv" then Just (Ok (Answer.Array []))
+  else if op == "fail" then Just (Err (Stop.Failed str))
+  -- what the prelude's `Abort` does unhandled: the message, as an error,
+  -- and exit status 1
+  else if op == "abort" then
+    let u = setRef w.errors (getRef w.errors ++ str ++ "\n") in
+    Just (Err (Stop.Exit 1))
+  else
+    let u = setRef w.missing (V.pushBack (getRef w.missing) op) in
+    None

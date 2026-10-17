@@ -13,7 +13,9 @@
 --            `idyllic-rename`), against the prelude
 --   Scc      definitions in dependency order (`idyllic-scc`)
 --   Types    the type checker (`Check`, `Elab`, `Decl`, and the machinery
---            under them; `idyllic-typecheck`), in slices
+--            under them; `idyllic-typecheck`)
+--   Run      the reference interpreter, a CEK machine on the checked Core
+--            (`Cek`, `World`; `idyll-eval`)
 --
 -- Run as `Idyll <pass> <file>...`, it writes each file's dump for the pass,
 -- each after a line `== <file>`: what the differential tests compare with
@@ -24,8 +26,14 @@ use Idyll.Syntax (parseIdyll)
 use Idyll.Parse as Parse
 use Idyll.Rename (renameModule)
 use Idyll.Hir as Hir
+use Std.String as S
+use Std.Maybe as M
 use Idyll.Scc (sccModule)
-use Idyll.Check (checkModule)
+use Idyll.Check (checkModule, checked, Checked)
+use Idyll.Cek as Cek
+use Idyll.World as W
+use Idyll.Core as C
+use Idyll.Ast (Literal)
 use Lingua.Green (dump)
 use Std.Collections.Vector as V
 use Std.Result.Result.*
@@ -47,6 +55,16 @@ fun main () =
                  | Err _ -> writeError "the prelude does not parse\n")
             | Err e -> writeError "could not read the prelude: ${e}\n")
        | _ -> writeError "usage: Idyll rename --prelude <file> <file>...\n")
+  | Just "run" ->
+      (match (V.get args 1, V.get args 2) with
+       | (Just "--prelude", Just path) ->
+           (match readToString path with
+            | Ok text ->
+                (match Parse.parsed text with
+                 | Ok prelude -> V.foldl (\u f -> each f (ran prelude)) () (V.drop args 3)
+                 | Err _ -> writeError "the prelude does not parse\n")
+            | Err e -> writeError "could not read the prelude: ${e}\n")
+       | _ -> writeError "usage: Idyll run --prelude <file> <file>...\n")
   | Just "types" ->
       (match (V.get args 1, V.get args 2) with
        | (Just "--prelude", Just path) ->
@@ -91,3 +109,41 @@ fun typed prelude (text : String) : String ! { Mut | e } =
   | Ok prog ->
       (match renameModule prog prelude with
        | (m, problems) -> if V.isEmpty problems then checkModule (sccModule m) else "(error)")
+
+-- How many steps a program is given before it is taken not to stop.
+def fuel = 5000000
+
+-- A program run after the prelude, as the run differential compares it:
+-- its answer as the REPL shows it (or `-`, for a function or a type) and
+-- how many steps it took, or how it stopped; and what it printed. `(error)`
+-- if it does not check, `(no expression)` if it has nothing to run.
+fun ran prelude (text : String) : String ! { Mut | e } =
+  match Parse.parsed text with
+  | Err _ -> "(error)"
+  | Ok prog ->
+      (match renameModule prog prelude with
+       | (m, problems) ->
+           if not (V.isEmpty problems) then "(error)"
+           else
+             (match checked (sccModule m) with
+              | Checked.Checked tc _ program ->
+                  if not (V.isEmpty (getRef tc.unsupported)) then "(unsupported)"
+                  else if not (V.isEmpty (getRef tc.errors)) then "(error)"
+                  else
+                    (match program with
+                     | None -> "(no expression)"
+                     | Just core -> runCore tc core)))
+
+fun runCore tc core : String ! { Mut | e } =
+  let w = W.captured () in
+  let result = Cek.run (Cek.programOf tc) w core fuel in
+  if not (V.isEmpty (getRef w.missing)) then "(unsupported: the world's ${S.join ", " (getRef w.missing)})"
+  else
+    let outcome =
+      match result with
+      | Ok (v, steps) -> ["answer: " ++ M.unwrapOr "-" (Cek.shown v), "steps: " ++ show steps]
+      | Err h -> ["stopped: " ++ Cek.haltShown h]
+    in
+    let printed = if getRef w.output == "" then [] else ["printed: " ++ C.literalShown (Literal.Str (getRef w.output))] in
+    let errors = if getRef w.errors == "" then [] else ["errors: " ++ C.literalShown (Literal.Str (getRef w.errors))] in
+    S.join "\n" (V.concat [outcome, printed, errors])
