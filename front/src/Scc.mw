@@ -1,0 +1,274 @@
+-- The dependency order of definitions: `compiler/idyllic-scc`.
+--
+-- The renamer makes every `let` and the top level one recursive group,
+-- which is the safe guess. This pass makes the groups the definitions'
+-- strongly connected components: a definition that does not, through the
+-- others, mention itself is not recursive; definitions that mention each
+-- other are one recursive group; and each group comes after the groups it
+-- uses (Tarjan's algorithm finds them in that order). A definition by
+-- matching with a signature is recursive even if it never calls itself,
+-- since the checker then keeps it a constant that unfolds only when its
+-- cases can choose.
+--
+-- The data types are put in order too: a data type's kind, and its
+-- parameters' kinds, may mention only the types before it.
+
+use Idyll.Hir (Term, Ident, Grade, Group, Bind, Clause, Rhs, Pattern, HandleClause, DataDecl, Module)
+use Idyll.Hir as H
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as Hm
+use Std.Collections.HashMap (HashMap)
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+@pub fun sccModule (m : Module) : Module ! { Mut | e } =
+  -- (each top-level group apart: the prelude's come before the program's)
+  let groups = V.concatMap (\g -> sccGroups [g]) m.groups in
+  { m | groups = groups, datas = orderDatas m.datas, body = M.map sccTerm m.body }
+
+-- --- data types ----------------------------------------------------------------
+
+fun orderDatas (datas : [DataDecl]) : [DataDecl] ! { Mut | e } =
+  let index =
+    V.foldl (\acc i -> match V.get datas i with | Just d -> Hm.insert (H.uniqueOf d.name) i acc | None -> acc) Hm.empty (V.range 0 (V.len datas))
+  in
+  let needs =
+    V.map
+      (\i ->
+        match V.get datas i with
+        | Just d ->
+            let kinds = V.append (V.concatMap (\p -> match p with | (_, Just k) -> [k] | _ -> []) d.params) (vecOf d.kind) in
+            let mentioned = V.foldl (\s k -> freeInto k s) Hm.empty kinds in
+            sortInts (V.filter (\j -> j != i) (V.concatMap (\u -> vecOf (Hm.lookup u index)) (Hm.keys mentioned)))
+        | None -> [])
+      (V.range 0 (V.len datas))
+  in
+  let seen = newRef Hm.empty in
+  let order = newRef [] in
+  let w = V.foldl (\acc i -> visitData i needs seen order) () (V.range 0 (V.len datas)) in
+  V.concatMap (\i -> vecOf (V.get datas i)) (getRef order)
+
+fun visitData (i : Int) (needs : [[Int]]) seen order =
+  if Hm.member i (getRef seen) then ()
+  else
+    let w = setRef seen (Hm.insert i True (getRef seen)) in
+    let w2 = V.foldl (\acc j -> visitData j needs seen order) () (V.getOr [] needs i) in
+    setRef order (V.pushBack (getRef order) i)
+
+fun sortInts (xs : [Int]) : [Int] =
+  V.foldl (\acc x -> V.concat [V.filter (\y -> y <= x) acc, [x], V.filter (\y -> y > x) acc]) [] xs
+
+-- --- groups ------------------------------------------------------------------
+
+fun sccGroups (groups : [Group]) : [Group] ! { Mut | e } =
+  let binds =
+    V.map
+      (\(b : Bind) -> { b | ty = M.map sccTerm b.ty, rhs = sccTerm b.rhs })
+      (V.concatMap (\g -> match g with | Group.NonRec b -> [b] | Group.Rec bs -> bs) groups)
+  in
+  sccBinds binds
+
+-- Split a list of definitions into their components, dependencies first,
+-- each component's members in the order they came.
+@pub fun sccBinds (binds : [Bind]) : [Group] ! { Mut | e } =
+  let n = V.len binds in
+  let indexOf =
+    V.foldl (\acc i -> match V.get binds i with | Just b -> Hm.insert (H.uniqueOf b.name) i acc | None -> acc) Hm.empty (V.range 0 n)
+  in
+  let edges =
+    V.map
+      (\(b : Bind) ->
+        let free = V.foldl (\s t -> freeInto t s) (freeInto b.rhs Hm.empty) (vecOf b.ty) in
+        sortInts (V.concatMap (\u -> vecOf (Hm.lookup u indexOf)) (Hm.keys free)))
+      binds
+  in
+  V.map
+    (\comp ->
+      let members = sortInts comp in
+      let bs = V.concatMap (\i -> vecOf (V.get binds i)) members in
+      let selfEdge = V.len members == 1 and V.elem (V.getOr 0 members 0) (V.getOr [] edges (V.getOr 0 members 0)) in
+      let byMatching =
+        V.len bs == 1
+          and (match V.get bs 0 with
+               | Just b -> M.isSome b.ty and (match b.rhs with | Term.Match _ -> True | _ -> False)
+               | None -> False)
+      in
+      if V.len bs == 1 and not selfEdge and not byMatching then
+        (match V.get bs 0 with
+         | Just b -> Group.NonRec b
+         | None -> Group.Rec bs)
+      else Group.Rec bs)
+    (components n edges)
+
+-- The strongly connected components of a graph of `n` nodes, by Tarjan's
+-- algorithm: each comes out after every component it reaches.
+@pub fun components (n : Int) (edges : [[Int]]) : [[Int]] ! { Mut | e } =
+  let t =
+    Tarjan {
+      index = newRef Hm.empty,
+      low = newRef Hm.empty,
+      onStack = newRef Hm.empty,
+      stack = newRef [],
+      next = newRef 0,
+      components = newRef []
+    }
+  in
+  let w = V.foldl (\acc v -> if Hm.member v (getRef t.index) then () else visit t v edges) () (V.range 0 n) in
+  getRef t.components
+
+record Tarjan = {
+  index : Ref (HashMap Int Int),
+  low : Ref (HashMap Int Int),
+  onStack : Ref (HashMap Int Bool),
+  stack : Ref [Int],
+  next : Ref Int,
+  components : Ref [[Int]]
+}
+
+fun visit (t : Tarjan) (v : Int) (edges : [[Int]]) =
+  let i = getRef t.next in
+  let w1 = setRef t.index (Hm.insert v i (getRef t.index)) in
+  let w2 = setRef t.low (Hm.insert v i (getRef t.low)) in
+  let w3 = setRef t.next (i + 1) in
+  let w4 = setRef t.stack (V.pushBack (getRef t.stack) v) in
+  let w5 = setRef t.onStack (Hm.insert v True (getRef t.onStack)) in
+  let w6 =
+    V.foldl
+      (\acc w ->
+        match Hm.lookup w (getRef t.index) with
+        | None ->
+            let u = visit t w edges in
+            lower t v (Hm.getOr 0 w (getRef t.low))
+        | Just wi -> if Hm.getOr False w (getRef t.onStack) then lower t v wi else ())
+      ()
+      (V.getOr [] edges v)
+  in
+  if Hm.getOr 0 v (getRef t.low) == i then setRef t.components (V.pushBack (getRef t.components) (popTo t v [])) else ()
+
+fun lower (t : Tarjan) (v : Int) (x : Int) =
+  if x < Hm.getOr 0 v (getRef t.low) then setRef t.low (Hm.insert v x (getRef t.low)) else ()
+
+fun popTo (t : Tarjan) (v : Int) (acc : [Int]) : [Int] ! { Mut | e } =
+  match V.last (getRef t.stack) with
+  | Just w ->
+      let u = setRef t.stack (V.take (getRef t.stack) (V.len (getRef t.stack) - 1)) in
+      let u2 = setRef t.onStack (Hm.insert w False (getRef t.onStack)) in
+      if w == v then V.pushBack acc w else popTo t v (V.pushBack acc w)
+  | None -> acc
+
+-- --- every `let`, everywhere ---------------------------------------------------
+
+@pub fun sccTerm (t : Term) : Term ! { Mut | e } =
+  match t with
+  | Term.App f a -> H.app (sccTerm f) (sccTerm a)
+  | Term.SeqCons h tl -> H.seqCons (sccTerm h) (sccTerm tl)
+  | Term.ArrayLit items -> H.arrayLit (V.map sccTerm items)
+  | Term.Ann e a -> H.ann (sccTerm e) (sccTerm a)
+  | Term.Range lo hi -> H.range (sccTerm lo) (sccTerm hi)
+  | Term.Pi x icit g dom cod -> H.pi x icit (M.map sccGrade g) (sccTerm dom) (sccTerm cod)
+  | Term.Lam x g ty body -> H.lam x (M.map sccGrade g) (M.map sccTerm ty) (sccTerm body)
+  | Term.BoxIntro e -> H.boxed (sccTerm e)
+  | Term.LetBox x e body -> H.letBox x (sccTerm e) (sccTerm body)
+  | Term.Let gs body -> H.letIn (sccGroups gs) (sccTerm body)
+  | Term.Case s cs -> H.caseOf (sccTerm s) (V.map sccClause cs)
+  | Term.Match cs -> H.matching (V.map sccClause cs)
+  | Term.Eff a r -> H.eff (sccTerm a) (sccTerm r)
+  | Term.Row ls tail -> H.row (V.map sccTerm ls) (M.map sccTerm tail)
+  | Term.Handle body cs ->
+      H.handled (sccTerm body) (V.map (\c -> match c with | HandleClause.HandleClause op xs b -> HandleClause.HandleClause op xs (sccTerm b)) cs)
+  | _ -> t
+
+fun sccGrade (g : Grade) : Grade ! { Mut | e } =
+  match g with
+  | Grade.Grade s r -> H.grade (sccTerm s) (M.map sccTerm r)
+
+fun sccClause (c : Clause) : Clause ! { Mut | e } =
+  match c with
+  | Clause.Clause ps r ->
+      let rhs =
+        match r with
+        | Rhs.Plain e -> H.plain (sccTerm e)
+        | Rhs.Guarded gs -> H.guarded (V.map (\g -> match g with | (c2, e) -> (sccTerm c2, sccTerm e)) gs)
+        | Rhs.Impossible -> H.impossible ()
+      in
+      H.clause (V.map sccPattern ps) rhs
+
+fun sccPattern (p : Pattern) : Pattern ! { Mut | e } =
+  match p with
+  | Pattern.Con c ps -> Pattern.Con c (V.map sccPattern ps)
+  | Pattern.SeqCons h tl -> Pattern.SeqCons (sccPattern h) (sccPattern tl)
+  | Pattern.As x q -> Pattern.As x (sccPattern q)
+  | Pattern.Dot e -> Pattern.Dot (sccTerm e)
+  | _ -> p
+
+-- --- free names ----------------------------------------------------------------
+
+-- The uniques a term uses and does not bind, added to a set. (Names are
+-- unique, so what a clause binds cannot be mistaken for anything outside
+-- it, and is left in: only the members of a group are looked up.)
+@pub fun freeInto (t : Term) (s : HashMap Int Bool) : HashMap Int Bool =
+  match t with
+  | Term.Var (Ident.Ident us _) -> V.foldl (\acc u -> Hm.insert u True acc) s us
+  | Term.App f a -> freeInto a (freeInto f s)
+  | Term.Ann f a -> freeInto a (freeInto f s)
+  | Term.Range f a -> freeInto a (freeInto f s)
+  | Term.Eff f a -> freeInto a (freeInto f s)
+  | Term.SeqCons f a -> freeInto a (freeInto f s)
+  | Term.BoxIntro a -> freeInto a s
+  | Term.ArrayLit items -> V.foldl (\acc e -> freeInto e acc) s items
+  | Term.LetBox x e body -> without x (freeInto body (freeInto e s)) s
+  | Term.Pi (Just x) _ g dom cod -> without x (freeInto cod (freeInto dom (gradeInto g s))) s
+  | Term.Pi None _ g dom cod -> freeInto cod (freeInto dom (gradeInto g s))
+  | Term.Lam x g ty body -> without x (freeInto body (V.foldl (\acc a -> freeInto a acc) (gradeInto g s) (vecOf ty))) s
+  | Term.Case sc cs -> V.foldl (\acc c -> clauseInto c acc) (freeInto sc s) cs
+  | Term.Match cs -> V.foldl (\acc c -> clauseInto c acc) s cs
+  | Term.Handle body cs ->
+      V.foldl
+        (\acc c ->
+          match c with
+          | HandleClause.HandleClause op _ b ->
+              let acc2 = match op with | Just (Ident.Ident us _) -> V.foldl (\a u -> Hm.insert u True a) acc us | None -> acc in
+              freeInto b acc2)
+        (freeInto body s)
+        cs
+  | Term.Row ls tail -> V.foldl (\acc a -> freeInto a acc) (V.foldl (\acc l -> freeInto l acc) s ls) (vecOf tail)
+  | Term.Let gs body ->
+      let binds = V.concatMap (\g -> match g with | Group.NonRec b -> [b] | Group.Rec bs -> bs) gs in
+      let inner = V.foldl (\acc (b : Bind) -> V.foldl (\a ty -> freeInto ty a) (freeInto b.rhs acc) (vecOf b.ty)) Hm.empty binds in
+      let inner2 = freeInto body inner in
+      let kept = V.foldl (\acc (b : Bind) -> Hm.delete (H.uniqueOf b.name) acc) inner2 binds in
+      V.foldl (\acc u -> Hm.insert u True acc) s (Hm.keys kept)
+  | _ -> s
+
+-- What `inner` has but the binder `x`, added to `outer`... which `inner`
+-- already includes, so: `inner` with `x` taken out unless `outer` had it.
+fun without (x : Ident) (inner : HashMap Int Bool) (outer : HashMap Int Bool) : HashMap Int Bool =
+  let u = H.uniqueOf x in
+  if Hm.member u outer then inner else Hm.delete u inner
+
+fun gradeInto (g : Maybe Grade) (s : HashMap Int Bool) : HashMap Int Bool =
+  match g with
+  | Just (Grade.Grade a r) -> V.foldl (\acc x -> freeInto x acc) (freeInto a s) (vecOf r)
+  | None -> s
+
+fun clauseInto (c : Clause) (s : HashMap Int Bool) : HashMap Int Bool =
+  match c with
+  | Clause.Clause ps r ->
+      let s2 = V.foldl (\acc p -> patternInto p acc) s ps in
+      match r with
+      | Rhs.Plain e -> freeInto e s2
+      | Rhs.Guarded gs -> V.foldl (\acc g -> match g with | (c2, e) -> freeInto e (freeInto c2 acc)) s2 gs
+      | Rhs.Impossible -> s2
+
+fun patternInto (p : Pattern) (s : HashMap Int Bool) : HashMap Int Bool =
+  match p with
+  | Pattern.Con (Ident.Ident us _) ps -> V.foldl (\acc q -> patternInto q acc) (V.foldl (\acc u -> Hm.insert u True acc) s us) ps
+  | Pattern.SeqCons h tl -> patternInto tl (patternInto h s)
+  | Pattern.As _ q -> patternInto q s
+  | Pattern.Dot e -> freeInto e s
+  | _ -> s
+
+fun vecOf (m : Maybe a) : [a] =
+  match m with
+  | Just x -> [x]
+  | None -> []

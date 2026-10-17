@@ -1,0 +1,411 @@
+-- Declarations: data types, effects and their operations, and natives,
+-- each a constant of the type it is declared with. Ported from
+-- `compiler/idyllic-typecheck/src/elab.rs` (data types), `handlers.rs`
+-- (effects) and `natives.rs`; and the context every module starts in.
+--
+-- `data T (a : k) .. = C t .. | ..` declares
+--
+--     T : (a : k) -> .. -> Type
+--     C : {a : k} -> .. -> t -> .. -> T a ..
+--
+-- a constructor taking the type's parameters implicitly and erased, and its
+-- fields once each. `data T .. : kind where C : ty` gives the constructors'
+-- types in full, which may choose the type's indices.
+--
+-- `effect E (a : k) where op : a -> b` declares `E : (a : k) -> Effect`,
+-- and `op : {a : k} -> a -> b ! E a`: the effect on its last arrow.
+
+use Idyll.Ast (Icit, Literal)
+use Idyll.Core (Core, Builtin, Prim)
+use Idyll.Core as C
+use Idyll.Value (Value, Elim)
+use Idyll.Value as Va
+use Idyll.Grade (Grade)
+use Idyll.Grade as G
+use Idyll.Tc (Tc)
+use Idyll.Tc as T
+use Idyll.Eval (force, apply, eval, quote, toPoly)
+use Idyll.Unify (sortOf)
+use Idyll.Ctx (Ctx, Info)
+use Idyll.Ctx as X
+use Idyll.Elab (checkType, inferType, declareConstant, manyEffectKind, keyOf)
+use Idyll.Hir (Term, Ident, DataDecl, CtorDecl, CtorShape, EffectDecl, OpDecl, NativeDecl)
+use Idyll.Hir as H
+use Idyll.Positivity (Shape, checkPositivity)
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as Hm
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+fun pi (name : String) (grade : Grade) (icit : Icit) (dom : Core) (cod : Core) : Core =
+  Core.Pi name icit (C.grade grade) (C.grade G.defaultInType) dom cod
+
+fun declare (tc : Tc) (x : Ident) (name : String) (ty : Core) =
+  setRef tc.declared (V.pushBack (getRef tc.declared) (H.uniqueOf x, name, ty))
+
+-- The parameters `(a : k) ..` checked, each under the ones before: their
+-- kinds, and the context with them bound.
+fun paramKinds (tc : Tc) (ctx : Ctx) (params : [(Ident, Maybe Term)]) : ([Core], Ctx) ! { Mut | e } =
+  V.foldl
+    (\acc p ->
+      match (acc, p) with
+      | ((ks, under), (x, kind)) ->
+          let (kC, kV) =
+            match kind with
+            | Just k -> checkType tc under k
+            | None -> (Core.Type 0, Value.Type 0)
+          in
+          (V.pushBack ks kC, X.bind under (Just x) (H.textOf x) kV))
+    ([], ctx)
+    params
+
+-- The parameters bound again, from their kinds.
+fun bindParams (tc : Tc) (ctx : Ctx) (params : [(Ident, Maybe Term)]) (ks : [Core]) : Ctx ! { Mut | e } =
+  V.foldl
+    (\c pk -> match pk with | ((x, _), k) -> X.bind c (Just x) (H.textOf x) (eval tc c.env k))
+    ctx
+    (V.zip params ks)
+
+-- `{a : k} -> .. -> ty`, the parameters implicit and erased.
+fun underParams (params : [(Ident, Maybe Term)]) (ks : [Core]) (ty : Core) (grade : Grade) (icit : Icit) : Core =
+  V.foldl (\acc pk -> match pk with | ((x, _), k) -> pi (H.textOf x) grade icit k acc) ty (V.reverse (V.zip params ks))
+
+-- --- data types ----------------------------------------------------------------------
+
+-- The module's data types: all their kinds first, then all the
+-- constructors, so that a constructor may mention any of them.
+@pub fun declareDatas (tc : Tc) (ctx : Ctx) (datas : [DataDecl]) : Ctx ! { Mut | e } =
+  let (ctx1, kinds) =
+    V.foldl
+      (\acc (d : DataDecl) ->
+        match acc with
+        | (c, kinds) ->
+            let (ks, under) = paramKinds tc c d.params in
+            let (kind, indices) =
+              match d.kind with
+              | None -> (Core.Type 0, 0)
+              | Just k ->
+                  let (kC, kV) = checkType tc under k in
+                  let (indices, last) = telescopeEnd tc under.lvl kV in
+                  (match last with
+                   | Value.Type 0 -> (kC, indices)
+                   | Value.Error -> (kC, indices)
+                   | _ ->
+                       let w = T.error tc "DataKindNotType" in
+                       (Core.Type 0, 0))
+            in
+            let ty = underParams d.params ks kind G.default Icit.Explicit in
+            let w = declare tc d.name (H.textOf d.name) ty in
+            let w2 = setRef tc.datas (Hm.insert (H.uniqueOf d.name) True (getRef tc.datas)) in
+            (declareConstant tc c d.name (eval tc c.env ty), V.pushBack kinds (ks, indices)))
+      (ctx, [])
+      datas
+  in
+  let (ctx2, shapes) =
+    V.foldl
+      (\acc dk ->
+        match (acc, dk) with
+        | ((c, shapes), (d, (ks, indices))) ->
+            let (c2, fields) = declareCtors tc c d ks indices in
+            (c2, V.pushBack shapes (Shape.Shape (H.uniqueOf d.name) c.lvl (V.len d.params) fields)))
+      (ctx1, [])
+      (V.zip datas kinds)
+  in
+  let w = checkPositivity tc shapes in
+  ctx2
+
+-- The constructors of a data type, and all their fields, for positivity:
+-- each with the size of the context it is in, and its type.
+fun declareCtors (tc : Tc) (ctx : Ctx) (d : DataDecl) (ks : [Core]) (indices : Int) : (Ctx, [(Int, Value)]) ! { Mut | e } =
+  -- the parameters again, now that the type itself is in scope
+  let params = bindParams tc ctx d.params ks in
+  V.foldl
+    (\acc ctor ->
+      match (acc, ctor) with
+      | ((c, fieldsSoFar), CtorDecl.CtorDecl x shape) ->
+          let declared =
+            match shape with
+            | CtorShape.Fields fields ->
+                if indices == 0 then Just (ctorFields tc d params fields)
+                else
+                  let w = T.error tc "IndexedNeedsSignatures" in
+                  None
+            | CtorShape.Sig sig -> Just (ctorSig tc d params ctx.lvl sig indices)
+          in
+          (match declared with
+           | None -> (declareConstant tc c x Value.Error, fieldsSoFar)
+           | Just (ty0, implicit, fields, found) ->
+               let ty = eval tc c.env (underParams d.params ks ty0 G.zero Icit.Implicit) in
+               let w = declare tc d.name (H.textOf d.name ++ "." ++ H.textOf x) (quote tc c.lvl ty) in
+               (declareConstant tc c x ty, V.append fieldsSoFar found)))
+    (ctx, [])
+    d.ctors
+
+-- How many function types a type starts with, and what it ends in.
+fun telescopeEnd (tc : Tc) (lvl : Int) (ty : Value) : (Int, Value) ! { Mut | e } =
+  match force tc ty with
+  | Value.Pi name _ _ _ _ cod ->
+      let (n, last) = telescopeEnd tc (lvl + 1) (apply tc cod (Va.vvar lvl name)) in
+      (n + 1, last)
+  | fty -> (0, fty)
+
+-- `C t ..`: the constructor's type under the parameters, `t -> .. -> T a ..`,
+-- each field linear.
+fun ctorFields (tc : Tc) (d : DataDecl) (params : Ctx) (fields : [Term]) : (Core, Int, Int, [(Int, Value)]) ! { Mut | e } =
+  let (elaborated, under, found) =
+    V.foldl
+      (\acc f ->
+        match acc with
+        | (es, u, fs) ->
+            let (fC, fV, level, _) = inferType tc u f in
+            let w = if level > 0 then T.error tc "LargeField" else () in
+            (V.pushBack es fC, X.bind u None "_" fV, V.pushBack fs (u.lvl, fV)))
+      ([], params, [])
+      fields
+  in
+  let n = V.len d.params in
+  let m = V.len elaborated in
+  let head = Core.Opaque (H.uniqueOf d.name) (H.textOf d.name) in
+  let result =
+    V.foldl
+      (\acc j -> Core.App acc (Core.Var (n + m - j - 1) (H.textOf (fst (V.getOr (d.name, None) d.params j)))))
+      head
+      (V.range 0 n)
+  in
+  let ty = V.foldl (\acc f -> pi "_" G.one Icit.Explicit f acc) result (V.reverse elaborated) in
+  (ty, 0, m, found)
+
+-- `C : ty`: the constructor's type under the parameters, checked to end in
+-- the type at its parameters and then at indices, and how many implicit
+-- arguments and fields it has.
+fun ctorSig (tc : Tc) (d : DataDecl) (params : Ctx) (paramsAt : Int) (sig : Term) (indices : Int) : (Core, Int, Int, [(Int, Value)]) ! { Mut | e } =
+  let (sigC0, _) = checkType tc params sig in
+  -- the fields it gives no grade are linear, as a list of fields is
+  let sigC = linearFields sig sigC0 in
+  let sigV = eval tc params.env sigC in
+  let (binders, last) = walk tc (X.types params) [] sigV in
+  let n = V.len d.params in
+  let rigidAt = \e l -> match e with | Elim.App (Value.Rigid k _ []) -> k == l | _ -> False in
+  let atParams = \sp -> V.all (\j -> rigidAt (V.getOr Elim.Unbox sp j) (paramsAt + j)) (V.range 0 n) in
+  let forced =
+    match last with
+    | Value.Opaque u _ sp ->
+        if u == H.uniqueOf d.name and V.len sp == n + indices and atParams sp then
+          V.concatMap (\e -> match e with | Elim.App (Value.Rigid l _ []) -> [l] | _ -> []) (V.drop sp n)
+        else
+          let w = T.error tc "CtorResult" in
+          []
+    | Value.Error -> []
+    | _ ->
+        let w = T.error tc "CtorResult" in
+        []
+  in
+  let implicit = V.len (V.takeWhile (\b -> match b with | (_, icit, _, _, _) -> icit == Icit.Implicit) binders) in
+  let erased =
+    V.all
+      (\b -> match b with | (_, _, g, _, _) -> Va.asConstant (toPoly tc g) == Just G.zero)
+      (V.take binders implicit)
+  in
+  let laterImplicit = V.any (\b -> match b with | (_, icit, _, _, _) -> icit == Icit.Implicit) (V.drop binders implicit) in
+  let w = if not erased or laterImplicit then T.error tc "CtorImplicit" else () in
+  let w2 =
+    V.foldl
+      (\acc b ->
+        match b with
+        | (lvl, icit, _, dom, types) ->
+            (match sortOf tc types dom with
+             | Just level -> if level > 0 and (icit == Icit.Explicit or not (V.elem lvl forced)) then T.error tc "LargeField" else ()
+             | None -> ()))
+      ()
+      binders
+  in
+  (sigC, implicit, V.len binders - implicit, V.map (\b -> match b with | (lvl, _, _, dom, _) -> (lvl, dom)) binders)
+
+-- A type's binders, each with its level, icit, grade, domain and the types
+-- of the slots before it; and what it ends in.
+fun walk (tc : Tc) (types : [(String, Value)]) (acc : [(Int, Icit, Value, Value, [(String, Value)])]) (ty : Value) : ([(Int, Icit, Value, Value, [(String, Value)])], Value) ! { Mut | e } =
+  match force tc ty with
+  | Value.Pi name icit grade _ dom cod ->
+      let lvl = V.len types in
+      walk tc (V.pushBack types (name, dom)) (V.pushBack acc (lvl, icit, grade, dom, types)) (apply tc cod (Va.vvar lvl name))
+  | fty -> (acc, fty)
+
+-- A constructor's signature with each of its own arrows that says no grade
+-- linear, as a field written `C a` is.
+fun linearFields (sig : Term) (core : Core) : Core =
+  match (sig, core) with
+  | (Term.Pi _ icit ann _ cod, Core.Pi name i grade inType dom c) ->
+      let g = if M.isNone ann and icit == Icit.Explicit then C.grade G.one else grade in
+      Core.Pi name i g inType dom (linearFields cod c)
+  | _ -> core
+
+-- --- effects -------------------------------------------------------------------------
+
+-- Each effect: `E : (a : k) -> .. -> Effect`, or `Effect []` if a handler
+-- may resume one of its operations more than once.
+@pub fun declareEffects (tc : Tc) (ctx : Ctx) (effects : [EffectDecl]) : Ctx ! { Mut | e } =
+  V.foldl
+    (\c (e : EffectDecl) ->
+      let (ks, _) = paramKinds tc c e.params in
+      let many = V.any (\o -> match o with | OpDecl.OpDecl _ _ m -> m) e.ops in
+      let kind = if many then manyEffectKind () else Core.LitTy Builtin.Effect in
+      let ty = underParams e.params ks kind G.default Icit.Explicit in
+      let w = declare tc e.name (H.textOf e.name) ty in
+      let w2 = setRef tc.effects (Hm.insert (H.uniqueOf e.name) ks (getRef tc.effects)) in
+      declareConstant tc c e.name (eval tc c.env ty))
+    ctx
+    effects
+
+-- Then their operations, once the data types they mention are declared.
+@pub fun declareOps (tc : Tc) (ctx : Ctx) (effects : [EffectDecl]) : Ctx ! { Mut | e } =
+  V.foldl
+    (\c (e : EffectDecl) ->
+      match Hm.lookup (H.uniqueOf e.name) (getRef tc.effects) with
+      | None -> c
+      | Just ks ->
+          let n = V.len e.params in
+          let params = bindParams tc c e.params ks in
+          -- the effect at its parameters, under `depth` binders of the
+          -- operation's own
+          let label =
+            \depth ->
+              let head = Core.Opaque (H.uniqueOf e.name) (H.textOf e.name) in
+              let applied =
+                V.foldl
+                  (\acc j -> Core.App acc (Core.Var (depth + n - j - 1) (H.textOf (fst (V.getOr (e.name, None) e.params j)))))
+                  head
+                  (V.range 0 n)
+              in
+              Core.Row [applied] []
+          in
+          V.foldl
+            (\c2 o ->
+              match o with
+              | OpDecl.OpDecl x opTy many ->
+                  let (sigC, _) = checkType tc params opTy in
+                  (match withRow sigC 0 label with
+                   | None ->
+                       let w = match sigC with | Core.Error -> () | _ -> T.error tc "OpSignature" in
+                       declareConstant tc c2 x Value.Error
+                   | Just (ty0, implicit, arity) ->
+                       let ty = eval tc c2.env (underParams e.params ks ty0 G.zero Icit.Implicit) in
+                       let w = declare tc x (H.textOf x) (quote tc c2.lvl ty) in
+                       declareConstant tc c2 x ty))
+            c
+            e.ops)
+    ctx
+    effects
+
+-- An operation's type with the effect's row on its last arrow; how many
+-- implicit arguments come first and how many explicit ones follow. None if
+-- it is not a function of one explicit argument at least, with a pure
+-- result.
+fun withRow (c : Core) (depth : Int) label : Maybe (Core, Int, Int) =
+  match c with
+  | Core.Pi name Icit.Implicit g r dom cod ->
+      M.map (\x -> match x with | (cod2, n, arity) -> (Core.Pi name Icit.Implicit g r dom cod2, n + 1, arity)) (withRow cod (depth + 1) label)
+  | Core.Pi _ Icit.Explicit _ _ _ _ -> M.map (\x -> match x with | (ty, arity) -> (ty, 0, arity)) (arguments c depth label)
+  | _ -> None
+
+fun arguments (c : Core) (depth : Int) label : Maybe (Core, Int) =
+  match c with
+  | Core.Pi name Icit.Explicit g r dom cod ->
+      M.map (\x -> match x with | (cod2, arity) -> (Core.Pi name Icit.Explicit g r dom cod2, arity + 1)) (arguments cod (depth + 1) label)
+  | Core.Comp _ _ -> None
+  | _ -> Just (Core.Comp c (label depth), 0)
+
+-- --- natives -------------------------------------------------------------------------
+
+-- What each native is: whether a type, and how many arguments it takes at
+-- run time.
+fun native (name : String) : Maybe (Bool, Int) =
+  let table =
+    [
+      ("Array", True, 0), ("arrayLen", False, 1), ("arrayGet", False, 2), ("arrayGetOr", False, 3),
+      ("arraySet", False, 3), ("arrayPush", False, 2), ("arrayPop", False, 1), ("arraySlice", False, 3),
+      ("arrayConcat", False, 2), ("arrayFromList", False, 1), ("arrayToList", False, 1), ("MArray", True, 0),
+      ("marrayNew", False, 2), ("marrayLen", False, 1), ("marrayGet", False, 2), ("marraySet", False, 3),
+      ("marrayFreeze", False, 1), ("marrayThaw", False, 1)
+    ]
+  in
+  M.map (\t -> match t with | (_, ty, n) -> (ty, n)) (V.find (\t -> match t with | (x, _, _) -> x == name) table)
+
+-- The natives of one kind: the types, or the operations. A name that is
+-- no native is reported with the operations.
+@pub fun declareNatives (tc : Tc) (ctx : Ctx) (natives : [NativeDecl]) (types : Bool) : Ctx ! { Mut | e } =
+  V.foldl
+    (\c nd ->
+      match nd with
+      | NativeDecl.NativeDecl x ty ->
+          (match native (H.textOf x) with
+           | None ->
+               if types then c
+               else
+                 let w = T.error tc "UnknownNative" in
+                 declareConstant tc c x Value.Error
+           | Just (isType, arity) ->
+               if isType != types then c
+               else
+                 let (sig, _) = checkType tc c ty in
+                 let (params, ar) = shape sig 0 0 in
+                 let fits = if isType then endsInUniverse sig else ar == arity and not (endsInEffects sig) in
+                 let w = match sig with | Core.Error -> () | _ -> if fits then () else T.error tc "NativeSignature" in
+                 let u = H.uniqueOf x in
+                 let w2 = setRef tc.natives (Hm.insert u True (getRef tc.natives)) in
+                 -- an array holds its elements, so mentions them only
+                 -- positively: a data type may have itself in one
+                 let w3 = if isType then setRef tc.positive (Hm.insert u (V.replicate ar True) (getRef tc.positive)) else () in
+                 declareConstant tc c x (eval tc c.env sig)))
+    ctx
+    natives
+
+-- How many implicit binders a type starts with, and how many follow.
+fun shape (c : Core) (params : Int) (arity : Int) : (Int, Int) =
+  match c with
+  | Core.Pi _ icit _ _ _ cod -> if icit == Icit.Implicit and arity == 0 then shape cod (params + 1) arity else shape cod params (arity + 1)
+  | _ -> (params, arity)
+
+fun endsInUniverse (c : Core) : Bool =
+  match c with
+  | Core.Pi _ _ _ _ _ cod -> endsInUniverse cod
+  | Core.Type _ -> True
+  | _ -> False
+
+fun endsInEffects (c : Core) : Bool =
+  match c with
+  | Core.Pi _ _ _ _ _ cod -> endsInEffects cod
+  | Core.Comp _ _ -> True
+  | _ -> False
+
+-- --- where every module starts ----------------------------------------------------
+
+-- The primitive types (each a definition of sort `Type`, but `Div`, an
+-- effect) and the primitive operations (each at its function type), at the
+-- uniques the renamer reserves for them.
+@pub fun initial (tc : Tc) : Ctx ! { Mut | e } =
+  let builtins = [Builtin.Unit, Builtin.Int, Builtin.Bool, Builtin.Str, Builtin.Grade, Builtin.Effect, Builtin.Div] in
+  let withTypes =
+    V.foldl
+      (\c i ->
+        let b = V.getOr Builtin.Unit builtins i in
+        let ty = if b == Builtin.Div then Value.LitTy Builtin.Effect else Value.Type 0 in
+        X.extend c (Just i) (C.builtinName b) ty Info.Defined (Value.LitTy b))
+      (X.empty ())
+      (V.range 0 7)
+  in
+  let prims = [Prim.IntAdd, Prim.IntMul, Prim.IntSub, Prim.IntLt, Prim.IntEq, Prim.IntDiv, Prim.IntMod, Prim.StrAppend] in
+  V.foldl
+    (\c i ->
+      let p = V.getOr Prim.IntAdd prims i in
+      let (arg, ret) =
+        match p with
+        | Prim.IntLt -> (Builtin.Int, Builtin.Bool)
+        | Prim.IntEq -> (Builtin.Int, Builtin.Bool)
+        | Prim.StrAppend -> (Builtin.Str, Builtin.Str)
+        | _ -> (Builtin.Int, Builtin.Int)
+      in
+      -- a primitive consumes each argument once
+      let ty = pi "_" G.one Icit.Explicit (Core.LitTy arg) (pi "_" G.one Icit.Explicit (Core.LitTy arg) (Core.LitTy ret)) in
+      X.extend c (Just (7 + i)) (C.primName p) (eval tc (Va.emptyEnv ()) ty) Info.Defined (Value.Prim p []))
+    withTypes
+    (V.range 0 8)

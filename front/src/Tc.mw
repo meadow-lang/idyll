@@ -6,6 +6,7 @@
 -- solution up whenever it meets a metavariable's head.
 
 use Idyll.Value (Value)
+use Idyll.Core (Core)
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
 use Std.Collections.HashMap (HashMap)
@@ -26,6 +27,16 @@ use Std.Maybe.Maybe.*
 
 @pub data Meta = Unsolved MetaInfo | Solved Value MetaInfo
 
+-- A `_` the program wrote, kept to be reported at the end, when what fills
+-- it is known: the context's length, the metavariable applied to its
+-- spine, and its type.
+@pub data HoleAt = HoleAt Int Value Value
+
+-- A question kept for later: at a context's length, a term of type
+-- `actual` where `expected` was wanted, which neither unified nor failed
+-- for good, one being stuck on a metavariable applied to something.
+@pub data Postponed = Postponed Int Value Value
+
 @pub record Tc = {
   metas : Ref [Meta],
   -- the type of every constant (a data type, a constructor, a recursive
@@ -36,13 +47,57 @@ use Std.Maybe.Maybe.*
   -- the row variables made to keep a solved row open for more, each with
   -- how many arguments it is applied to: closed to the empty row when the
   -- definition they were made in has been checked, if nothing filled them
-  opened : Ref [(Int, Int)]
+  opened : Ref [(Int, Int)],
+  -- what was wrong, by the name the Rust checker gives the kind of error
+  errors : Ref [String],
+  holes : Ref [HoleAt],
+  postponed : Ref [Postponed],
+  -- whether the definition being checked is in a linear module, where an
+  -- unannotated binder is used once
+  linear : Ref Bool,
+  -- how many `let`s deep the checker is: none is the top level
+  lets : Ref Int,
+  -- what the program uses that this checker cannot check yet; a program
+  -- with anything here is not compared
+  unsupported : Ref [String],
+  -- each declared effect's parameters' kinds, by its unique
+  effects : Ref (HashMap Int [Core]),
+  -- what the program declares, with its type, as the REPL lists it: the
+  -- unique, the name (`Nat.Z` for a constructor), the type
+  declared : Ref [(Int, String, Core)],
+  -- the data types and native types, by unique, and for each, which of its
+  -- parameters it uses strictly positively
+  datas : Ref (HashMap Int Bool),
+  natives : Ref (HashMap Int Bool),
+  positive : Ref (HashMap Int [Bool])
 }
 
 @pub fun new () =
-  Tc { metas = newRef [], constants = newRef Hm.empty, problems = newRef [], opened = newRef [] }
+  Tc {
+    metas = newRef [],
+    constants = newRef Hm.empty,
+    problems = newRef [],
+    opened = newRef [],
+    errors = newRef [],
+    holes = newRef [],
+    postponed = newRef [],
+    linear = newRef False,
+    lets = newRef 0,
+    unsupported = newRef [],
+    effects = newRef Hm.empty,
+    declared = newRef [],
+    datas = newRef Hm.empty,
+    natives = newRef Hm.empty,
+    positive = newRef Hm.empty
+  }
 
 @pub fun problem (tc : Tc) (why : String) = setRef tc.problems (V.pushBack (getRef tc.problems) why)
+
+-- An error, by its kind's name.
+@pub fun error (tc : Tc) (kind : String) = setRef tc.errors (V.pushBack (getRef tc.errors) kind)
+
+-- Something this checker cannot check yet.
+@pub fun cannot (tc : Tc) (what : String) = setRef tc.unsupported (V.pushBack (getRef tc.unsupported) what)
 
 -- A new metavariable, unsolved.
 @pub fun newMeta (tc : Tc) (info : MetaInfo) =

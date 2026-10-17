@@ -21,13 +21,16 @@ does, how it is checked, and why it is built the way it is.
 | Grammar | `Syntax.mw` | done: a Lingua `syntax!` grammar |
 | Parsing | `Parse.mw`, `Ast.mw` | done: agrees with the Rust parser on every program |
 | Renaming | `Rename.mw`, `Hir.mw` | done for one module after the prelude; packages not yet |
-| Types | `Grade.mw`, `Core.mw`, `Value.mw`, `Tc.mw`, `Eval.mw`, `Unify.mw` | the machinery is in; elaboration is next |
+| Dependency order | `Scc.mw` | done |
+| Types | `Check.mw`, `Elab.mw`, `Decl.mw`, `Positivity.mw`, `Ctx.mw`, `Usage.mw`, and the machinery under them | first slice: agrees on every program it handles (256); `case`, matching, recursion, handlers, sequences and arrays next |
 | Core and the CEK machine | | not started |
 | Cut | `Emit.mw` | the Cut package is wired in; only the smallest program so far |
 
-"Every program" means 791 programs: the test corpora in
-`compiler/idyllic/tests/corpus/`, the prelude, and every `.idl` file in the
-repository (the standard library, the examples, the benchmarks).
+"Every program" means 1082 programs: the test corpora in
+`compiler/idyllic/tests/corpus/`, the prelude, every `.idl` file in the
+repository (the standard library, the examples, the benchmarks), and every
+entry of TUTORIAL.md's REPL sessions, as the program its session has made by
+then.
 
 ## How it is run
 
@@ -42,6 +45,7 @@ meadow run . -- tokens file.idl               # the tokens, after layout
 meadow run . -- parse file.idl                # the syntax tree, as S-expressions
 meadow run . -- tree file.idl                 # Lingua's lossless tree, drawn
 meadow run . -- rename --prelude p.idl f.idl  # the renamed tree (HIR)
+meadow run . -- types --prelude p.idl f.idl   # each declaration's type, and the errors
 meadow build --release                        # native, into target/release/native/silo/
 ```
 
@@ -77,6 +81,17 @@ For the passes so far:
   number things differently, so the test renumbers both sides' uniques in
   the order they first appear. What is compared is which use refers to which
   binder.
+
+- **types**: a line each, sorted: every declaration of the program with its
+  type (`Nat.S : (_ : [1] Nat) -> Nat`), the type of its expression
+  (`body : Int`), and every error, by the name of its kind
+  (`error: UsageMismatch`). Metavariables are numbered by first appearance,
+  on both sides.
+
+A program that uses something the pass in front/ does not handle yet comes
+out `(unsupported: case, recursion)`; the test counts these and compares
+the rest. So a pass written in slices is checked from its first slice, and
+its coverage can be watched growing.
 
 If `meadow` is not installed, the test says so and passes.
 
@@ -176,23 +191,93 @@ win. No program of the corpus depends on the difference yet.
 because both modules have a type called `Term` and this Meadow cannot yet
 name a constructor through a module alias. That is coming in Meadow.)
 
-### Types (started)
+### Scc
 
-The type checker will be `compiler/idyllic-typecheck` ported:
-normalisation by evaluation over Core terms, metavariables solved by pattern
-unification, grades as polynomials over the interval semiring, effect rows as
-sets. It is being written in slices, each checked against the Rust checker on
-every program:
+`Scc.mw` is `compiler/idyllic-scc`. The renamer makes every `let`, and the
+top level, one recursive group, which is the safe guess. This pass makes the
+groups the definitions' strongly connected components (Tarjan's algorithm,
+which finds each after the ones it uses): a definition that does not reach
+itself through the others is not recursive, definitions that mention each
+other are one group, and each group comes after what it uses. A definition
+by matching with a signature is recursive even if it never calls itself,
+because the checker keeps such a definition a constant that unfolds only
+when its cases can choose. The data types are put in order too, since a
+data type's kind may mention only the types before it.
 
-- the comparison is what the REPL shows: each definition's name and type, as
-  the Rust checker prints them, and whether there was an error;
-- a program that uses something the slice does not handle yet is reported
-  `(unsupported)`, and the test counts those apart from agreements and
-  disagreements, failing only on a disagreement. Coverage then grows slice
-  by slice, visibly.
+### Types
 
-What is in so far is the machinery the elaborator stands on, each piece a
-port of its Rust module with tests of its own:
+The type checker is `compiler/idyllic-typecheck` ported, in slices, each
+checked against the Rust checker on every program.
+
+**How a definition is checked.** Bidirectionally (`Elab.mw`): `infer` works
+a term's type out, and `check` is told it. Both turn the term into Core, the
+fully explicit language of `Core.mw`, and both give back the term's `Usage`
+(`Usage.mw`): how often it uses each variable, and the effects of what it
+calls. The rules are Granule's, read bottom-up:
+
+- a variable uses itself once, and the uses of two subterms add;
+- `f e`, where `f : (x : [r] a) -> b`, uses what `e` uses `r` times over,
+  and so does a box, `[e] : a [r]`;
+- leaving a binder, the uses of its variable must fit its grade
+  (`UsageMismatch` if not).
+
+A term is never charged for its types: signatures and annotations are
+checked for what they mean, and their usage is dropped.
+
+Where the checker does not know something yet (a lambda's argument type, an
+implicit argument), it makes a metavariable, an unknown that unification
+(`Unify.mw`) solves later. Every metavariable is applied to the variables in
+scope, which keeps it closed: `?3 x y`, solved as `\x y -> ...`. `check`'s
+last case is where the two directions meet: infer, fill in the implicit
+arguments, and ask that the type found be a subtype of the one expected. A
+question that cannot be answered yet, because one side is stuck on a
+metavariable applied to something, is kept and asked again after each
+definition.
+
+**Effects.** A term's effects are collected in its usage as rows. Where a
+lambda ends, they become its type's (`a -> b ! {Log}`), and must fit what
+an expected type allows (`EffectNotAllowed`). A row variable still to be
+found takes what is missing and stays open for more, which is how
+`compose logged addAsk` comes out at `{Ask, Log}`. At the top of the
+program, what is left must be among the prelude's `Eff`, which the runtime
+handles (`UnhandledEffects` if not).
+
+**Declarations** (`Decl.mw`). Each is a constant at its type:
+
+- `data T a = C a (T a)` declares `T : Type -> Type` and
+  `T.C : {a : Type} -> (_ : [1] a) -> (_ : [1] T a) -> T a`: the type's
+  parameters implicit and erased, each field used once. A constructor with
+  a signature (`C : a -> Vec n a -> Vec (S n) a`) may choose the type's
+  indices, and is checked to end in the type.
+- `effect E where op : a -> b` declares `E : Effect` and
+  `op : a -> b ! E`.
+- `@native` declares a type or an operation that every back end implements.
+
+The data types are then checked for strict positivity (`Positivity.mw`): a
+type may occur in its own fields only to the right of every arrow, since
+`data Bad = Bad (Bad -> Int)` would loop with no recursion in sight. Inside
+another type it may occur only where that type is positive itself (a rose
+tree's `List (Rose a)`), which is decided for each type's parameters in
+turn.
+
+**The module** (`Check.mw`): the declarations, the definitions in the order
+`Scc.mw` found, the expression; then the holes are reported, the kept
+questions asked a last time, unconstrained row variables closed to no
+effects, and any metavariable nothing solved reported. The context
+(`Ctx.mw`) starts with the builtin types and the primitive operations at the
+uniques the renamer reserves for them.
+
+**The prelude** is taken at its signatures: its definitions are bound at the
+types they say, their bodies not checked, since this checker cannot check
+everything they use yet. Only the effect alias `Eff`, a row, is checked.
+
+**The first slice** handles everything but `case` (and so `if`), matching,
+recursion, handlers, sequence and array literals, and names that several
+`use`s bring in. The next slices take these in order: matching, with
+`if`; recursion with the termination checker; handlers.
+
+The machinery underneath, each piece a port of its Rust module with tests
+of its own:
 
 - **`Grade.mw`** (`grade.rs`): the semiring of use counts (`0`, `1`,
   `0..1`, `1..∞`, `0..∞`, exact counts), with its laws as tests.
@@ -205,21 +290,18 @@ port of its Rust module with tests of its own:
 - **`Value.mw`** (`value.rs`): values, closures, and stuck terms as a head
   and its spine; grade polynomials (so `r + r` and `2 * r` are one
   polynomial), and effect rows as sorted sets.
-- **`Tc.mw`**: the checker's state, chiefly the metacontext (each
-  metavariable unsolved or solved, with where it came from and its type).
+- **`Tc.mw`**: the checker's state: the metacontext (each metavariable
+  unsolved or solved, with where it came from and its type), the errors,
+  the holes, the kept questions, and the tables of what is declared.
 - **`Eval.mw`** (`eval.rs`): evaluation and reading back (`quote`),
   primitives computing on literals, `case` choosing its alternative, and
   `force`, which looks a metavariable's solution up wherever one is met.
 - **`Unify.mw`** (`unify.rs`): pattern unification. A metavariable applied
   to distinct variables is solved as a function of them (with the occurs
-  and scope checks); grades compare as polynomials; two open rows meet
-  through a fresh tail; and `subtype`, which lets a smaller universe, a
-  function using its argument less, or one with fewer effects stand where
-  more is allowed.
-
-Not in yet: recursive definitions unfolding in types (Rust's
-`transparent`, which comes with the termination checker), and the
-elaborator itself.
+  and scope checks, and a solution too large for its universe reported);
+  grades compare as polynomials; two open rows meet through a fresh tail;
+  and `subtype`, which lets a smaller universe, a function using its
+  argument less, or one with fewer effects stand where more is allowed.
 
 ### Cut
 
@@ -249,3 +331,8 @@ Things that cost time, for whoever works on this next:
   type parameters instead.
 - Windows caps a command line at about 32,000 characters, so the
   differential test runs `front/` on a couple of hundred files at a time.
+- `effect` cannot be a function's name either. A constructor cannot be
+  named through a module alias in a pattern (`C.CaseAlt.CaseAlt`): import
+  the type instead, `use Idyll.Core (CaseAlt)`. Where two modules have a type
+  of one name (`Hir`'s `Grade` and `Grade.mw`'s), give the one module
+  accessor functions (`H.gradeSubject`).

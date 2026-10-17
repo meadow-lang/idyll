@@ -118,6 +118,15 @@ use Std.Maybe.Maybe.*
 
 @pub fun textOf (x : Ident) : String = match x with | Ident.Ident _ t -> t
 
+-- Every unique a name may stand for.
+@pub fun uniquesOf (x : Ident) : [Int] = match x with | Ident.Ident us _ -> us
+
+-- The two grades of a binder: how often it is used, and how often its type
+-- mentions it, if that is written.
+@pub fun gradeSubject (g : Grade) : Term = match g with | Grade.Grade s _ -> s
+
+@pub fun gradeInType (g : Grade) : Maybe Term = match g with | Grade.Grade _ r -> r
+
 -- The binders a signature quantifies over, in front of it: the implicit
 -- `Pi`s it starts with.
 @pub fun quantified (t : Term) : [Ident] =

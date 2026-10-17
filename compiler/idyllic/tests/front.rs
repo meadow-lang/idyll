@@ -17,6 +17,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
+#[path = "support/tutorial_examples.rs"]
+#[allow(dead_code)]
+mod tutorial_examples;
+
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("the repository")
 }
@@ -60,6 +64,22 @@ fn corpus() -> Vec<(String, String)> {
         }
     }
     out.push(("prelude".to_string(), idyllic::pipeline::PRELUDE.to_string()));
+    // every entry of the tutorial's sessions, as the program the session has
+    // made by then
+    let markdown = include_str!("../../../TUTORIAL.md").replace("
+", "
+");
+    let opts = idyllic::pipeline::Options { debug: false, style: idyllic_diagnostics::OutputStyle::PLAIN, live: false };
+    let mut session = idyllic::pipeline::Session::default();
+    let mut block = 0;
+    for ex in tutorial_examples::examples(&markdown) {
+        if ex.block != block {
+            session.reset();
+            block = ex.block;
+        }
+        let entered = session.enter_in(&ex.source, &opts, idyllic::pipeline::Mode::Lower);
+        out.push((format!("tutorial-md-{:04}", ex.line), entered.source));
+    }
     let repo = repo();
     let mut files = Vec::new();
     for dir in ["lib", "examples", "bench"] {
@@ -190,9 +210,13 @@ fn agree_with(args: &[&str], extra: &[(&str, &str)], ours: impl Fn(&str) -> Stri
         }
         Err(why) => panic!("{why}"),
     };
+    // a program that uses what a slice of front/ does not handle yet is
+    // counted, not compared
+    let unsupported = theirs.iter().filter(|d| d.starts_with("(unsupported")).count();
     let differ: Vec<String> = programs
         .iter()
         .zip(&theirs)
+        .filter(|(_, theirs)| !theirs.starts_with("(unsupported"))
         .filter_map(|((name, src), theirs)| {
             let (ours, theirs) = (canon(&ours(src)), canon(theirs));
             // `IDYLL_FRONT_SHOW=handwritten-0003` shows both dumps of a
@@ -204,7 +228,7 @@ fn agree_with(args: &[&str], extra: &[(&str, &str)], ours: impl Fn(&str) -> Stri
         })
         .collect();
     let errors = theirs.iter().filter(|d| *d == "(error)").count();
-    eprintln!("{pass}: {} programs, {errors} of them an error to front/", programs.len());
+    eprintln!("{pass}: {} programs, {errors} of them an error to front/, {unsupported} not handled by it yet", programs.len());
     assert!(
         differ.is_empty(),
         "{} of {} programs differ:\n{}",
@@ -234,6 +258,48 @@ fn the_renames_agree() {
         |src| renamed(&prelude, src),
         renumbered,
     );
+}
+
+#[test]
+fn the_types_agree() {
+    let source = idyllic::pipeline::PRELUDE;
+    let prelude = program(source).expect("the prelude parses");
+    agree_with(
+        &["types", "--prelude", "_prelude.txt"],
+        &[("_prelude.txt", source)],
+        |src| typed(&prelude, src),
+        |d| renumbered_by(d, '?'),
+    );
+}
+
+// --- the types, written out ---------------------------------------------------
+//
+// As `front/src/Check.mw` writes them: a line each, sorted, for each of the
+// program's declarations with its type (`name : type`), the type of its
+// expression (`body : type`), and each error, by the name of its kind
+// (`error: Mismatch`). Metavariables are numbered by first appearance on
+// both sides.
+
+/// What this compiler's checker makes of `src`, after the prelude, written
+/// out.
+fn typed(prelude: &idyllic_ast::Program, src: &str) -> String {
+    let Some(p) = program(src) else { return "(error)".to_string() };
+    let result = idyllic_rename::rename_module(&p, prelude);
+    if !result.errors.is_empty() {
+        return "(error)".to_string();
+    }
+    let module = idyllic_scc::scc_module(result.module);
+    let checked = idyllic_typecheck::check_module(&module, result.spans.len(), false, &[]);
+    let mut lines: Vec<String> =
+        checked.catalog.iter().filter(|d| !d.prelude).map(|d| format!("{} : {}", d.name, d.ty)).collect();
+    lines.extend(checked.body_type.iter().map(|ty| format!("body : {ty}")));
+    for e in &checked.errors {
+        let kind = format!("{:?}", e.kind);
+        let name = kind.split(|c: char| !c.is_alphanumeric()).next().unwrap_or("").to_string();
+        lines.push(format!("error: {name}"));
+    }
+    lines.sort();
+    lines.join("\n")
 }
 
 // --- the rename, written out --------------------------------------------------
@@ -266,12 +332,17 @@ fn renamed(prelude: &idyllic_ast::Program, src: &str) -> String {
 
 /// Each `@123` numbered by where its number first appears: `@0`, `@1`, ...
 fn renumbered(dump: &str) -> String {
+    renumbered_by(dump, '@')
+}
+
+/// The same, for the numbers after `mark`.
+fn renumbered_by(dump: &str, mark: char) -> String {
     let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut out = String::with_capacity(dump.len());
     let mut chars = dump.chars().peekable();
     while let Some(c) = chars.next() {
         out.push(c);
-        if c == '@' {
+        if c == mark {
             let mut digits = String::new();
             while let Some(d) = chars.peek().copied().filter(char::is_ascii_digit) {
                 digits.push(d);

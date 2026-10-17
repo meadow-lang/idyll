@@ -371,14 +371,14 @@ fun solve (tc : Tc) (gamma : Int) (m : Int) (sp : [Elim]) (rhs : Value) : Bool !
               -- metavariable solved with an error
               match violation tc info value with
               | Just why ->
-                  let w = T.problem tc why in
+                  let w = T.error tc why in
                   let v = T.solve tc m Value.Error in
                   True
               | None ->
                   let v = T.solve tc m value in
                   True
 
--- What is wrong with a solution, if anything.
+-- What is wrong with a solution, if anything: the kind of error.
 fun violation (tc : Tc) (info : MetaInfo) (solution : Value) : Maybe String ! { Mut | e } =
   match info with
   | MetaInfo.MetaInfo _ _ (Just (MetaTy.MetaTy types spine ty)) ->
@@ -391,8 +391,8 @@ fun violation (tc : Tc) (info : MetaInfo) (solution : Value) : Maybe String ! { 
              | None -> False)
         | _ -> False
       in
-      if tooLarge then Just "universe too large"
-      else if rowKind tc ty == Just False and rowIsMany tc types inst then Just "these effects may be resumed more than once"
+      if tooLarge then Just "UniverseTooLarge"
+      else if rowKind tc ty == Just False and rowIsMany tc types inst then Just "ManyEffectsInRow"
       else None
   | _ -> None
 

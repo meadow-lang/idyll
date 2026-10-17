@@ -183,13 +183,13 @@ fun useName (r : Rn) (name : String) =
         else bad r "a constructor lives under its type: ${name}"
       else ()
     in
-    Ident.Ident (V.map (asWritten r) found) name
+    Ident.Ident (distinct (V.map (asWritten r) found)) name
 
 -- The prelude's `Pair`, which a tuple is made of.
 fun tuple (r : Rn) =
   let found = V.find (\s -> Hm.member "Pair" s) (V.reverse (getRef r.base)) in
   match found with
-  | Just s -> Ident.Ident (V.map (asWritten r) (Hm.getOr [] "Pair" s)) "Pair"
+  | Just s -> Ident.Ident (distinct (V.map (asWritten r) (Hm.getOr [] "Pair" s))) "Pair"
   | None ->
       let w = bad r "name not in scope: Pair" in
       Ident.Ident [] "Pair"

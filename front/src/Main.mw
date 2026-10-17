@@ -11,6 +11,9 @@
 --            `idyllic-parser`)
 --   Rename   names resolved, equations and records desugared (`Hir`,
 --            `idyllic-rename`), against the prelude
+--   Scc      definitions in dependency order (`idyllic-scc`)
+--   Types    the type checker (`Check`, `Elab`, `Decl`, and the machinery
+--            under them; `idyllic-typecheck`), in slices
 --
 -- Run as `Idyll <pass> <file>...`, it writes each file's dump for the pass,
 -- each after a line `== <file>`: what the differential tests compare with
@@ -21,6 +24,8 @@ use Idyll.Syntax (parseIdyll)
 use Idyll.Parse as Parse
 use Idyll.Rename (renameModule)
 use Idyll.Hir as Hir
+use Idyll.Scc (sccModule)
+use Idyll.Check (checkModule)
 use Lingua.Green (dump)
 use Std.Collections.Vector as V
 use Std.Result.Result.*
@@ -42,7 +47,17 @@ fun main () =
                  | Err _ -> writeError "the prelude does not parse\n")
             | Err e -> writeError "could not read the prelude: ${e}\n")
        | _ -> writeError "usage: Idyll rename --prelude <file> <file>...\n")
-  | _ -> writeError "usage: Idyll (tokens | tree | parse | rename --prelude <file>) <file>...\n"
+  | Just "types" ->
+      (match (V.get args 1, V.get args 2) with
+       | (Just "--prelude", Just path) ->
+           (match readToString path with
+            | Ok text ->
+                (match Parse.parsed text with
+                 | Ok prelude -> V.foldl (\u f -> each f (typed prelude)) () (V.drop args 3)
+                 | Err _ -> writeError "the prelude does not parse\n")
+            | Err e -> writeError "could not read the prelude: ${e}\n")
+       | _ -> writeError "usage: Idyll types --prelude <file> <file>...\n")
+  | _ -> writeError "usage: Idyll (tokens | tree | parse | rename --prelude <file> | types --prelude <file>) <file>...\n"
 
 -- `file`'s dump, under a line naming it.
 fun each (file : String) dumpOf =
@@ -67,3 +82,12 @@ fun renamed prelude (text : String) : String ! { Mut | e } =
   | Ok prog ->
       (match renameModule prog prelude with
        | (m, problems) -> if V.isEmpty problems then Hir.dumped m else "(error)")
+
+-- A program checked after the prelude, as `Check` writes it; `(error)` if
+-- it does not parse or rename.
+fun typed prelude (text : String) : String ! { Mut | e } =
+  match Parse.parsed text with
+  | Err _ -> "(error)"
+  | Ok prog ->
+      (match renameModule prog prelude with
+       | (m, problems) -> if V.isEmpty problems then checkModule (sccModule m) else "(error)")

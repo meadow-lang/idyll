@@ -1,0 +1,152 @@
+-- Checking a whole module: `check_module` in
+-- `compiler/idyllic-typecheck/src/lib.rs`, and what the differential test
+-- compares of it.
+--
+-- The declarations first (native types, effects, data types, operations,
+-- native operations), then the definitions in dependency order, then the
+-- program's expression. What is left of its effects at the top is run by
+-- the runtime, which handles the prelude's `Eff` and nothing else. Then the
+-- holes are reported, the postponed questions asked a last time, and the
+-- metavariables nothing solved reported too.
+--
+-- The prelude's definitions are taken at their signatures, unchecked: this
+-- checker cannot check all they use yet.
+
+use Idyll.Core (Core, Builtin)
+use Idyll.Core as C
+use Idyll.Value (Value, Row)
+use Idyll.Value as Va
+use Idyll.Ast (Icit)
+use Idyll.Tc (Tc)
+use Idyll.Tc as T
+use Idyll.Eval (force, apply, eval, quote, row, rowParts, splitComp)
+use Idyll.Unify (unify, effectsFit)
+use Idyll.Usage (Usage)
+use Idyll.Ctx (Ctx)
+use Idyll.Ctx as X
+use Idyll.Elab (Pending, effectsOf, enterGroups, assumeGroup, infer, retryPostponed, closeOpened, closeRows, reportHoles, reportUnsolved, keyOf)
+use Idyll.Decl (initial, declareNatives, declareEffects, declareDatas, declareOps)
+use Idyll.Hir (Module, Group, Bind, Ident)
+use Idyll.Hir as H
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+fun bindsOf (g : Group) : [Bind] =
+  match g with
+  | Group.NonRec b -> [b]
+  | Group.Rec bs -> bs
+
+-- The module checked, and written as the differential test compares it:
+-- `(unsupported: ..)` if it uses what this checker cannot check yet; or
+-- else, a line each, sorted, the program's declarations with their types
+-- (`name : type`), the type of its expression (`body : type`), and the
+-- kinds of the errors found (`error: Mismatch`).
+@pub fun checkModule (m : Module) : String ! { Mut | e } =
+  let tc = T.new () in
+  let ctx0 = initial tc in
+  -- native types first, which the data types and effects may mention; and
+  -- native operations last, as their types may mention those
+  let ctx1 = declareNatives tc ctx0 m.natives True in
+  let ctx2 = declareEffects tc ctx1 m.effects in
+  let ctx3 = declareDatas tc ctx2 m.datas in
+  let ctx4 = declareOps tc ctx3 m.effects in
+  let ctx5 = declareNatives tc ctx4 m.natives False in
+  let inPrelude = \g -> V.all (\(b : Bind) -> H.uniqueOf b.name < m.first) (bindsOf g) in
+  let preludeGroups = V.filter inPrelude m.groups in
+  let ownGroups = V.filter (\g -> not (inPrelude g)) m.groups in
+  let ctx6 = V.foldl (\c g -> assumeGroup tc c g) ctx5 preludeGroups in
+  let (ctx, owed, lets) = enterGroups tc ctx6 ownGroups in
+  let world = worldOf tc ctx preludeGroups in
+  let w1 =
+    V.foldl
+      (\acc p ->
+        match p with
+        | Pending.NonRec _ rhs -> unhandled tc ctx rhs world
+        | _ -> ())
+      ()
+      owed
+  in
+  let main = V.find (\(b : Bind) -> Just (H.uniqueOf b.name) == m.main) (V.concatMap bindsOf ownGroups) in
+  let mainFits = M.map (\b -> checkMain tc ctx b world) main in
+  let body =
+    match m.body with
+    | Just e ->
+        let w = setRef tc.linear m.linearBody in
+        let (core, ty, usage) = infer tc ctx e in
+        let w2 = if mainFits == Just False then () else unhandled tc ctx usage world in
+        Just (quote tc ctx.lvl ty)
+    | None -> None
+  in
+  let w2 = reportHoles tc in
+  let w3 = retryPostponed tc True in
+  let w4 = closeOpened tc in
+  let w5 = closeRows tc in
+  let w6 = reportUnsolved tc in
+  dump tc m body
+
+-- The effects the runtime handles: the prelude's `Eff`, or failing that,
+-- `Div`.
+fun worldOf (tc : Tc) (ctx : Ctx) (prelude : [Group]) : Value ! { Mut | e } =
+  let eff = V.find (\(b : Bind) -> H.textOf b.name == "Eff") (V.concatMap bindsOf prelude) in
+  match M.andThen (\(b : Bind) -> X.lookup ctx b.name) eff with
+  | Just (core, _, _) -> eval tc ctx.env core
+  | None -> row tc [Value.LitTy Builtin.Div]
+
+-- The effects in `usage` that nothing will handle: all but the world's. A
+-- row variable nothing has said anything about is no more effects, at the
+-- top, where nothing more will.
+fun unhandled (tc : Tc) (ctx : Ctx) (usage : Usage) (world : Value) =
+  match effectsOf tc usage with
+  | None -> ()
+  | Just effects ->
+      let w =
+        match rowParts tc effects with
+        | Row.Row _ ts ->
+            V.foldl
+              (\acc kv -> match force tc (snd kv) with | Value.Flex _ _ -> (let b = unify tc ctx.lvl (snd kv) (Va.emptyRow ()) in ()) | _ -> ())
+              ()
+              ts
+      in
+      (match (rowParts tc effects, rowParts tc world) with
+       | (Row.Row ls ts, Row.Row hs _) ->
+           let left = V.append (V.map snd (V.filter (\kv -> not (V.any (\h -> fst h == fst kv) hs)) ls)) (V.map snd ts) in
+           if V.any (\v -> match force tc v with | Value.Error -> True | _ -> False) left then ()
+           else if V.isEmpty left then ()
+           else T.error tc "UnhandledEffects")
+
+-- `main : () -> () ! e`, every effect in `e` the runtime's.
+fun checkMain (tc : Tc) (ctx : Ctx) (main : Bind) (world : Value) : Bool ! { Mut | e } =
+  match X.lookup ctx main.name with
+  | None -> False
+  | Just (_, ty, _) ->
+      let unit = Value.LitTy Builtin.Unit in
+      let fits =
+        match force tc ty with
+        | Value.Pi name Icit.Explicit _ _ dom cod ->
+            let (result, effects) = splitComp tc (apply tc cod (Va.vvar ctx.lvl name)) in
+            unify tc ctx.lvl dom unit and unify tc (ctx.lvl + 1) result unit and effectsFit tc (ctx.lvl + 1) effects world
+        | Value.Error -> True
+        | _ -> False
+      in
+      let w = if fits then () else T.error tc "MainType" in
+      fits
+
+-- --- the dump --------------------------------------------------------------------------
+
+fun sorted (xs : [String]) : [String] =
+  V.foldl (\acc x -> V.concat [V.filter (\y -> not (S.lessThan x y)) acc, [x], V.filter (\y -> S.lessThan x y) acc]) [] xs
+
+fun distinct (xs : [String]) : [String] = V.foldl (\acc x -> if V.elem x acc then acc else V.pushBack acc x) [] xs
+
+fun dump (tc : Tc) (m : Module) (body : Maybe Core) : String ! { Mut | e } =
+  let cannot = getRef tc.unsupported in
+  if not (V.isEmpty cannot) then "(unsupported: " ++ S.join ", " (sorted (distinct cannot)) ++ ")"
+  else
+    let shown = \c -> C.shown m.linearBody c in
+    let own = V.filter (\d -> match d with | (u, _, _) -> u >= m.first) (getRef tc.declared) in
+    let decls = V.map (\d -> match d with | (_, name, ty) -> name ++ " : " ++ shown ty) own in
+    let bodyLine = match body with | Just ty -> ["body : " ++ shown ty] | None -> [] in
+    let errors = V.map (\k -> "error: " ++ k) (getRef tc.errors) in
+    S.join "\n" (sorted (V.concat [decls, bodyLine, errors]))
