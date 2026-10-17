@@ -460,6 +460,12 @@ A method (a closure's `apply`, a handler clause) binds no representation
 variable of its own, as `docs/CUT.md` has it, so a closure taking a type
 parameter boxes that type's values (`any`) and passes `desc(any)` on.
 
+`idyll-eval/tests/front.rs` also runs front/'s Cut of every program with
+`meadow cut` on Glade, and holds it to the reference interpreter: the same
+printed, the same answer, the same exit status. 190 of the 200 it runs do
+exactly that; the other 10 have handlers, and meet a panic in Meadow's
+lowering of Cut to AxCut, which the test counts apart as Meadow's.
+
 The Cut corpus (`cut-corpus/`, which `idyllic-cut` writes) runs on Glade:
 all its pure programs and those using the world's effects pass; programs
 with handlers wait on a fix in Meadow's lowering of Cut to AxCut (meadow

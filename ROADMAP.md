@@ -923,9 +923,12 @@ do yet `(unsupported)`, and the tests count those apart.
   that lower give the same Cut (canonical: whitespace, fresh names and
   declaration order aside). The Cut package grew what Idyll needs (roles,
   natives, effect variables, `@many`) in its PR 2.
-- [ ] Run front/'s Cut with `meadow cut` on Glade and Silo against the CEK
-  machine's answers, in a test. The Cut corpus itself passes on Glade
-  (pure 198/198, world 5/5); handlers wait on meadow PR 11.
+- [x] Run front/'s Cut with `meadow cut` on Glade against the reference
+  interpreter's answers, in a test (`idyll-eval/tests/front.rs`): 190 of
+  200 as the reference says, the 10 with handlers meeting a Meadow panic
+  (fixed in meadow PR 11, not yet in a release). The Cut corpus itself
+  passes on Glade likewise (pure 198/198, world 5/5).
+- [ ] The same on Silo, and the handler programs once meadow PR 11 is in.
 - [ ] Packages: a module's `use` of another package (Std), in the renamer
   and the checker, so that the Std library and the examples are compared
   too (690 of the 1082 programs stop at renaming today, most for want of
