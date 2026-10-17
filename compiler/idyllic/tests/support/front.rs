@@ -16,7 +16,13 @@ use super::tutorial_examples;
 /// the tutorial in it.
 pub fn repo() -> PathBuf {
     let here = Path::new(env!("CARGO_MANIFEST_DIR")).canonicalize().expect("the package");
-    here.ancestors().find(|d| d.join("TUTORIAL.md").is_file()).expect("the repository").to_path_buf()
+    let found = here.ancestors().find(|d| d.join("TUTORIAL.md").is_file()).expect("the repository").to_path_buf();
+    // not Windows' verbatim form (`\\?\C:\..`), in which a `/` written onto
+    // the path is no separator, as front/ writes them
+    match found.to_string_lossy().strip_prefix(r"\\?\") {
+        Some(plain) => PathBuf::from(plain),
+        None => found,
+    }
 }
 
 pub fn meadow() -> PathBuf {

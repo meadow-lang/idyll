@@ -1,6 +1,11 @@
 -- Name resolution: the parser's tree (`Ast`) to the renamed one (`Hir`), as
--- `compiler/idyllic-rename` does it, for a module and the prelude.
+-- `compiler/idyllic-rename` does it: a package of modules, after the prelude
+-- and the packages it depends on.
 --
+-- * Each module is a namespace of its own, whose names others reach with
+--   `use` or written in full (`Std.Collections.List.map`); a package that
+--   says how visible anything is keeps the rest to its own module, and
+--   another package gives only what it makes `@pub`.
 -- * Every name a use refers to is resolved to the unique its binder was
 --   given; every binder gets a fresh one, with lexical scoping (a binder's
 --   annotation does not see the name it binds; a group of declarations is
@@ -22,7 +27,7 @@
 -- What is wrong is collected (`problems`), not said, for now: the rename test
 -- compares only whether there was anything.
 
-use Idyll.Ast (Icit, Grade, Literal, Term, Param, Pat, Rhs, Alt, Clause, Decl, Ctor, Data, OpSig, Effect, Use, Program)
+use Idyll.Ast (Icit, Grade, Literal, Term, Param, Pat, Rhs, Alt, Clause, Decl, Ctor, Data, OpSig, Effect, Use, Program, Visibility)
 use Idyll.Hir (Ident, Pattern, Bind, Group, CtorShape, CtorDecl, DataDecl, OpDecl, EffectDecl, NativeDecl, HandleClause, Module)
 use Idyll.Hir as H
 use Std.Collections.Vector as V
@@ -59,10 +64,30 @@ record Rn = {
   inType : Ref Bool,
   -- the scopes under the module's: the builtins' and the prelude's
   base : Ref [Scope],
-  -- `use M as C`
-  aliases : Ref (HashMap String Int),
-  -- what the module gives, for `use Main (x)`
-  exports : Ref (HashMap String Int)
+  -- every module of every package being renamed
+  modules : Ref [Mod],
+  -- the module whose names are in `scopes`, if one is
+  current : Ref Int,
+  -- each package's name, by its index; the packages each may name; and
+  -- whether any of its declarations says how visible it is
+  packageNames : Ref [String],
+  packageDeps : Ref [[Int]],
+  visibilityMentioned : Ref [Bool],
+  -- the module each top-level name of a module other than a package's root
+  -- is in, as written before it from outside (`Math` for `Math.double`)
+  qualifiers : Ref (HashMap Int String)
+}
+
+-- A module: its package's index, its path in it (the root's is empty), its
+-- own declarations' names, what its `use`s bring, its aliases for other
+-- modules (`use M as C`), and what it gives others, each with how visible.
+record Mod = {
+  package : Int,
+  path : [String],
+  own : Scope,
+  imports : Scope,
+  aliases : HashMap String Int,
+  exports : HashMap String (Int, Visibility)
 }
 
 -- The package a lone module is the root of.
@@ -89,9 +114,44 @@ fun new () =
     linear = newRef False,
     inType = newRef False,
     base = newRef [],
-    aliases = newRef Hm.empty,
-    exports = newRef Hm.empty
+    modules = newRef [],
+    current = newRef (0 - 1),
+    packageNames = newRef [],
+    packageDeps = newRef [],
+    visibilityMentioned = newRef [],
+    qualifiers = newRef Hm.empty
   }
+
+fun modAt (r : Rn) (i : Int) : Maybe Mod ! { Mut | e } = V.get (getRef r.modules) i
+
+fun setMod (r : Rn) (i : Int) (m : Mod) = setRef r.modules (V.set (getRef r.modules) i m)
+
+-- The package of the module being renamed.
+fun currentPackage (r : Rn) : Int ! { Mut | e } =
+  match modAt r (getRef r.current) with
+  | Just m -> m.package
+  | None -> 0 - 1
+
+-- Put module `i`'s names in scope: the prelude's, then what it uses, then
+-- its own.
+fun enter (r : Rn) (i : Int) =
+  match modAt r i with
+  | Just m ->
+      let w = setRef r.scopes (V.append (getRef r.base) [m.imports, m.own]) in
+      let w2 = setRef r.ownAt (V.len (getRef r.base) + 1) in
+      setRef r.current i
+  | None -> ()
+
+fun leave (r : Rn) =
+  let i = getRef r.current in
+  let scopes = getRef r.scopes in
+  let w =
+    match modAt r i with
+    | Just m ->
+        setMod r i { m | own = M.unwrapOr Hm.empty (V.last scopes), imports = V.getOr Hm.empty scopes (V.len scopes - 2) }
+    | None -> ()
+  in
+  setRef r.current (0 - 1)
 
 fun bad (r : Rn) (why : String) = setRef r.problems (V.pushBack (getRef r.problems) why)
 
@@ -207,35 +267,110 @@ fun constructorTypes (r : Rn) (name : String) : [String] ! { Mut | e } =
           else [])
     (Hm.toVec (getRef r.ctors))
 
--- What a dotted path names.
-data Target = Module Int | Name Int
+-- What a dotted path names: a module; a directory of modules with no
+-- module of its own (a package and a path), only a step on the way to one;
+-- or a name.
+data Target = Module Int | Namespace Int [String] | Name Int
+
+fun samePath (a : [String]) (b : [String]) : Bool = V.len a == V.len b and V.all (\i -> V.getOr "" a i == V.getOr "" b i) (V.range 0 (V.len a))
+
+fun startsWith (path : [String]) (prefix : [String]) : Bool = V.len path >= V.len prefix and samePath (V.take path (V.len prefix)) prefix
+
+-- The module at this path in a package, if it has one.
+fun moduleAt (r : Rn) (package : Int) (path : [String]) : Maybe Int ! { Mut | e } =
+  let ms = getRef r.modules in
+  V.find (\i -> match V.get ms i with | Just (m : Mod) -> m.package == package and samePath m.path path | None -> False) (V.range 0 (V.len ms))
+
+-- What is at this path under a package's root: a module, or failing that a
+-- directory with modules in it.
+fun underRoot (r : Rn) (package : Int) (path : [String]) : Maybe Target ! { Mut | e } =
+  match moduleAt r package path with
+  | Just m -> Just (Target.Module m)
+  | None ->
+      if V.any (\(m : Mod) -> m.package == package and V.len m.path > V.len path and startsWith m.path path) (getRef r.modules) then
+        Just (Target.Namespace package path)
+      else None
+
+-- A module as a `use` writes it.
+fun moduleName (r : Rn) (i : Int) : String ! { Mut | e } =
+  match modAt r i with
+  | Just m ->
+      let pkg = V.getOr "" (getRef r.packageNames) m.package in
+      if V.isEmpty m.path then pkg
+      else if m.package == currentPackage r then S.join "." m.path
+      else pkg ++ "." ++ S.join "." m.path
+  | None -> ""
+
+-- May the module being renamed see something of module `owner`'s that is
+-- this visible? Its own and its descendants', always; its parent's
+-- subtree's, with `@pub(super)`; the package's, with `@pub(pkg)` or `@pub`.
+-- Another package gives only what it makes `@pub`.
+fun visible (r : Rn) (owner : Int) (vis : Visibility) : Bool ! { Mut | e } =
+  match (modAt r owner, modAt r (getRef r.current)) with
+  | (Just o, Just c) ->
+      if o.package != c.package then vis == Visibility.Public
+      else if not (V.getOr False (getRef r.visibilityMentioned) c.package) then True
+      else
+        (match vis with
+         | Visibility.Public -> True
+         | Visibility.Package -> True
+         | Visibility.Super -> startsWith c.path (V.take o.path (if V.len o.path > 0 then V.len o.path - 1 else 0))
+         | Visibility.Private -> startsWith c.path o.path)
+  | (Just o, None) -> True
+  | _ -> True
 
 -- What a dotted path names: a module, or a name in one or in scope, then a
--- type's constructor or a record's field.
+-- type's constructor or a record's field. The first segment is a module's
+-- alias, a name in scope, the package's own name, a module under its root,
+-- or a package it depends on.
 fun resolvePath (r : Rn) (segments : [String]) : Maybe Target ! { Mut | e } =
   let first = V.getOr "" segments 0 in
+  let cur = getRef r.current in
+  let pkg = currentPackage r in
+  let alias = match modAt r cur with | Just m -> Hm.lookup first m.aliases | None -> None in
   let start =
-    match Hm.lookup first (getRef r.aliases) with
+    match alias with
     | Just m -> Just (Target.Module m)
     | None ->
         (match V.head (lookup r first) with
          | Just u -> Just (Target.Name u)
          | None ->
-             if first == package and getRef r.ownAt > 0 then Just (Target.Module 0)
+             if pkg >= 0 and first == V.getOr "" (getRef r.packageNames) pkg then Just (Target.Module (M.unwrapOr 0 (moduleAt r pkg [])))
              else
-               let w = bad r "no module or type ${first}" in
-               None)
+               (match (if pkg >= 0 then underRoot r pkg [first] else None) with
+                | Just t -> Just t
+                | None ->
+                    let deps = V.getOr [] (getRef r.packageDeps) (if pkg >= 0 then pkg else 0) in
+                    (match V.find (\d -> V.getOr "" (getRef r.packageNames) d == first) deps with
+                     | Just d -> M.map (\m -> Target.Module m) (moduleAt r d [])
+                     | None ->
+                         let w = bad r "no module or type ${first}" in
+                         None)))
   in
   V.foldl
     (\at seg ->
       match at with
       | None -> None
-      | Just (Target.Module m) ->
-          (match Hm.lookup seg (getRef r.exports) with
-           | Just u -> Just (Target.Name u)
+      | Just (Target.Namespace package path) ->
+          (match underRoot r package (V.pushBack path seg) with
+           | Just t -> Just t
            | None ->
-               let w = bad r "${package} has no ${seg}" in
+               let w = bad r "${S.join "." path} has no ${seg}" in
                None)
+      | Just (Target.Module m) ->
+          (match modAt r m with
+           | None -> None
+           | Just md ->
+               (match underRoot r md.package (V.pushBack md.path seg) with
+                | Just t -> Just t
+                | None ->
+                    (match Hm.lookup seg md.exports with
+                     | Just (u, vis) ->
+                         let w = if visible r m vis then () else bad r "${seg} is not visible from here" in
+                         Just (Target.Name u)
+                     | None ->
+                         let w = bad r "${moduleName r m} has no ${seg}" in
+                         None)))
       | Just (Target.Name u) ->
           (match Hm.lookup u (getRef r.ctors) with
            | None ->
@@ -253,53 +388,78 @@ fun resolvePath (r : Rn) (segments : [String]) : Maybe Target ! { Mut | e } =
     start
     (V.drop segments 1)
 
--- `Nat.Z`, `Main.double`: a name, from wherever its path says.
+-- `Nat.Z`, `Math.double`: a name, from wherever its path says.
 fun useQualified (r : Rn) (name : String) =
   let segments = S.split "." name in
   let last = M.unwrapOr "" (V.last segments) in
   match resolvePath r segments with
   | Just (Target.Name u) -> Ident.Ident [u] last
-  | Just (Target.Module _) ->
+  | Just _ ->
       let w = bad r "${name} is a module" in
       Ident.Ident [] last
   | None -> Ident.Ident [] last
 
 -- Bring a name into the module's scope from elsewhere (naming an effect
--- brings its operations): beside what is there already, not over it.
-fun import (r : Rn) (name : String) (unique : Int) =
+-- brings its operations): beside what is there already, not over it. With
+-- `@pub use`, give it on to whoever uses this module.
+fun import (r : Rn) (name : String) (unique : Int) (public : Bool) =
   let ops = Hm.getOr [] unique (getRef r.effectOps) in
+  let both = V.append [(name, unique)] ops in
+  let w =
+    if public then
+      (match modAt r (getRef r.current) with
+       | Just m -> setMod r (getRef r.current) { m | exports = V.foldl (\e p -> match p with | (x, u) -> Hm.insert x (u, Visibility.Public) e) m.exports both }
+       | None -> ())
+    else ()
+  in
   let scopes = getRef r.scopes in
   let at = V.len scopes - 2 in
   let imports =
     V.foldl
-      (\s p -> match p with | (x, u) -> Hm.insert x (distinct (V.append (Hm.getOr [] x s) [u])) s)
+      (\sc p -> match p with | (x, u) -> Hm.insert x (distinct (V.append (Hm.getOr [] x sc) [u])) sc)
       (V.getOr Hm.empty scopes at)
-      (V.append [(name, unique)] ops)
+      both
   in
   setRef r.scopes (V.set scopes at imports)
 
--- `use M`, `use M (a, b)`, `use T.*`, `use T (C)`.
+-- `use M`, `use M as C`, `use M (a, b)`: another module's names; `use T.*`,
+-- `use T (C)`: a type's constructors, bare.
 fun renameUse (r : Rn) (u : Use) =
   match resolvePath r u.path with
   | None -> ()
+  | Just (Target.Namespace _ _) -> bad r "${S.join "." u.path} has no module of its own"
   | Just (Target.Module m) ->
-      let v = match u.alias with | Just a -> setRef r.aliases (Hm.insert a m (getRef r.aliases)) | None -> () in
-      let wanted =
-        match u.names with
-        | Just ns -> ns
-        | None -> if M.isNone u.alias or u.glob then V.map fst (sortOn fst (Hm.toVec (getRef r.exports))) else []
+      let cur = getRef r.current in
+      let v =
+        match (u.alias, modAt r cur) with
+        | (Just a, Just c) -> setMod r cur { c | aliases = Hm.insert a m c.aliases }
+        | _ -> ()
       in
-      V.foldl
-        (\acc x ->
-          match Hm.lookup x (getRef r.exports) with
-          | Just e -> import r x e
-          | None -> bad r "${package} has no ${x}")
-        ()
-        wanted
+      (match modAt r m with
+       | None -> ()
+       | Just md ->
+           -- everything it gives, unless it has an alias or a list
+           let wanted =
+             match u.names with
+             | Just ns -> ns
+             | None ->
+                 if M.isNone u.alias or u.glob then
+                   V.map fst (V.filter (\kv -> match snd kv with | (_, vis) -> visible r m vis) (sortOn fst (Hm.toVec md.exports)))
+                 else []
+           in
+           V.foldl
+             (\acc x ->
+               match Hm.lookup x md.exports with
+               | Just (e, vis) ->
+                   let w = if visible r m vis then () else bad r "${x} is not visible from here" in
+                   import r x e u.public
+               | None -> bad r "${S.join "." u.path} has no ${x}")
+             ()
+             wanted)
   | Just (Target.Name t) ->
       let last = M.unwrapOr "" (V.last u.path) in
       match Hm.lookup t (getRef r.ctors) with
-      | None -> if u.glob or M.isSome u.names then bad r "${last} has no constructors to bring" else import r last t
+      | None -> if u.glob or M.isSome u.names then bad r "${last} has no constructors to bring" else import r last t u.public
       | Just cs ->
           if M.isSome u.alias then bad r "only a module takes an alias"
           else
@@ -309,13 +469,13 @@ fun renameUse (r : Rn) (u : Use) =
                 match u.names with
                 | Just ns -> ns
                 | None ->
-                    let w = if V.len u.path > 1 then import r last t else () in
+                    let w = if V.len u.path > 1 then import r last t u.public else () in
                     []
             in
             V.foldl
               (\acc x ->
                 match V.find (\c -> fst c == x) cs with
-                | Just (_, c) -> import r x c
+                | Just (_, c) -> import r x c u.public
                 | None -> bad r "no constructor ${x}")
               ()
               wanted
@@ -921,22 +1081,119 @@ fun renameProgram (r : Rn) (prog : Program) (b : Bound) =
   let binds = renameDefs r b.defs in
   (datas, effects, natives, binds)
 
--- What the module gives, for `use Main (x)`.
-fun export (r : Rn) (b : Bound) =
+-- Record what module `i` declares, and how visible each is, for the
+-- others' `use`s.
+fun export (r : Rn) (i : Int) (prog : Program) (b : Bound) =
+  let declared = \x -> match V.find (\v -> fst v == x) prog.visibility with | Just (_, vis) -> vis | None -> Visibility.Private in
   let names =
     V.concat [
-      V.map fst b.dataNames,
-      V.concatMap (\en -> match en with | (n, ops) -> V.append [n] ops) b.effectNames,
-      V.map (\(d : Def) -> d.name) b.defs,
-      V.map fst b.natives
+      V.map (\dn -> match dn with | ((d : Data), (n, _)) -> (n, d.visibility)) (V.zip b.datas b.dataNames),
+      V.concatMap (\en -> match en with | ((e : Effect), (n, ops)) -> V.map (\x -> (x, e.visibility)) (V.append [n] ops)) (V.zip prog.effects b.effectNames),
+      V.map (\(d : Def) -> (d.name, declared (H.textOf d.name))) b.defs,
+      V.map (\nt -> (fst nt, declared (H.textOf (fst nt)))) b.natives
     ]
   in
-  V.foldl (\acc x -> setRef r.exports (Hm.insert (H.textOf x) (H.uniqueOf x) (getRef r.exports))) () names
+  match modAt r i with
+  | None -> ()
+  | Just m ->
+      let qualifier = S.join "." m.path in
+      let w =
+        if S.isEmpty qualifier then ()
+        else V.foldl (\acc xv -> setRef r.qualifiers (Hm.insert (H.uniqueOf (fst xv)) qualifier (getRef r.qualifiers))) () names
+      in
+      setMod r i { m | exports = V.foldl (\e xv -> match xv with | (x, vis) -> Hm.insert (H.textOf x) (H.uniqueOf x, vis) e) m.exports names }
 
--- Rename a whole program, one module, after the prelude: its declarations
--- the top-level bindings and its expression, if any, the body. A program
--- that is nothing but `let ... in body` is those declarations and that body.
-@pub fun renameModule (prog : Program) (prelude : Program) : (Module, [String]) ! { Mut | e } =
+-- Whether a module says how visible anything in it is.
+fun mentionsVisibility (p : Program) : Bool =
+  not (V.isEmpty p.visibility)
+    or V.any (\(u : Use) -> u.public) p.uses
+    or V.any (\(d : Data) -> d.visibility != Visibility.Private) p.datas
+    or V.any (\(e : Effect) -> e.visibility != Visibility.Private) p.effects
+
+-- What renaming a package made: its data types, effects, natives,
+-- definitions, and, for the root package, its expression and its `main`.
+data Renamed = Renamed [DataDecl] [EffectDecl] [NativeDecl] [Bind] (Maybe H.Term) (Maybe Int)
+
+-- Rename the modules of package `pkg` (whose modules are `first` on in
+-- `r.modules`), its root's expression if `root`: every module's names, so
+-- that any may mention any other; then what their `use`s bring, twice,
+-- since a `@pub use` may give on what another's brings it (only the second
+-- time says what is wrong); then what each says.
+fun renamePackageAt (r : Rn) (pkg : Int) (first : Int) (progs : [Program]) (root : Bool) (linearPackage : Bool) : Renamed ! { Mut | e } =
+  let n = V.len progs in
+  -- a root that is nothing but `let ... in body` is those declarations and
+  -- that body
+  let parts =
+    V.map
+      (\i ->
+        match V.get progs i with
+        | Just (p : Program) ->
+            (match (V.isEmpty p.decls, p.body) with
+             | (True, Just (Term.Let ds body)) -> if i == 0 and root then (ds, Just body) else (p.decls, None)
+             | _ -> (p.decls, if i == 0 and root then p.body else None))
+        | None -> ([], None))
+      (V.range 0 n)
+  in
+  let bound =
+    V.map
+      (\i ->
+        match (V.get progs i, V.get parts i) with
+        | (Just (p : Program), Just (decls, _)) ->
+            let w = enter r (first + i) in
+            let w2 = setRef r.linear (linearPackage or p.linear) in
+            let b = bindProgram r p decls in
+            let w3 = export r (first + i) p b in
+            let w4 = leave r in
+            b
+        | _ -> Bound { datas = [], dataNames = [], effectNames = [], defs = [], natives = [] })
+      (V.range 0 n)
+  in
+  let uses =
+    \quiet ->
+      let mark = V.len (getRef r.problems) in
+      let w =
+        V.foldl
+          (\acc i ->
+            match V.get progs i with
+            | Just (p : Program) ->
+                let a = enter r (first + i) in
+                let b = V.foldl (\acc2 u -> renameUse r u) () p.uses in
+                leave r
+            | None -> ())
+          ()
+          (V.range 0 n)
+      in
+      if quiet then setRef r.problems (V.take (getRef r.problems) mark) else ()
+  in
+  let w1 = uses True in
+  let w2 = uses False in
+  V.foldl
+    (\acc i ->
+      match (acc, V.get progs i, V.get bound i, V.get parts i) with
+      | (Renamed.Renamed ds es ns bs body main, Just (p : Program), Just b, Just (_, rootBody)) ->
+          let w = enter r (first + i) in
+          let w3 = setRef r.linear (linearPackage or p.linear) in
+          (match renameProgram r p b with
+           | (d, e, nt, bnd) ->
+               let (body2, main2) =
+                 if i == 0 and root then
+                   let bd = M.map (\x -> renameTerm r x) rootBody in
+                   let own = M.unwrapOr Hm.empty (V.last (getRef r.scopes)) in
+                   (bd, M.andThen V.head (Hm.lookup "main" own))
+                 else (body, main)
+               in
+               let w4 = leave r in
+               Renamed.Renamed (V.append ds d) (V.append es e) (V.append ns nt) (V.append bs bnd) body2 main2)
+      | _ -> acc)
+    (Renamed.Renamed [] [] [] [] None None)
+    (V.range 0 n)
+
+-- Rename a package, its modules each a path and a program, the root first,
+-- after the prelude and the packages it depends on (each a name and its
+-- modules, the same way), which are renamed first and named from the
+-- uniques before its own: their declarations come in the module beside the
+-- prelude's, and only what they make `@pub` is theirs to give.
+@pub fun renamePackage (name : String) (modules : [([String], Program)]) (prelude : Program) (deps : [(String, [([String], Program)])]) : (Module, [String]) ! { Mut | e } =
   let r = new () in
   let w1 = setRef r.scopes (V.append (getRef r.scopes) [Hm.empty, Hm.empty]) in
   let w2 = setRef r.linear prelude.linear in
@@ -946,42 +1203,57 @@ fun export (r : Rn) (b : Bound) =
   | (pdatas, peffects, pnatives, pbinds) ->
       let w4 = setRef r.linear False in
       let w5 = setRef r.base (getRef r.scopes) in
-      let first = getRef r.next in
-      let parts =
-        match (V.isEmpty prog.decls, prog.body) with
-        | (True, Just (Term.Let ds body)) -> (ds, Just body)
-        | _ -> (prog.decls, prog.body)
+      -- the root package is 0, its dependencies 1 on
+      let allPackages = V.append [(name, modules)] deps in
+      let w6 = setRef r.packageNames (V.map fst allPackages) in
+      let w7 = setRef r.packageDeps (V.append [V.range 1 (V.len allPackages)] (V.map (\d -> []) deps)) in
+      let w8 = setRef r.visibilityMentioned (V.map (\pm -> V.any (\m -> mentionsVisibility (snd m)) (snd pm)) allPackages) in
+      let mods =
+        V.concatMap
+          (\pi ->
+            match V.get allPackages pi with
+            | Just (_, ms) -> V.map (\m -> Mod { package = pi, path = fst m, own = Hm.empty, imports = Hm.empty, aliases = Hm.empty, exports = Hm.empty }) ms
+            | None -> [])
+          (V.range 0 (V.len allPackages))
       in
-      (match parts with
-       | (decls, body) ->
-           let w6 = setRef r.scopes (V.append (getRef r.base) [Hm.empty, Hm.empty]) in
-           let w7 = setRef r.ownAt (V.len (getRef r.base) + 1) in
-           let w8 = setRef r.linear prog.linear in
-           let b = bindProgram r prog decls in
-           let w9 = export r b in
-           -- twice, as the Rust renamer takes them, and only the second time
-           -- says what is wrong
-           let mark = V.len (getRef r.problems) in
-           let w10 = V.foldl (\acc u -> renameUse r u) () prog.uses in
-           let w11 = setRef r.problems (V.take (getRef r.problems) mark) in
-           let w12 = V.foldl (\acc u -> renameUse r u) () prog.uses in
-           (match renameProgram r prog b with
-            | (datas, effects, natives, binds) ->
-                let body2 = M.map (\e -> renameTerm r e) body in
-                let own = M.unwrapOr Hm.empty (V.last (getRef r.scopes)) in
-                let main = M.andThen V.head (Hm.lookup "main" own) in
-                let groups = V.map (\bs -> Group.Rec bs) (V.filter (\bs -> not (V.isEmpty bs)) [pbinds, binds]) in
-                let m =
-                  Module {
-                    datas = V.append pdatas datas,
-                    effects = V.append peffects effects,
-                    natives = V.append pnatives natives,
-                    groups,
-                    body = body2,
-                    main,
-                    first,
-                    terminating = getRef r.terminating,
-                    linearBody = prog.linear
-                  }
-                in
-                (m, getRef r.problems)))
+      let w9 = setRef r.modules mods in
+      let starts = V.foldl (\acc pm -> V.pushBack acc (V.getOr 0 acc (V.len acc - 1) + V.len (snd pm))) [0] allPackages in
+      -- the dependencies, in turn
+      let depParts =
+        V.map
+          (\di ->
+            let lo = getRef r.next in
+            let renamed = renamePackageAt r (di + 1) (V.getOr 0 starts (di + 1)) (V.map snd (snd (V.getOr ("", []) deps di))) False False in
+            (renamed, (lo, getRef r.next, fst (V.getOr ("", []) deps di))))
+          (V.range 0 (V.len deps))
+      in
+      let first = getRef r.next in
+      (match renamePackageAt r 0 0 (V.map snd modules) True False with
+       | Renamed.Renamed datas effects natives binds body main ->
+           let depDatas = V.concatMap (\dp -> match fst dp with | Renamed.Renamed d _ _ _ _ _ -> d) depParts in
+           let depEffects = V.concatMap (\dp -> match fst dp with | Renamed.Renamed _ e _ _ _ _ -> e) depParts in
+           let depNatives = V.concatMap (\dp -> match fst dp with | Renamed.Renamed _ _ n _ _ _ -> n) depParts in
+           let depBinds = V.map (\dp -> match fst dp with | Renamed.Renamed _ _ _ b _ _ -> b) depParts in
+           let groups = V.map (\bs -> Group.Rec bs) (V.filter (\bs -> not (V.isEmpty bs)) (V.concat [[pbinds], depBinds, [binds]])) in
+           let linearBody = match V.head modules with | Just (_, p) -> p.linear | None -> False in
+           let m =
+             Module {
+               datas = V.concat [pdatas, depDatas, datas],
+               effects = V.concat [peffects, depEffects, effects],
+               natives = V.concat [pnatives, depNatives, natives],
+               groups,
+               body,
+               main,
+               first,
+               terminating = getRef r.terminating,
+               linearBody,
+               qualifiers = getRef r.qualifiers,
+               ranges = V.pushBack (V.map snd depParts) (first, getRef r.next, name)
+             }
+           in
+           (m, getRef r.problems))
+
+-- Rename a lone module, the root of a package called `Main`, after the
+-- prelude.
+@pub fun renameModule (prog : Program) (prelude : Program) : (Module, [String]) ! { Mut | e } =
+  renamePackage package [([], prog)] prelude []

@@ -27,7 +27,8 @@
 use Idyll.Layout (dumped)
 use Idyll.Syntax (parseIdyll)
 use Idyll.Parse as Parse
-use Idyll.Rename (renameModule)
+use Idyll.Rename (renameModule, renamePackage)
+use Idyll.Ast as Ast
 use Idyll.Hir as Hir
 use Std.String as S
 use Std.Maybe as M
@@ -89,10 +90,31 @@ fun main () =
            (match readToString path with
             | Ok text ->
                 (match Parse.parsed text with
-                 | Ok prelude -> V.foldl (\u f -> each f (typed prelude)) () (V.drop args 3)
+                 | Ok prelude ->
+                     -- `--std <dir>`: the standard library's sources, which a
+                     -- program that names `Std` depends on
+                     (match (V.get args 3, V.get args 4) with
+                      | (Just "--std", Just dir) ->
+                          (match packageModules dir with
+                           | Ok std -> V.foldl (\u f -> each f (typedWith prelude (Just std))) () (V.drop args 5)
+                           | Err why -> writeError "Std: ${why}\n")
+                      | _ -> V.foldl (\u f -> each f (typed prelude)) () (V.drop args 3))
                  | Err _ -> writeError "the prelude does not parse\n")
             | Err e -> writeError "could not read the prelude: ${e}\n")
-       | _ -> writeError "usage: Idyll types --prelude <file> <file>...\n")
+       | _ -> writeError "usage: Idyll types --prelude <file> [--std <dir>] <file>...\n")
+  | Just "package" ->
+      (match (V.get args 1, V.get args 2, V.get args 3, V.get args 4) with
+       | (Just "--prelude", Just path, Just name, Just dir) ->
+           (match readToString path with
+            | Ok text ->
+                (match (Parse.parsed text, packageModules dir) with
+                 | (Ok prelude, Ok modules) ->
+                     let u = writeOutput "== ${name}\n" in
+                     writeOutput "${packageTypes prelude name modules}\n"
+                 | (Err _, _) -> writeError "the prelude does not parse\n"
+                 | (_, Err why) -> writeError "${name}: ${why}\n")
+            | Err e -> writeError "could not read the prelude: ${e}\n")
+       | _ -> writeError "usage: Idyll package --prelude <file> <name> <dir>\n")
   | _ -> writeError "usage: Idyll (tokens | tree | parse | rename --prelude <file> | types --prelude <file>) <file>...\n"
 
 -- `file`'s dump, under a line naming it.
@@ -121,12 +143,74 @@ fun renamed prelude (text : String) : String ! { Mut | e } =
 
 -- A program checked after the prelude, as `Check` writes it; `(error)` if
 -- it does not parse or rename.
-fun typed prelude (text : String) : String ! { Mut | e } =
+fun typed prelude (text : String) : String ! { Mut | e } = typedWith prelude None text
+
+-- The same, with the standard library's modules given: a program that
+-- names `Std` is the root of a package that depends on it.
+fun typedWith prelude std (text : String) : String ! { Mut | e } =
   match Parse.parsed text with
   | Err _ -> "(error)"
   | Ok prog ->
-      (match renameModule prog prelude with
+      let renamed =
+        match std with
+        | Just mods -> if S.contains "Std" text then renamePackage "Main" [([], prog)] prelude [("Std", mods)] else renameModule prog prelude
+        | None -> renameModule prog prelude
+      in
+      (match renamed with
        | (m, problems) -> if V.isEmpty problems then checkModule (sccModule m) else "(error)")
+
+-- A whole package checked, its modules each a path and a program.
+fun packageTypes prelude (name : String) (modules : [([String], Ast.Program)]) : String ! { Mut | e } =
+  match renamePackage name modules prelude [] with
+  | (m, problems) -> if V.isEmpty problems then checkModule (sccModule m) else "(error: ${S.join "; " problems})"
+
+-- A package's modules, read from its source directory: each `.idl` file
+-- under it, its path the file's (`Collections/List.idl` is
+-- `Collections.List`), `Lib.idl` the root; the root first, then the rest
+-- by path.
+fun packageModules (dir : String) : Result String [([String], Ast.Program)] ! { Fs, Mut | e } =
+  let files = idlFiles dir [] in
+  let modules =
+    V.map
+      (\rel ->
+        let path = V.take (S.split "/" rel) (V.len (S.split "/" rel)) in
+        let last = M.unwrapOr "" (V.last path) in
+        let segs = V.pushBack (V.take path (V.len path - 1)) (S.take last (S.byteLength last - 4)) in
+        let p = if V.len segs == 1 and V.getOr "" segs 0 == "Lib" then [] else segs in
+        (p, rel))
+      files
+  in
+  let sorted = V.foldl (\acc m -> V.concat [V.filter (\x -> not (S.lessThan (key m) (key x))) acc, [m], V.filter (\x -> S.lessThan (key m) (key x)) acc]) [] modules in
+  V.foldl
+    (\acc m ->
+      match acc with
+      | Err why -> Err why
+      | Ok done ->
+          (match readToString (dir ++ "/" ++ snd m) with
+           | Err e -> Err e
+           | Ok text ->
+               (match Parse.parsed text with
+                | Ok prog -> Ok (V.pushBack done (fst m, prog))
+                | Err _ -> Err "${snd m} does not parse")))
+    (Ok [])
+    sorted
+
+-- How modules sort: the root first, then by path.
+fun key (m : ([String], String)) : String = if V.isEmpty (fst m) then "" else S.join "." (fst m)
+
+-- The `.idl` files under a directory, by their paths in it.
+fun idlFiles (dir : String) (prefix : [String]) : [String] ! { Fs | e } =
+  let here = if V.isEmpty prefix then dir else dir ++ "/" ++ S.join "/" prefix in
+  match readDir here with
+  | Err _ -> []
+  | Ok names ->
+      V.concatMap
+        (\n ->
+          let full = here ++ "/" ++ n in
+          if isDir full then idlFiles dir (V.pushBack prefix n)
+          else if S.endsWith ".idl" n then [S.join "/" (V.pushBack prefix n)]
+          else [])
+        names
 
 -- How many steps a program is given before it is taken not to stop.
 def fuel = 5000000

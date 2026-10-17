@@ -124,8 +124,8 @@ fun bindsOf (g : Group) : [Bind] =
 -- Every name declared, by unique: its package (the prelude's, or `Main`,
 -- which a lone module is) and its path there.
 fun symbolsOf (m : Module) : HashMap Int (String, String) =
-  let pkg = \x -> if H.uniqueOf x < m.first then "Prelude" else "Main" in
-  let add = \acc x path -> Hm.insert (H.uniqueOf x) (pkg x, path) acc in
+  let pkg = \x -> packageOf m (H.uniqueOf x) in
+  let add = \acc x path -> Hm.insert (H.uniqueOf x) (pkg x, qualified m (H.uniqueOf x) path) acc in
   let withDatas =
     V.foldl
       (\acc (d : DataDecl) ->
@@ -202,7 +202,21 @@ fun dump (tc : Tc) (m : Module) (body : Maybe Core) : String ! { Mut | e } =
   else
     let shown = \c -> C.shown m.linearBody c in
     let own = V.filter (\d -> match d with | (u, _, _) -> u >= m.first) (getRef tc.declared) in
-    let decls = V.map (\d -> match d with | (_, name, ty) -> name ++ " : " ++ shown ty) own in
+    let decls = V.map (\d -> match d with | (u, name, ty) -> qualified m u name ++ " : " ++ shown ty) own in
     let bodyLine = match body with | Just ty -> ["body : " ++ shown ty] | None -> [] in
     let errors = V.map (\k -> "error: " ++ k) (getRef tc.errors) in
     S.join "\n" (sorted (V.concat [decls, bodyLine, errors]))
+
+-- The package a unique is one of: by the ranges each named its own things
+-- with, and failing those, the prelude.
+fun packageOf (m : Module) (u : Int) : String =
+  match V.find (\r -> match r with | (lo, hi, _) -> u >= lo and u < hi) m.ranges with
+  | Just (_, _, name) -> name
+  | None -> "Prelude"
+
+-- A name as it is written from outside its module: under the module, if it
+-- is not a package's root.
+fun qualified (m : Module) (u : Int) (name : String) : String =
+  match Hm.lookup u m.qualifiers with
+  | Just q -> q ++ "." ++ name
+  | None -> name

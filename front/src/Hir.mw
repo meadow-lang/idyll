@@ -19,6 +19,7 @@ use Idyll.Ast as A
 use Std.Collections.Vector as V
 use Std.String as S
 use Std.Maybe.Maybe.*
+use Std.Collections.HashMap (HashMap)
 
 @pub data Ident = Ident [Int] String
 
@@ -108,7 +109,13 @@ use Std.Maybe.Maybe.*
   -- before is the builtins' and the prelude's
   first : Int,
   terminating : [Int],
-  linearBody : Bool
+  linearBody : Bool,
+  -- the module each top-level name of a module other than a package's root
+  -- is in (`Collections.List` for `map`), as written before it from outside
+  qualifiers : HashMap Int String,
+  -- the uniques each package named its own things with, and its name: the
+  -- dependencies', then the package's own
+  ranges : [(Int, Int, String)]
 }
 
 -- The one unique of a binder.

@@ -929,10 +929,14 @@ do yet `(unsupported)`, and the tests count those apart.
   (fixed in meadow PR 11, not yet in a release). The Cut corpus itself
   passes on Glade likewise (pure 198/198, world 5/5).
 - [ ] The same on Silo, and the handler programs once meadow PR 11 is in.
-- [ ] Packages: a module's `use` of another package (Std), in the renamer
-  and the checker, so that the Std library and the examples are compared
-  too (690 of the 1082 programs stop at renaming today, most for want of
-  Std); then choosing by type among names several `use`s bring in.
+- [x] Packages: a package of modules, and a dependency (Std), in the
+  renamer (module namespaces, visibility, `@pub use`, dependencies renamed
+  in the same run) and the checker (a dependency checked alongside, as a
+  compiled one is imported). The whole Std package agrees with the Rust
+  checker, all 475 declarations, and so do the 39 corpus programs that use
+  Std (types 431 programs in all).
+- [ ] Std's users through the CEK machine and Cut too (the Rust side needs
+  its linking there); choosing by type among names several `use`s bring in.
 - [ ] front/'s own REPL and driver, once Cut moves its Lingua pin (Lingua
   833e1a5, for LineEditor 0.2.2).
 - [ ] CI, with MeadowBoot's prerelease for the `meadow` it needs.

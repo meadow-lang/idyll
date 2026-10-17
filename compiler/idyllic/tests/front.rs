@@ -67,12 +67,57 @@ fn the_renames_agree() {
 fn the_types_agree() {
     let source = idyllic::pipeline::PRELUDE;
     let prelude = program(source).expect("the prelude parses");
+    let std_dir = repo().join("lib/Std/src");
+    let std_dir = std_dir.to_string_lossy();
     agree_with(
-        &["types", "--prelude", "_prelude.txt"],
+        &["types", "--prelude", "_prelude.txt", "--std", &std_dir],
         &[("_prelude.txt", source)],
         |src| typed(&prelude, src),
         |d| renumbered_by(d, '?'),
     );
+}
+
+/// The standard library, checked as the package it is, by both: each of
+/// its declarations' types, and its errors (none).
+#[test]
+fn the_std_package_agrees() {
+    let Ok(exe) = front() else {
+        eprintln!("no front/ to check the Std package with");
+        return;
+    };
+    let source = idyllic::pipeline::PRELUDE;
+    let prelude = program(source).expect("the prelude parses");
+    let dir = std::env::temp_dir().join(format!("idyll-front-std-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a directory");
+    std::fs::write(dir.join("_prelude.txt"), source).expect("the prelude can be written");
+    let std_dir = repo().join("lib/Std/src");
+    let out = std::process::Command::new(&exe)
+        .args(["package", "--prelude", "_prelude.txt", "Std"])
+        .arg(&std_dir)
+        .current_dir(&dir)
+        .output()
+        .expect("front/ runs");
+    let _ = std::fs::remove_dir_all(&dir);
+    let text = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
+    let theirs = text.strip_prefix("== Std\n").unwrap_or(&text).trim_end().to_string();
+    // here: the package's modules, checked as `Std` is
+    let programs: Vec<(Vec<String>, idyllic_ast::Program)> = idyllic::stdlib::MODULES
+        .iter()
+        .map(|(path, text)| {
+            let path = if path.is_empty() { Vec::new() } else { path.split('.').map(String::from).collect() };
+            (path, program(text).expect("a Std module parses"))
+        })
+        .collect();
+    let modules: Vec<idyllic_rename::ModuleSource<'_>> =
+        programs.iter().map(|(path, program)| idyllic_rename::ModuleSource { path: path.clone(), program }).collect();
+    let result = idyllic_rename::rename_package("Std", &modules, &prelude, &[], idyllic_builtins::FIRST_USER_UNIQUE, false);
+    assert!(result.errors.is_empty(), "Std renames");
+    let module = idyllic_scc::scc_module(result.module);
+    let checked = idyllic_typecheck::check_module(&module, result.spans.len(), false, &[]);
+    let ours = renumbered_by(&checked_dump(&checked), '?');
+    let theirs = renumbered_by(&theirs, '?');
+    eprintln!("std: {} declarations", ours.lines().count());
+    assert!(ours == theirs, "the Std package differs: {}", first_difference(&ours, &theirs));
 }
 
 #[test]
@@ -173,15 +218,31 @@ fn renamed_fresh(decl: &str) -> String {
 // both sides.
 
 /// What this compiler's checker makes of `src`, after the prelude, written
-/// out.
+/// out; a program that names `Std` is checked against it, compiled, as a
+/// package depends on it.
 fn typed(prelude: &idyllic_ast::Program, src: &str) -> String {
     let Some(p) = program(src) else { return "(error)".to_string() };
-    let result = idyllic_rename::rename_module(&p, prelude);
+    let std = idyllic::stdlib::compiled();
+    let uses_std = src.contains("Std");
+    let result = if uses_std {
+        let modules = [idyllic_rename::ModuleSource { path: Vec::new(), program: &p }];
+        let first = std.uniques.end.max(idyllic_builtins::FIRST_USER_UNIQUE);
+        idyllic_rename::rename_package("Main", &modules, prelude, &[("Std", &std.names)], first, false)
+    } else {
+        idyllic_rename::rename_module(&p, prelude)
+    };
     if !result.errors.is_empty() {
         return "(error)".to_string();
     }
     let module = idyllic_scc::scc_module(result.module);
-    let checked = idyllic_typecheck::check_module(&module, result.spans.len(), false, &[]);
+    let deps: Vec<&idyllic_typecheck::packages::CompiledPackage> = if uses_std { vec![&*std] } else { Vec::new() };
+    let checked = idyllic_typecheck::check_module(&module, result.spans.len(), false, &deps);
+    checked_dump(&checked)
+}
+
+/// A checked module written out: its own declarations with their types, its
+/// expression's type, and its errors by kind, a line each, sorted.
+fn checked_dump(checked: &idyllic_typecheck::TypeCheckResult) -> String {
     let mut lines: Vec<String> =
         checked.catalog.iter().filter(|d| !d.prelude).map(|d| format!("{} : {}", d.name, d.ty)).collect();
     lines.extend(checked.body_type.iter().map(|ty| format!("body : {ty}")));

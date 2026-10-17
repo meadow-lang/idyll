@@ -20,9 +20,9 @@ does, how it is checked, and why it is built the way it is.
 | Layout | `Layout.mw` | done: agrees on every program |
 | Grammar | `Syntax.mw` | done: a Lingua `syntax!` grammar |
 | Parsing | `Parse.mw`, `Ast.mw` | done: agrees with the Rust parser on every program |
-| Renaming | `Rename.mw`, `Hir.mw` | done for one module after the prelude; packages not yet |
+| Renaming | `Rename.mw`, `Hir.mw` | done: packages of modules, after the prelude and their dependencies |
 | Dependency order | `Scc.mw` | done |
-| Types | `Check.mw`, `Elab.mw`, `Matching.mw`, `Termination.mw`, `Handlers.mw`, `Sequences.mw`, `Decl.mw`, `Positivity.mw`, `Ctx.mw`, `Usage.mw`, and the machinery under them | done for one module: agrees on every program that gets this far (392) |
+| Types | `Check.mw`, `Elab.mw`, `Matching.mw`, `Termination.mw`, `Handlers.mw`, `Sequences.mw`, `Decl.mw`, `Positivity.mw`, `Ctx.mw`, `Usage.mw`, and the machinery under them | done: agrees on every program that gets this far (431, Std's users among them), and on the whole Std package (475 declarations) |
 | The CEK machine | `Cek.mw`, `World.mw` | done: the same answer, in the same number of steps, as `idyll-eval` on every program that runs (211) |
 | Cut | `Lower.mw`, `Typer.mw`, `Prune.mw`, `CutAst.mw`, `Emit.mw` | done: the same Cut as `idyllic-cut` on every program that lowers (212) |
 
@@ -46,6 +46,8 @@ meadow run . -- parse file.idl                # the syntax tree, as S-expression
 meadow run . -- tree file.idl                 # Lingua's lossless tree, drawn
 meadow run . -- rename --prelude p.idl f.idl  # the renamed tree (HIR)
 meadow run . -- types --prelude p.idl f.idl   # each declaration's type, and the errors
+meadow run . -- types --prelude p.idl --std ../lib/Std/src f.idl   # the same, Std given
+meadow run . -- package --prelude p.idl Std ../lib/Std/src         # a whole package checked
 meadow run . -- run --prelude p.idl f.idl     # its answer, steps and output, on the CEK machine
 meadow run . -- cut --prelude p.idl f.idl     # its Cut, which `meadow cut` runs
 meadow build --release                        # native, into target/release/native/silo/
@@ -185,8 +187,26 @@ wrong is collected rather than reported in full.
 
 ### Rename
 
-`Rename.mw` is `compiler/idyllic-rename`, for one module after the prelude.
-Its output, `Hir.mw`, is `compiler/idyllic-hir`.
+`Rename.mw` is `compiler/idyllic-rename`: a package of modules, after the
+prelude and the packages it depends on. Its output, `Hir.mw`, is
+`compiler/idyllic-hir`.
+
+- Each module is a namespace of its own (`src/Collections/List.idl` is
+  `Collections.List`, `Lib.idl` the root), whose names others reach with a
+  `use` or written in full. A directory of modules with no module of its
+  own is a step on the way to one. A package that says how visible
+  anything is (`@pub`, `@pub(pkg)`, `@pub(super)`) keeps the rest to its own
+  module and those under it; another package gives only what it makes
+  `@pub`. `@pub use` gives on what it brings.
+- Every module's names are bound first, so any may mention any other; then
+  their `use`s are taken, twice, since a `@pub use` may give on what
+  another's brings it; then what each says is renamed.
+- A dependency (Std) is renamed in the same run, before the package, with
+  uniques before the package's own. Its declarations go into the module
+  beside the prelude's, so the checker checks them alongside, much as the
+  Rust checker imports a compiled package: its definitions are constants
+  whose values unfold. `--std <dir>` gives a program that names `Std` the
+  standard library this way.
 
 - Every binder gets a fresh unique, and every use is resolved to the binder
   it means, with lexical scoping. A group of declarations is recursive.
