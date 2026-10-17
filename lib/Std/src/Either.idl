@@ -1,60 +1,58 @@
 -- One of two: `Left` an `a`, or `Right` a `b`. A `Result` with neither
 -- side the error, for when both are answers.
 
-@linear
-
 @pub
 data Either a b = Left a | Right b
 
 use Either.*
 
 @pub
-isLeft : {a b : Type} -> (x : [0..1] Either a b) -> Bool
+isLeft : {a b : Type} -> (x : Either a b) -> Bool
 isLeft (Left l) = True
 isLeft (Right r) = False
 
 @pub
-isRight : {a b : Type} -> (x : [0..1] Either a b) -> Bool
+isRight : {a b : Type} -> (x : Either a b) -> Bool
 isRight (Left l) = False
 isRight (Right r) = True
 
 -- `onLeft` or `onRight`, whichever there is something for.
 @pub
-either : {a b c : Type} -> {r : Grade} -> (onLeft : [0..1] ((x : [r] a) -> c ! e)) -> (onRight : [0..1] ((y : [r] b) -> c ! e)) -> (v : [r] Either a b) -> c ! e
+either : {a b c : Type} -> (onLeft : (a -> c ! e)) -> (onRight : (b -> c ! e)) -> (v : Either a b) -> c ! e
 either f g (Left l) = f l
 either f g (Right r) = g r
 
 -- What is on the left, or `fallback`.
 @pub
-fromLeft : {a b : Type} -> (fallback : [0..1] a) -> (x : [0..1] Either a b) -> a
+fromLeft : {a b : Type} -> (fallback : a) -> (x : Either a b) -> a
 fromLeft d (Left l) = l
 fromLeft d (Right r) = d
 
 -- What is on the right, or `fallback`.
 @pub
-fromRight : {a b : Type} -> (fallback : [0..1] b) -> (x : [0..1] Either a b) -> b
+fromRight : {a b : Type} -> (fallback : b) -> (x : Either a b) -> b
 fromRight d (Left l) = d
 fromRight d (Right r) = r
 
 -- `f` of what is on the right; the left is passed on.
 @pub
-map : {a b c : Type} -> (f : [0..1] ((y : [] b) -> c ! e)) -> (v : [] Either a b) -> Either a c ! e
+map : {a b c : Type} -> (f : ((y : b) -> c ! e)) -> (v : Either a b) -> Either a c ! e
 map f (Left l) = Left l
 map f (Right r) = Right (f r)
 
 @pub
-mapLeft : {a b c : Type} -> (f : [0..1] ((x : [] a) -> c ! e)) -> (v : [] Either a b) -> Either c b ! e
+mapLeft : {a b c : Type} -> (f : ((x : a) -> c ! e)) -> (v : Either a b) -> Either c b ! e
 mapLeft f (Left l) = Left (f l)
 mapLeft f (Right r) = Right r
 
 @pub
-bimap : {a b c d : Type} -> {r : Grade} -> (f : [0..1] ((x : [r] a) -> c ! e)) -> (g : [0..1] ((y : [r] b) -> d ! e)) -> (v : [r] Either a b) -> Either c d ! e
+bimap : {a b c d : Type} -> (f : (a -> c ! e)) -> (g : (b -> d ! e)) -> (v : Either a b) -> Either c d ! e
 bimap f g (Left l) = Left (f l)
 bimap f g (Right r) = Right (g r)
 
 -- `f` of what is on the right, which may itself be on the left.
 @pub
-andThen : {a b c : Type} -> (f : [0..1] ((y : [] b) -> Either a c ! e)) -> (v : [] Either a b) -> Either a c ! e
+andThen : {a b c : Type} -> (f : ((y : b) -> Either a c ! e)) -> (v : Either a b) -> Either a c ! e
 andThen f (Left l) = Left l
 andThen f (Right r) = f r
 
@@ -65,13 +63,13 @@ swap (Right r) = Left r
 
 -- What is on the right, if anything.
 @pub
-toMaybe : {a b : Type} -> (x : [0..1] Either a b) -> Maybe b
+toMaybe : {a b : Type} -> (x : Either a b) -> Maybe b
 toMaybe (Left l) = Nothing
 toMaybe (Right r) = Just r
 
 -- What is on the left, if anything.
 @pub
-leftToMaybe : {a b : Type} -> (x : [0..1] Either a b) -> Maybe a
+leftToMaybe : {a b : Type} -> (x : Either a b) -> Maybe a
 leftToMaybe (Left l) = Just l
 leftToMaybe (Right r) = Nothing
 
@@ -88,20 +86,20 @@ fromResult (Ok r) = Right r
 
 -- What there is, or `fallback` on the left.
 @pub
-fromMaybe : {a b : Type} -> (fallback : [0..1] a) -> Maybe b -> Either a b
+fromMaybe : {a b : Type} -> (fallback : a) -> Maybe b -> Either a b
 fromMaybe d Nothing = Left d
 fromMaybe d (Just r) = Right r
 
 -- Everything on the left, in order.
 @pub
-lefts : {a b : Type} -> (xs : [0..1] List (Either a b)) -> List a
+lefts : {a b : Type} -> (xs : List (Either a b)) -> List a
 lefts Nil = Nil
 lefts (Left l :: rest) = l :: lefts rest
 lefts (Right r :: rest) = lefts rest
 
 -- Everything on the right, in order.
 @pub
-rights : {a b : Type} -> (xs : [0..1] List (Either a b)) -> List b
+rights : {a b : Type} -> (xs : List (Either a b)) -> List b
 rights Nil = Nil
 rights (Left l :: rest) = rights rest
 rights (Right r :: rest) = r :: rights rest

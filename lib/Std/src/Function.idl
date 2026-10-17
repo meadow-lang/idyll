@@ -1,7 +1,5 @@
 -- Functions on functions.
 
-@linear
-
 use Std.Num.Nat (Nat)
 
 -- The function that gives back what it is given.
@@ -16,26 +14,26 @@ const x y = x
 
 -- A function of two arguments, taking them the other way round.
 @pub
-flip : {a b c : Type} -> {r s : Grade} -> (f : (x : [r] a) -> (y : [s] b) -> c ! e) -> (y : [s] b) -> (x : [r] a) -> c ! e
+flip : {a b c : Type} -> (f : a -> b -> c ! e) -> (y : b) -> (x : a) -> c ! e
 flip f y x = f x y
 
 -- `g`, then `f`.
 @pub
-compose : {a b c : Type} -> {r s : Grade} -> (f : (y : [s] b) -> c ! e) -> (g : [s] ((x : [r] a) -> b ! e)) -> (x : [s * r] a) -> c ! e
+compose : {a b c : Type} -> (f : b -> c ! e) -> (g : a -> b ! e) -> (x : a) -> c ! e
 compose f g x = f (g x)
 
 -- `f x`, as a function: for passing application itself on.
 @pub
-apply : {a b : Type} -> {r : Grade} -> (f : (x : [r] a) -> b ! e) -> (x : [r] a) -> b ! e
+apply : {a b : Type} -> (f : a -> b ! e) -> (x : a) -> b ! e
 apply f x = f x
 
 -- `f (f x)`.
 @pub
-twice : {a : Type} -> {r : Grade} -> (f : [1 + r] ((x : [r] a) -> a ! e)) -> (x : [r * r] a) -> a ! e
+twice : {a : Type} -> (f : a -> a ! e) -> (x : a) -> a ! e
 twice f x = f (f x)
 
 -- `f` applied `n` times.
 @pub
-iterate : {a : Type} -> (n : Nat) -> (f : [] ((x : [] a) -> a ! e)) -> (x : [] a) -> a ! e
+iterate : {a : Type} -> (n : Nat) -> (f : ((x : a) -> a ! e)) -> (x : a) -> a ! e
 iterate Nat.Z f x = x
 iterate (Nat.S n) f x = iterate n f (f x)

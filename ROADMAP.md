@@ -60,11 +60,16 @@ and the tour has steps for it.
   `@linear` on a line of its own at its top, or for every module of a
   package by `idyllic --linear`, where a binder that says nothing (a
   constructor's field too) is `1`. Types print as their module reads them.
-  The prelude and Std are linear modules, so that what they declare can
-  hold resources; their callbacks take what they hand on at a grade
-  variable where one covers it (`map`'s elements, `{r : Grade}`) and at
-  `[]` where none does (a fold's accumulator), so a function from any
-  module fits them. A function type whose parameter allows fewer uses fits
+  The prelude is a linear module, so that the data types it declares can
+  hold anything, resources too. **Std is unrestricted** (Chris,
+  2026-10-17), as a module that says nothing is: its signatures say
+  nothing about grades, and grade variables are kept for APIs that handle
+  linear values (`MArray`, the one linear module of it). Std was linear
+  until then, so that one library served linear callers too. That stopped
+  being worth its signatures once resources became effects and low-level
+  code got a fragment of its own (*Low-level code*, phase 7): grade
+  polymorphism is a feature of the language still, used where it is
+  needed. A function type whose parameter allows fewer uses fits
   one whose parameter allows more (`(x : [1] a) -> b` where `(x : [] a) ->
   b` is wanted); a match on a value with no fields (a `Bool`, an `Int`)
   looks at it once, whatever the default.
@@ -423,8 +428,9 @@ examples need strings to take apart first (`Std.Yield` is the generators).
   equal lengths, `append` into `plus n m`, `splitAt`, `fromList` into the
   list's `size`), `Fin` indices (`Vec.index`, and `List.nth` on a
   `Fin (size xs)`), propositional equality with proofs about `Nat`
-  (`plusComm`, `plusAssoc`, ...), `Dec` and `Nat.decEq`, dependent pairs; and
-  grades in every signature. Meadow's traits, records, maps and string
+  (`plusComm`, `plusAssoc`, ...), `Dec` and `Nat.decEq`, dependent pairs. (Its signatures gave grades
+  throughout until 2026-10-17, when Std became unrestricted: see the
+  principles.) Meadow's traits, records, maps and string
   operations wait for those features. Writing it found and fixed, in the
   checker: data types ordered by their kinds across modules; constraints on a
   meta applied to something postponed until the definition is checked (so

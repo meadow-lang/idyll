@@ -3,8 +3,6 @@
 -- given a `Fin n`, cannot be out of range. A literal knows its length:
 -- `(#[1, 2, 3] : Vec (S (S (S Z))) Int)`.
 
-@linear
-
 use Std.Num.Nat (Nat, plus)
 use Std.Num.Nat.Nat.*
 use Std.Num.Fin (Fin)
@@ -23,44 +21,44 @@ use Vec.*
 
 -- The first element of a vector that has one, which the type says.
 @pub
-head : {n : Nat} -> {a : Type} -> (v : [0..1] Vec (S n) a) -> a
+head : {n : Nat} -> {a : Type} -> (v : Vec (S n) a) -> a
 head (Cons x xs) = x
 
 -- All but the first.
 @pub
-tail : {n : Nat} -> {a : Type} -> (v : [0..1] Vec (S n) a) -> Vec n a
+tail : {n : Nat} -> {a : Type} -> (v : Vec (S n) a) -> Vec n a
 tail (Cons x xs) = xs
 
 -- The element at an index below the length: always there.
 @pub
-index : {n : Nat} -> {a : Type} -> Fin n -> (v : [0..1] Vec n a) -> a
+index : {n : Nat} -> {a : Type} -> Fin n -> (v : Vec n a) -> a
 index FZ (Cons x xs) = x
 index (FS i) (Cons x xs) = index i xs
 
 -- How many elements: `n`, counted (see `lengthIsIndex`).
 @pub
-length : {n : Nat} -> {a : Type} -> (v : [0..1] Vec n a) -> Nat
+length : {n : Nat} -> {a : Type} -> (v : Vec n a) -> Nat
 length Nil = Z
 length (Cons x xs) = S (length xs)
 
 -- `length` counts what the type says: a proof.
 @pub
-lengthIsIndex : {n : Nat} -> {a : Type} -> (v : [] Vec n a) -> Eq (length v) n
+lengthIsIndex : {n : Nat} -> {a : Type} -> (v : Vec n a) -> Eq (length v) n
 lengthIsIndex Nil = Refl
 lengthIsIndex (Cons x xs) = cong S (lengthIsIndex xs)
 
 @pub
-map : {n : Nat} -> {a b : Type} -> {r : Grade} -> (f : [] ((x : [r] a) -> b ! e)) -> (v : [r] Vec n a) -> Vec n b ! e
+map : {n : Nat} -> {a b : Type} -> (f : a -> b ! e) -> (v : Vec n a) -> Vec n b ! e
 map f Nil = Nil
 map f (Cons x xs) = Cons (f x) (map f xs)
 
 @pub
-foldr : {n : Nat} -> {a b : Type} -> (f : [] ((x : [] a) -> (acc : [] b) -> b ! e)) -> (z : [] b) -> (v : [] Vec n a) -> b ! e
+foldr : {n : Nat} -> {a b : Type} -> (f : ((x : a) -> (acc : b) -> b ! e)) -> (z : b) -> (v : Vec n a) -> b ! e
 foldr f z Nil = z
 foldr f z (Cons x xs) = f x (foldr f z xs)
 
 @pub
-foldl : {n : Nat} -> {a b : Type} -> (f : [] ((acc : [] b) -> (x : [] a) -> b ! e)) -> (z : [] b) -> (v : [] Vec n a) -> b ! e
+foldl : {n : Nat} -> {a b : Type} -> (f : ((acc : b) -> (x : a) -> b ! e)) -> (z : b) -> (v : Vec n a) -> b ! e
 foldl f z Nil = z
 foldl f z (Cons x xs) = foldl f (f z x) xs
 
@@ -83,7 +81,7 @@ reverse (Cons x xs) = snoc (reverse xs) x
 
 -- `n` copies of `x`: the length is the argument.
 @pub
-replicate : {a : Type} -> (n : Nat) -> (x : [] a) -> Vec n a
+replicate : {a : Type} -> (n : Nat) -> (x : a) -> Vec n a
 replicate Z x = Nil
 replicate (S n) x = Cons x (replicate n x)
 
@@ -94,7 +92,7 @@ zip Nil Nil = Nil
 zip (Cons x xs) (Cons y ys) = Cons (x, y) (zip xs ys)
 
 @pub
-zipWith : {n : Nat} -> {a b c : Type} -> {r s : Grade} -> (f : [] ((x : [r] a) -> (y : [s] b) -> c ! e)) -> (xs : [r] Vec n a) -> (ys : [s] Vec n b) -> Vec n c ! e
+zipWith : {n : Nat} -> {a b c : Type} -> (f : a -> b -> c ! e) -> (xs : Vec n a) -> (ys : Vec n b) -> Vec n c ! e
 zipWith f Nil Nil = Nil
 zipWith f (Cons x xs) (Cons y ys) = Cons (f x y) (zipWith f xs ys)
 

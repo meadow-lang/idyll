@@ -21,16 +21,12 @@
 -- `append` and `splitAt` rebuild, chunk by chunk, rather than doing the
 -- true logarithmic RRB merge; everything else is the real structure.
 --
--- A vector shares its parts, so it is taken with []: one in a linear
--- variable cannot be given to these. What a function given to one is
--- handed, an element, can likewise be used as often as wanted: it is given
--- with []. An element going in is used once.
+-- A vector shares its parts, so it, and what is read out of it, may be used
+-- as often as wanted, as anything in Std may.
 --
 -- The loops count an index up to a length, or follow the tree down by an
 -- index, neither of which the checker sees getting smaller: `@terminating`
 -- says they end.
-
-@linear
 
 use Std.Ordering (Ordering)
 use Std.Ordering.Ordering.*
@@ -49,21 +45,21 @@ bits = 5
 
 -- 2 to the `n`.
 @terminating
-pow2 : (n : [] Int) -> Int
+pow2 : (n : Int) -> Int
 pow2 n = if n < 1 then 1 else 2 * pow2 (n - 1)
 
 -- Arrays, end on.
 
-aLast : {a : Type} -> (xs : [] Array a) -> a
+aLast : {a : Type} -> (xs : Array a) -> a
 aLast xs = arrayGet xs (arrayLen xs - 1)
 
-aInit : {a : Type} -> (xs : [] Array a) -> Array a
+aInit : {a : Type} -> (xs : Array a) -> Array a
 aInit xs = arraySlice xs 0 (arrayLen xs - 1)
 
-aTail : {a : Type} -> (xs : [] Array a) -> Array a
+aTail : {a : Type} -> (xs : Array a) -> Array a
 aTail xs = arraySlice xs 1 (arrayLen xs)
 
-aSetLast : {a : Type} -> (xs : [] Array a) -> a -> Array a
+aSetLast : {a : Type} -> (xs : Array a) -> a -> Array a
 aSetLast xs x = arraySet xs (arrayLen xs - 1) x
 
 -- Representation.
@@ -86,34 +82,34 @@ emptyNode : {a : Type} -> VNode a
 emptyNode = Branch Nothing #[;]
 
 -- The most elements a balanced node at `shift` can hold.
-nodeCap : (shift : [] Int) -> Int
+nodeCap : (shift : Int) -> Int
 nodeCap shift = pow2 (shift + bits)
 
 @terminating
-nodeLen : {a : Type} -> (shift : [] Int) -> (node : [] VNode a) -> Int
+nodeLen : {a : Type} -> (shift : Int) -> (node : VNode a) -> Int
 nodeLen shift (Leaf xs) = arrayLen xs
 nodeLen shift (Branch (Just sizes) kids) = if arrayLen sizes == 0 then 0 else aLast sizes
 nodeLen shift (Branch Nothing kids) =
   if arrayLen kids == 0 then 0 else (arrayLen kids - 1) * pow2 shift + nodeLen (shift - bits) (aLast kids)
 
 -- The running lengths of `kids`, children of a node at `shift`.
-sizesOf : {a : Type} -> (shift : [] Int) -> (kids : [] Array (VNode a)) -> Array Int
+sizesOf : {a : Type} -> (shift : Int) -> (kids : Array (VNode a)) -> Array Int
 sizesOf shift kids = sizesFrom shift kids 0 0 #[;]
 
 @terminating
-sizesFrom : {a : Type} -> (shift : [] Int) -> (kids : [] Array (VNode a)) -> (i : [] Int) -> (run : [] Int) -> Array Int -> Array Int
+sizesFrom : {a : Type} -> (shift : Int) -> (kids : Array (VNode a)) -> (i : Int) -> (run : Int) -> Array Int -> Array Int
 sizesFrom shift kids i run acc =
   if i < arrayLen kids
     then sizesFrom shift kids (i + 1) (run + nodeLen (shift - bits) (arrayGet kids i)) (arrayPush acc (run + nodeLen (shift - bits) (arrayGet kids i)))
     else acc
 
 -- A branch at `shift` of `kids`, relaxed if `sizes` says it was.
-rebuild : {a : Type} -> (shift : [] Int) -> (sizes : [0..1] Maybe (Array Int)) -> (kids : [] Array (VNode a)) -> VNode a
+rebuild : {a : Type} -> (shift : Int) -> (sizes : Maybe (Array Int)) -> (kids : Array (VNode a)) -> VNode a
 rebuild shift Nothing kids = Branch Nothing kids
 rebuild shift (Just old) kids = Branch (Just (sizesOf shift kids)) kids
 
 -- A relaxed branch at `shift` of `kids`.
-relaxed : {a : Type} -> (shift : [] Int) -> (kids : [] Array (VNode a)) -> VNode a
+relaxed : {a : Type} -> (shift : Int) -> (kids : Array (VNode a)) -> VNode a
 relaxed shift kids = Branch (Just (sizesOf shift kids)) kids
 
 -- Indexing.
@@ -121,22 +117,22 @@ relaxed shift kids = Branch (Just (sizesOf shift kids)) kids
 -- The child of a relaxed branch the index `i` is in: the first whose
 -- running length is past it.
 @terminating
-findSlot : (sizes : [] Array Int) -> (i : [] Int) -> (k : [] Int) -> Int
+findSlot : (sizes : Array Int) -> (i : Int) -> (k : Int) -> Int
 findSlot sizes i k = if i < arrayGet sizes k then k else findSlot sizes i (k + 1)
 
 -- `i`, inside the child at `slot` of a relaxed branch.
-within : (sizes : [] Array Int) -> (i : [] Int) -> (slot : [] Int) -> Int
+within : (sizes : Array Int) -> (i : Int) -> (slot : Int) -> Int
 within sizes i slot = if slot == 0 then i else i - arrayGet sizes (slot - 1)
 
 @terminating
-nodeIndex : {a : Type} -> (shift : [] Int) -> (node : [] VNode a) -> (i : [] Int) -> a
+nodeIndex : {a : Type} -> (shift : Int) -> (node : VNode a) -> (i : Int) -> a
 nodeIndex shift (Leaf xs) i = arrayGet xs i
 nodeIndex shift (Branch Nothing kids) i = nodeIndex (shift - bits) (arrayGet kids (i / pow2 shift)) (i % pow2 shift)
 nodeIndex shift (Branch (Just sizes) kids) i =
   let slot = findSlot sizes i 0 in nodeIndex (shift - bits) (arrayGet kids slot) (within sizes i slot)
 
 @terminating
-nodeUpdate : {a : Type} -> (shift : [] Int) -> (node : [] VNode a) -> (i : [] Int) -> a -> VNode a
+nodeUpdate : {a : Type} -> (shift : Int) -> (node : VNode a) -> (i : Int) -> a -> VNode a
 nodeUpdate shift (Leaf xs) i x = Leaf (arraySet xs i x)
 nodeUpdate shift (Branch Nothing kids) i x =
   let slot = i / pow2 shift in Branch Nothing (arraySet kids slot (nodeUpdate (shift - bits) (arrayGet kids slot) (i % pow2 shift) x))
@@ -146,62 +142,62 @@ nodeUpdate shift (Branch (Just sizes) kids) i x =
 -- Building a tree at once.
 
 -- Where the chunk from `i` ends, in an array `n` long.
-chunkEnd : (i : [] Int) -> (n : [] Int) -> Int
+chunkEnd : (i : Int) -> (n : Int) -> Int
 chunkEnd i n = if i + width < n then i + width else n
 
 -- The array, in leaves of `width`.
-leavesOf : {a : Type} -> (xs : [] Array a) -> Array (VNode a)
+leavesOf : {a : Type} -> (xs : Array a) -> Array (VNode a)
 leavesOf xs = leavesFrom xs 0 #[;]
 
 @terminating
-leavesFrom : {a : Type} -> (xs : [] Array a) -> (i : [] Int) -> Array (VNode a) -> Array (VNode a)
+leavesFrom : {a : Type} -> (xs : Array a) -> (i : Int) -> Array (VNode a) -> Array (VNode a)
 leavesFrom xs i acc =
   if i < arrayLen xs then leavesFrom xs (chunkEnd i (arrayLen xs)) (arrayPush acc (Leaf (arraySlice xs i (chunkEnd i (arrayLen xs))))) else acc
 
 -- The nodes, in balanced branches of `width`.
-group : {a : Type} -> (nodes : [] Array (VNode a)) -> Array (VNode a)
+group : {a : Type} -> (nodes : Array (VNode a)) -> Array (VNode a)
 group nodes = groupFrom nodes 0 #[;]
 
 @terminating
-groupFrom : {a : Type} -> (nodes : [] Array (VNode a)) -> (i : [] Int) -> Array (VNode a) -> Array (VNode a)
+groupFrom : {a : Type} -> (nodes : Array (VNode a)) -> (i : Int) -> Array (VNode a) -> Array (VNode a)
 groupFrom nodes i acc =
   if i < arrayLen nodes then groupFrom nodes (chunkEnd i (arrayLen nodes)) (arrayPush acc (Branch Nothing (arraySlice nodes i (chunkEnd i (arrayLen nodes))))) else acc
 
 -- The tree of a non-empty array: its root, and the root's shift.
-buildNode : {a : Type} -> (xs : [] Array a) -> VNode a
+buildNode : {a : Type} -> (xs : Array a) -> VNode a
 buildNode xs = buildUp (leavesOf xs)
 
-buildShift : {a : Type} -> (xs : [] Array a) -> Int
+buildShift : {a : Type} -> (xs : Array a) -> Int
 buildShift xs = buildLevel bits (leavesOf xs)
 
 @terminating
-buildUp : {a : Type} -> (nodes : [] Array (VNode a)) -> VNode a
+buildUp : {a : Type} -> (nodes : Array (VNode a)) -> VNode a
 buildUp nodes = if arrayLen nodes < width + 1 then Branch Nothing nodes else buildUp (group nodes)
 
 @terminating
-buildLevel : {a : Type} -> (level : [] Int) -> (nodes : [] Array (VNode a)) -> Int
+buildLevel : {a : Type} -> (level : Int) -> (nodes : Array (VNode a)) -> Int
 buildLevel level nodes = if arrayLen nodes < width + 1 then level else buildLevel (level + bits) (group nodes)
 
 -- Every element of a node, in order.
 @terminating
-nodeToArray : {a : Type} -> (node : [] VNode a) -> Array a
+nodeToArray : {a : Type} -> (node : VNode a) -> Array a
 nodeToArray (Leaf xs) = xs
 nodeToArray (Branch sizes kids) = nodesToArray kids 0 #[;]
 
 @terminating
-nodesToArray : {a : Type} -> (kids : [] Array (VNode a)) -> (i : [] Int) -> Array a -> Array a
+nodesToArray : {a : Type} -> (kids : Array (VNode a)) -> (i : Int) -> Array a -> Array a
 nodesToArray kids i acc = if i < arrayLen kids then nodesToArray kids (i + 1) (arrayConcat acc (nodeToArray (arrayGet kids i))) else acc
 
 -- A whole chunk, onto the bottom right.
 
 -- A path down to a leaf of `chunk`, from `shift`.
 @terminating
-newSpine : {a : Type} -> (shift : [] Int) -> (chunk : [] Array a) -> VNode a
+newSpine : {a : Type} -> (shift : Int) -> (chunk : Array a) -> VNode a
 newSpine shift chunk = if shift == 0 then Leaf chunk else Branch Nothing #[newSpine (shift - bits) chunk;]
 
 -- `chunk`, as the last leaf of `node`, which has room for it.
 @terminating
-appendChunk : {a : Type} -> (shift : [] Int) -> (node : [] VNode a) -> (chunk : [] Array a) -> VNode a
+appendChunk : {a : Type} -> (shift : Int) -> (node : VNode a) -> (chunk : Array a) -> VNode a
 appendChunk shift (Leaf xs) chunk = Leaf xs
 appendChunk shift (Branch sizes kids) chunk =
   if shift == bits then rebuild shift sizes (arrayPush kids (Leaf chunk))
@@ -210,26 +206,26 @@ appendChunk shift (Branch sizes kids) chunk =
     else rebuild shift sizes (arrayPush kids (newSpine (shift - bits) chunk))
 
 -- Whether a node at `shift` has room for another chunk.
-fits : {a : Type} -> (shift : [] Int) -> (node : [] VNode a) -> Bool
+fits : {a : Type} -> (shift : Int) -> (node : VNode a) -> Bool
 fits shift node = nodeLen shift node + width < nodeCap shift + 1
 
 -- After a chunk is pushed onto the back (or the front): the shift, which
 -- is one level more if the root was full, and the root.
-pushedShift : {a : Type} -> (shift : [] Int) -> (node : [] VNode a) -> Int
+pushedShift : {a : Type} -> (shift : Int) -> (node : VNode a) -> Int
 pushedShift shift node = if fits shift node then shift else shift + bits
 
-pushBackNode : {a : Type} -> (shift : [] Int) -> (node : [] VNode a) -> (chunk : [] Array a) -> VNode a
+pushBackNode : {a : Type} -> (shift : Int) -> (node : VNode a) -> (chunk : Array a) -> VNode a
 pushBackNode shift node chunk =
   if fits shift node then appendChunk shift node chunk else appendChunk (shift + bits) (Branch Nothing #[node;]) chunk
 
 -- The last leaf's elements, and the node without it.
 @terminating
-lastChunk : {a : Type} -> (shift : [] Int) -> (node : [] VNode a) -> Array a
+lastChunk : {a : Type} -> (shift : Int) -> (node : VNode a) -> Array a
 lastChunk shift (Leaf xs) = xs
 lastChunk shift (Branch sizes kids) = if shift == bits then leafOf (aLast kids) else lastChunk (shift - bits) (aLast kids)
 
 @terminating
-popBackNode : {a : Type} -> (shift : [] Int) -> (node : [] VNode a) -> VNode a
+popBackNode : {a : Type} -> (shift : Int) -> (node : VNode a) -> VNode a
 popBackNode shift (Leaf xs) = emptyNode
 popBackNode shift (Branch sizes kids) =
   if shift == bits then rebuild shift sizes (aInit kids)
@@ -238,20 +234,20 @@ popBackNode shift (Branch sizes kids) =
     else rebuild shift sizes (aSetLast kids (popBackNode (shift - bits) (aLast kids)))
 
 -- What a leaf holds; a branch where a leaf should be, nothing.
-leafOf : {a : Type} -> (node : [] VNode a) -> Array a
+leafOf : {a : Type} -> (node : VNode a) -> Array a
 leafOf (Leaf xs) = xs
 leafOf (Branch sizes kids) = #[;]
 
 -- A root of one child is that child, one level down: the shift, and the
 -- root.
 @terminating
-shrunkShift : {a : Type} -> (shift : [] Int) -> (node : [] VNode a) -> Int
+shrunkShift : {a : Type} -> (shift : Int) -> (node : VNode a) -> Int
 shrunkShift shift (Leaf xs) = shift
 shrunkShift shift (Branch sizes kids) =
   if bits < shift then (if arrayLen kids == 1 then shrunkShift (shift - bits) (arrayGet kids 0) else shift) else shift
 
 @terminating
-shrunkNode : {a : Type} -> (shift : [] Int) -> (node : [] VNode a) -> VNode a
+shrunkNode : {a : Type} -> (shift : Int) -> (node : VNode a) -> VNode a
 shrunkNode shift (Leaf xs) = Leaf xs
 shrunkNode shift (Branch sizes kids) =
   if bits < shift then (if arrayLen kids == 1 then shrunkNode (shift - bits) (arrayGet kids 0) else Branch sizes kids) else Branch sizes kids
@@ -260,7 +256,7 @@ shrunkNode shift (Branch sizes kids) =
 -- makes the branches relaxed.
 
 @terminating
-prependChunk : {a : Type} -> (shift : [] Int) -> (node : [] VNode a) -> (chunk : [] Array a) -> VNode a
+prependChunk : {a : Type} -> (shift : Int) -> (node : VNode a) -> (chunk : Array a) -> VNode a
 prependChunk shift (Leaf xs) chunk = Leaf xs
 prependChunk shift (Branch sizes kids) chunk =
   if shift == bits then relaxed shift (arrayConcat #[Leaf chunk;] kids)
@@ -268,18 +264,18 @@ prependChunk shift (Branch sizes kids) chunk =
     then relaxed shift (arraySet kids 0 (prependChunk (shift - bits) (arrayGet kids 0) chunk))
     else relaxed shift (arrayConcat #[newSpine (shift - bits) chunk;] kids)
 
-pushFrontNode : {a : Type} -> (shift : [] Int) -> (node : [] VNode a) -> (chunk : [] Array a) -> VNode a
+pushFrontNode : {a : Type} -> (shift : Int) -> (node : VNode a) -> (chunk : Array a) -> VNode a
 pushFrontNode shift node chunk =
   if fits shift node then prependChunk shift node chunk else prependChunk (shift + bits) (Branch Nothing #[node;]) chunk
 
 -- The first leaf's elements, and the node without it.
 @terminating
-firstChunk : {a : Type} -> (shift : [] Int) -> (node : [] VNode a) -> Array a
+firstChunk : {a : Type} -> (shift : Int) -> (node : VNode a) -> Array a
 firstChunk shift (Leaf xs) = xs
 firstChunk shift (Branch sizes kids) = if shift == bits then leafOf (arrayGet kids 0) else firstChunk (shift - bits) (arrayGet kids 0)
 
 @terminating
-popFrontNode : {a : Type} -> (shift : [] Int) -> (node : [] VNode a) -> VNode a
+popFrontNode : {a : Type} -> (shift : Int) -> (node : VNode a) -> VNode a
 popFrontNode shift (Leaf xs) = emptyNode
 popFrontNode shift (Branch sizes kids) =
   if shift == bits then relaxed shift (aTail kids)
@@ -301,120 +297,120 @@ singleton x = Single #[x;]
 -- which indexes by radix on the understanding that every leaf but the
 -- last is full; the rest waits in the back buffer.
 @pub
-fromArray : {a : Type} -> (xs : [] Array a) -> Vector a
+fromArray : {a : Type} -> (xs : Array a) -> Vector a
 fromArray xs =
   if arrayLen xs == 0 then Empty
   else if arrayLen xs < width + 1 then Single xs
   else Full (arrayLen xs) (buildShift (wholeOf xs)) #[;] #[;] (buildNode (wholeOf xs)) #[;] (arraySlice xs (wholeCount xs) (arrayLen xs))
 
 -- How many elements of `xs` make whole chunks, and those.
-wholeCount : {a : Type} -> (xs : [] Array a) -> Int
+wholeCount : {a : Type} -> (xs : Array a) -> Int
 wholeCount xs = arrayLen xs - arrayLen xs % width
 
-wholeOf : {a : Type} -> (xs : [] Array a) -> Array a
+wholeOf : {a : Type} -> (xs : Array a) -> Array a
 wholeOf xs = arraySlice xs 0 (wholeCount xs)
 
 @pub
-fromList : {a : Type} -> (xs : [] List a) -> Vector a
+fromList : {a : Type} -> (xs : List a) -> Vector a
 fromList xs = fromArray (arrayFromList xs)
 
 -- Looking at one.
 
 @pub
-len : {a : Type} -> (v : [0..1] Vector a) -> Int
+len : {a : Type} -> (v : Vector a) -> Int
 len Empty = 0
 len (Single xs) = arrayLen xs
 len (Full n sh oF iF mid iB oB) = n
 
 @pub
-length : {a : Type} -> (v : [0..1] Vector a) -> Int
+length : {a : Type} -> (v : Vector a) -> Int
 length v = len v
 
 @pub
-isEmpty : {a : Type} -> (v : [0..1] Vector a) -> Bool
+isEmpty : {a : Type} -> (v : Vector a) -> Bool
 isEmpty v = len v == 0
 
 -- The element at `i`, which is in range.
-getU : {a : Type} -> (v : [] Vector a) -> (i : [] Int) -> a
+getU : {a : Type} -> (v : Vector a) -> (i : Int) -> a
 getU Empty i = arrayGet #[;] i
 getU (Single xs) i = arrayGet xs i
 getU (Full n sh oF iF mid iB oB) i = getOuterF sh oF iF mid iB oB i
 
-getOuterF : {a : Type} -> (sh : [] Int) -> (oF : [] Array a) -> (iF : [] Array a) -> (mid : [] VNode a) -> (iB : [] Array a) -> (oB : [] Array a) -> (i : [] Int) -> a
+getOuterF : {a : Type} -> (sh : Int) -> (oF : Array a) -> (iF : Array a) -> (mid : VNode a) -> (iB : Array a) -> (oB : Array a) -> (i : Int) -> a
 getOuterF sh oF iF mid iB oB i = if i < arrayLen oF then arrayGet oF i else getInnerF sh iF mid iB oB (i - arrayLen oF)
 
-getInnerF : {a : Type} -> (sh : [] Int) -> (iF : [] Array a) -> (mid : [] VNode a) -> (iB : [] Array a) -> (oB : [] Array a) -> (i : [] Int) -> a
+getInnerF : {a : Type} -> (sh : Int) -> (iF : Array a) -> (mid : VNode a) -> (iB : Array a) -> (oB : Array a) -> (i : Int) -> a
 getInnerF sh iF mid iB oB i = if i < arrayLen iF then arrayGet iF i else getMid sh mid iB oB (i - arrayLen iF)
 
-getMid : {a : Type} -> (sh : [] Int) -> (mid : [] VNode a) -> (iB : [] Array a) -> (oB : [] Array a) -> (i : [] Int) -> a
+getMid : {a : Type} -> (sh : Int) -> (mid : VNode a) -> (iB : Array a) -> (oB : Array a) -> (i : Int) -> a
 getMid sh mid iB oB i = if i < nodeLen sh mid then nodeIndex sh mid i else getBack iB oB (i - nodeLen sh mid)
 
-getBack : {a : Type} -> (iB : [] Array a) -> (oB : [] Array a) -> (i : [] Int) -> a
+getBack : {a : Type} -> (iB : Array a) -> (oB : Array a) -> (i : Int) -> a
 getBack iB oB i = if i < arrayLen iB then arrayGet iB i else arrayGet oB (i - arrayLen iB)
 
 -- Whether `i` is an index of `v`.
 @pub
-inRange : {a : Type} -> (v : [0..1] Vector a) -> (i : [] Int) -> Bool
+inRange : {a : Type} -> (v : Vector a) -> (i : Int) -> Bool
 inRange v i = if i < 0 then False else i < len v
 
 -- The element at `i`, counting from zero, if there is one.
 @pub
-get : {a : Type} -> (v : [] Vector a) -> (i : [] Int) -> Maybe a
+get : {a : Type} -> (v : Vector a) -> (i : Int) -> Maybe a
 get v i = if inRange v i then Just (getU v i) else Nothing
 
 -- The element at `i`, or `fallback`.
 @pub
-getOr : {a : Type} -> (fallback : [0..1] a) -> (v : [] Vector a) -> (i : [] Int) -> a
+getOr : {a : Type} -> (fallback : a) -> (v : Vector a) -> (i : Int) -> a
 getOr fallback v i = if inRange v i then getU v i else fallback
 
 @pub
-head : {a : Type} -> (v : [] Vector a) -> Maybe a
+head : {a : Type} -> (v : Vector a) -> Maybe a
 head v = get v 0
 
 @pub
-last : {a : Type} -> (v : [] Vector a) -> Maybe a
+last : {a : Type} -> (v : Vector a) -> Maybe a
 last v = get v (len v - 1)
 
 @pub
-nth : {a : Type} -> (i : [] Int) -> (v : [] Vector a) -> Maybe a
+nth : {a : Type} -> (i : Int) -> (v : Vector a) -> Maybe a
 nth i v = get v i
 
 -- `v` with `x` at `i`, if `i` is an index of it; `v` as it was if not.
 @pub
-set : {a : Type} -> (v : [] Vector a) -> (i : [] Int) -> (x : [0..1] a) -> Vector a
+set : {a : Type} -> (v : Vector a) -> (i : Int) -> (x : a) -> Vector a
 set v i x = if inRange v i then setU v i x else v
 
-setU : {a : Type} -> (v : [] Vector a) -> (i : [] Int) -> (x : [0..1] a) -> Vector a
+setU : {a : Type} -> (v : Vector a) -> (i : Int) -> (x : a) -> Vector a
 setU Empty i x = Empty
 setU (Single xs) i x = Single (arraySet xs i x)
 setU (Full n sh oF iF mid iB oB) i x =
   if i < arrayLen oF then Full n sh (arraySet oF i x) iF mid iB oB
   else setInnerF n sh oF iF mid iB oB (i - arrayLen oF) x
 
-setInnerF : {a : Type} -> (n : [] Int) -> (sh : [] Int) -> (oF : [] Array a) -> (iF : [] Array a) -> (mid : [] VNode a) -> (iB : [] Array a) -> (oB : [] Array a) -> (i : [] Int) -> a -> Vector a
+setInnerF : {a : Type} -> (n : Int) -> (sh : Int) -> (oF : Array a) -> (iF : Array a) -> (mid : VNode a) -> (iB : Array a) -> (oB : Array a) -> (i : Int) -> a -> Vector a
 setInnerF n sh oF iF mid iB oB i x =
   if i < arrayLen iF then Full n sh oF (arraySet iF i x) mid iB oB
   else setMid n sh oF iF mid iB oB (i - arrayLen iF) x
 
-setMid : {a : Type} -> (n : [] Int) -> (sh : [] Int) -> (oF : [] Array a) -> (iF : [] Array a) -> (mid : [] VNode a) -> (iB : [] Array a) -> (oB : [] Array a) -> (i : [] Int) -> a -> Vector a
+setMid : {a : Type} -> (n : Int) -> (sh : Int) -> (oF : Array a) -> (iF : Array a) -> (mid : VNode a) -> (iB : Array a) -> (oB : Array a) -> (i : Int) -> a -> Vector a
 setMid n sh oF iF mid iB oB i x =
   if i < nodeLen sh mid then Full n sh oF iF (nodeUpdate sh mid i x) iB oB
   else setBack n sh oF iF mid iB oB (i - nodeLen sh mid) x
 
-setBack : {a : Type} -> (n : [] Int) -> (sh : [] Int) -> (oF : [] Array a) -> (iF : [] Array a) -> (mid : [] VNode a) -> (iB : [] Array a) -> (oB : [] Array a) -> (i : [] Int) -> a -> Vector a
+setBack : {a : Type} -> (n : Int) -> (sh : Int) -> (oF : Array a) -> (iF : Array a) -> (mid : VNode a) -> (iB : Array a) -> (oB : Array a) -> (i : Int) -> a -> Vector a
 setBack n sh oF iF mid iB oB i x =
   if i < arrayLen iB then Full n sh oF iF mid (arraySet iB i x) oB
   else Full n sh oF iF mid iB (arraySet oB (i - arrayLen iB) x)
 
 -- `v` with what is at `i` replaced by `f` of it.
 @pub
-updateAt : {a : Type} -> (v : [] Vector a) -> (i : [] Int) -> (f : [0..1] ((x : [] a) -> a ! e)) -> Vector a ! e
+updateAt : {a : Type} -> (v : Vector a) -> (i : Int) -> (f : ((x : a) -> a ! e)) -> Vector a ! e
 updateAt v i f = if inRange v i then setU v i (f (getU v i)) else v
 
 -- Pushing and popping at the back.
 
 @pub
-pushBack : {a : Type} -> (v : [] Vector a) -> a -> Vector a
+pushBack : {a : Type} -> (v : Vector a) -> a -> Vector a
 pushBack Empty x = Single #[x;]
 pushBack (Single xs) x = if arrayLen xs < width then Single (arrayPush xs x) else Full (width + 1) bits xs #[;] emptyNode #[;] #[x;]
 pushBack (Full n sh oF iF mid iB oB) x =
@@ -424,7 +420,7 @@ pushBack (Full n sh oF iF mid iB oB) x =
 
 -- The one shape an empty vector has, `Empty`, and the small one for what
 -- fits in a chunk: every way of emptying a vector comes through here.
-normalize : {a : Type} -> (v : [] Vector a) -> Vector a
+normalize : {a : Type} -> (v : Vector a) -> Vector a
 normalize (Single xs) | arrayLen xs == 0 = Empty
 normalize (Full n sh oF iF mid iB oB) | n == 0 = Empty
 normalize (Full n sh oF iF mid iB oB) | n < width + 1 =
@@ -433,7 +429,7 @@ normalize v = v
 
 -- All but the last; an empty vector stays empty.
 @pub
-popBack : {a : Type} -> (v : [] Vector a) -> Vector a
+popBack : {a : Type} -> (v : Vector a) -> Vector a
 popBack Empty = Empty
 popBack (Single xs) = normalize (Single (aInit xs))
 popBack (Full n sh oF iF mid iB oB) =
@@ -449,7 +445,7 @@ popBack (Full n sh oF iF mid iB oB) =
 -- Pushing and popping at the front.
 
 @pub
-pushFront : {a : Type} -> (v : [] Vector a) -> a -> Vector a
+pushFront : {a : Type} -> (v : Vector a) -> a -> Vector a
 pushFront Empty x = Single #[x;]
 pushFront (Single xs) x = if arrayLen xs < width then Single (arrayConcat #[x;] xs) else Full (width + 1) bits #[x;] #[;] emptyNode #[;] xs
 pushFront (Full n sh oF iF mid iB oB) x =
@@ -459,7 +455,7 @@ pushFront (Full n sh oF iF mid iB oB) x =
 
 -- All but the first; an empty vector stays empty.
 @pub
-popFront : {a : Type} -> (v : [] Vector a) -> Vector a
+popFront : {a : Type} -> (v : Vector a) -> Vector a
 popFront Empty = Empty
 popFront (Single xs) = normalize (Single (aTail xs))
 popFront (Full n sh oF iF mid iB oB) =
@@ -473,245 +469,245 @@ popFront (Full n sh oF iF mid iB oB) =
 -- Converting.
 
 @pub
-toArray : {a : Type} -> (v : [] Vector a) -> Array a
+toArray : {a : Type} -> (v : Vector a) -> Array a
 toArray Empty = #[;]
 toArray (Single xs) = xs
 toArray (Full n sh oF iF mid iB oB) = arrayConcat (arrayConcat (arrayConcat (arrayConcat oF iF) (nodeToArray mid)) iB) oB
 
 @pub
-toList : {a : Type} -> (v : [] Vector a) -> List a
+toList : {a : Type} -> (v : Vector a) -> List a
 toList v = arrayToList (toArray v)
 
 -- Whole vectors at once: chunk by chunk, or rebuilt.
 
 -- One vector, then the other.
 @pub
-append : {a : Type} -> (l : [] Vector a) -> (r : [] Vector a) -> Vector a
+append : {a : Type} -> (l : Vector a) -> (r : Vector a) -> Vector a
 append l r = if isEmpty l then r else appendFrom l (toArray r) 0
 
 @terminating
-appendFrom : {a : Type} -> (v : [] Vector a) -> (xs : [] Array a) -> (i : [] Int) -> Vector a
+appendFrom : {a : Type} -> (v : Vector a) -> (xs : Array a) -> (i : Int) -> Vector a
 appendFrom v xs i = if i < arrayLen xs then appendFrom (pushBack v (arrayGet xs i)) xs (i + 1) else v
 
 -- `n` kept between `0` and the length of `xs`.
-clampTo : {a : Type} -> (xs : [] Array a) -> (n : [] Int) -> Int
+clampTo : {a : Type} -> (xs : Array a) -> (n : Int) -> Int
 clampTo xs n = if n < 0 then 0 else (if n < arrayLen xs then n else arrayLen xs)
 
 -- The first `n` elements, and the rest.
 @pub
-splitAt : {a : Type} -> (v : [] Vector a) -> (n : [] Int) -> (Vector a, Vector a)
+splitAt : {a : Type} -> (v : Vector a) -> (n : Int) -> (Vector a, Vector a)
 splitAt v n = (take v n, drop v n)
 
 @pub
-take : {a : Type} -> (v : [] Vector a) -> (n : [] Int) -> Vector a
+take : {a : Type} -> (v : Vector a) -> (n : Int) -> Vector a
 take v n = fromArray (arraySlice (toArray v) 0 (clampTo (toArray v) n))
 
 @pub
-drop : {a : Type} -> (v : [] Vector a) -> (n : [] Int) -> Vector a
+drop : {a : Type} -> (v : Vector a) -> (n : Int) -> Vector a
 drop v n = fromArray (arraySlice (toArray v) (clampTo (toArray v) n) (len v))
 
 -- The elements from `from` up to but not including `to`, as far as there
 -- are any.
 @pub
-slice : {a : Type} -> (v : [] Vector a) -> (from : [] Int) -> (to : [] Int) -> Vector a
+slice : {a : Type} -> (v : Vector a) -> (from : Int) -> (to : Int) -> Vector a
 slice v from to = fromArray (arraySlice (toArray v) from to)
 
 -- `f` of each element, in order, keeping the shape: the tree is mapped
 -- where it is.
 @pub
-map : {a b : Type} -> (f : [] ((x : [] a) -> b ! e)) -> (v : [] Vector a) -> Vector b ! e
+map : {a b : Type} -> (f : ((x : a) -> b ! e)) -> (v : Vector a) -> Vector b ! e
 map f Empty = Empty
 map f (Single xs) = Single (Std.Collections.Array.map f xs)
 map f (Full n sh oF iF mid iB oB) =
   Full n sh (Std.Collections.Array.map f oF) (Std.Collections.Array.map f iF) (mapNode f mid) (Std.Collections.Array.map f iB) (Std.Collections.Array.map f oB)
 
 @terminating
-mapNode : {a b : Type} -> (f : [] ((x : [] a) -> b ! e)) -> (node : [] VNode a) -> VNode b ! e
+mapNode : {a b : Type} -> (f : ((x : a) -> b ! e)) -> (node : VNode a) -> VNode b ! e
 mapNode f (Leaf xs) = Leaf (Std.Collections.Array.map f xs)
 mapNode f (Branch sizes kids) = Branch sizes (mapNodes f kids 0 #[;])
 
 @terminating
-mapNodes : {a b : Type} -> (f : [] ((x : [] a) -> b ! e)) -> (kids : [] Array (VNode a)) -> (i : [] Int) -> Array (VNode b) -> Array (VNode b) ! e
+mapNodes : {a b : Type} -> (f : ((x : a) -> b ! e)) -> (kids : Array (VNode a)) -> (i : Int) -> Array (VNode b) -> Array (VNode b) ! e
 mapNodes f kids i acc = if i < arrayLen kids then mapNodes f kids (i + 1) (arrayPush acc (mapNode f (arrayGet kids i))) else acc
 
 @pub
-foldl : {a b : Type} -> (f : [] ((acc : [] b) -> (x : [] a) -> b ! e)) -> (z : [] b) -> (v : [] Vector a) -> b ! e
+foldl : {a b : Type} -> (f : ((acc : b) -> (x : a) -> b ! e)) -> (z : b) -> (v : Vector a) -> b ! e
 foldl f z v = Std.Collections.Array.foldl f z (toArray v)
 
 @pub
-foldr : {a b : Type} -> (f : [] ((x : [] a) -> (acc : [] b) -> b ! e)) -> (z : [] b) -> (v : [] Vector a) -> b ! e
+foldr : {a b : Type} -> (f : ((x : a) -> (acc : b) -> b ! e)) -> (z : b) -> (v : Vector a) -> b ! e
 foldr f z v = Std.Collections.Array.foldr f z (toArray v)
 
 -- `f` of each element, for what it does.
 @pub
-forEach : {a : Type} -> (f : [] ((x : [] a) -> () ! e)) -> (v : [] Vector a) -> () ! e
+forEach : {a : Type} -> (f : ((x : a) -> () ! e)) -> (v : Vector a) -> () ! e
 forEach f v = Std.Collections.Array.forEach f (toArray v)
 
 @pub
-filter : {a : Type} -> (keep : [] ((x : [] a) -> Bool ! e)) -> (v : [] Vector a) -> Vector a ! e
+filter : {a : Type} -> (keep : ((x : a) -> Bool ! e)) -> (v : Vector a) -> Vector a ! e
 filter keep v = fromArray (Std.Collections.Array.filter keep (toArray v))
 
 @pub
-reverse : {a : Type} -> (v : [] Vector a) -> Vector a
+reverse : {a : Type} -> (v : Vector a) -> Vector a
 reverse v = fromArray (Std.Collections.Array.reverse (toArray v))
 
 -- The integers from `lo` up to but not including `hi`.
 @pub
-range : (lo : [] Int) -> (hi : [] Int) -> Vector Int
+range : (lo : Int) -> (hi : Int) -> Vector Int
 range lo hi = fromArray (Std.Collections.Array.range lo hi)
 
 -- `n` copies of `x`.
 @pub
-replicate : {a : Type} -> (n : [] Int) -> (x : [] a) -> Vector a
+replicate : {a : Type} -> (n : Int) -> (x : a) -> Vector a
 replicate n x = fromArray (Std.Collections.Array.replicate n x)
 
 -- Asking about the elements.
 
 -- Whether `x` is an element, as `eq` says.
 @pub
-elemBy : {a : Type} -> (eq : [] ((x : [] a) -> (y : [] a) -> Bool)) -> (x : [] a) -> (v : [] Vector a) -> Bool
+elemBy : {a : Type} -> (eq : ((x : a) -> (y : a) -> Bool)) -> (x : a) -> (v : Vector a) -> Bool
 elemBy eq x v = Std.Collections.Array.containsBy eq x (toArray v)
 
 @pub
-elem : (x : [] Int) -> (v : [] Vector Int) -> Bool
-elem x v = elemBy (\(p : [] Int) (q : [] Int) -> p == q) x v
+elem : (x : Int) -> (v : Vector Int) -> Bool
+elem x v = elemBy (\(p : Int) (q : Int) -> p == q) x v
 
 @pub
-notElem : (x : [] Int) -> (v : [] Vector Int) -> Bool
+notElem : (x : Int) -> (v : Vector Int) -> Bool
 notElem x v = if elem x v then False else True
 
 @pub
-sum : (v : [] Vector Int) -> Int
+sum : (v : Vector Int) -> Int
 sum v = Std.Collections.Array.sum (toArray v)
 
 @pub
-product : (v : [] Vector Int) -> Int
+product : (v : Vector Int) -> Int
 product v = Std.Collections.Array.product (toArray v)
 
 @pub
-sumBy : {a : Type} -> (f : [] ((x : [] a) -> Int ! e)) -> (v : [] Vector a) -> Int ! e
-sumBy f v = foldl (\(acc : [] Int) (x : [] a) -> acc + f x) 0 v
+sumBy : {a : Type} -> (f : ((x : a) -> Int ! e)) -> (v : Vector a) -> Int ! e
+sumBy f v = foldl (\(acc : Int) (x : a) -> acc + f x) 0 v
 
 @pub
-all : {a : Type} -> (keep : [] ((x : [] a) -> Bool ! e)) -> (v : [] Vector a) -> Bool ! e
+all : {a : Type} -> (keep : ((x : a) -> Bool ! e)) -> (v : Vector a) -> Bool ! e
 all keep v = Std.Collections.Array.all keep (toArray v)
 
 @pub
-any : {a : Type} -> (keep : [] ((x : [] a) -> Bool ! e)) -> (v : [] Vector a) -> Bool ! e
+any : {a : Type} -> (keep : ((x : a) -> Bool ! e)) -> (v : Vector a) -> Bool ! e
 any keep v = Std.Collections.Array.any keep (toArray v)
 
 -- The first element that passes the test.
 @pub
-find : {a : Type} -> (keep : [] ((x : [] a) -> Bool ! e)) -> (v : [] Vector a) -> Maybe a ! e
+find : {a : Type} -> (keep : ((x : a) -> Bool ! e)) -> (v : Vector a) -> Maybe a ! e
 find keep v = Std.Collections.Array.find keep (toArray v)
 
 -- Where the first element that passes the test is.
 @pub
-findIndex : {a : Type} -> (keep : [] ((x : [] a) -> Bool ! e)) -> (v : [] Vector a) -> Maybe Int ! e
+findIndex : {a : Type} -> (keep : ((x : a) -> Bool ! e)) -> (v : Vector a) -> Maybe Int ! e
 findIndex keep v = Std.Collections.Array.findIndex keep (toArray v)
 
 -- The vectors, one after another.
 @pub
-concat : {a : Type} -> (vs : [] Vector (Vector a)) -> Vector a
+concat : {a : Type} -> (vs : Vector (Vector a)) -> Vector a
 concat vs = concatFrom (toArray vs) 0 Empty
 
 @terminating
-concatFrom : {a : Type} -> (vs : [] Array (Vector a)) -> (i : [] Int) -> (acc : [] Vector a) -> Vector a
+concatFrom : {a : Type} -> (vs : Array (Vector a)) -> (i : Int) -> (acc : Vector a) -> Vector a
 concatFrom vs i acc = if i < arrayLen vs then concatFrom vs (i + 1) (append acc (arrayGet vs i)) else acc
 
 @pub
-concatMap : {a b : Type} -> (f : [] ((x : [] a) -> Vector b ! e)) -> (v : [] Vector a) -> Vector b ! e
+concatMap : {a b : Type} -> (f : ((x : a) -> Vector b ! e)) -> (v : Vector a) -> Vector b ! e
 concatMap f v = concat (map f v)
 
 -- The longest run of elements from the front that pass the test, and what
 -- follows it.
 @pub
-takeWhile : {a : Type} -> (keep : [] ((x : [] a) -> Bool ! e)) -> (v : [] Vector a) -> Vector a ! e
+takeWhile : {a : Type} -> (keep : ((x : a) -> Bool ! e)) -> (v : Vector a) -> Vector a ! e
 takeWhile keep v = takeArray (toArray v) (prefixLen keep (toArray v) 0)
 
 @pub
-dropWhile : {a : Type} -> (keep : [] ((x : [] a) -> Bool ! e)) -> (v : [] Vector a) -> Vector a ! e
+dropWhile : {a : Type} -> (keep : ((x : a) -> Bool ! e)) -> (v : Vector a) -> Vector a ! e
 dropWhile keep v = dropArray (toArray v) (prefixLen keep (toArray v) 0)
 
-takeArray : {a : Type} -> (xs : [] Array a) -> (n : [] Int) -> Vector a
+takeArray : {a : Type} -> (xs : Array a) -> (n : Int) -> Vector a
 takeArray xs n = fromArray (arraySlice xs 0 n)
 
-dropArray : {a : Type} -> (xs : [] Array a) -> (n : [] Int) -> Vector a
+dropArray : {a : Type} -> (xs : Array a) -> (n : Int) -> Vector a
 dropArray xs n = fromArray (arraySlice xs n (arrayLen xs))
 
 @terminating
-prefixLen : {a : Type} -> (keep : [] ((x : [] a) -> Bool ! e)) -> (xs : [] Array a) -> (i : [] Int) -> Int ! e
+prefixLen : {a : Type} -> (keep : ((x : a) -> Bool ! e)) -> (xs : Array a) -> (i : Int) -> Int ! e
 prefixLen keep xs i = if i < arrayLen xs then (if keep (arrayGet xs i) then prefixLen keep xs (i + 1) else i) else i
 
 -- Those that pass the test, and those that do not.
 @pub
-partition : {a : Type} -> (keep : [] ((x : [] a) -> Bool ! e)) -> (v : [] Vector a) -> (Vector a, Vector a) ! e
-partition keep v = (filter keep v, filter (\(x : [] a) -> if keep x then False else True) v)
+partition : {a : Type} -> (keep : ((x : a) -> Bool ! e)) -> (v : Vector a) -> (Vector a, Vector a) ! e
+partition keep v = (filter keep v, filter (\(x : a) -> if keep x then False else True) v)
 
 -- `f` of the elements in the same places, as many as the shorter has.
 @pub
-zipWith : {a b c : Type} -> (f : [] ((x : [] a) -> (y : [] b) -> c ! e)) -> (l : [] Vector a) -> (r : [] Vector b) -> Vector c ! e
+zipWith : {a b c : Type} -> (f : ((x : a) -> (y : b) -> c ! e)) -> (l : Vector a) -> (r : Vector b) -> Vector c ! e
 zipWith f l r = fromArray (Std.Collections.Array.zipWith f (toArray l) (toArray r))
 
 @pub
-zip : {a b : Type} -> (l : [] Vector a) -> (r : [] Vector b) -> Vector (a, b)
-zip l r = zipWith (\(x : [] a) (y : [] b) -> (x, y)) l r
+zip : {a b : Type} -> (l : Vector a) -> (r : Vector b) -> Vector (a, b)
+zip l r = zipWith (\(x : a) (y : b) -> (x, y)) l r
 
 @pub
-unzip : {a b : Type} -> (v : [] Vector (a, b)) -> (Vector a, Vector b)
-unzip v = (map (\(p : [] (a, b)) -> Std.Tuple.fst p) v, map (\(p : [] (a, b)) -> Std.Tuple.snd p) v)
+unzip : {a b : Type} -> (v : Vector (a, b)) -> (Vector a, Vector b)
+unzip v = (map (\(p : (a, b)) -> Std.Tuple.fst p) v, map (\(p : (a, b)) -> Std.Tuple.snd p) v)
 
 -- The largest, as `cmp` compares; the first of equals.
 @pub
-maximumBy : {a : Type} -> (cmp : [] ((x : [] a) -> (y : [] a) -> Ordering)) -> (v : [] Vector a) -> Maybe a
-maximumBy cmp v = bestOf (\(x : [] a) (y : [] a) -> Std.Ordering.isLess (cmp x y)) (toArray v)
+maximumBy : {a : Type} -> (cmp : ((x : a) -> (y : a) -> Ordering)) -> (v : Vector a) -> Maybe a
+maximumBy cmp v = bestOf (\(x : a) (y : a) -> Std.Ordering.isLess (cmp x y)) (toArray v)
 
 -- The smallest, as `cmp` compares; the first of equals.
 @pub
-minimumBy : {a : Type} -> (cmp : [] ((x : [] a) -> (y : [] a) -> Ordering)) -> (v : [] Vector a) -> Maybe a
-minimumBy cmp v = bestOf (\(x : [] a) (y : [] a) -> Std.Ordering.isGreater (cmp x y)) (toArray v)
+minimumBy : {a : Type} -> (cmp : ((x : a) -> (y : a) -> Ordering)) -> (v : Vector a) -> Maybe a
+minimumBy cmp v = bestOf (\(x : a) (y : a) -> Std.Ordering.isGreater (cmp x y)) (toArray v)
 
 @pub
-maximum : (v : [] Vector Int) -> Maybe Int
+maximum : (v : Vector Int) -> Maybe Int
 maximum v = maximumBy Std.Num.Int.compare v
 
 @pub
-minimum : (v : [] Vector Int) -> Maybe Int
+minimum : (v : Vector Int) -> Maybe Int
 minimum v = minimumBy Std.Num.Int.compare v
 
 -- The element nothing after it is `better` than, if there is one.
-bestOf : {a : Type} -> (better : [] ((x : [] a) -> (y : [] a) -> Bool)) -> (xs : [] Array a) -> Maybe a
+bestOf : {a : Type} -> (better : ((x : a) -> (y : a) -> Bool)) -> (xs : Array a) -> Maybe a
 bestOf better xs = if arrayLen xs == 0 then Nothing else Just (bestFrom better xs 1 (arrayGet xs 0))
 
 @terminating
-bestFrom : {a : Type} -> (better : [] ((x : [] a) -> (y : [] a) -> Bool)) -> (xs : [] Array a) -> (i : [] Int) -> (best : [] a) -> a
+bestFrom : {a : Type} -> (better : ((x : a) -> (y : a) -> Bool)) -> (xs : Array a) -> (i : Int) -> (best : a) -> a
 bestFrom better xs i best =
   if i < arrayLen xs then bestFrom better xs (i + 1) (if better best (arrayGet xs i) then arrayGet xs i else best) else best
 
 -- Each element, yielded in turn (see `Std.Yield`).
 @pub
-each : {a : Type} -> (v : [] Vector a) -> () ! Yield a
-each v = forEach (\(x : [] a) -> yield x) v
+each : {a : Type} -> (v : Vector a) -> () ! Yield a
+each v = forEach (\(x : a) -> yield x) v
 
 -- Writing and comparing.
 
 -- `#[1, 2, 3]`, each element as `show` writes it.
 @pub
-showWith : {a : Type} -> (show : [] ((x : [] a) -> String)) -> (v : [] Vector a) -> String
+showWith : {a : Type} -> (show : ((x : a) -> String)) -> (v : Vector a) -> String
 showWith show v = Std.String.fromList show (toList v)
 
 -- Whether two vectors have the same elements, as `eq` says, however they
 -- were built.
 @pub
-equalBy : {a : Type} -> (eq : [] ((x : [] a) -> (y : [] a) -> Bool)) -> (l : [] Vector a) -> (r : [] Vector a) -> Bool
+equalBy : {a : Type} -> (eq : ((x : a) -> (y : a) -> Bool)) -> (l : Vector a) -> (r : Vector a) -> Bool
 equalBy eq l r = if len l == len r then sameFrom eq (toArray l) (toArray r) 0 else False
 
 @terminating
-sameFrom : {a : Type} -> (eq : [] ((x : [] a) -> (y : [] a) -> Bool)) -> (xs : [] Array a) -> (ys : [] Array a) -> (i : [] Int) -> Bool
+sameFrom : {a : Type} -> (eq : ((x : a) -> (y : a) -> Bool)) -> (xs : Array a) -> (ys : Array a) -> (i : Int) -> Bool
 sameFrom eq xs ys i = if i < arrayLen xs then (if eq (arrayGet xs i) (arrayGet ys i) then sameFrom eq xs ys (i + 1) else False) else True
 
 -- By their elements: the first that differs orders them, and a vector
 -- that runs out first is the smaller.
 @pub
-compareBy : {a : Type} -> (cmp : [] ((x : [] a) -> (y : [] a) -> Ordering)) -> (l : [] Vector a) -> (r : [] Vector a) -> Ordering
+compareBy : {a : Type} -> (cmp : ((x : a) -> (y : a) -> Ordering)) -> (l : Vector a) -> (r : Vector a) -> Ordering
 compareBy cmp l r = Std.Cmp.lexicographic cmp (toList l) (toList r)

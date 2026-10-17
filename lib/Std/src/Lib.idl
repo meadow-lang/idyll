@@ -40,11 +40,10 @@
 --   State             a state, as an effect: get, put, and running with one
 --   Yield             generators, as an effect: yield, and collecting a list
 --
--- Linearity runs through all of it: a function takes what it uses once as
--- it is, what it may drop or only look at with the grade [0..1], and what it
--- uses many times with []. So `List.map` takes its function with [] (it is
--- called for each element) and its list as it is (each element is used
--- once), and `List.length` takes its list with [0..1], since it drops the
--- elements. Proofs take what only the types need with [0]. The collections
--- that share their parts, arrays and vectors, are taken with [], and so is
--- what they hand a function they are given.
+-- Std is unrestricted, as a module that says nothing is: what a function
+-- takes it may use as often as it likes, so its signatures say nothing
+-- about grades. A function from any module fits them. The exceptions say
+-- so: proofs take what only the types need with [0], and
+-- `Collections.MArray`, whose arrays are changed in place, is linear, and
+-- takes an array once. (Std was linear until 2026-10-17; ROADMAP.md says
+-- why it is no longer.)

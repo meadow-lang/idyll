@@ -1,8 +1,6 @@
 -- Building strings. A `String` can be joined (`++`) and printed, but not
 -- yet taken apart: there are no characters to look at.
 
-@linear
-
 use Std.Num.Nat (Nat)
 use Std.Num.Nat.Nat.*
 
@@ -15,12 +13,12 @@ concat (s :: rest) = s ++ concat rest
 -- The strings, with `sep` between each two: `join ", " #["a", "b"]` is
 -- `"a, b"`.
 @pub
-join : (sep : [] String) -> List String -> String
+join : (sep : String) -> List String -> String
 join sep Nil = ""
 join sep (s :: rest) = s ++ joined sep rest
 
 -- `sep` in front of each.
-joined : (sep : [] String) -> List String -> String
+joined : (sep : String) -> List String -> String
 joined sep Nil = ""
 joined sep (s :: rest) = sep ++ s ++ joined sep rest
 
@@ -37,7 +35,7 @@ unwords ss = join " " ss
 
 -- `n` copies of `s`, one after another.
 @pub
-replicate : Nat -> (s : [] String) -> String
+replicate : Nat -> (s : String) -> String
 replicate Z s = ""
 replicate (S n) s = s ++ replicate n s
 
@@ -51,18 +49,17 @@ parens : String -> String
 parens s = "(" ++ s ++ ")"
 
 -- A list, written the way Idyll writes one, `#[1, 2, 3]`, each element as
--- `show` writes it. (A show function looks at what it shows as often as it
--- likes, as `Int.show` does, so takes it with [].)
+-- `show` writes it.
 @pub
-fromList : {a : Type} -> (show : [] ((x : [] a) -> String ! e)) -> (xs : [] List a) -> String ! e
+fromList : {a : Type} -> (show : ((x : a) -> String ! e)) -> (xs : List a) -> String ! e
 fromList show xs = "#[" ++ join ", " (shown show xs) ++ "]"
 
-shown : {a : Type} -> (show : [] ((x : [] a) -> String ! e)) -> (xs : [] List a) -> List String ! e
+shown : {a : Type} -> (show : ((x : a) -> String ! e)) -> (xs : List a) -> List String ! e
 shown show Nil = Nil
 shown show (x :: rest) = show x :: shown show rest
 
 @pub
-fromInt : (n : [] Int) -> String
+fromInt : (n : Int) -> String
 fromInt n = showInt n
 
 @pub

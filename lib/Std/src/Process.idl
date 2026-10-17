@@ -2,28 +2,26 @@
 -- `argv`, `args`, `getEnv`, ...).
 
 -- How many arguments the program was given.
-@linear
-
 @pub
 argCount : () -> Int ! Process
 argCount u = arrayLen (argv ())
 
 -- The argument at `i`, counting from zero, if there is one.
 @pub
-arg : (i : [] Int) -> Maybe String ! Process
+arg : (i : Int) -> Maybe String ! Process
 arg i = argIn (argv ()) i
 
-argIn : (xs : [] Array String) -> (i : [] Int) -> Maybe String
+argIn : (xs : Array String) -> (i : Int) -> Maybe String
 argIn xs i = if i < 0 then Nothing else if i < arrayLen xs then Just (arrayGet xs i) else Nothing
 
 -- The environment variable, or `fallback` if it is not set.
 @pub
-envOr : (fallback : [0..1] String) -> (name : [0..1] String) -> String ! Process
+envOr : (fallback : String) -> (name : String) -> String ! Process
 envOr fallback name = Std.Maybe.withDefault fallback (getEnv name)
 
 -- Whether the environment variable is set.
 @pub
-hasEnv : (name : [0..1] String) -> Bool ! Process
+hasEnv : (name : String) -> Bool ! Process
 hasEnv name = Std.Maybe.isJust (getEnv name)
 
 -- End the program, successfully.

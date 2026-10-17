@@ -2,8 +2,6 @@
 -- none. Better than a `Bool`, which says which, but not why; see
 -- `Nat.decEq`.
 
-@linear
-
 use Std.Void (Void)
 
 @pub
@@ -12,17 +10,17 @@ data Dec (p : Type) = Yes p | No (p -> Void)
 use Dec.*
 
 @pub
-isYes : {p : Type} -> (d : [0..1] Dec p) -> Bool
+isYes : {p : Type} -> (d : Dec p) -> Bool
 isYes (Yes x) = True
 isYes (No f) = False
 
 @pub
-isNo : {p : Type} -> (d : [0..1] Dec p) -> Bool
+isNo : {p : Type} -> (d : Dec p) -> Bool
 isNo (Yes x) = False
 isNo (No f) = True
 
 -- The proof, if there is one.
 @pub
-toMaybe : {p : Type} -> (d : [0..1] Dec p) -> Maybe p
+toMaybe : {p : Type} -> (d : Dec p) -> Maybe p
 toMaybe (Yes x) = Just x
 toMaybe (No f) = Nothing

@@ -2,8 +2,6 @@
 -- (`putStr`, `putErr`, `readLine`) and `putStrLn` and `printInt`.
 
 -- Each string on a line of its own.
-@linear
-
 @pub
 printLines : List String -> () ! Console
 printLines Nil = ()
@@ -11,7 +9,7 @@ printLines (s :: rest) = let u = putStrLn s in printLines rest
 
 -- A list, as `String.fromList` writes it, on a line.
 @pub
-printList : {a : Type} -> (show : [] ((x : [] a) -> String)) -> (xs : [] List a) -> () ! Console
+printList : {a : Type} -> (show : ((x : a) -> String)) -> (xs : List a) -> () ! Console
 printList show xs = putStrLn (Std.String.fromList show xs)
 
 @pub

@@ -3,15 +3,13 @@
 -- usually wants.
 
 -- The file's text, or `fallback` if it cannot be read.
-@linear
-
 @pub
-readToStringOr : (fallback : [0..1] String) -> (path : [0..1] String) -> String ! Fs
+readToStringOr : (fallback : String) -> (path : String) -> String ! Fs
 readToStringOr fallback path = Std.Result.withDefault fallback (readToString path)
 
 -- The names in a directory, or none if it cannot be read.
 @pub
-tryReadDir : (path : [0..1] String) -> List String ! Fs
+tryReadDir : (path : String) -> List String ! Fs
 tryReadDir path = Std.Result.withDefault Nil (readDir path)
 
 -- The lines, each followed by a newline, as the file's text.
@@ -21,12 +19,12 @@ writeLines path lines = writeString path (Std.String.unlines lines)
 
 -- Whether every path exists; it stops at the first that does not.
 @pub
-existsAll : (paths : [0..1] List String) -> Bool ! Fs
+existsAll : (paths : List String) -> Bool ! Fs
 existsAll Nil = True
 existsAll (p :: rest) = if exists p then existsAll rest else False
 
 -- Whether some path exists; it stops at the first that does.
 @pub
-existsAny : (paths : [0..1] List String) -> Bool ! Fs
+existsAny : (paths : List String) -> Bool ! Fs
 existsAny Nil = False
 existsAny (p :: rest) = if exists p then True else existsAny rest

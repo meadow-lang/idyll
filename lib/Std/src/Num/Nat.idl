@@ -2,8 +2,6 @@
 -- far, but a recursion that takes a `Nat` apart is seen to end, so a `Nat`
 -- can compute inside a type: the length of a `Vec`, the bound of a `Fin`.
 
-@linear
-
 use Std.Eq (Eq, sym, trans, cong)
 use Std.Eq.Eq.*
 use Std.Dec (Dec)
@@ -23,13 +21,13 @@ plus Z m = m
 plus (S n) m = S (plus n m)
 
 @pub
-times : Nat -> (m : [] Nat) -> Nat
+times : Nat -> (m : Nat) -> Nat
 times Z m = Z
 times (S n) m = plus m (times n m)
 
 -- Subtraction that stops at zero: `minus 2 5` is `Z`.
 @pub
-minus : Nat -> (m : [0..1] Nat) -> Nat
+minus : Nat -> (m : Nat) -> Nat
 minus n Z = n
 minus Z (S m) = Z
 minus (S n) (S m) = minus n m
@@ -45,26 +43,26 @@ double Z = Z
 double (S n) = S (S (double n))
 
 @pub
-isZero : (n : [0..1] Nat) -> Bool
+isZero : (n : Nat) -> Bool
 isZero Z = True
 isZero (S n) = False
 
 @pub
-equal : (n : [0..1] Nat) -> (m : [0..1] Nat) -> Bool
+equal : (n : Nat) -> (m : Nat) -> Bool
 equal Z Z = True
 equal Z (S m) = False
 equal (S n) Z = False
 equal (S n) (S m) = equal n m
 
 @pub
-compare : (n : [0..1] Nat) -> (m : [0..1] Nat) -> Ordering
+compare : (n : Nat) -> (m : Nat) -> Ordering
 compare Z Z = Equal
 compare Z (S m) = Less
 compare (S n) Z = Greater
 compare (S n) (S m) = compare n m
 
 @pub
-lessThan : (n : [0..1] Nat) -> (m : [0..1] Nat) -> Bool
+lessThan : (n : Nat) -> (m : Nat) -> Bool
 lessThan n Z = False
 lessThan Z (S m) = True
 lessThan (S n) (S m) = lessThan n m
@@ -76,7 +74,7 @@ max (S n) Z = S n
 max (S n) (S m) = S (max n m)
 
 @pub
-min : (n : [0..1] Nat) -> (m : [0..1] Nat) -> Nat
+min : (n : Nat) -> (m : Nat) -> Nat
 min Z m = Z
 min (S n) Z = Z
 min (S n) (S m) = S (min n m)
@@ -90,10 +88,10 @@ toInt (S n) = 1 + toInt n
 -- time, the bits of a 64-bit `Int` being few enough to count: a recursion
 -- on an `Int` itself would not be seen to end.
 @pub
-fromInt : (n : [] Int) -> Nat
+fromInt : (n : Int) -> Nat
 fromInt n = bits sixtyFour n
 
-bits : (fuel : [0..1] Nat) -> (n : [] Int) -> Nat
+bits : (fuel : Nat) -> (n : Int) -> Nat
 bits Z n = Z
 bits (S fuel) n = if n < 1 then Z else plus (if n % 2 == 1 then S Z else Z) (double (bits fuel (n / 2)))
 
@@ -101,7 +99,7 @@ sixtyFour : Nat
 sixtyFour = double (double (double (double (double (double (S Z))))))
 
 @pub
-show : (n : [] Nat) -> String
+show : (n : Nat) -> String
 show n = showInt (toInt n)
 
 -- Proofs. Each is a function from naturals to an equality, by induction:
@@ -119,7 +117,7 @@ plusSucc Z m = Refl
 plusSucc (S n) m = cong S (plusSucc n m)
 
 @pub
-plusComm : (n : [] Nat) -> (m : [] Nat) -> Eq (plus n m) (plus m n)
+plusComm : (n : Nat) -> (m : Nat) -> Eq (plus n m) (plus m n)
 plusComm Z m = sym (plusZero m)
 plusComm (S n) m = trans (cong S (plusComm n m)) (sym (plusSucc m n))
 
@@ -140,7 +138,7 @@ succInjective Refl = Refl
 
 -- Whether two naturals are equal, with the proof either way.
 @pub
-decEq : (n : [] Nat) -> (m : [] Nat) -> Dec (Eq n m)
+decEq : (n : Nat) -> (m : Nat) -> Dec (Eq n m)
 decEq Z Z = Yes Refl
 decEq Z (S m) = No zeroNotSucc
 decEq (S n) Z = No (\(r : Eq (S n) Z) -> zeroNotSucc (sym r))

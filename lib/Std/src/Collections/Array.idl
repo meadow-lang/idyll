@@ -8,18 +8,13 @@
 -- array nobody else holds is changed in place. For an array changed in a
 -- loop, with no copies ever, see `Std.Collections.MArray`.
 --
--- Most of these read an array more than once (its length, then its
--- elements), so take it with []. What they read out of it can be used as
--- often as wanted, so a function they call is given each element with []:
--- a test can look at an element that is then kept. A fold's accumulator is
--- likewise [], so that it can be an array, or a vector, built up.
+-- An array, and what is read out of it, may be used as often as wanted, as
+-- anything in Std may: these say nothing about grades.
 --
 -- Indexing with an `Int` checks it: `get` gives a `Maybe`. An index can
 -- also be checked once and then used as often as wanted: `checkIndex` gives
 -- a `Fin (size xs)`, an index the type says is in range of `xs`, which
 -- `at` takes and cannot fail with. `indices` gives every one of them.
-
-@linear
 
 use Std.Num.Nat (Nat)
 use Std.Num.Fin (Fin)
@@ -33,44 +28,44 @@ singleton : {a : Type} -> a -> Array a
 singleton x = #[x;]
 
 @pub
-length : {a : Type} -> (xs : [0..1] Array a) -> Int
+length : {a : Type} -> (xs : Array a) -> Int
 length xs = arrayLen xs
 
 @pub
-isEmpty : {a : Type} -> (xs : [0..1] Array a) -> Bool
+isEmpty : {a : Type} -> (xs : Array a) -> Bool
 isEmpty xs = arrayLen xs == 0
 
 -- Whether `i` is an index of `xs`.
 @pub
-inRange : {a : Type} -> (xs : [0..1] Array a) -> (i : [] Int) -> Bool
+inRange : {a : Type} -> (xs : Array a) -> (i : Int) -> Bool
 inRange xs i = if i < 0 then False else i < arrayLen xs
 
 -- The element at `i`, counting from zero, if there is one.
 @pub
-get : {a : Type} -> (xs : [] Array a) -> (i : [] Int) -> Maybe a
+get : {a : Type} -> (xs : Array a) -> (i : Int) -> Maybe a
 get xs i = if inRange xs i then Just (arrayGet xs i) else Nothing
 
 -- The element at `i`, or `fallback` if there is none.
 @pub
-getOr : {a : Type} -> (fallback : [0..1] a) -> (xs : [0..1] Array a) -> Int -> a
+getOr : {a : Type} -> (fallback : a) -> (xs : Array a) -> Int -> a
 getOr fallback xs i = arrayGetOr fallback xs i
 
 @pub
-first : {a : Type} -> (xs : [] Array a) -> Maybe a
+first : {a : Type} -> (xs : Array a) -> Maybe a
 first xs = get xs 0
 
 @pub
-last : {a : Type} -> (xs : [] Array a) -> Maybe a
+last : {a : Type} -> (xs : Array a) -> Maybe a
 last xs = get xs (arrayLen xs - 1)
 
 -- `xs` with `x` at `i`, if `i` is an index of it; `xs` as it was if not.
 @pub
-set : {a : Type} -> (xs : [] Array a) -> (i : [] Int) -> (x : [0..1] a) -> Array a
+set : {a : Type} -> (xs : Array a) -> (i : Int) -> (x : a) -> Array a
 set xs i x = if inRange xs i then arraySet xs i x else xs
 
 -- `xs` with what is at `i` replaced by `f` of it.
 @pub
-update : {a : Type} -> (xs : [] Array a) -> (i : [] Int) -> (f : [0..1] ((x : [] a) -> a ! e)) -> Array a ! e
+update : {a : Type} -> (xs : Array a) -> (i : Int) -> (f : ((x : a) -> a ! e)) -> Array a ! e
 update xs i f = if inRange xs i then arraySet xs i (f (arrayGet xs i)) else xs
 
 -- One more, at the end.
@@ -80,21 +75,21 @@ push xs x = arrayPush xs x
 
 -- All but the last; an empty array stays empty.
 @pub
-pop : {a : Type} -> (xs : [] Array a) -> Array a
+pop : {a : Type} -> (xs : Array a) -> Array a
 pop xs = if arrayLen xs == 0 then xs else arrayPop xs
 
 -- The elements from `from` up to but not including `to`, as far as there
 -- are any.
 @pub
-slice : {a : Type} -> (xs : [0..1] Array a) -> Int -> Int -> Array a
+slice : {a : Type} -> (xs : Array a) -> Int -> Int -> Array a
 slice xs from to = arraySlice xs from to
 
 @pub
-take : {a : Type} -> (xs : [0..1] Array a) -> Int -> Array a
+take : {a : Type} -> (xs : Array a) -> Int -> Array a
 take xs n = arraySlice xs 0 n
 
 @pub
-drop : {a : Type} -> (xs : [] Array a) -> Int -> Array a
+drop : {a : Type} -> (xs : Array a) -> Int -> Array a
 drop xs n = arraySlice xs n (arrayLen xs)
 
 @pub
@@ -115,43 +110,43 @@ toList xs = arrayToList xs
 
 -- `f` of each element, in order.
 @pub
-map : {a b : Type} -> (f : [] ((x : [] a) -> b ! e)) -> (xs : [] Array a) -> Array b ! e
+map : {a b : Type} -> (f : ((x : a) -> b ! e)) -> (xs : Array a) -> Array b ! e
 map f xs = mapFrom f xs 0 #[;]
 
 @terminating
-mapFrom : {a b : Type} -> (f : [] ((x : [] a) -> b ! e)) -> (xs : [] Array a) -> (i : [] Int) -> Array b -> Array b ! e
+mapFrom : {a b : Type} -> (f : ((x : a) -> b ! e)) -> (xs : Array a) -> (i : Int) -> Array b -> Array b ! e
 mapFrom f xs i acc = if i < arrayLen xs then mapFrom f xs (i + 1) (arrayPush acc (f (arrayGet xs i))) else acc
 
 -- `f (.. (f (f z x0) x1) ..) xn`, from the left.
 @pub
-foldl : {a b : Type} -> (f : [] ((acc : [] b) -> (x : [] a) -> b ! e)) -> (z : [] b) -> (xs : [] Array a) -> b ! e
+foldl : {a b : Type} -> (f : ((acc : b) -> (x : a) -> b ! e)) -> (z : b) -> (xs : Array a) -> b ! e
 foldl f z xs = foldlFrom f z xs 0
 
 @terminating
-foldlFrom : {a b : Type} -> (f : [] ((acc : [] b) -> (x : [] a) -> b ! e)) -> (z : [] b) -> (xs : [] Array a) -> (i : [] Int) -> b ! e
+foldlFrom : {a b : Type} -> (f : ((acc : b) -> (x : a) -> b ! e)) -> (z : b) -> (xs : Array a) -> (i : Int) -> b ! e
 foldlFrom f z xs i = if i < arrayLen xs then foldlFrom f (f z (arrayGet xs i)) xs (i + 1) else z
 
 -- `f x0 (f x1 (.. (f xn z)))`, from the right.
 @pub
-foldr : {a b : Type} -> (f : [] ((x : [] a) -> (acc : [] b) -> b ! e)) -> (z : [] b) -> (xs : [] Array a) -> b ! e
+foldr : {a b : Type} -> (f : ((x : a) -> (acc : b) -> b ! e)) -> (z : b) -> (xs : Array a) -> b ! e
 foldr f z xs = foldrFrom f z xs (arrayLen xs - 1)
 
 @terminating
-foldrFrom : {a b : Type} -> (f : [] ((x : [] a) -> (acc : [] b) -> b ! e)) -> (z : [] b) -> (xs : [] Array a) -> (i : [] Int) -> b ! e
+foldrFrom : {a b : Type} -> (f : ((x : a) -> (acc : b) -> b ! e)) -> (z : b) -> (xs : Array a) -> (i : Int) -> b ! e
 foldrFrom f z xs i = if i < 0 then z else foldrFrom f (f (arrayGet xs i) z) xs (i - 1)
 
 -- `f` of each element, for what it does.
 @pub
-forEach : {a : Type} -> (f : [] ((x : [] a) -> () ! e)) -> (xs : [] Array a) -> () ! e
-forEach f xs = foldl (\(u : [] ()) (x : [] a) -> f x) () xs
+forEach : {a : Type} -> (f : ((x : a) -> () ! e)) -> (xs : Array a) -> () ! e
+forEach f xs = foldl (\(u : ()) (x : a) -> f x) () xs
 
 -- The elements that pass the test.
 @pub
-filter : {a : Type} -> (keep : [] ((x : [] a) -> Bool ! e)) -> (xs : [] Array a) -> Array a ! e
+filter : {a : Type} -> (keep : ((x : a) -> Bool ! e)) -> (xs : Array a) -> Array a ! e
 filter keep xs = filterFrom keep xs 0 #[;]
 
 @terminating
-filterFrom : {a : Type} -> (keep : [] ((x : [] a) -> Bool ! e)) -> (xs : [] Array a) -> (i : [] Int) -> Array a -> Array a ! e
+filterFrom : {a : Type} -> (keep : ((x : a) -> Bool ! e)) -> (xs : Array a) -> (i : Int) -> Array a -> Array a ! e
 filterFrom keep xs i acc =
   if i < arrayLen xs
     then filterFrom keep xs (i + 1) (if keep (arrayGet xs i) then arrayPush acc (arrayGet xs i) else acc)
@@ -160,104 +155,104 @@ filterFrom keep xs i acc =
 -- Where the first element that passes the test is, if any does; it stops
 -- there.
 @pub
-findIndex : {a : Type} -> (keep : [] ((x : [] a) -> Bool ! e)) -> (xs : [] Array a) -> Maybe Int ! e
+findIndex : {a : Type} -> (keep : ((x : a) -> Bool ! e)) -> (xs : Array a) -> Maybe Int ! e
 findIndex keep xs = findFrom keep xs 0
 
 @terminating
-findFrom : {a : Type} -> (keep : [] ((x : [] a) -> Bool ! e)) -> (xs : [] Array a) -> (i : [] Int) -> Maybe Int ! e
+findFrom : {a : Type} -> (keep : ((x : a) -> Bool ! e)) -> (xs : Array a) -> (i : Int) -> Maybe Int ! e
 findFrom keep xs i = if i < arrayLen xs then (if keep (arrayGet xs i) then Just i else findFrom keep xs (i + 1)) else Nothing
 
 -- The first element that passes the test.
 @pub
-find : {a : Type} -> (keep : [] ((x : [] a) -> Bool ! e)) -> (xs : [] Array a) -> Maybe a ! e
+find : {a : Type} -> (keep : ((x : a) -> Bool ! e)) -> (xs : Array a) -> Maybe a ! e
 find keep xs = case findIndex keep xs of
   Nothing -> Nothing
   Just i -> Just (arrayGet xs i)
 
 @pub
-any : {a : Type} -> (keep : [] ((x : [] a) -> Bool ! e)) -> (xs : [] Array a) -> Bool ! e
+any : {a : Type} -> (keep : ((x : a) -> Bool ! e)) -> (xs : Array a) -> Bool ! e
 any keep xs = Std.Maybe.isJust (findIndex keep xs)
 
 @pub
-all : {a : Type} -> (keep : [] ((x : [] a) -> Bool ! e)) -> (xs : [] Array a) -> Bool ! e
-all keep xs = Std.Maybe.isNothing (findIndex (\(x : [] a) -> if keep x then False else True) xs)
+all : {a : Type} -> (keep : ((x : a) -> Bool ! e)) -> (xs : Array a) -> Bool ! e
+all keep xs = Std.Maybe.isNothing (findIndex (\(x : a) -> if keep x then False else True) xs)
 
 -- Whether some element is `x`, as `eq` says.
 @pub
-containsBy : {a : Type} -> (eq : [] ((x : [] a) -> (y : [] a) -> Bool)) -> (x : [] a) -> (xs : [] Array a) -> Bool
-containsBy eq x xs = any (\(y : [] a) -> eq x y) xs
+containsBy : {a : Type} -> (eq : ((x : a) -> (y : a) -> Bool)) -> (x : a) -> (xs : Array a) -> Bool
+containsBy eq x xs = any (\(y : a) -> eq x y) xs
 
 -- The elements, last first.
 @pub
-reverse : {a : Type} -> (xs : [] Array a) -> Array a
-reverse xs = foldr (\(x : [] a) (acc : [] Array a) -> arrayPush acc x) #[;] xs
+reverse : {a : Type} -> (xs : Array a) -> Array a
+reverse xs = foldr (\(x : a) (acc : Array a) -> arrayPush acc x) #[;] xs
 
 -- The integers from `lo` up to but not including `hi`.
 @pub
-range : (lo : [] Int) -> (hi : [] Int) -> Array Int
+range : (lo : Int) -> (hi : Int) -> Array Int
 range lo hi = rangeFrom lo hi #[;]
 
 @terminating
-rangeFrom : (i : [] Int) -> (hi : [] Int) -> Array Int -> Array Int
+rangeFrom : (i : Int) -> (hi : Int) -> Array Int -> Array Int
 rangeFrom i hi acc = if i < hi then rangeFrom (i + 1) hi (arrayPush acc i) else acc
 
 -- `n` copies of `x`.
 @pub
-replicate : {a : Type} -> (n : [] Int) -> (x : [] a) -> Array a
+replicate : {a : Type} -> (n : Int) -> (x : a) -> Array a
 replicate n x = replicateOnto n x #[;]
 
 @terminating
-replicateOnto : {a : Type} -> (n : [] Int) -> (x : [] a) -> Array a -> Array a
+replicateOnto : {a : Type} -> (n : Int) -> (x : a) -> Array a -> Array a
 replicateOnto n x acc = if n < 1 then acc else replicateOnto (n - 1) x (arrayPush acc x)
 
 -- `f` of the elements in the same places, as many as the shorter has.
 @pub
-zipWith : {a b c : Type} -> (f : [] ((x : [] a) -> (y : [] b) -> c ! e)) -> (xs : [] Array a) -> (ys : [] Array b) -> Array c ! e
+zipWith : {a b c : Type} -> (f : ((x : a) -> (y : b) -> c ! e)) -> (xs : Array a) -> (ys : Array b) -> Array c ! e
 zipWith f xs ys = zipFrom f xs ys 0 #[;]
 
 @terminating
-zipFrom : {a b c : Type} -> (f : [] ((x : [] a) -> (y : [] b) -> c ! e)) -> (xs : [] Array a) -> (ys : [] Array b) -> (i : [] Int) -> Array c -> Array c ! e
+zipFrom : {a b c : Type} -> (f : ((x : a) -> (y : b) -> c ! e)) -> (xs : Array a) -> (ys : Array b) -> (i : Int) -> Array c -> Array c ! e
 zipFrom f xs ys i acc =
   if i < arrayLen xs
     then (if i < arrayLen ys then zipFrom f xs ys (i + 1) (arrayPush acc (f (arrayGet xs i) (arrayGet ys i))) else acc)
     else acc
 
 @pub
-zip : {a b : Type} -> (xs : [] Array a) -> (ys : [] Array b) -> Array (a, b)
-zip xs ys = zipWith (\(x : [] a) (y : [] b) -> (x, y)) xs ys
+zip : {a b : Type} -> (xs : Array a) -> (ys : Array b) -> Array (a, b)
+zip xs ys = zipWith (\(x : a) (y : b) -> (x, y)) xs ys
 
 @pub
-sum : (xs : [] Array Int) -> Int
-sum xs = foldl (\(acc : [] Int) (x : [] Int) -> acc + x) 0 xs
+sum : (xs : Array Int) -> Int
+sum xs = foldl (\(acc : Int) (x : Int) -> acc + x) 0 xs
 
 @pub
-product : (xs : [] Array Int) -> Int
-product xs = foldl (\(acc : [] Int) (x : [] Int) -> acc * x) 1 xs
+product : (xs : Array Int) -> Int
+product xs = foldl (\(acc : Int) (x : Int) -> acc * x) 1 xs
 
 -- The arrays, one after another.
 @pub
-concat : {a : Type} -> (xss : [] Array (Array a)) -> Array a
-concat xss = foldl (\(acc : [] Array a) (xs : [] Array a) -> arrayConcat acc xs) #[;] xss
+concat : {a : Type} -> (xss : Array (Array a)) -> Array a
+concat xss = foldl (\(acc : Array a) (xs : Array a) -> arrayConcat acc xs) #[;] xss
 
 -- Indices the types check.
 
 -- How many elements, as a `Nat`, which a type can mention: `Fin (size xs)`
 -- is an index of `xs`.
 @pub
-size : {a : Type} -> (xs : [] Array a) -> Nat
+size : {a : Type} -> (xs : Array a) -> Nat
 size xs = Std.Num.Nat.fromInt (arrayLen xs)
 
 -- `i`, as an index of `xs`, if it is one.
 @pub
-checkIndex : {a : Type} -> (xs : [] Array a) -> (i : [] Int) -> Maybe (Fin (size xs))
+checkIndex : {a : Type} -> (xs : Array a) -> (i : Int) -> Maybe (Fin (size xs))
 checkIndex xs i = if i < 0 then Nothing else Std.Num.Fin.fromNat (Std.Num.Nat.fromInt i) (size xs)
 
 -- The element at an index the type says is in range: nothing to fail.
 @pub
-at : {a : Type} -> (xs : [0..1] Array a) -> Fin (size xs) -> a
+at : {a : Type} -> (xs : Array a) -> Fin (size xs) -> a
 at xs i = arrayGet xs (Std.Num.Fin.toInt i)
 
 -- Every index of `xs`, in order, each one in range by its type.
 @pub
-indices : {a : Type} -> (xs : [] Array a) -> List (Fin (size xs))
+indices : {a : Type} -> (xs : Array a) -> List (Fin (size xs))
 indices xs = Std.Num.Fin.enumerate (size xs)

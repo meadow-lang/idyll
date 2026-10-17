@@ -2,8 +2,6 @@
 -- something of length `n` is always in range, so looking it up cannot fail;
 -- see `Vec.index` and `List.nth`.
 
-@linear
-
 use Std.Num.Nat (Nat)
 use Std.Num.Nat.Nat.*
 use Std.Void (Void)
@@ -39,7 +37,7 @@ last (S n) = FS (last n)
 
 -- `i` as an index below `n`, if it is one.
 @pub
-fromNat : (i : [0..1] Nat) -> (n : [0..1] Nat) -> Maybe (Fin n)
+fromNat : (i : Nat) -> (n : Nat) -> Maybe (Fin n)
 fromNat i Z = Nothing
 fromNat Z (S n) = Just (FZ : Fin (S n))
 fromNat (S i) (S n) = case fromNat i n of

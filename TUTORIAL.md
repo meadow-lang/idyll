@@ -571,10 +571,12 @@ Error: usage mismatch
 
 A type is printed as the module it is in reads it: there, `(x : Int)` is
 linear, and an unrestricted binder is written `(x : [] Int)`. The prelude
-and the standard library are linear modules, so that what they declare can
-hold resources; their functions take what they are given at the grades
-they say, and a function from anywhere else fits them (see
-[The standard library](#the-standard-library)).
+is a linear module, so that the data types it declares (`List`, `Maybe`,
+`Result`, pairs) can hold anything, resources too. The standard library is
+not: its functions use what they are given as often as they like, so their
+signatures say nothing about grades, and a function from any module fits
+them. `Std.Collections.MArray`, whose arrays are changed in place, is the
+one linear module of it (see [The standard library](#the-standard-library)).
 
 ### Grades flow through calls
 

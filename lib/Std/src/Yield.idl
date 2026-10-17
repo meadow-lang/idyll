@@ -1,15 +1,13 @@
 -- Generators, as an effect: `yield` hands out a value and carries on, and
 -- `collect` gathers every value a computation yields into a list.
 
-@linear
-
 @pub
 effect Yield (a : Type) where
   yield : a -> ()
 
 -- Every value `body` yields, in order.
 @pub
-collect : {a : Type} -> (body : (u : [] ()) -> () ! {Yield a | r}) -> List a ! r
+collect : {a : Type} -> (body : (u : ()) -> () ! {Yield a | r}) -> List a ! r
 collect body = handle body () with
   return u -> Nil
   yield x k -> x :: k ()

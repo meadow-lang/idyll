@@ -1,17 +1,13 @@
 -- Comparing. Idyll has no traits for an `Ord` to be one of, so what
 -- compares two things is passed along: a function to an `Ordering`, as
--- `Std.Num.Int.compare` is. A comparison looks at its arguments as often
--- as it likes, so takes them with [], and is itself called as often as is
--- needed, so is taken with [].
-
-@linear
+-- `Std.Num.Int.compare` is.
 
 use Std.Ordering (Ordering)
 use Std.Ordering.Ordering.*
 
 -- The smaller of two, by `cmp`; the first, if they are equal.
 @pub
-minBy : {a : Type} -> (cmp : [] ((x : [] a) -> (y : [] a) -> Ordering)) -> (x : [] a) -> (y : [] a) -> a
+minBy : {a : Type} -> (cmp : ((x : a) -> (y : a) -> Ordering)) -> (x : a) -> (y : a) -> a
 minBy cmp x y = case cmp y x of
   Less -> y
   Equal -> x
@@ -19,7 +15,7 @@ minBy cmp x y = case cmp y x of
 
 -- The larger of two, by `cmp`; the second, if they are equal.
 @pub
-maxBy : {a : Type} -> (cmp : [] ((x : [] a) -> (y : [] a) -> Ordering)) -> (x : [] a) -> (y : [] a) -> a
+maxBy : {a : Type} -> (cmp : ((x : a) -> (y : a) -> Ordering)) -> (x : a) -> (y : a) -> a
 maxBy cmp x y = case cmp y x of
   Less -> x
   Equal -> y
@@ -27,23 +23,23 @@ maxBy cmp x y = case cmp y x of
 
 -- `x`, kept between `lo` and `hi`.
 @pub
-clampBy : {a : Type} -> (cmp : [] ((x : [] a) -> (y : [] a) -> Ordering)) -> (lo : [] a) -> (hi : [] a) -> (x : [] a) -> a
+clampBy : {a : Type} -> (cmp : ((x : a) -> (y : a) -> Ordering)) -> (lo : a) -> (hi : a) -> (x : a) -> a
 clampBy cmp lo hi x = minBy cmp hi (maxBy cmp lo x)
 
 -- Comparing by a key: `comparing length Std.Num.Int.compare` compares
 -- lists by how long they are.
 @pub
-comparing : {a b : Type} -> (key : [] ((x : [] a) -> b)) -> (cmp : [] ((x : [] b) -> (y : [] b) -> Ordering)) -> (x : [] a) -> (y : [] a) -> Ordering
+comparing : {a b : Type} -> (key : ((x : a) -> b)) -> (cmp : ((x : b) -> (y : b) -> Ordering)) -> (x : a) -> (y : a) -> Ordering
 comparing key cmp x y = cmp (key x) (key y)
 
 -- The other way round: largest first.
 @pub
-reversed : {a : Type} -> (cmp : [] ((x : [] a) -> (y : [] a) -> Ordering)) -> (x : [] a) -> (y : [] a) -> Ordering
+reversed : {a : Type} -> (cmp : ((x : a) -> (y : a) -> Ordering)) -> (x : a) -> (y : a) -> Ordering
 reversed cmp x y = cmp y x
 
 -- By `first`, and where that finds them equal, by `second`.
 @pub
-thenBy : {a : Type} -> (first : [] ((x : [] a) -> (y : [] a) -> Ordering)) -> (second : [] ((x : [] a) -> (y : [] a) -> Ordering)) -> (x : [] a) -> (y : [] a) -> Ordering
+thenBy : {a : Type} -> (first : ((x : a) -> (y : a) -> Ordering)) -> (second : ((x : a) -> (y : a) -> Ordering)) -> (x : a) -> (y : a) -> Ordering
 thenBy first second x y = case first x y of
   Less -> Less
   Equal -> second x y
@@ -51,18 +47,18 @@ thenBy first second x y = case first x y of
 
 -- Whether `cmp` finds them equal.
 @pub
-equalBy : {a : Type} -> (cmp : [] ((x : [] a) -> (y : [] a) -> Ordering)) -> (x : [] a) -> (y : [] a) -> Bool
+equalBy : {a : Type} -> (cmp : ((x : a) -> (y : a) -> Ordering)) -> (x : a) -> (y : a) -> Bool
 equalBy cmp x y = Std.Ordering.isEqual (cmp x y)
 
 -- Whether `x` comes before `y`.
 @pub
-lessBy : {a : Type} -> (cmp : [] ((x : [] a) -> (y : [] a) -> Ordering)) -> (x : [] a) -> (y : [] a) -> Bool
+lessBy : {a : Type} -> (cmp : ((x : a) -> (y : a) -> Ordering)) -> (x : a) -> (y : a) -> Bool
 lessBy cmp x y = Std.Ordering.isLess (cmp x y)
 
 -- Two lists, element by element: the first that differs decides, and a
 -- list that runs out first is the smaller.
 @pub
-lexicographic : {a : Type} -> (cmp : [] ((x : [] a) -> (y : [] a) -> Ordering)) -> (xs : [] List a) -> (ys : [] List a) -> Ordering
+lexicographic : {a : Type} -> (cmp : ((x : a) -> (y : a) -> Ordering)) -> (xs : List a) -> (ys : List a) -> Ordering
 lexicographic cmp Nil Nil = Equal
 lexicographic cmp Nil (y :: ys) = Less
 lexicographic cmp (x :: xs) Nil = Greater
@@ -72,5 +68,5 @@ lexicographic cmp (x :: xs) (y :: ys) = case cmp x y of
   Greater -> Greater
 
 @pub
-compareBool : (x : [] Bool) -> (y : [] Bool) -> Ordering
+compareBool : (x : Bool) -> (y : Bool) -> Ordering
 compareBool x y = if x then (if y then Equal else Greater) else (if y then Less else Equal)
