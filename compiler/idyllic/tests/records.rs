@@ -47,7 +47,7 @@ fn a_record_is_a_type_its_constructor_and_a_projection_for_each_field() {
         decls("record Pair2 (a : Type) = { first : a, second : a }\n"),
         [
             "Pair2 : (a : Type) -> Type",
-            "Pair2.Pair2 : {a : Type} -> (first : a) -> (second : a) -> Pair2 a",
+            "Pair2.Pair2 : {a : Type} -> (first : [1] a) -> (second : [1] a) -> Pair2 a",
             "Pair2.first : {a : Type} -> (self : [0..1] Pair2 a) -> a",
             "Pair2.second : {a : Type} -> (self : [0..1] Pair2 a) -> a",
         ]

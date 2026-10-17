@@ -100,7 +100,7 @@ fn a_declaration_introduces_a_type_and_its_constructors() {
         [
             "Maybe : (a : Type) -> Type",
             "Maybe.Nothing : {a : Type} -> Maybe a",
-            "Maybe.Just : {a : Type} -> a -> Maybe a",
+            "Maybe.Just : {a : Type} -> (_ : [1] a) -> Maybe a",
         ]
     );
 }
@@ -213,4 +213,21 @@ fn consuming_a_list_frees_it_as_it_goes() {
     // the second list is built entirely out of the first one's cells
     assert!(m.fresh <= 1002, "{m}");
     assert_eq!((m.leaked, m.miscounted), (0, 0));
+}
+
+/// A constructor's field is linear in every module: what goes into a value
+/// is used once by it. So a value given a precise grade can be put into
+/// one, and what comes out of a value has the value's own grade.
+#[test]
+fn a_field_is_linear_in_any_module() {
+    let nat = "data Nat = Z | S Nat\n\nuse Nat.*\n\n";
+    // built from something used at most once: the field charges it once
+    rejects(&format!("{nat}size : (xs : [0..1] Nat) -> Nat\nsize Z = Z\nsize (S n) = S (size n)\n"), &[]);
+    // what comes out of a value used freely is used freely
+    rejects("data Box = Box Int\n\nuse Box.*\n\ntwice : (b : Box) -> Int\ntwice (Box n) = n + n\n", &[]);
+    // and what comes out of a linear value, once
+    rejects(
+        "data Box = Box Int\n\nuse Box.*\n\ntwice : (b : [1] Box) -> Int\ntwice (Box n) = n + n\n",
+        &["usage mismatch: n has grade 1, but is used 2 times"],
+    );
 }

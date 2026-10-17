@@ -58,10 +58,16 @@ and the tour has steps for it.
 - **A binder that says nothing is unrestricted, `[]`** (Chris, 2026-10-02).
   Linearity is asked for: by a grade, `[1]`, or for a whole module by
   `@linear` on a line of its own at its top, or for every module of a
-  package by `idyllic --linear`, where a binder that says nothing (a
-  constructor's field too) is `1`. Types print as their module reads them.
-  The prelude is a linear module, so that the data types it declares can
-  hold anything, resources too. **Std is unrestricted** (Chris,
+  package by `idyllic --linear`, where a binder that says nothing is `1`.
+  Types print as their module reads them. **A constructor's field is
+  linear in every module** (Chris, 2026-10-17, as Granule has it): what
+  goes into a value is used once by it, so a value can be built of
+  anything, and what comes out of it has the value's own grade. Until
+  then a field took its module's default, `[]` outside a linear module,
+  which charged what went into it as used without limit. A constructor's
+  type shows the `[1]` in a module that is not linear, as
+  `Nat.S : (_ : [1] Nat) -> Nat`. The prelude is a linear module.
+  **Std is unrestricted** (Chris,
   2026-10-17), as a module that says nothing is: its signatures say
   nothing about grades, and grade variables are kept for APIs that handle
   linear values (`MArray`, the one linear module of it). Std was linear

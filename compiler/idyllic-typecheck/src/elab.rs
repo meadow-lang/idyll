@@ -1445,9 +1445,10 @@ impl Checker {
             Rc::new(Core::Pi {
                 name: "_".into(),
                 icit: Icit::Explicit,
-                // linear in a linear module, and `[]` elsewhere, as a field
-                // of a constructor's signature is
-                grade: Core::grade(if d.linear { Grade::ONE } else { Grade::DEFAULT }),
+                // a field is linear, in any module: what goes into a value
+                // is used once by it, which is what lets a value be built
+                // of anything, a linear thing too
+                grade: Core::grade(Grade::ONE),
                 in_type: Core::grade(Grade::DEFAULT_IN_TYPE),
                 dom: f,
                 cod: acc,
@@ -1467,7 +1468,10 @@ impl Checker {
         indices: usize,
         shape: &mut DataShape,
     ) -> (Rc<Core>, usize, usize) {
-        let (sig_c, sig_v) = self.check_type(params, sig);
+        let (sig_c, _) = self.check_type(params, sig);
+        // the fields it gives no grade are linear, as a list of fields is
+        let sig_c = linear_fields(sig, &sig_c);
+        let sig_v = self.eval(&params.env, &sig_c);
         // the written domains, for errors about one argument
         let mut nodes = Vec::new();
         let mut t = sig;
@@ -1531,5 +1535,20 @@ impl Checker {
             shape.fields.push(Field { node, ctor: c.name.text.clone(), lvl, ty: dom });
         }
         (sig_c, implicit, binders.len() - implicit)
+    }
+}
+
+/// A constructor's signature, `C : a -> Vec n a -> Vec (S n) a`, with each of
+/// its fields that says no grade linear, in any module, as a field of a
+/// constructor written `C a (Vec n a)` is. Only the constructor's own
+/// arrows: a field's type (`(a -> b) -> T`'s `a -> b`) keeps the module's
+/// default.
+fn linear_fields(sig: &hir::Term, core: &Rc<Core>) -> Rc<Core> {
+    match (&sig.kind, &**core) {
+        (TermKind::Pi(_, icit, ann, _, cod), Core::Pi { name, icit: i, grade, in_type, dom, cod: c }) => {
+            let grade = if ann.is_none() && *icit == Icit::Explicit { Core::grade(Grade::ONE) } else { grade.clone() };
+            Rc::new(Core::Pi { name: name.clone(), icit: *i, grade, in_type: in_type.clone(), dom: dom.clone(), cod: linear_fields(cod, c) })
+        }
+        _ => core.clone(),
     }
 }

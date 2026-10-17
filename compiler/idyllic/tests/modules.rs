@@ -95,7 +95,7 @@ fn the_preludes_constructors_are_in_scope() {
 fn constructors_are_reported_under_their_types() {
     let out = pipeline::run("data Nat = Z | S Nat\n", &OPTIONS);
     let decls: Vec<String> = out.decls.iter().map(|(x, t)| format!("{x} : {t}")).collect();
-    assert_eq!(decls, ["Nat : Type", "Nat.Z : Nat", "Nat.S : Nat -> Nat"]);
+    assert_eq!(decls, ["Nat : Type", "Nat.Z : Nat", "Nat.S : (_ : [1] Nat) -> Nat"]);
 }
 
 // ---------------------------------------------------------------------------

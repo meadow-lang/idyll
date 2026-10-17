@@ -1010,10 +1010,15 @@ use Maybe.*
 
 Maybe : (a : Type) -> Type
 Maybe.Nothing : {a : Type} -> Maybe a
-Maybe.Just : {a : Type} -> a -> Maybe a
+Maybe.Just : {a : Type} -> (_ : [1] a) -> Maybe a
 > Just (Just True)
 Just (Just True) : Maybe (Maybe Bool)
 ```
+
+A constructor uses each of its fields once, which its type shows as
+`[1]`: what goes into a value is in it once, so anything can go in, a value
+that may only be used once too. (How often what comes out may be used is
+the value's own grade: see [Fields keep their grade](#fields-keep-their-grade).)
 
 A constructor lives under its type, as a variant does in Rust: `Maybe.Just`,
 `Maybe.Nothing`. `use Maybe.*` brings them all into scope bare, as here,
@@ -1025,8 +1030,8 @@ have one with its own name, `data Box a = Box a`, written `Box.Box`.
 > data Shape = Circle Int | Square Int
 
 Shape : Type
-Shape.Circle : Int -> Shape
-Shape.Square : Int -> Shape
+Shape.Circle : (_ : [1] Int) -> Shape
+Shape.Square : (_ : [1] Int) -> Shape
 > Shape.Square 3
 Square 3 : Shape
 > Circle 1
@@ -1049,7 +1054,7 @@ use Maybe.*
 
 Maybe : (a : Type) -> Type
 Maybe.Nothing : {a : Type} -> Maybe a
-Maybe.Just : {a : Type} -> a -> Maybe a
+Maybe.Just : {a : Type} -> (_ : [1] a) -> Maybe a
 > fromMaybe : {a : Type} -> a [0..1] -> Maybe a -> a
 fromMaybe [d] m = case m of
   Nothing -> d
@@ -1070,9 +1075,9 @@ alternative and not the other, so it has to be allowed to go unused —
 - A `case` must cover every case. Its patterns can be much more than a
   constructor and its fields: see [Pattern matching](#pattern-matching).
 - What comes out of a constructor has the grade of what it came out of:
-  in a linear module, a linear value's fields are linear. A field to be
-  used otherwise is a box, `Maybe (Int [2])`, or comes out of a value
-  with a grade that allows it.
+  a linear value's fields are linear, and a value used freely gives fields
+  used freely. A field to be used otherwise is a box, `Maybe (Int [2])`,
+  or comes out of a value with a grade that allows it.
 
 ### What a data type may hold
 
@@ -1106,7 +1111,7 @@ in its parameter, as `List` is:
 use Rose.*
 
 Rose : (a : Type) -> Type
-Rose.Node : {a : Type} -> a -> List (Rose a) -> Rose a
+Rose.Node : {a : Type} -> (_ : [1] a) -> (_ : [1] List (Rose a)) -> Rose a
 ```
 
 ### Lists
@@ -1162,7 +1167,7 @@ in an expression or a pattern:
 use Point.*
 
 Point : Type
-Point.Point : Int -> Int -> Point
+Point.Point : (_ : [1] Int) -> (_ : [1] Int) -> Point
 > flip : Point -> Point
 flip (Point x y) = Point y x
 
@@ -1211,7 +1216,7 @@ built with them, in any order, read with `.`, and matched by them:
 > record Point = { x : Int, y : Int }
 
 Point : Type
-Point.Point : (x : Int) -> (y : Int) -> Point
+Point.Point : (x : [1] Int) -> (y : [1] Int) -> Point
 Point.x : (self : [0..1] Point) -> Int
 Point.y : (self : [0..1] Point) -> Int
 > Point { y = 2, x = 1 }
@@ -1245,7 +1250,7 @@ The old `x` is dropped, so `p` has to be something that may be: `[0..1]` or
 > record Point = { x : Int, y : Int }
 
 Point : Type
-Point.Point : (x : Int) -> (y : Int) -> Point
+Point.Point : (x : [1] Int) -> (y : [1] Int) -> Point
 Point.x : (self : [0..1] Point) -> Int
 Point.y : (self : [0..1] Point) -> Int
 > moved : Point -> Point
@@ -1266,7 +1271,7 @@ use Std.Collections.Vec (Vec)
 > record Sized = { size : Nat, items : Vec size Int }
 
 Sized : Type
-Sized.Sized : (size : Nat) -> (items : Vec size Int) -> Sized
+Sized.Sized : (size : [1] Nat) -> (items : [1] Vec size Int) -> Sized
 Sized.size : (self : [0..1] Sized) -> Nat
 Sized.items : (self : [0..1] Sized) -> Vec (size self) Int
 > (Sized { size = S (S Z), items = #[1, 2] }).items
@@ -1364,7 +1369,7 @@ use Nat.*
 
 Nat : Type
 Nat.Z : Nat
-Nat.S : Nat -> Nat
+Nat.S : (_ : [1] Nat) -> Nat
 > half : Nat -> Nat
 half (S (S n)) = S (half n)
 half _ = Z
@@ -1437,11 +1442,11 @@ both : Bool -> Bool -> Int
 ### Fields keep their grade
 
 What comes out of a value has that value's grade, times the grade its
-constructor took it at. A constructor takes a field that says nothing as
-any binder does: once in a [linear module](#linear-modules), and `[]`
-elsewhere, where what comes out of a value can be used freely. In a linear
-module, then, a linear `Nat` has a linear field, and a linear field has to
-be used:
+constructor took it at. A constructor takes a field that says nothing once,
+in any module: so a value can be built of anything, and what comes out of
+it can be used as often as the value itself can. A field of a value used
+freely, as a binder that says nothing is, is used freely; a linear `Nat`
+has a linear field, and a linear field has to be used:
 
 ```
 > @linear
@@ -1480,7 +1485,7 @@ use Nat.*
 
 Nat : Type
 Nat.Z : Nat
-Nat.S : Nat -> Nat
+Nat.S : (_ : [1] Nat) -> Nat
 > data Vec : Nat -> Type -> Type where
   Nil : Vec Z a
   Cons : a -> Vec n a -> Vec (S n) a
@@ -1488,7 +1493,7 @@ use Vec.*
 
 Vec : Nat -> Type -> Type
 Vec.Nil : {a : Type} -> Vec Z a
-Vec.Cons : {a : Type} -> {n : Nat} -> a -> Vec n a -> Vec (S n) a
+Vec.Cons : {a : Type} -> {n : Nat} -> (_ : [1] a) -> (_ : [1] Vec n a) -> Vec (S n) a
 > Cons 1 (Cons 2 Nil)
 Cons 1 (Cons 2 Nil) : Vec (S (S Z)) Int
 ```
@@ -1521,7 +1526,7 @@ use Nat.*
 
 Nat : Type
 Nat.Z : Nat
-Nat.S : Nat -> Nat
+Nat.S : (_ : [1] Nat) -> Nat
 > @seq(nil = Nil, cons = Cons)
 data Vec : Nat -> Type -> Type where
   Nil : Vec Z a
@@ -1530,7 +1535,7 @@ use Vec.*
 
 Vec : Nat -> Type -> Type
 Vec.Nil : {a : Type} -> Vec Z a
-Vec.Cons : {a : Type} -> {n : Nat} -> a -> Vec n a -> Vec (S n) a
+Vec.Cons : {a : Type} -> {n : Nat} -> (_ : [1] a) -> (_ : [1] Vec n a) -> Vec (S n) a
 > (#[1, 2, 3] : Vec (S (S (S Z))) Int)
 Cons 1 (Cons 2 (Cons 3 Nil)) : Vec (S (S (S Z))) Int
 > total : Vec n Int -> Int
@@ -1559,7 +1564,7 @@ use Nat.*
 
 Nat : Type
 Nat.Z : Nat
-Nat.S : Nat -> Nat
+Nat.S : (_ : [1] Nat) -> Nat
 > data Vec : Nat -> Type -> Type where
   Nil : Vec Z a
   Cons : a -> Vec n a -> Vec (S n) a
@@ -1567,7 +1572,7 @@ use Vec.*
 
 Vec : Nat -> Type -> Type
 Vec.Nil : {a : Type} -> Vec Z a
-Vec.Cons : {a : Type} -> {n : Nat} -> a -> Vec n a -> Vec (S n) a
+Vec.Cons : {a : Type} -> {n : Nat} -> (_ : [1] a) -> (_ : [1] Vec n a) -> Vec (S n) a
 > head : (v : [0..1] Vec (S n) a) -> a
 head (Cons x xs) = x
 
@@ -1595,7 +1600,7 @@ use Nat.*
 
 Nat : Type
 Nat.Z : Nat
-Nat.S : Nat -> Nat
+Nat.S : (_ : [1] Nat) -> Nat
 > data Vec : Nat -> Type -> Type where
   Nil : Vec Z a
   Cons : a -> Vec n a -> Vec (S n) a
@@ -1603,7 +1608,7 @@ use Vec.*
 
 Vec : Nat -> Type -> Type
 Vec.Nil : {a : Type} -> Vec Z a
-Vec.Cons : {a : Type} -> {n : Nat} -> a -> Vec n a -> Vec (S n) a
+Vec.Cons : {a : Type} -> {n : Nat} -> (_ : [1] a) -> (_ : [1] Vec n a) -> Vec (S n) a
 > plus : Nat -> Nat -> Nat
 plus Z m = m
 plus (S n) m = S (plus n m)
@@ -1639,7 +1644,7 @@ use Nat.*
 
 Nat : Type
 Nat.Z : Nat
-Nat.S : Nat -> Nat
+Nat.S : (_ : [1] Nat) -> Nat
 > plus : Nat -> Nat -> Nat
 plus Z m = m
 plus (S n) m = S (plus n m)
@@ -1676,7 +1681,7 @@ use Nat.*
 
 Nat : Type
 Nat.Z : Nat
-Nat.S : Nat -> Nat
+Nat.S : (_ : [1] Nat) -> Nat
 > data Fin : Nat -> Type where
   FZ : Fin (S n)
   FS : Fin n -> Fin (S n)
@@ -1684,7 +1689,7 @@ use Fin.*
 
 Fin : Nat -> Type
 Fin.FZ : {n : Nat} -> Fin (S n)
-Fin.FS : {n : Nat} -> Fin n -> Fin (S n)
+Fin.FS : {n : Nat} -> (_ : [1] Fin n) -> Fin (S n)
 > noFin : Fin Z -> Int
 noFin i impossible
 
@@ -1811,7 +1816,7 @@ use Nat.*
 
 Nat : Type
 Nat.Z : Nat
-Nat.S : Nat -> Nat
+Nat.S : (_ : [1] Nat) -> Nat
 > data Eq : Nat -> Nat -> Type where
   Refl : Eq x x
 use Eq.*
@@ -1825,7 +1830,7 @@ use Vec.*
 
 Vec : Nat -> Type -> Type
 Vec.Nil : {a : Type} -> Vec Z a
-Vec.Cons : {a : Type} -> {n : Nat} -> a -> Vec n a -> Vec (S n) a
+Vec.Cons : {a : Type} -> {n : Nat} -> (_ : [1] a) -> (_ : [1] Vec n a) -> Vec (S n) a
 > cast : (p : [0] Eq n m) -> Vec n a -> Vec m a
 cast Refl v = v
 
