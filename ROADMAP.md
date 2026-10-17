@@ -884,8 +884,11 @@ Each pass is checked against the Rust compiler's on the same programs, as
 MeadowBoot's are against the Rust Meadow compiler: `front/` writes what a
 pass made as text, the Rust compiler the same, and
 `compiler/idyllic/tests/front.rs` compares them on every program of the
-corpora (`compiler/idyllic/tests/corpus/`), the prelude, and every `.idl`
-file of the repository: 791 programs.
+corpora (`compiler/idyllic/tests/corpus/`), the prelude, every `.idl` file
+of the repository, and every entry of the tutorial's REPL sessions: 1082
+programs. The CEK machine is held to `idyll-eval` the same way, by
+`idyll-eval/tests/front.rs`. A pass written in slices marks what it cannot
+do yet `(unsupported)`, and the tests count those apart.
 
 - [x] **Tokens and layout** (`Lex`, `Layout`): every program agrees, token
   for token.
@@ -902,19 +905,39 @@ file of the repository: 791 programs.
   choose between (phase 3), where the Rust renamer lets the last win; no
   program of the corpus meets the difference yet. Left: packages of several
   modules, and dependencies.
-- [ ] Types: simple ones first, then dependent types, case trees,
-  termination, grades and effects.
-- [ ] Core, and the CEK machine on it.
-- [ ] Cut: lowered and written out, run with `meadow cut` on Glade and Silo,
-  first on a dozen of the corpus's programs. Cut is built with
-  [`meadow-lang/Cut`](https://github.com/meadow-lang/Cut), a package of its
-  own that MeadowBoot depends on too (Chris, 2026-10-16), all of it in
-  `front/src/Emit.mw`; so far the smallest program, which runs on Glade and
-  Silo.
+- [x] **Dependency order** (`Scc`, `idyllic-scc`).
+- [x] **Types** (`Elab`, `Matching`, `Termination`, `Handlers`,
+  `Sequences`, `Decl`, `Positivity`, `Check`, on the machinery of `Grade`,
+  `Core`, `Value`, `Eval`, `Unify`): `idyllic-typecheck` ported, normalisation
+  by evaluation, pattern unification, grades as polynomials, effect rows
+  with subsumption, dependent matching, size-change termination with
+  transparent unfolding, handlers, strict positivity. The prelude is
+  checked in full. Every program that reaches the checker (392) gets the
+  same declarations, types and errors (by kind) as the Rust checker.
+- [x] **The CEK machine** (`Cek`, with a captured `World`): `idyll-eval`
+  ported. All 211 programs that run come to the same answer, in the same
+  number of steps, printing the same.
+- [x] **Cut** (`Lower`, with `Typer` and `Prune`; `CutAst`, built and written
+  by `Emit` with [`meadow-lang/Cut`](https://github.com/meadow-lang/Cut),
+  the package MeadowBoot uses too): `idyllic-cut` ported. All 212 programs
+  that lower give the same Cut (canonical: whitespace, fresh names and
+  declaration order aside). The Cut package grew what Idyll needs (roles,
+  natives, effect variables, `@many`) in its PR 2.
+- [ ] Run front/'s Cut with `meadow cut` on Glade and Silo against the CEK
+  machine's answers, in a test. The Cut corpus itself passes on Glade
+  (pure 198/198, world 5/5); handlers wait on meadow PR 11.
+- [ ] Packages: a module's `use` of another package (Std), in the renamer
+  and the checker, so that the Std library and the examples are compared
+  too (690 of the 1082 programs stop at renaming today, most for want of
+  Std); then choosing by type among names several `use`s bring in.
+- [ ] front/'s own REPL and driver, once Cut moves its Lingua pin (Lingua
+  833e1a5, for LineEditor 0.2.2).
 - [ ] CI, with MeadowBoot's prerelease for the `meadow` it needs.
 
 *Done when:* `front/` compiles the corpus and the tutorial to Cut that Glade
-and Silo run with the answers the CEK machine gives.
+and Silo run with the answers the CEK machine gives. As of 2026-10-17 it
+compiles them to the same Cut as the Rust compiler; what is left is running
+it there in a test, and packages.
 
 ## Not porting
 
