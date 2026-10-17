@@ -43,6 +43,16 @@ use Std.Maybe.Maybe.*
 -- fields follow.
 @pub data CtorInfo = CtorInfo String Int Int Int Int
 
+-- What is known of an effect: its name, its parameters' kinds, and its
+-- operations in order.
+@pub data EffectInfo = EffectInfo String [Core] [Int]
+
+-- What is known of an operation: its name, its effect's unique, its place
+-- among the effect's operations, how many erased arguments come first (the
+-- effect's parameters, then its own implicit ones), how many it takes after
+-- those, and whether a handler may resume it more than once (`@many`).
+@pub data OpInfo = OpInfo String Int Int Int Int Bool
+
 @pub record Tc = {
   metas : Ref [Meta],
   -- the type of every constant (a data type, a constructor, a recursive
@@ -66,8 +76,15 @@ use Std.Maybe.Maybe.*
   -- what the program uses that this checker cannot check yet; a program
   -- with anything here is not compared
   unsupported : Ref [String],
-  -- each declared effect's parameters' kinds, by its unique
-  effects : Ref (HashMap Int [Core]),
+  -- the declared effects and their operations, by unique
+  effects : Ref (HashMap Int EffectInfo),
+  ops : Ref (HashMap Int OpInfo),
+  -- the `nil` and `cons` of each data type declared `@seq`
+  seqs : Ref (HashMap Int (Int, Int)),
+  -- the natives, by the names they are declared by
+  nativeNames : Ref (HashMap String Int),
+  -- the prelude's `List`, which a sequence is with nothing to say otherwise
+  list : Ref Int,
   -- what the program declares, with its type, as the REPL lists it: the
   -- unique, the name (`Nat.Z` for a constructor), the type
   declared : Ref [(Int, String, Core)],
@@ -101,6 +118,10 @@ use Std.Maybe.Maybe.*
     lets = newRef 0,
     unsupported = newRef [],
     effects = newRef Hm.empty,
+    ops = newRef Hm.empty,
+    seqs = newRef Hm.empty,
+    nativeNames = newRef Hm.empty,
+    list = newRef (0 - 1),
     declared = newRef [],
     datas = newRef Hm.empty,
     ctors = newRef Hm.empty,

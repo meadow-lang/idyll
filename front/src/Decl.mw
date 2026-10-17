@@ -22,7 +22,7 @@ use Idyll.Value (Value, Elim)
 use Idyll.Value as Va
 use Idyll.Grade (Grade)
 use Idyll.Grade as G
-use Idyll.Tc (Tc, CtorInfo)
+use Idyll.Tc (Tc, CtorInfo, EffectInfo, OpInfo)
 use Idyll.Tc as T
 use Idyll.Eval (force, apply, eval, quote, toPoly)
 use Idyll.Unify (sortOf)
@@ -108,6 +108,7 @@ fun underParams (params : [(Ident, Maybe Term)]) (ks : [Core]) (ty : Core) (grad
         match (acc, dk) with
         | ((c, shapes), (d, (ks, indices))) ->
             let (c2, fields) = declareCtors tc c d ks indices in
+            let w = declareSeq tc d in
             (c2, V.pushBack shapes (Shape.Shape (H.uniqueOf d.name) c.lvl (V.len d.params) fields)))
       (ctx1, [])
       (V.zip datas kinds)
@@ -144,6 +145,26 @@ fun declareCtors (tc : Tc) (ctx : Ctx) (d : DataDecl) (ks : [Core]) (indices : I
                (declareConstant tc c x ty, V.append fieldsSoFar found)))
     (ctx, [])
     (V.zip (V.range 0 (V.len d.ctors)) d.ctors)
+
+-- A data type's `@seq`, noted once its constructors are declared: `nil`
+-- has to be one of them with no fields, and `cons` one with two, an element
+-- and the rest.
+fun declareSeq (tc : Tc) (d : DataDecl) =
+  match d.seq with
+  | None -> ()
+  | Just (nil, cons) ->
+      let (n, c) = (H.uniqueOf nil, H.uniqueOf cons) in
+      -- an unknown name, which the renamer reported
+      if n < 0 or c < 0 then ()
+      else
+        let fits =
+          \u fields ->
+            match T.ctorInfo tc u with
+            | Just (CtorInfo.CtorInfo _ dt _ _ fs) -> dt == H.uniqueOf d.name and fs == fields
+            | None -> False
+        in
+        if fits n 0 and fits c 2 then setRef tc.seqs (Hm.insert (H.uniqueOf d.name) (n, c) (getRef tc.seqs))
+        else T.error tc "BadSeq"
 
 -- How many function types a type starts with, and what it ends in.
 fun telescopeEnd (tc : Tc) (lvl : Int) (ty : Value) : (Int, Value) ! { Mut | e } =
@@ -255,7 +276,8 @@ fun linearFields (sig : Term) (core : Core) : Core =
       let kind = if many then manyEffectKind () else Core.LitTy Builtin.Effect in
       let ty = underParams e.params ks kind G.default Icit.Explicit in
       let w = declare tc e.name (H.textOf e.name) ty in
-      let w2 = setRef tc.effects (Hm.insert (H.uniqueOf e.name) ks (getRef tc.effects)) in
+      let ops = V.map (\o -> match o with | OpDecl.OpDecl x _ _ -> H.uniqueOf x) e.ops in
+      let w2 = setRef tc.effects (Hm.insert (H.uniqueOf e.name) (EffectInfo.EffectInfo (H.textOf e.name) ks ops) (getRef tc.effects)) in
       declareConstant tc c e.name (eval tc c.env ty))
     ctx
     effects
@@ -266,7 +288,7 @@ fun linearFields (sig : Term) (core : Core) : Core =
     (\c (e : EffectDecl) ->
       match Hm.lookup (H.uniqueOf e.name) (getRef tc.effects) with
       | None -> c
-      | Just ks ->
+      | Just (EffectInfo.EffectInfo _ ks _) ->
           let n = V.len e.params in
           let params = bindParams tc c e.params ks in
           -- the effect at its parameters, under `depth` binders of the
@@ -283,9 +305,9 @@ fun linearFields (sig : Term) (core : Core) : Core =
               Core.Row [applied] []
           in
           V.foldl
-            (\c2 o ->
-              match o with
-              | OpDecl.OpDecl x opTy many ->
+            (\c2 io ->
+              match io with
+              | (index, OpDecl.OpDecl x opTy many) ->
                   let (sigC, _) = checkType tc params opTy in
                   (match withRow sigC 0 label with
                    | None ->
@@ -294,9 +316,11 @@ fun linearFields (sig : Term) (core : Core) : Core =
                    | Just (ty0, implicit, arity) ->
                        let ty = eval tc c2.env (underParams e.params ks ty0 G.zero Icit.Implicit) in
                        let w = declare tc x (H.textOf x) (quote tc c2.lvl ty) in
+                       let info = OpInfo.OpInfo (H.textOf x) (H.uniqueOf e.name) index (n + implicit) arity many in
+                       let w2 = setRef tc.ops (Hm.insert (H.uniqueOf x) info (getRef tc.ops)) in
                        declareConstant tc c2 x ty))
             c
-            e.ops)
+            (V.zip (V.range 0 (V.len e.ops)) e.ops))
     ctx
     effects
 
@@ -356,6 +380,7 @@ fun native (name : String) : Maybe (Bool, Int) =
                  let w = match sig with | Core.Error -> () | _ -> if fits then () else T.error tc "NativeSignature" in
                  let u = H.uniqueOf x in
                  let w2 = setRef tc.natives (Hm.insert u True (getRef tc.natives)) in
+                 let w4 = setRef tc.nativeNames (Hm.insert (H.textOf x) u (getRef tc.nativeNames)) in
                  -- an array holds its elements, so mentions them only
                  -- positively: a data type may have itself in one
                  let w3 = if isType then setRef tc.positive (Hm.insert u (V.replicate ar True) (getRef tc.positive)) else () in

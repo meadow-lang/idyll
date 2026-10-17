@@ -36,6 +36,8 @@ use Idyll.Ctx as X
 use Idyll.Hir (Term, Ident, Group, Bind, DataDecl, CtorDecl, CtorShape, EffectDecl, OpDecl, NativeDecl)
 use Idyll.Hir as H
 use Idyll.Matching (caseOf, inferMatch, elabMatch)
+use Idyll.Handlers (handled)
+use Idyll.Sequences (checkSeq, inferSeq, arrayLiteral, arrayElement)
 use Idyll.Termination (checkTermination, arity)
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
@@ -203,7 +205,7 @@ fun rowPart (tc : Tc) (ctx : Ctx) (t : Term) : (Core, Bool) ! { Mut | e } =
                 (Core.Error, False)))
 
 -- Whether a function type's codomain mentions its argument.
-fun depends (tc : Tc) (l : Int) (cod : Closure) : Bool ! { Mut | e } =
+@pub(pkg) fun depends (tc : Tc) (l : Int) (cod : Closure) : Bool ! { Mut | e } =
   mentions (quote tc (l + 1) (apply tc cod (Va.vvar l "_"))) 0
 
 -- A term that has to be a type, and its universe. One whose universe is
@@ -476,27 +478,6 @@ fun checkMember (tc : Tc) (ctxRec : Ctx) (b : Bind) (ty : Value) : (Core, Usage)
   let w = if getRef tc.lets == 0 then declare tc b.name (H.textOf b.name) (quote tc ctxRec.lvl ty) else () in
   (core, usage)
 
--- The prelude's own definitions, which this checker takes as given: each
--- at the type its signature says, its body unchecked. (One with no
--- signature, the effect alias `Eff`, is checked.)
-@pub fun assumeGroup (tc : Tc) (ctx : Ctx) (group : Group) : Ctx ! { Mut | e } =
-  let assume =
-    \c (b : Bind) ->
-      match b.ty with
-      | Just sig ->
-          let outer = getRef tc.linear in
-          let w = setRef tc.linear b.linear in
-          let (_, _, vsig) = signature tc c sig in
-          let w2 = setRef tc.linear outer in
-          -- a definition, so new metavariables do not depend on it, whose
-          -- value, unknown, does not unfold
-          X.extend c (keyOf b.name) (H.textOf b.name) vsig Info.Defined (Va.vvar c.lvl (H.textOf b.name))
-      | None -> (match checkGroup tc c (Group.NonRec b) with | (c2, _, _) -> c2)
-  in
-  match group with
-  | Group.NonRec b -> assume ctx b
-  | Group.Rec bs -> V.foldl assume ctx bs
-
 -- The groups of a `let`: what is defined there is local.
 fun enterLet (tc : Tc) (ctx : Ctx) (groups : [Group]) : (Ctx, [Pending], [Maybe (String, Core)]) ! { Mut | e } =
   let w = setRef tc.lets (getRef tc.lets + 1) in
@@ -741,10 +722,10 @@ fun leaveGroups (usage : Usage) (pending : [Pending]) : Usage =
       (freshMetaWith tc ctx (Origin.Inferred "this") (Just ty), ty, U.none ())
   | Term.Case s cs -> caseOf tc ctx s cs None
   | Term.Match cs -> inferMatch tc ctx cs
-  | Term.Handle _ _ -> unsupported tc "handlers"
-  | Term.SeqNil -> unsupported tc "sequences"
-  | Term.SeqCons _ _ -> unsupported tc "sequences"
-  | Term.ArrayLit _ -> unsupported tc "arrays"
+  | Term.Handle b cs -> handled tc ctx b cs None
+  | Term.SeqNil -> inferSeq tc ctx t
+  | Term.SeqCons _ _ -> inferSeq tc ctx t
+  | Term.ArrayLit items -> arrayLiteral tc ctx items None
 
 fun unsupported (tc : Tc) (what : String) : (Core, Value, Usage) ! { Mut | e } =
   let w = T.cannot tc what in
@@ -932,10 +913,19 @@ fun checkAgainst (tc : Tc) (ctx : Ctx) (t : Term) (expected : Value) : (Core, Us
       let (core, _, usage) = caseOf tc ctx s cs (Just expected) in
       (core, usage)
   | (Term.Match cs, _) -> elabMatch tc ctx cs expected
-  | (Term.Handle _ _, _) -> unsupportedCheck tc "handlers"
-  | (Term.SeqNil, _) -> unsupportedCheck tc "sequences"
-  | (Term.SeqCons _ _, _) -> unsupportedCheck tc "sequences"
-  | (Term.ArrayLit _, _) -> unsupportedCheck tc "arrays"
+  | (Term.Handle b cs, _) ->
+      let (core, _, usage) = handled tc ctx b cs (Just expected) in
+      (core, usage)
+  -- a sequence is built as the type it is expected to be, if that is known
+  | (Term.SeqNil, _) -> if isFlex expected then fallback tc ctx t expected else checkSeq tc ctx t expected
+  | (Term.SeqCons _ _, _) -> if isFlex expected then fallback tc ctx t expected else checkSeq tc ctx t expected
+  -- an array of what is expected is made of elements checked against that
+  | (Term.ArrayLit items, _) ->
+      (match arrayElement tc expected with
+       | Just elem ->
+           let (core, _, usage) = arrayLiteral tc ctx items (Just elem) in
+           (core, usage)
+       | None -> fallback tc ctx t expected)
   | (Term.Omitted, _) -> (freshMetaWith tc ctx (Origin.Inferred "this") (Just expected), U.none ())
   -- a hole has the type expected, so nothing needs inferring
   | (Term.Hole, _) -> (elabHole tc ctx expected, U.none ())

@@ -22,7 +22,7 @@ does, how it is checked, and why it is built the way it is.
 | Parsing | `Parse.mw`, `Ast.mw` | done: agrees with the Rust parser on every program |
 | Renaming | `Rename.mw`, `Hir.mw` | done for one module after the prelude; packages not yet |
 | Dependency order | `Scc.mw` | done |
-| Types | `Check.mw`, `Elab.mw`, `Matching.mw`, `Termination.mw`, `Decl.mw`, `Positivity.mw`, `Ctx.mw`, `Usage.mw`, and the machinery under them | agrees on every program it handles (356 of 392); handlers, sequences and arrays next |
+| Types | `Check.mw`, `Elab.mw`, `Matching.mw`, `Termination.mw`, `Handlers.mw`, `Sequences.mw`, `Decl.mw`, `Positivity.mw`, `Ctx.mw`, `Usage.mw`, and the machinery under them | done for one module: agrees on every program that gets this far (392) |
 | Core and the CEK machine | | not started |
 | Cut | `Emit.mw` | the Cut package is wired in; only the smallest program so far |
 
@@ -267,9 +267,7 @@ effects, and any metavariable nothing solved reported. The context
 (`Ctx.mw`) starts with the builtin types and the primitive operations at the
 uniques the renamer reserves for them.
 
-**The prelude** is taken at its signatures: its definitions are bound at the
-types they say, their bodies not checked, since this checker cannot check
-everything they use yet. Only the effect alias `Eff`, a row, is checked.
+The prelude's definitions come first and are checked like the program's.
 
 **Matching** (`Matching.mw`, `matching.rs`) turns equations and `case`
 alternatives into case trees, with dependent matching, after Cockx and
@@ -308,8 +306,27 @@ choose a right-hand side (`Eval.unfold`), so `first (Sigma x y)` is `x` in
 `second`'s type. A group that may not terminate must say `! Div`, or be
 vouched for with `@terminating` (`MayNotTerminate` otherwise).
 
-**Not in yet**: handlers, sequence and array literals, and names that
-several `use`s bring in (overloading). Those are the next slices.
+**Handlers** (`Handlers.mw`, `handlers.rs`). `handle e with clauses` takes
+care of every operation of one effect in `e`'s row. The effect's
+parameters are read off that row, and each clause `op x k -> body` is
+checked with them: `x` has the type of the operation's argument, and `k`,
+the resumption, takes the operation's result and gives back what the
+whole `handle` does. Handlers are deep, so resuming has the handle's own
+effects: those of `e` but the handled one, and those of the clauses, which
+are solved for once the clauses are checked. How often a clause resumes is
+inferred from how it uses `k`, and may be more than once only for an
+operation declared `@many` (`ResumesTooOften`).
+
+**Sequences and arrays** (`Sequences.mw`). `#[a, b, c]` is built with the
+constructors of the sequence type expected (a data type declared
+`@seq(nil = Nil, cons = (::))`), so an indexed family gets its length in
+its type for nothing; with nothing expected it is a `List`. The same form
+is a pattern. `#[a; b]` is an array: the native `arrayFromList` applied to
+the list of its elements.
+
+**Not in yet**: packages (a module's `use` of another package, which the
+renamer does not do yet either), and choosing by type among the names
+several `use`s bring in. No program of the corpus needs either.
 
 The machinery underneath, each piece a port of its Rust module with tests
 of its own:

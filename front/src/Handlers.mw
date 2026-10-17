@@ -1,0 +1,251 @@
+-- Handlers: `handle e with clauses`, from
+-- `compiler/idyllic-typecheck/src/handlers.rs`.
+--
+-- A handler takes care of every operation of one effect in the row of
+-- `e`. The effect's parameters are read off that row, and each clause is
+-- checked with them: in `op x k -> body`, `x` has the type of the
+-- operation's argument, and `k`, the resumption, takes the operation's
+-- result and gives back what the whole `handle` does. Handlers are deep:
+-- resuming runs the rest of `e` under the same handler, so `k` has the
+-- handle's own effects, those of `e` but the handled one, and those of the
+-- clauses, which is found by solving for them at the end.
+--
+-- How often a clause resumes is its resumption's grade, inferred from its
+-- use of `k`: more than once only for an operation declared `@many`.
+
+use Idyll.Ast (Icit)
+use Idyll.Core (Core, OpClause)
+use Idyll.Core as C
+use Idyll.Value (Value, Elim, Row)
+use Idyll.Value as Va
+use Idyll.Grade as G
+use Idyll.Tc (Tc, EffectInfo, OpInfo)
+use Idyll.Tc as T
+use Idyll.Eval (force, apply, eval, quote, row, rowParts, toPoly, splitComp)
+use Idyll.Unify (unify, subtype)
+use Idyll.Usage (Usage)
+use Idyll.Usage as U
+use Idyll.Ctx (Ctx)
+use Idyll.Ctx as X
+use Idyll.Elab (check, infer, insert, freshMeta, leaveBinder, lam, keyOf)
+use Idyll.Hir (Term, Ident, HandleClause)
+use Idyll.Hir as H
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as Hm
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+fun failed () : (Core, Value, Usage) = (Core.Error, Value.Error, U.unknown ())
+
+fun gradeValue g : Value = Va.polyValue (Va.polyConstant g)
+
+fun opOf (c : HandleClause) : Maybe Ident = match c with | HandleClause.HandleClause op _ _ -> op
+
+fun paramsOf (c : HandleClause) : [Ident] = match c with | HandleClause.HandleClause _ xs _ -> xs
+
+fun bodyOf (c : HandleClause) : Term = match c with | HandleClause.HandleClause _ _ b -> b
+
+fun opInfo (tc : Tc) (u : Int) : OpInfo ! { Mut | e } =
+  M.unwrapOr (OpInfo.OpInfo "?" (0 - 1) 0 0 0 False) (Hm.lookup u (getRef tc.ops))
+
+-- Which effect the clauses handle: the one their operations all belong to.
+fun effectOf (tc : Tc) (clauses : [HandleClause]) : Maybe (Maybe Int) ! { Mut | e } =
+  V.foldl
+    (\acc c ->
+      match (acc, opOf c) with
+      | (None, _) -> None
+      | (_, None) -> acc
+      | (Just found, Just op) ->
+          let us = H.uniquesOf op in
+          if V.len us != 1 then
+            let w = if V.len us > 1 then T.cannot tc "overloading" else () in
+            None
+          else
+            (match Hm.lookup (V.getOr 0 us 0) (getRef tc.ops) with
+             | None ->
+                 let w = T.error tc "NotAnOperation" in
+                 None
+             | Just (OpInfo.OpInfo _ eff _ _ _ _) ->
+                 (match found with
+                  | None -> Just (Just eff)
+                  | Just e ->
+                      if e != eff then
+                        let w = T.error tc "HandlerMixesEffects" in
+                        None
+                      else acc)))
+    (Just None)
+    clauses
+
+-- `handle body with clauses`, against `expected` if there is one.
+@pub fun handled (tc : Tc) (ctx : Ctx) (body : Term) (clauses : [HandleClause]) (expected : Maybe Value) : (Core, Value, Usage) ! { Mut | e } =
+  match effectOf tc clauses with
+  | None -> failed ()
+  | Just None ->
+      let w = T.error tc "HandlerHandlesNothing" in
+      failed ()
+  | Just (Just eff) ->
+      (match Hm.lookup eff (getRef tc.effects) with
+       | None -> failed ()
+       | Just info -> handleEffect tc ctx body clauses expected eff info)
+
+fun clausesFor (clauses : [HandleClause]) (op : Int) : [HandleClause] =
+  V.filter (\c -> match opOf c with | Just x -> H.uniqueOf x == op | None -> False) clauses
+
+fun handleEffect (tc : Tc) (ctx : Ctx) (body : Term) (clauses : [HandleClause]) (expected : Maybe Value) (eff : Int) (info : EffectInfo) : (Core, Value, Usage) ! { Mut | e } =
+  match info with
+  | EffectInfo.EffectInfo effName kinds ops ->
+      let missing = V.filter (\op -> V.isEmpty (clausesFor clauses op)) ops in
+      let duplicated = V.any (\op -> V.len (clausesFor clauses op) > 1) ops in
+      let badParams =
+        V.any
+          (\c ->
+            let want = match opOf c with | None -> 1 | Just op -> (match opInfo tc (H.uniqueOf op) with | OpInfo.OpInfo _ _ _ _ arity _ -> arity + 1) in
+            V.len (paramsOf c) != want)
+          clauses
+      in
+      if not (V.isEmpty missing) then
+        let w = T.error tc "MissingOperations" in
+        failed ()
+      else if duplicated then
+        let w = T.error tc "DuplicateOperation" in
+        failed ()
+      else if badParams then
+        let w = T.error tc "ClauseParams" in
+        failed ()
+      else
+        -- what is handled: the effect, at the arguments the body has it at
+        let (bodyC0, bodyTy0, bodyU0) = infer tc ctx body in
+        let (bodyC, bodyTy) = insert tc ctx bodyC0 bodyTy0 in
+        let theRow = row tc (U.effectsOf bodyU0) in
+        let bodyU = U.withoutEffects bodyU0 in
+        (match rowParts tc theRow with
+         | Row.Row labels tails ->
+             let ours = V.filter (\kv -> match force tc (snd kv) with | Value.Opaque u _ _ -> u == eff | _ -> False) labels in
+             let args =
+               if V.len ours == 1 then
+                 (match force tc (snd (V.getOr ("", Value.Error) ours 0)) with
+                  | Value.Opaque _ _ sp -> Just (V.concatMap (\e -> match e with | Elim.App a -> [a] | _ -> []) sp)
+                  | _ -> Just [])
+               -- the body does not have the effect: the handler does nothing,
+               -- but is still checked, at arguments nothing determines yet
+               else if V.isEmpty ours then
+                 Just (V.map (\k -> eval tc ctx.env (freshMeta tc ctx ("a parameter of " ++ effName))) kinds)
+               else None
+             in
+             (match args with
+              | None ->
+                  let w = T.error tc "AmbiguousHandler" in
+                  failed ()
+              | Just args ->
+                  let handled = V.map fst ours in
+                  let rest = row tc (V.append (V.map snd (V.filter (\kv -> not (V.elem (fst kv) handled)) labels)) (V.map snd tails)) in
+                  let result =
+                    match expected with
+                    | Just ty -> ty
+                    | None -> eval tc ctx.env (freshMeta tc ctx "the type of this handle")
+                  in
+                  -- what resuming does: worked out once the clauses are known
+                  let resumed = eval tc ctx.env (freshMeta tc ctx "the effects of resuming") in
+                  let one = gradeValue G.one in
+                  -- `return x -> ..`
+                  let (retCore, retU) =
+                    match V.find (\c -> M.isNone (opOf c)) clauses with
+                    | Just c ->
+                        let x = V.getOr (Ident.Ident [] "x") (paramsOf c) 0 in
+                        let inner = X.graded (X.bind ctx (Just x) (H.textOf x) bodyTy) one in
+                        let (cBody, usage) = check tc inner (bodyOf c) result in
+                        let u2 = leaveBinder tc inner x one usage False in
+                        (lam tc ctx (H.textOf x) one bodyTy cBody, u2)
+                    | None ->
+                        let w = if subtype tc ctx.lvl bodyTy result then () else T.error tc "Mismatch" in
+                        (lam tc ctx "x" one bodyTy (Core.Var 0 "x"), U.none ())
+                  in
+                  -- `op x k -> ..`, for each operation in turn
+                  let clauseResults = V.map (\op -> opClause tc ctx clauses op args result resumed effName) ops in
+                  if V.any M.isNone clauseResults then failed ()
+                  else
+                    let done = V.concatMap (\r -> match r with | Just x -> [x] | None -> []) clauseResults in
+                    let opsCore = V.map fst done in
+                    let opsU = V.foldl (\acc r -> U.add acc (snd r)) (U.none ()) done in
+                    -- what the handle does: the body's other effects, and what
+                    -- the clauses do; resuming is the same again
+                    let resumedKey = Va.atomKey (force tc resumed) in
+                    let clauseRow = row tc (V.append (U.effectsOf retU) (U.effectsOf opsU)) in
+                    (match rowParts tc clauseRow with
+                     | Row.Row cls cts ->
+                         let total = row tc (V.concat [[rest], V.map snd cls, V.map snd (V.filter (\kv -> fst kv != resumedKey) cts)]) in
+                         let w = if unify tc ctx.lvl resumed total then () else T.error tc "AmbiguousHandler" in
+                         let usage = U.add (U.add (U.add bodyU (U.withoutEffects retU)) (U.withoutEffects opsU)) (U.performs total) in
+                         (Core.Handle bodyC retCore opsCore, result, usage))))
+
+-- One operation's clause: its Core, and its usage, which counts as often as
+-- the operation may be performed.
+fun opClause (tc : Tc) (ctx : Ctx) (clauses : [HandleClause]) (op : Int) (args : [Value]) (result : Value) (resumed : Value) (effName : String) : Maybe (OpClause, Usage) ! { Mut | e } =
+  match (V.head (clausesFor clauses op), opInfo tc op) with
+  | (None, _) -> None
+  | (Just c, OpInfo.OpInfo opName _ _ _ arity many) ->
+      let params = paramsOf c in
+      let xs = V.take params arity in
+      let k = V.getOr (Ident.Ident [] "k") params arity in
+      -- the operation's type at the handled arguments
+      let ty0 =
+        V.foldl
+          (\acc a ->
+            match acc with
+            | Just t -> (match force tc t with | Value.Pi _ _ _ _ _ cod -> Just (apply tc cod a) | _ -> None)
+            | None -> None)
+          (Hm.lookup op (getRef tc.constants))
+          args
+      in
+      (match ty0 with
+       | None -> None
+       | Just ty1 ->
+           -- then its own implicit arguments, as variables the clause knows
+           -- nothing of
+           let (inner, erased, ty2) = implicits tc ctx [] ty1 in
+           (match explicits tc inner [] xs ty2 with
+            | None -> None
+            | Just (innerX, xBinders, ty3) ->
+                let (opResult, _) = splitComp tc ty3 in
+                -- k : (y : opResult) -> result ! resumed, using what it is
+                -- resumed with once
+                let l = innerX.lvl in
+                let kC = Core.Pi "y" Icit.Explicit (C.grade G.one) (C.grade G.defaultInType) (quote tc l opResult) (Core.Comp (quote tc (l + 1) result) (quote tc (l + 1) resumed)) in
+                let kTy = eval tc innerX.env kC in
+                let kGrade = eval tc innerX.env (freshMeta tc innerX ("how often " ++ opName ++ " resumes")) in
+                let innerK = X.graded (X.bind innerX (Just k) (H.textOf k) kTy) kGrade in
+                let (cBody, usage) = check tc innerK (bodyOf c) result in
+                -- how often it resumes is how often it uses `k`: at most once
+                -- unless the operation says otherwise
+                let unknown = U.isUnknown usage in
+                let u1 = leaveBinder tc innerK k kGrade usage False in
+                let w =
+                  if many or unknown then ()
+                  else
+                    (match Va.asConstant (toPoly tc (force tc kGrade)) with
+                     | Just g -> if G.fits g (M.unwrapOr G.any (G.range G.zero G.one)) then () else T.error tc "ResumesTooOften"
+                     | None -> T.error tc "ResumesTooOften")
+                in
+                let u2 = V.foldl (\u xb -> match xb with | (x, _, _, grade) -> leaveBinder tc innerX x grade u False) u1 xBinders in
+                let withK = lam tc innerX (H.textOf k) kGrade kTy cBody in
+                let withXs = V.foldl (\acc xb -> match xb with | (x, at, dom, grade) -> lam tc at (H.textOf x) grade dom acc) withK (V.reverse xBinders) in
+                let zero = gradeValue G.zero in
+                let whole = V.foldl (\acc eb -> match eb with | (name, at, dom) -> lam tc at name zero dom acc) withXs (V.reverse erased) in
+                Just (OpClause.OpClause op opName (V.len erased) whole, U.scale u2 (Va.polyConstant G.any))))
+
+fun implicits (tc : Tc) (inner : Ctx) (acc : [(String, Ctx, Value)]) (ty : Value) : (Ctx, [(String, Ctx, Value)], Value) ! { Mut | e } =
+  match force tc ty with
+  | Value.Pi name Icit.Implicit _ _ dom cod ->
+      let lvl = inner.lvl in
+      implicits tc (X.bind inner None name dom) (V.pushBack acc (name, inner, dom)) (apply tc cod (Va.vvar lvl name))
+  | fty -> (inner, acc, fty)
+
+fun explicits (tc : Tc) (inner : Ctx) (acc : [(Ident, Ctx, Value, Value)]) (xs : [Ident]) (ty : Value) : Maybe (Ctx, [(Ident, Ctx, Value, Value)], Value) ! { Mut | e } =
+  match V.head xs with
+  | None -> Just (inner, acc, ty)
+  | Just x ->
+      (match force tc ty with
+       | Value.Pi _ _ grade _ dom cod ->
+           let lvl = inner.lvl in
+           explicits tc (X.graded (X.bind inner (Just x) (H.textOf x) dom) grade) (V.pushBack acc (x, inner, dom, grade)) (V.drop xs 1) (apply tc cod (Va.vvar lvl (H.textOf x)))
+       | _ -> None)

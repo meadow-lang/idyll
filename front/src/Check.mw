@@ -8,9 +8,6 @@
 -- the runtime, which handles the prelude's `Eff` and nothing else. Then the
 -- holes are reported, the postponed questions asked a last time, and the
 -- metavariables nothing solved reported too.
---
--- The prelude's definitions are taken at their signatures, unchecked: this
--- checker cannot check all they use yet.
 
 use Idyll.Core (Core, Builtin)
 use Idyll.Core as C
@@ -24,14 +21,16 @@ use Idyll.Unify (unify, effectsFit)
 use Idyll.Usage (Usage)
 use Idyll.Ctx (Ctx)
 use Idyll.Ctx as X
-use Idyll.Elab (Pending, effectsOf, enterGroups, assumeGroup, infer, retryPostponed, closeOpened, closeRows, reportHoles, reportUnsolved, keyOf)
+use Idyll.Elab (Pending, effectsOf, enterGroups, infer, retryPostponed, closeOpened, closeRows, reportHoles, reportUnsolved, keyOf)
 use Idyll.Decl (initial, declareNatives, declareEffects, declareDatas, declareOps)
-use Idyll.Hir (Module, Group, Bind, Ident)
+use Idyll.Hir (Module, Group, Bind, Ident, DataDecl)
 use Idyll.Hir as H
 use Std.Collections.Vector as V
 use Std.String as S
 use Std.Maybe as M
 use Std.Maybe.Maybe.*
+
+fun dataName (d : DataDecl) : Ident = d.name
 
 fun bindsOf (g : Group) : [Bind] =
   match g with
@@ -46,6 +45,8 @@ fun bindsOf (g : Group) : [Bind] =
 @pub fun checkModule (m : Module) : String ! { Mut | e } =
   let tc = T.new () in
   let w0 = setRef tc.terminating m.terminating in
+  let listOf = V.find (\(d : DataDecl) -> H.textOf d.name == "List" and H.uniqueOf d.name < m.first) m.datas in
+  let w0b = match listOf with | Just d -> setRef tc.list (H.uniqueOf (dataName d)) | None -> () in
   let ctx0 = initial tc in
   -- native types first, which the data types and effects may mention; and
   -- native operations last, as their types may mention those
@@ -56,9 +57,7 @@ fun bindsOf (g : Group) : [Bind] =
   let ctx5 = declareNatives tc ctx4 m.natives False in
   let inPrelude = \g -> V.all (\(b : Bind) -> H.uniqueOf b.name < m.first) (bindsOf g) in
   let preludeGroups = V.filter inPrelude m.groups in
-  let ownGroups = V.filter (\g -> not (inPrelude g)) m.groups in
-  let ctx6 = V.foldl (\c g -> assumeGroup tc c g) ctx5 preludeGroups in
-  let (ctx, owed, lets) = enterGroups tc ctx6 ownGroups in
+  let (ctx, owed, lets) = enterGroups tc ctx5 m.groups in
   let world = worldOf tc ctx preludeGroups in
   let w1 =
     V.foldl
@@ -69,7 +68,7 @@ fun bindsOf (g : Group) : [Bind] =
       ()
       owed
   in
-  let main = V.find (\(b : Bind) -> Just (H.uniqueOf b.name) == m.main) (V.concatMap bindsOf ownGroups) in
+  let main = V.find (\(b : Bind) -> Just (H.uniqueOf b.name) == m.main) (V.concatMap bindsOf m.groups) in
   let mainFits = M.map (\b -> checkMain tc ctx b world) main in
   let body =
     match m.body with

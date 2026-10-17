@@ -46,6 +46,7 @@ use Idyll.Ctx as X
 use Idyll.Elab (check, infer, insert, freshMeta, closeEffects, leaveKey, leaveBinder, lam, gradeFits, defaultGrade, mentions, keyOf, effectsOf)
 use Idyll.Hir (Term, Ident, Clause, Pattern, Rhs)
 use Idyll.Hir as H
+use Idyll.Sequences (seqPatternCtors)
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
 use Std.Maybe as M
@@ -374,8 +375,25 @@ fun simplify (tc : Tc) (ctx : Ctx) (p : Problem) : (Step, Problem) ! { Mut | e }
                   -- name several `use`s give is not chosen between yet
                   let w = if V.len us > 1 then T.cannot tc "overloading" else () in
                   (Step.Failed, p)
-                else
-                  let cu = V.getOr 0 us 0 in
+                else conStep tc ctx p (V.getOr 0 us 0) args target rest
+            -- `#[p, q]`: taken apart with the constructors of what it is
+            -- matched against
+            | Pattern.SeqNil -> seqStep tc ctx p target rest []
+            | Pattern.SeqCons h tl -> seqStep tc ctx p target rest [h, tl]))
+
+fun seqStep (tc : Tc) (ctx : Ctx) (p : Problem) (target : Target) (rest : [(Pattern, Target)]) (args : [Pattern]) : (Step, Problem) ! { Mut | e } =
+  let ty = targetType ctx target in
+  match seqPatternCtors tc ctx ty with
+  | Just (nil, cons) -> conStep tc ctx p (if V.isEmpty args then nil else cons) args target rest
+  | None ->
+      let w = match force tc ty with | Value.Error -> () | _ -> T.error tc "NotASequence" in
+      (Step.Failed, p)
+
+-- A constructor pattern, `cu args`, against what it is matched with.
+fun conStep (tc : Tc) (ctx : Ctx) (p : Problem) (cu : Int) (args : [Pattern]) (target : Target) (rest : [(Pattern, Target)]) : (Step, Problem) ! { Mut | e } =
+  match p with
+  | Problem.Problem clause index pending _ bindings dots ->
+      let again = \cs -> simplify tc ctx (Problem.Problem clause index pending cs bindings dots) in
                   (match T.ctorInfo tc cu with
                    | None ->
                        let w = T.error tc "NotAConstructor" in
@@ -397,18 +415,12 @@ fun simplify (tc : Tc) (ctx : Ctx) (p : Problem) : (Step, Problem) ! { Mut | e }
                                    else if c2 != cu then (Step.Fails, p)
                                    else
                                      let fs = fieldTargets tc ctx target cu sp in
-                                     again (V.append (V.zip args fs) rest) bindings dots
+                                     again (V.append (V.zip args fs) rest)
                                | Value.Rigid k _ [] -> (Step.Splits k How.ByCon, p)
                                | v -> (cannotSplit tc v, p))
                         | _ ->
                             let w = T.error tc "NotAConstructorOf" in
                             (Step.Failed, p)))
-            | Pattern.SeqNil ->
-                let w = T.cannot tc "sequences" in
-                (Step.Failed, p)
-            | Pattern.SeqCons _ _ ->
-                let w = T.cannot tc "sequences" in
-                (Step.Failed, p)))
 
 -- Whether a clause no case reached at least makes sense, as far as its
 -- outermost patterns go: a constructor of another type is an error, not an
