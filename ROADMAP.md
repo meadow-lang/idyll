@@ -929,7 +929,8 @@ do yet `(unsupported)`, and the tests count those apart.
   as the reference says, handlers included, on meadow built from its
   `idyll-dev` branch (which has the handler fix, meadow PR 11). The Cut
   corpus passes on Glade likewise, all 221.
-- [ ] The same on Silo.
+- [x] The same on Silo: front/'s Cut 200/200; the Cut corpus 220/221, the
+  one left crashing meadow's lowering for Silo (reported).
 - [x] Packages: a package of modules, and a dependency (Std), in the
   renamer (module namespaces, visibility, `@pub use`, dependencies renamed
   in the same run) and the checker (a dependency checked alongside, as a

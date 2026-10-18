@@ -480,13 +480,16 @@ variable of its own, as `docs/CUT.md` has it, so a closure taking a type
 parameter boxes that type's values (`any`) and passes `desc(any)` on.
 
 `idyll-eval/tests/front.rs` also runs front/'s Cut of every program with
-`meadow cut` on Glade, and holds it to the reference interpreter: the same
-printed, the same answer, the same exit status: all 200 it runs do. (A
+`meadow cut`, on Glade and on Silo, and holds it to the reference
+interpreter: the same printed, the same answer, the same exit status. All
+200 it runs do, on both. (A
 panic in Meadow's back end, should there be one, is counted apart as
 Meadow's.)
 
 The Cut corpus (`cut-corpus/`, which `idyllic-cut` writes) runs on Glade:
-all 221 programs pass, the 18 with handlers among them.
+all 221 programs pass, the 18 with handlers among them. On Silo 220 do; the
+other (`tutorial-md-2566`) crashes meadow as it lowers it for Silo, which is
+reported to the Meadow session.
 
 ## Dependencies
 

@@ -39,10 +39,20 @@ fn the_runs_agree() {
 /// must do what this interpreter says the program does: print the same, and
 /// answer the same (the Cut's entry writes its answer as the REPL shows
 /// it), or exit with the same status. A program whose answer depends on the
-/// clock or randomness is left out; and where Meadow's back end itself
-/// fails (panics), that is Meadow's bug, not front/'s, and is counted apart.
+/// clock or randomness is left out; and where Meadow itself fails (a panic,
+/// a crash), that is Meadow's bug, not front/'s, and is counted apart.
 #[test]
 fn front_cut_runs_as_the_reference_says() {
+    cut_runs_on("glade");
+}
+
+/// The same on Silo, which compiles each program natively first.
+#[test]
+fn front_cut_runs_natively_as_the_reference_says() {
+    cut_runs_on("silo");
+}
+
+fn cut_runs_on(runtime: &str) {
     let source = idyllic::pipeline::PRELUDE;
     let prelude = harness::program(source).expect("the prelude parses");
     let programs = harness::corpus();
@@ -54,7 +64,7 @@ fn front_cut_runs_as_the_reference_says() {
         }
         Err(why) => panic!("{why}"),
     };
-    let dir = std::env::temp_dir().join(format!("idyll-front-glade-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("idyll-front-{runtime}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("a directory for the Cut");
     // each program to run, with what it should print, exit with, and answer
     let mut jobs: Vec<(String, std::path::PathBuf, String, i32)> = Vec::new();
@@ -77,15 +87,26 @@ fn front_cut_runs_as_the_reference_says() {
                     chunk
                         .iter()
                         .map(|(name, file, want, exit)| {
-                            let out = Command::new(harness::meadow()).arg("cut").arg(file).output();
-                            let Ok(out) = out else { return (name.clone(), Err("meadow did not run".to_string()), false) };
+                            let mut cmd = Command::new(harness::meadow());
+                            cmd.arg("cut");
+                            if runtime != "glade" {
+                                cmd.args(["--runtime", runtime]);
+                            }
+                            let Ok(out) = cmd.arg(file).output() else {
+                                return (name.clone(), Err("meadow did not run".to_string()), false);
+                            };
                             let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-                            if stderr.contains("panicked at") {
+                            let code = out.status.code().unwrap_or(-1);
+                            // Meadow itself panicking, or crashing (Windows'
+                            // access violation, a Unix signal)
+                            let crashed = stderr.contains("panicked at") || code == -1073741819 || out.status.code().is_none() || code == 139;
+                            if crashed && code != *exit {
                                 return (name.clone(), Ok(()), true);
                             }
                             let got = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
-                            let code = out.status.code().unwrap_or(-1);
-                            if got == *want && code == *exit {
+                            // Silo says what it is building first
+                            let same = if runtime == "glade" { got == *want } else { got.ends_with(want.as_str()) };
+                            if same && code == *exit {
                                 (name.clone(), Ok(()), false)
                             } else {
                                 let why = format!("printed {got:?} and exited {code}; the reference: {want:?}, exit {exit}; {}", stderr.lines().next().unwrap_or(""));
@@ -102,7 +123,7 @@ fn front_cut_runs_as_the_reference_says() {
     let crashed: Vec<&String> = results.iter().filter(|(_, _, c)| *c).map(|(n, _, _)| n).collect();
     let wrong: Vec<String> = results.iter().filter_map(|(n, r, _)| r.as_ref().err().map(|why| format!("{n}: {why}"))).collect();
     eprintln!(
-        "glade: {} programs run, {} as the reference says, {} where Meadow's back end crashed ({})",
+        "{runtime}: {} programs run, {} as the reference says, {} where Meadow crashed ({})",
         results.len(),
         results.len() - crashed.len() - wrong.len(),
         crashed.len(),
