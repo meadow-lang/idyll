@@ -225,9 +225,8 @@ every unique it could stand for, so that the type checker can choose between
 them by type (ROADMAP.md, phase 3). The Rust renamer lets the last `use`
 win. No program of the corpus depends on the difference yet.
 
-(Rename.mw builds HIR through functions `Hir.mw` exports, `H.app f a`,
-because both modules have a type called `Term` and this Meadow cannot yet
-name a constructor through a module alias. That is coming in Meadow.)
+(Rename.mw writes HIR's constructors through the module's alias,
+`H.Term.App f a`, since both modules have a type called `Term`.)
 
 ### Scc
 
@@ -482,14 +481,12 @@ parameter boxes that type's values (`any`) and passes `desc(any)` on.
 
 `idyll-eval/tests/front.rs` also runs front/'s Cut of every program with
 `meadow cut` on Glade, and holds it to the reference interpreter: the same
-printed, the same answer, the same exit status. 190 of the 200 it runs do
-exactly that; the other 10 have handlers, and meet a panic in Meadow's
-lowering of Cut to AxCut, which the test counts apart as Meadow's.
+printed, the same answer, the same exit status: all 200 it runs do. (A
+panic in Meadow's back end, should there be one, is counted apart as
+Meadow's.)
 
 The Cut corpus (`cut-corpus/`, which `idyllic-cut` writes) runs on Glade:
-all its pure programs and those using the world's effects pass; programs
-with handlers wait on a fix in Meadow's lowering of Cut to AxCut (meadow
-PR 11).
+all 221 programs pass, the 18 with handlers among them.
 
 ## Dependencies
 
@@ -497,6 +494,11 @@ PR 11).
   pinned at the revision the Cut package pins, since Cut's builders take
   Lingua's source positions and two Lingua revisions in one build would be two
   types of them.
+- **meadow** itself is built from the `idyll-dev` branch of the meadow
+  repository, which the Meadow session keeps with whatever Idyll is waiting
+  on, in a clone of its own (`cargo build --release --manifest-path
+  buildtools/Cargo.toml -p meadow`, then `meadowup install --from
+  <target>/release --force`).
 - **Cut**: building Cut and writing its text (rev d12a905, which has the
   roles and native sections, effect variables on definitions, and `@many`
   operations).
@@ -514,8 +516,9 @@ Things that cost time, for whoever works on this next:
   type parameters instead.
 - Windows caps a command line at about 32,000 characters, so the
   differential test runs `front/` on a couple of hundred files at a time.
-- `effect` cannot be a function's name either. A constructor cannot be
-  named through a module alias in a pattern (`C.CaseAlt.CaseAlt`): import
-  the type instead, `use Idyll.Core (CaseAlt)`. Where two modules have a type
+- `effect` cannot be a function's name either. A constructor can be named
+  through a module alias (`H.Term.App`) only from meadow's 04f96f4 on (PR 10);
+  front/ is built with meadow from the `idyll-dev` branch, which has it.
+  Where two modules have a type
   of one name (`Hir`'s `Grade` and `Grade.mw`'s), give the one module
   accessor functions (`H.gradeSubject`).

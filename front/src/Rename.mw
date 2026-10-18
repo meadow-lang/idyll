@@ -587,38 +587,38 @@ fun recordUpdate (r : Rn) (e : Term) (values : [(String, Term)]) : Maybe Term ! 
 
 fun renameGrades (r : Rn) (g : Grade) =
   match g with
-  | Grade.Grade s t -> H.grade (renameTerm r s) (M.map (\x -> renameTerm r x) t)
+  | Grade.Grade s t -> H.Grade.Grade (renameTerm r s) (M.map (\x -> renameTerm r x) t)
 
-fun gradeOne () = H.grade (H.lit (Literal.Int 1)) None
+fun gradeOne () = H.Grade.Grade (H.Term.Lit (Literal.Int 1)) None
 
-fun unresolved () = H.var (Ident.Ident [] "_")
+fun unresolved () = H.Term.Var (Ident.Ident [] "_")
 
 fun renameTerm (r : Rn) (t : Term) =
   match t with
-  | Term.Type -> H.universe ()
-  | Term.Hole -> H.hole ()
-  | Term.Inf -> H.inf ()
-  | Term.Lit l -> H.lit l
+  | Term.Type -> H.Term.Type
+  | Term.Hole -> H.Term.Hole
+  | Term.Inf -> H.Term.Inf
+  | Term.Lit l -> H.Term.Lit l
   -- `otherwise` is `True`, unless something else is called that
-  | Term.Var x -> if x == "otherwise" and not (known r x) then H.lit (Literal.Bool True) else H.var (useName r x)
+  | Term.Var x -> if x == "otherwise" and not (known r x) then H.Term.Lit (Literal.Bool True) else H.Term.Var (useName r x)
   | Term.App f a ->
       let f2 = renameTerm r f in
-      H.app f2 (renameTerm r a)
+      H.Term.App f2 (renameTerm r a)
   | Term.Ann e ty ->
       let e2 = renameTerm r e in
-      H.ann e2 (asType r (\u -> renameTerm r ty))
+      H.Term.Ann e2 (asType r (\u -> renameTerm r ty))
   | Term.Range a b ->
       let a2 = renameTerm r a in
-      H.range a2 (renameTerm r b)
+      H.Term.Range a2 (renameTerm r b)
   | Term.Eff b e ->
       let b2 = renameTerm r b in
-      H.eff b2 (renameTerm r e)
+      H.Term.Eff b2 (renameTerm r e)
   | Term.Row ls tail ->
       let ls2 = V.map (\l -> renameTerm r l) ls in
-      H.row ls2 (M.map (\x -> renameTerm r x) tail)
+      H.Term.Row ls2 (M.map (\x -> renameTerm r x) tail)
   | Term.Handle body clauses ->
       let body2 = renameTerm r body in
-      H.handled
+      H.Term.Handle
         body2
         (V.map
            (\c ->
@@ -640,22 +640,22 @@ fun renameTerm (r : Rn) (t : Term) =
       let dom2 = asType r (\u -> renameTerm r dom) in
       scoped r (\u ->
         let x2 = M.map (\n -> bindName r n) x in
-        H.pi x2 icit grade dom2 (asType r (\v -> renameTerm r cod)))
+        H.Term.Pi x2 icit grade dom2 (asType r (\v -> renameTerm r cod)))
   | Term.Lam p body ->
       scoped r (\u ->
         let bp = bindParam r p in
         wrapParam r bp (renameTerm r body))
-  | Term.BoxIntro e -> H.boxed (renameTerm r e)
+  | Term.BoxIntro e -> H.Term.BoxIntro (renameTerm r e)
   | Term.LetBox x e body ->
       let e2 = renameTerm r e in
       scoped r (\u ->
         let x2 = bindName r x in
-        H.letBox x2 e2 (renameTerm r body))
+        H.Term.LetBox x2 e2 (renameTerm r body))
   | Term.Let ds body ->
       scoped r (\u ->
         let bs = renameDecls r ds in
-        H.letIn [Group.Rec bs] (renameTerm r body))
-  | Term.ArrayLit es -> H.arrayLit (V.map (\e -> renameTerm r e) es)
+        H.Term.Let [Group.Rec bs] (renameTerm r body))
+  | Term.ArrayLit es -> H.Term.ArrayLit (V.map (\e -> renameTerm r e) es)
   | Term.RecordLit name values ->
       (match recordLiteral r name values with
        | Just built -> renameTerm r built
@@ -670,10 +670,10 @@ fun renameTerm (r : Rn) (t : Term) =
        | None -> unresolved ())
   | Term.Seq es ->
       let items = V.map (\e -> renameTerm r e) es in
-      V.foldr (\h tl -> H.seqCons h tl) (H.seqNil ()) items
+      V.foldr (\h tl -> H.Term.SeqCons h tl) (H.Term.SeqNil) items
   | Term.Case e alts ->
       let e2 = renameTerm r e in
-      H.caseOf e2 (V.map (\a -> match a with | Alt.Alt p rhs -> renameClause r [p] None rhs) alts)
+      H.Term.Case e2 (V.map (\a -> match a with | Alt.Alt p rhs -> renameClause r [p] None rhs) alts)
 
 -- A signature: the lower-case names it mentions that nothing binds are bound
 -- in front of it, implicitly, in order of appearance, their types left to
@@ -683,7 +683,7 @@ fun renameSig (r : Rn) (ty : Term) =
   scoped r (\u ->
     let bound = V.map (\x -> bindName r x) free in
     let body = asType r (\v -> renameTerm r ty) in
-    V.foldr (\x acc -> H.pi (Just x) Icit.Implicit None (H.omitted ()) acc) body bound)
+    V.foldr (\x acc -> H.Term.Pi (Just x) Icit.Implicit None (H.Term.Omitted) acc) body bound)
 
 -- One equation or alternative: its patterns bind names for the rest of it,
 -- all of them before any `.e` is renamed; then the right-hand side, under a
@@ -697,14 +697,14 @@ fun renameClause (r : Rn) (pats : [Pat]) (resultTy : Maybe Term) (rhs : Rhs) =
       \e ->
         let body = renameTerm r e in
         match resultTy with
-        | Just ty -> H.ann body (asType r (\w -> renameTerm r ty))
+        | Just ty -> H.Term.Ann body (asType r (\w -> renameTerm r ty))
         | None -> body
     in
     let rhs2 =
       match rhs with
-      | Rhs.Plain e -> H.plain (annotate e)
+      | Rhs.Plain e -> H.Rhs.Plain (annotate e)
       | Rhs.Guarded gs ->
-          H.guarded
+          H.Rhs.Guarded
             (V.map
                (\g ->
                  match g with
@@ -712,9 +712,9 @@ fun renameClause (r : Rn) (pats : [Pat]) (resultTy : Maybe Term) (rhs : Rhs) =
                      let c2 = renameTerm r c in
                      (c2, annotate e))
                gs)
-      | Rhs.Impossible -> H.impossible ()
+      | Rhs.Impossible -> H.Rhs.Impossible
     in
-    H.clause pats2 rhs2)
+    H.Clause.Clause pats2 rhs2)
 
 -- Bind a pattern's names, in order, onto `names`.
 fun bindPattern (r : Rn) (p : Pat) (names : Ref [Ident]) =
@@ -835,7 +835,7 @@ fun renameEffect (r : Rn) (e : Effect) (names : (Ident, [Ident])) =
             (\j ->
               match V.get e.ops j with
               | Just (OpSig.OpSig _ ty many) -> OpDecl.OpDecl (V.getOr (Ident.Ident [] "_") opNames j) (renameSig r ty) many
-              | None -> OpDecl.OpDecl (Ident.Ident [] "_") (H.hole ()) False)
+              | None -> OpDecl.OpDecl (Ident.Ident [] "_") (H.Term.Hole) False)
             (V.range 0 (V.len e.ops))
         in
         EffectDecl { name, params, ops })
@@ -859,8 +859,8 @@ fun wrapParam (r : Rn) p body =
   match p with
   | BoundParam.BoundParam name boxed grade ty ->
       (match boxed with
-       | None -> H.lam name grade ty body
-       | Just b -> H.lam b None None (H.letBox name (H.var b) body))
+       | None -> H.Term.Lam name grade ty body
+       | Just b -> H.Term.Lam b None None (H.Term.LetBox name (H.Term.Var b) body))
 
 -- A definition: its equations, its name bound, and its signature.
 record Def = {
@@ -942,12 +942,12 @@ fun renameDef (r : Rn) (dfn : Def) =
                scoped r (\w ->
                  let bps = V.map (\p -> bindParam r p) ps in
                  let b = renameTerm r body in
-                 let b2 = match resultTy with | Just t -> H.ann b (asType r (\x -> renameTerm r t)) | None -> b in
+                 let b2 = match resultTy with | Just t -> H.Term.Ann b (asType r (\x -> renameTerm r t)) | None -> b in
                  V.foldr (\bp acc -> wrapParam r bp acc) b2 bps)
              in
              H.bind dfn.name ty built (getRef r.linear))
        | _ -> renameMatch r dfn ty)
-  | _ -> H.bind dfn.name None (H.hole ()) False
+  | _ -> H.bind dfn.name None (H.Term.Hole) False
 
 -- A definition by matching: each equation a clause.
 fun renameMatch (r : Rn) (dfn : Def) ty =
@@ -958,10 +958,10 @@ fun renameMatch (r : Rn) (dfn : Def) ty =
         (\d ->
           match d with
           | Decl.Def _ pats resultTy rhs -> renameClause r pats resultTy rhs
-          | _ -> H.clause [] (H.impossible ()))
+          | _ -> H.Clause.Clause [] (H.Rhs.Impossible))
         dfn.eqs
     in
-    H.bind dfn.name ty (H.matching clauses) (getRef r.linear))
+    H.bind dfn.name ty (H.Term.Match clauses) (getRef r.linear))
 
 -- What a signature quantifies over scopes over the equation.
 fun scopeQuantified (r : Rn) ty =

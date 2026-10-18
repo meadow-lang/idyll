@@ -160,38 +160,38 @@ fun popTo (t : Tarjan) (v : Int) (acc : [Int]) : [Int] ! { Mut | e } =
 
 @pub fun sccTerm (t : Term) : Term ! { Mut | e } =
   match t with
-  | Term.App f a -> H.app (sccTerm f) (sccTerm a)
-  | Term.SeqCons h tl -> H.seqCons (sccTerm h) (sccTerm tl)
-  | Term.ArrayLit items -> H.arrayLit (V.map sccTerm items)
-  | Term.Ann e a -> H.ann (sccTerm e) (sccTerm a)
-  | Term.Range lo hi -> H.range (sccTerm lo) (sccTerm hi)
-  | Term.Pi x icit g dom cod -> H.pi x icit (M.map sccGrade g) (sccTerm dom) (sccTerm cod)
-  | Term.Lam x g ty body -> H.lam x (M.map sccGrade g) (M.map sccTerm ty) (sccTerm body)
-  | Term.BoxIntro e -> H.boxed (sccTerm e)
-  | Term.LetBox x e body -> H.letBox x (sccTerm e) (sccTerm body)
-  | Term.Let gs body -> H.letIn (sccGroups gs) (sccTerm body)
-  | Term.Case s cs -> H.caseOf (sccTerm s) (V.map sccClause cs)
-  | Term.Match cs -> H.matching (V.map sccClause cs)
-  | Term.Eff a r -> H.eff (sccTerm a) (sccTerm r)
-  | Term.Row ls tail -> H.row (V.map sccTerm ls) (M.map sccTerm tail)
+  | Term.App f a -> H.Term.App (sccTerm f) (sccTerm a)
+  | Term.SeqCons h tl -> H.Term.SeqCons (sccTerm h) (sccTerm tl)
+  | Term.ArrayLit items -> H.Term.ArrayLit (V.map sccTerm items)
+  | Term.Ann e a -> H.Term.Ann (sccTerm e) (sccTerm a)
+  | Term.Range lo hi -> H.Term.Range (sccTerm lo) (sccTerm hi)
+  | Term.Pi x icit g dom cod -> H.Term.Pi x icit (M.map sccGrade g) (sccTerm dom) (sccTerm cod)
+  | Term.Lam x g ty body -> H.Term.Lam x (M.map sccGrade g) (M.map sccTerm ty) (sccTerm body)
+  | Term.BoxIntro e -> H.Term.BoxIntro (sccTerm e)
+  | Term.LetBox x e body -> H.Term.LetBox x (sccTerm e) (sccTerm body)
+  | Term.Let gs body -> H.Term.Let (sccGroups gs) (sccTerm body)
+  | Term.Case s cs -> H.Term.Case (sccTerm s) (V.map sccClause cs)
+  | Term.Match cs -> H.Term.Match (V.map sccClause cs)
+  | Term.Eff a r -> H.Term.Eff (sccTerm a) (sccTerm r)
+  | Term.Row ls tail -> H.Term.Row (V.map sccTerm ls) (M.map sccTerm tail)
   | Term.Handle body cs ->
-      H.handled (sccTerm body) (V.map (\c -> match c with | HandleClause.HandleClause op xs b -> HandleClause.HandleClause op xs (sccTerm b)) cs)
+      H.Term.Handle (sccTerm body) (V.map (\c -> match c with | HandleClause.HandleClause op xs b -> HandleClause.HandleClause op xs (sccTerm b)) cs)
   | _ -> t
 
 fun sccGrade (g : Grade) : Grade ! { Mut | e } =
   match g with
-  | Grade.Grade s r -> H.grade (sccTerm s) (M.map sccTerm r)
+  | Grade.Grade s r -> H.Grade.Grade (sccTerm s) (M.map sccTerm r)
 
 fun sccClause (c : Clause) : Clause ! { Mut | e } =
   match c with
   | Clause.Clause ps r ->
       let rhs =
         match r with
-        | Rhs.Plain e -> H.plain (sccTerm e)
-        | Rhs.Guarded gs -> H.guarded (V.map (\g -> match g with | (c2, e) -> (sccTerm c2, sccTerm e)) gs)
-        | Rhs.Impossible -> H.impossible ()
+        | Rhs.Plain e -> H.Rhs.Plain (sccTerm e)
+        | Rhs.Guarded gs -> H.Rhs.Guarded (V.map (\g -> match g with | (c2, e) -> (sccTerm c2, sccTerm e)) gs)
+        | Rhs.Impossible -> H.Rhs.Impossible
       in
-      H.clause (V.map sccPattern ps) rhs
+      H.Clause.Clause (V.map sccPattern ps) rhs
 
 fun sccPattern (p : Pattern) : Pattern ! { Mut | e } =
   match p with

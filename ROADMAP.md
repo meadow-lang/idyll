@@ -925,11 +925,11 @@ do yet `(unsupported)`, and the tests count those apart.
   declaration order aside). The Cut package grew what Idyll needs (roles,
   natives, effect variables, `@many`) in its PR 2.
 - [x] Run front/'s Cut with `meadow cut` on Glade against the reference
-  interpreter's answers, in a test (`idyll-eval/tests/front.rs`): 190 of
-  200 as the reference says, the 10 with handlers meeting a Meadow panic
-  (fixed in meadow PR 11, not yet in a release). The Cut corpus itself
-  passes on Glade likewise (pure 198/198, world 5/5).
-- [ ] The same on Silo, and the handler programs once meadow PR 11 is in.
+  interpreter's answers, in a test (`idyll-eval/tests/front.rs`): all 200
+  as the reference says, handlers included, on meadow built from its
+  `idyll-dev` branch (which has the handler fix, meadow PR 11). The Cut
+  corpus passes on Glade likewise, all 221.
+- [ ] The same on Silo.
 - [x] Packages: a package of modules, and a dependency (Std), in the
   renamer (module namespaces, visibility, `@pub use`, dependencies renamed
   in the same run) and the checker (a dependency checked alongside, as a

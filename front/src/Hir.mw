@@ -141,39 +141,9 @@ use Std.Collections.HashMap (HashMap)
   | Term.Pi (Just x) Icit.Implicit _ _ cod -> V.append [x] (quantified cod)
   | _ -> []
 
--- --- building ----------------------------------------------------------------
---
--- What the renamer builds its terms with. It reads the parser's tree, whose
--- `Term`, `Grade`, `Clause` and `Rhs` share these names, so it names this
--- module's through these functions, `H.app f a`.
+-- --- building ---------------------------------------------------------------
 
-@pub fun universe () : Term = Term.Type
-@pub fun var (x : Ident) : Term = Term.Var x
-@pub fun lit (l : Literal) : Term = Term.Lit l
-@pub fun pi (x : Maybe Ident) (icit : Icit) (g : Maybe Grade) (dom : Term) (cod : Term) : Term = Term.Pi x icit g dom cod
-@pub fun lam (x : Ident) (g : Maybe Grade) (ty : Maybe Term) (body : Term) : Term = Term.Lam x g ty body
-@pub fun app (f : Term) (a : Term) : Term = Term.App f a
-@pub fun ann (e : Term) (ty : Term) : Term = Term.Ann e ty
-@pub fun hole () : Term = Term.Hole
-@pub fun boxed (e : Term) : Term = Term.BoxIntro e
-@pub fun inf () : Term = Term.Inf
-@pub fun range (a : Term) (b : Term) : Term = Term.Range a b
-@pub fun letBox (x : Ident) (e : Term) (body : Term) : Term = Term.LetBox x e body
-@pub fun letIn (gs : [Group]) (body : Term) : Term = Term.Let gs body
-@pub fun caseOf (e : Term) (cs : [Clause]) : Term = Term.Case e cs
-@pub fun matching (cs : [Clause]) : Term = Term.Match cs
-@pub fun omitted () : Term = Term.Omitted
-@pub fun eff (b : Term) (e : Term) : Term = Term.Eff b e
-@pub fun row (ls : [Term]) (tail : Maybe Term) : Term = Term.Row ls tail
-@pub fun handled (e : Term) (cs : [HandleClause]) : Term = Term.Handle e cs
-@pub fun seqNil () : Term = Term.SeqNil
-@pub fun seqCons (h : Term) (tl : Term) : Term = Term.SeqCons h tl
-@pub fun arrayLit (es : [Term]) : Term = Term.ArrayLit es
-@pub fun grade (s : Term) (r : Maybe Term) : Grade = Grade.Grade s r
-@pub fun clause (ps : [Pattern]) (r : Rhs) : Clause = Clause.Clause ps r
-@pub fun plain (e : Term) : Rhs = Rhs.Plain e
-@pub fun guarded (gs : [(Term, Term)]) : Rhs = Rhs.Guarded gs
-@pub fun impossible () : Rhs = Rhs.Impossible
+-- A binding, its fields in order.
 @pub fun bind (name : Ident) (ty : Maybe Term) (rhs : Term) (linear : Bool) : Bind = Bind { name, ty, rhs, linear }
 
 -- --- writing -----------------------------------------------------------------
