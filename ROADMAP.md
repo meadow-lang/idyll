@@ -709,7 +709,8 @@ shows a type.
   compiler** (Chris, 2026-10-17), as F*'s Low\* has it, compiled to C by
   KaRaMeL, which HACL\* and EverCrypt are written in. Idyll stays high level:
   this is a fenced-off part of it, provably safe, not a second way to write
-  everything. Five pieces:
+  everything. The design, with a worked example, the C it compiles to, an
+  order of work and the open questions, is `docs/LOW.md`. Five pieces:
   - **A `Mem` effect**: stack frames and heap regions, `alloca`, `malloc`
     and `free`, buffers whose lengths are in their types, reads and writes
     through pointers, machine integers of fixed widths.
