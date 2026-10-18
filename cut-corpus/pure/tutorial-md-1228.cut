@@ -76,34 +76,34 @@ def idyll:Main/norm (p_62: ptr; k_63: ptr) =
             prim mul(v_66, v_67; μ̃ v_65: i64.
               prim add(v_64, v_65; k_63)))))))
 
-def idyll:Main/Point.x (self_72: ptr; k_73: ptr) =
+def idyll:Main/Point.y (self_72: ptr; k_73: ptr) =
   <self_72 | case {
     idyll:Main/Point.Point(x_74: i64, y_75: i64) =>
-      <x_74 | k_73>
+      <y_75 | k_73>
   }>
 
-def idyll:Main/Point.y (self_76: ptr; k_77: ptr) =
-  <self_76 | case {
-    idyll:Main/Point.Point(x_78: i64, y_79: i64) =>
-      <y_79 | k_77>
-  }>
-
-def idyll:Prelude/negativeDigits (fuel_80: ptr, n_81: i64; k_82: ptr) =
-  <fuel_80 | case {
+def idyll:Prelude/negativeDigits (fuel_76: ptr, n_77: i64; k_78: ptr) =
+  <fuel_76 | case {
     idyll:Prelude/DigitFuel.Spent =>
-      <"" | k_82>;
-    idyll:Prelude/DigitFuel.More(fuel_83: ptr) =>
-      prim sub(0, 10; μ̃ v_93: i64.
-        prim lt(v_93, n_81; μ̃ v__84: bool.
-          prim if(v__84; μ̃ u_91: unit.
-            prim div(n_81, 10; μ̃ v_89: i64.
-              idyll:Prelude/negativeDigits(fuel_83, v_89; μ̃ v_85: str.
-                prim mod(n_81, 10; μ̃ v_88: i64.
-                  prim sub(0, v_88; μ̃ v_87: i64.
-                    idyll:Prelude/digitString(v_87; μ̃ v_86: str.
-                      prim concatStrings([v_85, v_86]; k_82)))))), μ̃ u_92: unit.
-            prim sub(0, n_81; μ̃ v_90: i64.
-              idyll:Prelude/digitString(v_90; k_82)))))
+      <"" | k_78>;
+    idyll:Prelude/DigitFuel.More(fuel_79: ptr) =>
+      prim sub(0, 10; μ̃ v_89: i64.
+        prim lt(v_89, n_77; μ̃ v__80: bool.
+          prim if(v__80; μ̃ u_87: unit.
+            prim div(n_77, 10; μ̃ v_85: i64.
+              idyll:Prelude/negativeDigits(fuel_79, v_85; μ̃ v_81: str.
+                prim mod(n_77, 10; μ̃ v_84: i64.
+                  prim sub(0, v_84; μ̃ v_83: i64.
+                    idyll:Prelude/digitString(v_83; μ̃ v_82: str.
+                      prim concatStrings([v_81, v_82]; k_78)))))), μ̃ u_88: unit.
+            prim sub(0, n_77; μ̃ v_86: i64.
+              idyll:Prelude/digitString(v_86; k_78)))))
+  }>
+
+def idyll:Main/Point.x (self_90: ptr; k_91: ptr) =
+  <self_90 | case {
+    idyll:Main/Point.Point(x_92: i64, y_93: i64) =>
+      <x_92 | k_91>
   }>
 
 def idyll:Main/"#entry" (; k_94: ptr) =

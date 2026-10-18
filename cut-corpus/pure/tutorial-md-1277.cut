@@ -108,14 +108,13 @@ def idyll:Std/Num.Nat.bits (fuel_74: ptr, n_75: i64; k_76: ptr) =
           <idyll:Std/Num.Nat.Nat.Z | k_76>))
   }>
 
-def idyll:Std/Num.Nat.double (x_93: ptr; k_94: ptr) =
+def idyll:Std/Num.Nat.plus (x_93: ptr, m_94: ptr; k_95: ptr) =
   <x_93 | case {
     idyll:Std/Num.Nat.Nat.Z =>
-      <idyll:Std/Num.Nat.Nat.Z | k_94>;
-    idyll:Std/Num.Nat.Nat.S(n_95: ptr) =>
-      idyll:Std/Num.Nat.double(n_95; μ̃ v_97: ptr.
-        <idyll:Std/Num.Nat.Nat.S(v_97) | μ̃ v_96: ptr.
-          <idyll:Std/Num.Nat.Nat.S(v_96) | k_94>>)
+      <m_94 | k_95>;
+    idyll:Std/Num.Nat.Nat.S(n_96: ptr) =>
+      idyll:Std/Num.Nat.plus(n_96, m_94; μ̃ v_97: ptr.
+        <idyll:Std/Num.Nat.Nat.S(v_97) | k_95>)
   }>
 
 def idyll:Prelude/negativeDigits (fuel_98: ptr, n_99: i64; k_100: ptr) =
@@ -142,13 +141,14 @@ def idyll:Main/Sized.items (self_112: ptr; k_113: ptr) =
       <items_115 | k_113>
   }>
 
-def idyll:Std/Num.Nat.plus (x_116: ptr, m_117: ptr; k_118: ptr) =
+def idyll:Std/Num.Nat.double (x_116: ptr; k_117: ptr) =
   <x_116 | case {
     idyll:Std/Num.Nat.Nat.Z =>
-      <m_117 | k_118>;
-    idyll:Std/Num.Nat.Nat.S(n_119: ptr) =>
-      idyll:Std/Num.Nat.plus(n_119, m_117; μ̃ v_120: ptr.
-        <idyll:Std/Num.Nat.Nat.S(v_120) | k_118>)
+      <idyll:Std/Num.Nat.Nat.Z | k_117>;
+    idyll:Std/Num.Nat.Nat.S(n_118: ptr) =>
+      idyll:Std/Num.Nat.double(n_118; μ̃ v_120: ptr.
+        <idyll:Std/Num.Nat.Nat.S(v_120) | μ̃ v_119: ptr.
+          <idyll:Std/Num.Nat.Nat.S(v_119) | k_117>>)
   }>
 
 def idyll:Main/"#show Vec Z Int" (x_135: ptr; k_136: ptr) =

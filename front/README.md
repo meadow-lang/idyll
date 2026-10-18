@@ -487,9 +487,12 @@ panic in Meadow's back end, should there be one, is counted apart as
 Meadow's.)
 
 The Cut corpus (`cut-corpus/`, which `idyllic-cut` writes) runs on Glade:
-all 221 programs pass, the 18 with handlers among them. On Silo 220 do; the
-other (`tutorial-md-2566`) crashes meadow as it lowers it for Silo, which is
-reported to the Meadow session.
+all 221 programs pass, the 18 with handlers among them, and on Silo too.
+
+A primitive whose answer is whatever was stored (`arrayGet`) has it bound at
+the element's representation before it goes on: given straight to a
+continuation, whose representation is always `ptr`, it would be taken for a
+pointer, which Glade survives (its values carry tags) and Silo does not.
 
 ## Dependencies
 

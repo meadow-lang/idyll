@@ -75,28 +75,28 @@ def idyll:Main/moved (p_62: ptr; k_63: ptr) =
           <idyll:Main/Point.Point(v_66, v_y_65) | k_63>))
   }>
 
-def idyll:Main/Point.x (self_69: ptr; k_70: ptr) =
-  <self_69 | case {
-    idyll:Main/Point.Point(x_71: i64, y_72: i64) =>
-      <x_71 | k_70>
+def idyll:Prelude/negativeDigits (fuel_69: ptr, n_70: i64; k_71: ptr) =
+  <fuel_69 | case {
+    idyll:Prelude/DigitFuel.Spent =>
+      <"" | k_71>;
+    idyll:Prelude/DigitFuel.More(fuel_72: ptr) =>
+      prim sub(0, 10; μ̃ v_82: i64.
+        prim lt(v_82, n_70; μ̃ v__73: bool.
+          prim if(v__73; μ̃ u_80: unit.
+            prim div(n_70, 10; μ̃ v_78: i64.
+              idyll:Prelude/negativeDigits(fuel_72, v_78; μ̃ v_74: str.
+                prim mod(n_70, 10; μ̃ v_77: i64.
+                  prim sub(0, v_77; μ̃ v_76: i64.
+                    idyll:Prelude/digitString(v_76; μ̃ v_75: str.
+                      prim concatStrings([v_74, v_75]; k_71)))))), μ̃ u_81: unit.
+            prim sub(0, n_70; μ̃ v_79: i64.
+              idyll:Prelude/digitString(v_79; k_71)))))
   }>
 
-def idyll:Prelude/negativeDigits (fuel_73: ptr, n_74: i64; k_75: ptr) =
-  <fuel_73 | case {
-    idyll:Prelude/DigitFuel.Spent =>
-      <"" | k_75>;
-    idyll:Prelude/DigitFuel.More(fuel_76: ptr) =>
-      prim sub(0, 10; μ̃ v_86: i64.
-        prim lt(v_86, n_74; μ̃ v__77: bool.
-          prim if(v__77; μ̃ u_84: unit.
-            prim div(n_74, 10; μ̃ v_82: i64.
-              idyll:Prelude/negativeDigits(fuel_76, v_82; μ̃ v_78: str.
-                prim mod(n_74, 10; μ̃ v_81: i64.
-                  prim sub(0, v_81; μ̃ v_80: i64.
-                    idyll:Prelude/digitString(v_80; μ̃ v_79: str.
-                      prim concatStrings([v_78, v_79]; k_75)))))), μ̃ u_85: unit.
-            prim sub(0, n_74; μ̃ v_83: i64.
-              idyll:Prelude/digitString(v_83; k_75)))))
+def idyll:Main/Point.x (self_83: ptr; k_84: ptr) =
+  <self_83 | case {
+    idyll:Main/Point.Point(x_85: i64, y_86: i64) =>
+      <x_85 | k_84>
   }>
 
 def idyll:Main/"#show Point" (x_89: ptr; k_90: ptr) =

@@ -967,11 +967,26 @@ fun nativeApp (l : L) (env : LEnv) (whole : Core) (ni : (String, Int)) (args : [
                 else
                   let values = V.slice args nparams all in
                   let later = V.drop args all in
+                  -- What an array holds comes out as whatever was stored,
+                  -- which only a binder can say how it is represented: given
+                  -- straight to a continuation, it would be taken for a
+                  -- pointer (`docs/CUT.md`).
+                  let isBinder = match k with | Cons.MuT _ _ -> True | _ -> False in
+                  let stored =
+                    if (n == "arrayGet" or n == "arrayGetOr") and V.isEmpty later and not isBinder then
+                      (let r = repOf l env whole in if r == Rep.Ptr then None else Just r)
+                    else None
+                  in
                   atoms
                     l
                     env
                     values
                     (\ps ->
+                      match stored with
+                      | Just r ->
+                          let x = name l "x" in
+                          Stmt.Prim op ps [Cons.MuT (Binder.Binder x r) (Stmt.Cut (Prod.Var x) k)]
+                      | None ->
                       if V.isEmpty later then Stmt.Prim op ps [k]
                       else
                         let r = name l "r" in

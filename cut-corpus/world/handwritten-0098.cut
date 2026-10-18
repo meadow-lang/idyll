@@ -87,27 +87,27 @@ def idyll:Main/count (n_69: i64; k_70: ptr) =
           idyll:Main/count(v_74; k_70))), μ̃ u_76: unit.
       idyll:Prelude/putStrLn("liftoff"; k_70)))
 
-def idyll:Prelude/negativeDigits (fuel_77: ptr, n_78: i64; k_79: ptr) =
-  <fuel_77 | case {
-    idyll:Prelude/DigitFuel.Spent =>
-      <"" | k_79>;
-    idyll:Prelude/DigitFuel.More(fuel_80: ptr) =>
-      prim sub(0, 10; μ̃ v_90: i64.
-        prim lt(v_90, n_78; μ̃ v__81: bool.
-          prim if(v__81; μ̃ u_88: unit.
-            prim div(n_78, 10; μ̃ v_86: i64.
-              idyll:Prelude/negativeDigits(fuel_80, v_86; μ̃ v_82: str.
-                prim mod(n_78, 10; μ̃ v_85: i64.
-                  prim sub(0, v_85; μ̃ v_84: i64.
-                    idyll:Prelude/digitString(v_84; μ̃ v_83: str.
-                      prim concatStrings([v_82, v_83]; k_79)))))), μ̃ u_89: unit.
-            prim sub(0, n_78; μ̃ v_87: i64.
-              idyll:Prelude/digitString(v_87; k_79)))))
-  }>
+def idyll:Main/main (x_77: unit; k_78: ptr) =
+  perform idyll:Prelude/Console.putStr("counting: "; μ̃ u_79: unit.
+    idyll:Main/count(3; k_78))
 
-def idyll:Main/main (x_91: unit; k_92: ptr) =
-  perform idyll:Prelude/Console.putStr("counting: "; μ̃ u_93: unit.
-    idyll:Main/count(3; k_92))
+def idyll:Prelude/negativeDigits (fuel_80: ptr, n_81: i64; k_82: ptr) =
+  <fuel_80 | case {
+    idyll:Prelude/DigitFuel.Spent =>
+      <"" | k_82>;
+    idyll:Prelude/DigitFuel.More(fuel_83: ptr) =>
+      prim sub(0, 10; μ̃ v_93: i64.
+        prim lt(v_93, n_81; μ̃ v__84: bool.
+          prim if(v__84; μ̃ u_91: unit.
+            prim div(n_81, 10; μ̃ v_89: i64.
+              idyll:Prelude/negativeDigits(fuel_83, v_89; μ̃ v_85: str.
+                prim mod(n_81, 10; μ̃ v_88: i64.
+                  prim sub(0, v_88; μ̃ v_87: i64.
+                    idyll:Prelude/digitString(v_87; μ̃ v_86: str.
+                      prim concatStrings([v_85, v_86]; k_82)))))), μ̃ u_92: unit.
+            prim sub(0, n_81; μ̃ v_90: i64.
+              idyll:Prelude/digitString(v_90; k_82)))))
+  }>
 
 def idyll:Main/"#entry" (; k_94: ptr) =
   idyll:Main/main(unit; k_94)

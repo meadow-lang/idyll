@@ -1011,7 +1011,17 @@ impl Lower<'_> {
         let values = args[info.params..all].to_vec();
         let later = args[all..].to_vec();
         let env2 = env.clone();
+        // What an array holds comes out as whatever was stored, which only a
+        // binder can say how it is represented: given straight to a
+        // continuation, it would be taken for a pointer (`docs/CUT.md`).
+        let stored = matches!(n, Native::ArrayGet | Native::ArrayGetOr) && later.is_empty() && !matches!(k, Consumer::MuTilde(..));
+        let stored = if stored { Some(self.rep_of(env, whole)).filter(|r| *r != Rep::Ptr) } else { None };
         self.atoms(env, &values, &mut |this, ps| {
+            if let Some(rep) = &stored {
+                let x = this.name("x");
+                let give = Statement::Cut(Producer::Var(x.clone()), k.clone());
+                return Statement::Prim(op.clone(), ps, vec![Consumer::MuTilde(Binder { name: x, rep: rep.clone() }, Box::new(give))]);
+            }
             if later.is_empty() {
                 return Statement::Prim(op.clone(), ps, vec![k.clone()]);
             }

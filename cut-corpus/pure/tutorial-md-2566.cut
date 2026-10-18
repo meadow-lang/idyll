@@ -109,103 +109,104 @@ def idyll:Std/Collections.Array.checkIndex <'a_87 = d_a_86> (d_a_86: desc, xs_88
 
 def idyll:Std/Collections.Array.at <'a_103 = d_a_102> (d_a_102: desc, xs_104: ptr, i_105: ptr; k_106: ptr) =
   idyll:Std/Num.Fin.toInt(i_105; μ̃ v_107: i64.
-    prim arrayGet(xs_104, v_107; k_106))
+    prim arrayGet(xs_104, v_107; μ̃ x_108: 'a_103.
+      <x_108 | k_106>))
 
-def idyll:Std/Num.Nat.double (x_109: ptr; k_110: ptr) =
-  <x_109 | case {
-    idyll:Std/Num.Nat.Nat.Z =>
-      <idyll:Std/Num.Nat.Nat.Z | k_110>;
-    idyll:Std/Num.Nat.Nat.S(n_111: ptr) =>
-      idyll:Std/Num.Nat.double(n_111; μ̃ v_113: ptr.
-        <idyll:Std/Num.Nat.Nat.S(v_113) | μ̃ v_112: ptr.
-          <idyll:Std/Num.Nat.Nat.S(v_112) | k_110>>)
-  }>
-
-def idyll:Prelude/negativeDigits (fuel_114: ptr, n_115: i64; k_116: ptr) =
-  <fuel_114 | case {
+def idyll:Prelude/negativeDigits (fuel_110: ptr, n_111: i64; k_112: ptr) =
+  <fuel_110 | case {
     idyll:Prelude/DigitFuel.Spent =>
-      <"" | k_116>;
-    idyll:Prelude/DigitFuel.More(fuel_117: ptr) =>
-      prim sub(0, 10; μ̃ v_127: i64.
-        prim lt(v_127, n_115; μ̃ v__118: bool.
-          prim if(v__118; μ̃ u_125: unit.
-            prim div(n_115, 10; μ̃ v_123: i64.
-              idyll:Prelude/negativeDigits(fuel_117, v_123; μ̃ v_119: str.
-                prim mod(n_115, 10; μ̃ v_122: i64.
-                  prim sub(0, v_122; μ̃ v_121: i64.
-                    idyll:Prelude/digitString(v_121; μ̃ v_120: str.
-                      prim concatStrings([v_119, v_120]; k_116)))))), μ̃ u_126: unit.
-            prim sub(0, n_115; μ̃ v_124: i64.
-              idyll:Prelude/digitString(v_124; k_116)))))
+      <"" | k_112>;
+    idyll:Prelude/DigitFuel.More(fuel_113: ptr) =>
+      prim sub(0, 10; μ̃ v_123: i64.
+        prim lt(v_123, n_111; μ̃ v__114: bool.
+          prim if(v__114; μ̃ u_121: unit.
+            prim div(n_111, 10; μ̃ v_119: i64.
+              idyll:Prelude/negativeDigits(fuel_113, v_119; μ̃ v_115: str.
+                prim mod(n_111, 10; μ̃ v_118: i64.
+                  prim sub(0, v_118; μ̃ v_117: i64.
+                    idyll:Prelude/digitString(v_117; μ̃ v_116: str.
+                      prim concatStrings([v_115, v_116]; k_112)))))), μ̃ u_122: unit.
+            prim sub(0, n_111; μ̃ v_120: i64.
+              idyll:Prelude/digitString(v_120; k_112)))))
   }>
 
-def idyll:Std/Num.Fin.fromNat (i_128: ptr, n_129: ptr; k_130: ptr) =
-  <n_129 | case {
+def idyll:Std/Num.Nat.plus (x_124: ptr, m_125: ptr; k_126: ptr) =
+  <x_124 | case {
     idyll:Std/Num.Nat.Nat.Z =>
-      <idyll:Prelude/Maybe.Nothing | k_130>;
-    idyll:Std/Num.Nat.Nat.S(n_131: ptr) =>
-      <i_128 | case {
+      <m_125 | k_126>;
+    idyll:Std/Num.Nat.Nat.S(n_127: ptr) =>
+      idyll:Std/Num.Nat.plus(n_127, m_125; μ̃ v_128: ptr.
+        <idyll:Std/Num.Nat.Nat.S(v_128) | k_126>)
+  }>
+
+def idyll:Std/Num.Nat.bits (fuel_131: ptr, n_132: i64; k_133: ptr) =
+  <fuel_131 | case {
+    idyll:Std/Num.Nat.Nat.Z =>
+      <idyll:Std/Num.Nat.Nat.Z | k_133>;
+    idyll:Std/Num.Nat.Nat.S(fuel_134: ptr) =>
+      prim lt(n_132, 1; μ̃ v__135: bool.
+        prim if(v__135; μ̃ u_146: unit.
+          prim mod(n_132, 2; μ̃ v_145: i64.
+            prim eq(v_145, 1; μ̃ v__140: bool.
+              <μ j_141.
+                prim if(v__140; μ̃ u_143: unit.
+                  <idyll:Std/Num.Nat.Nat.Z | j_141>, μ̃ u_144: unit.
+                  <idyll:Std/Num.Nat.Nat.Z | μ̃ v_142: ptr.
+                    <idyll:Std/Num.Nat.Nat.S(v_142) | j_141>>) | μ̃ v_136: ptr.
+                prim div(n_132, 2; μ̃ v_139: i64.
+                  idyll:Std/Num.Nat.bits(fuel_134, v_139; μ̃ v_138: ptr.
+                    idyll:Std/Num.Nat.double(v_138; μ̃ v_137: ptr.
+                      idyll:Std/Num.Nat.plus(v_136, v_137; k_133))))>)), μ̃ u_147: unit.
+          <idyll:Std/Num.Nat.Nat.Z | k_133>))
+  }>
+
+def idyll:Std/Num.Fin.fromNat (i_148: ptr, n_149: ptr; k_150: ptr) =
+  <n_149 | case {
+    idyll:Std/Num.Nat.Nat.Z =>
+      <idyll:Prelude/Maybe.Nothing | k_150>;
+    idyll:Std/Num.Nat.Nat.S(n_151: ptr) =>
+      <i_148 | case {
         idyll:Std/Num.Nat.Nat.Z =>
-          <idyll:Std/Num.Fin.Fin.FZ | μ̃ v_132: ptr.
-            <idyll:Prelude/Maybe.Just(v_132) | k_130>>;
-        idyll:Std/Num.Nat.Nat.S(i_133: ptr) =>
-          idyll:Std/Num.Fin.fromNat(i_133, n_131; μ̃ v__134: ptr.
-            <v__134 | case {
+          <idyll:Std/Num.Fin.Fin.FZ | μ̃ v_152: ptr.
+            <idyll:Prelude/Maybe.Just(v_152) | k_150>>;
+        idyll:Std/Num.Nat.Nat.S(i_153: ptr) =>
+          idyll:Std/Num.Fin.fromNat(i_153, n_151; μ̃ v__154: ptr.
+            <v__154 | case {
               idyll:Prelude/Maybe.Nothing =>
-                <idyll:Prelude/Maybe.Nothing | k_130>;
-              idyll:Prelude/Maybe.Just(f_135: ptr) =>
-                <idyll:Std/Num.Fin.Fin.FS(f_135) | μ̃ v_136: ptr.
-                  <idyll:Prelude/Maybe.Just(v_136) | k_130>>
+                <idyll:Prelude/Maybe.Nothing | k_150>;
+              idyll:Prelude/Maybe.Just(f_155: ptr) =>
+                <idyll:Std/Num.Fin.Fin.FS(f_155) | μ̃ v_156: ptr.
+                  <idyll:Prelude/Maybe.Just(v_156) | k_150>>
             }>)
       }>
   }>
 
-def idyll:Std/Num.Nat.bits (fuel_137: ptr, n_138: i64; k_139: ptr) =
-  <fuel_137 | case {
-    idyll:Std/Num.Nat.Nat.Z =>
-      <idyll:Std/Num.Nat.Nat.Z | k_139>;
-    idyll:Std/Num.Nat.Nat.S(fuel_140: ptr) =>
-      prim lt(n_138, 1; μ̃ v__141: bool.
-        prim if(v__141; μ̃ u_154: unit.
-          prim mod(n_138, 2; μ̃ v_153: i64.
-            prim eq(v_153, 1; μ̃ v__148: bool.
-              <μ j_149.
-                prim if(v__148; μ̃ u_151: unit.
-                  <idyll:Std/Num.Nat.Nat.Z | j_149>, μ̃ u_152: unit.
-                  <idyll:Std/Num.Nat.Nat.Z | μ̃ v_150: ptr.
-                    <idyll:Std/Num.Nat.Nat.S(v_150) | j_149>>) | μ̃ v_144: ptr.
-                prim div(n_138, 2; μ̃ v_147: i64.
-                  idyll:Std/Num.Nat.bits(fuel_140, v_147; μ̃ v_146: ptr.
-                    idyll:Std/Num.Nat.double(v_146; μ̃ v_145: ptr.
-                      idyll:Std/Num.Nat.plus(v_144, v_145; k_139))))>)), μ̃ u_155: unit.
-          <idyll:Std/Num.Nat.Nat.Z | k_139>))
-  }>
-
-def idyll:Std/Num.Fin.toInt (x_156: ptr; k_157: ptr) =
-  <x_156 | case {
+def idyll:Std/Num.Fin.toInt (x_157: ptr; k_158: ptr) =
+  <x_157 | case {
     idyll:Std/Num.Fin.Fin.FZ =>
-      <0 | k_157>;
-    idyll:Std/Num.Fin.Fin.FS(i_158: ptr) =>
-      idyll:Std/Num.Fin.toInt(i_158; μ̃ v_159: i64.
-        prim add(1, v_159; k_157))
+      <0 | k_158>;
+    idyll:Std/Num.Fin.Fin.FS(i_159: ptr) =>
+      idyll:Std/Num.Fin.toInt(i_159; μ̃ v_160: i64.
+        prim add(1, v_160; k_158))
   }>
 
-def idyll:Std/Num.Nat.plus (x_160: ptr, m_161: ptr; k_162: ptr) =
-  <x_160 | case {
+def idyll:Std/Num.Nat.double (x_161: ptr; k_162: ptr) =
+  <x_161 | case {
     idyll:Std/Num.Nat.Nat.Z =>
-      <m_161 | k_162>;
+      <idyll:Std/Num.Nat.Nat.Z | k_162>;
     idyll:Std/Num.Nat.Nat.S(n_163: ptr) =>
-      idyll:Std/Num.Nat.plus(n_163, m_161; μ̃ v_164: ptr.
-        <idyll:Std/Num.Nat.Nat.S(v_164) | k_162>)
+      idyll:Std/Num.Nat.double(n_163; μ̃ v_165: ptr.
+        <idyll:Std/Num.Nat.Nat.S(v_165) | μ̃ v_164: ptr.
+          <idyll:Std/Num.Nat.Nat.S(v_164) | k_162>>)
   }>
 
-def idyll:Main/"#entry" (; k_165: ptr) =
-  idyll:Std/Collections.Array.checkIndex(desc(i64), idyll:Main/xs, 2; μ̃ v__167: ptr.
-    <μ j_168.
-      <v__167 | case {
+def idyll:Main/"#entry" (; k_166: ptr) =
+  idyll:Std/Collections.Array.checkIndex(desc(i64), idyll:Main/xs, 2; μ̃ v__168: ptr.
+    <μ j_169.
+      <v__168 | case {
         idyll:Prelude/Maybe.Nothing =>
-          <0 | j_168>;
-        idyll:Prelude/Maybe.Just(i_169: ptr) =>
-          idyll:Std/Collections.Array.at(desc(i64), idyll:Main/xs, i_169; j_168)
-      }> | μ̃ answer_166: i64.
-      idyll:Prelude/showInt(answer_166; k_165)>)
+          <0 | j_169>;
+        idyll:Prelude/Maybe.Just(i_170: ptr) =>
+          idyll:Std/Collections.Array.at(desc(i64), idyll:Main/xs, i_170; j_169)
+      }> | μ̃ answer_167: i64.
+      idyll:Prelude/showInt(answer_167; k_166)>)
