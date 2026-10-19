@@ -1,4 +1,4 @@
--- Name resolution: the program as `View` reads it to the renamed one (`Hir`), as
+-- Name resolution: `Surface` to `Hir`, as
 -- `compiler/idyllic-rename` does it: a package of modules, after the prelude
 -- and the packages it depends on.
 --
@@ -19,6 +19,12 @@
 --   projection, an update a `case` that builds it again.
 -- * Sequence literals and patterns are taken apart into `SeqCons`/`SeqNil`.
 --
+-- Terms and patterns are renamed by a pass (`resolve`, a `pass!` from
+-- `Surface` to `Hir`, both `lang!`s): a case for each production that names
+-- or binds something, and the rest copied. What is around it -- a package's
+-- modules, their `use`s, each module's declarations paired and bound -- is
+-- the driver below it, which hands each term and pattern to the pass.
+--
 -- One thing it does differently: a name brought into a module by more than
 -- one `use`, or by a `use` and the module itself, keeps every unique it
 -- could stand for, for the checker to choose between by type (ROADMAP,
@@ -27,8 +33,12 @@
 -- What is wrong is collected (`problems`), not said, for now: the rename test
 -- compares only whether there was anything.
 
-use Idyll.View (Expr, Grade, Term, Param, Pat, Rhs, Alt, Clause, Decl, Ctor, Data, OpSig, Effect, Use, Program, termOf, patOf)
+use Lingua (lang!, pass!)
+use Lingua.Lang (Meta, noMeta)
+use Idyll.Surface
+use Idyll.Surface (Surface!)
 use Idyll.Hir (Icit, Literal, Visibility)
+use Std.St (runSt)
 use Idyll.Hir (Ident, Pattern, Bind, Group, CtorShape, CtorDecl, DataDecl, OpDecl, EffectDecl, NativeDecl, HandleClause, Module)
 use Idyll.Hir as H
 use Std.Collections.Vector as V
@@ -513,24 +523,6 @@ fun inFieldOrder (r : Rn) (recordName : String) (fields : [String]) (given : [(S
   in
   V.map (\f -> M.map snd (V.find (\g -> fst g == f) given)) fields
 
--- `Point { x = 1, y = 2 }`: the constructor, given each field in order.
-fun recordLiteral (r : Rn) (name : String) (values : [(String, Expr)]) : Maybe Expr ! { Mut | e } =
-  match recordNamed r name True with
-  | None -> None
-  | Just fields ->
-      let ordered = inFieldOrder r name fields values True in
-      if V.any M.isNone ordered then
-        let w = bad r "${name} is built with every one of its fields" in
-        None
-      else Just (V.foldl (\f v -> match v with | Just e -> Expr.Made (Term.App f e) | None -> f) (Expr.Made (Term.Var name)) ordered)
-
--- `Point { x = p }`: the constructor's pattern, `_` for a field not named.
-fun recordPattern (r : Rn) (name : String) (given : [(String, Expr)]) (report : Bool) : Maybe Expr ! { Mut | e } =
-  match recordNamed r name report with
-  | None -> None
-  | Just fields ->
-      Just (Expr.MadePat (Pat.Con name (V.map (\p -> M.unwrapOr (Expr.MadePat Pat.Wild) p) (inFieldOrder r name fields given report))))
-
 -- The records in scope with each of `wanted`'s fields, by name.
 fun recordsWith (r : Rn) (wanted : [String]) : [(String, [String])] ! { Mut | e } =
   sortOn
@@ -556,360 +548,482 @@ fun theRecordWith (r : Rn) (wanted : [String]) : Maybe (String, [String]) ! { Mu
     in
     None
 
+-- --- the renamed language --------------------------------------------------------
+
+-- `Surface` with every name resolved, as `idyllic-hir` has it: a use of a
+-- name is an `Ident`, the uniques it may stand for, and a binder one with
+-- its own. Equations are lambdas or matches, signatures are paired with
+-- them in groups, and records and sequences are taken apart.
+@pub lang! {
+  pub Hir
+  Module + Module { datas : [Data], effects : [Effect], natives : [Native], groups : [Group], body : Maybe Expr }
+  Ident + Ident { uniques : [Int], text : String }
+  Grade + Grade { uses : Expr, inType : Maybe Expr }
+  Expr + Type {}
+  Expr + Var { ident : Ident }
+  Expr + Lit { lit : Literal }
+  Expr + Pi { name : Maybe Ident, icit : Icit, grade : Maybe Grade, dom : Expr, cod : Expr }
+  Expr + Lam { name : Ident, grade : Maybe Grade, ty : Maybe Expr, body : Expr }
+  Expr + App { func : Expr, arg : Expr }
+  Expr + Ann { expr : Expr, ty : Expr }
+  Expr + Hole {}
+  Expr + Box { expr : Expr }
+  Expr + Inf {}
+  Expr + Range { lo : Expr, hi : Expr }
+  Expr + LetBox { name : Ident, value : Expr, body : Expr }
+  Expr + Let { groups : [Group], body : Expr }
+  Expr + Case { scrutinee : Expr, clauses : [Clause] }
+  Expr + Match { clauses : [Clause] }
+  Expr + Omitted {}
+  Expr + Eff { ty : Expr, row : Expr }
+  Expr + Row { labels : [Expr], tail : Maybe Expr }
+  Expr + Handle { body : Expr, clauses : [HandleClause] }
+  Expr + SeqNil {}
+  Expr + SeqCons { head : Expr, tail : Expr }
+  Expr + Array { items : [Expr] }
+  -- `op x k -> body`; no operation for `return x -> body`
+  HandleClause + HandleClause { op : Maybe Ident, params : [Ident], body : Expr }
+  Clause + Clause { pats : [Pattern], rhs : Rhs }
+  Rhs + Plain { body : Expr }
+  Rhs + Guarded { guards : [Guard] }
+  Rhs + Impossible {}
+  Guard + Guard { cond : Expr, body : Expr }
+  Pattern + Var { ident : Ident }
+  Pattern + Wild {}
+  Pattern + Lit { lit : Literal }
+  Pattern + Con { ctor : Ident, args : [Pattern] }
+  Pattern + As { ident : Ident, pat : Pattern }
+  Pattern + Dot { expr : Expr }
+  Pattern + SeqNil {}
+  Pattern + SeqCons { head : Pattern, tail : Pattern }
+  Bind + Bind { name : Ident, ty : Maybe Expr, rhs : Expr, linear : Bool }
+  Group + NonRec { bind : Bind }
+  Group + Rec { binds : [Bind] }
+  Ctor + Fields { name : Ident, fields : [Expr] }
+  Ctor + Sig { name : Ident, ty : Expr }
+  TypeParam + TypeParam { name : Ident, kindSig : Maybe Expr }
+  SeqPair + SeqPair { nil : Ident, cons : Ident }
+  Data + Data { name : Ident, params : [TypeParam], kindSig : Maybe Expr, ctors : [Ctor], seq : Maybe SeqPair, linear : Bool }
+  Op + Op { name : Ident, ty : Expr, many : Bool }
+  Effect + Effect { name : Ident, params : [TypeParam], ops : [Op] }
+  Native + Native { name : Ident, ty : Expr }
+}
+
+-- An identifier, written.
+fun idNode out (m : Meta) (x : Ident) = match x with | Ident.Ident us t -> newHirIdent out m us t
+
+fun gradeOne out (m : Meta) = newHirGrade out m (newHirExprLit out m (Literal.Int 1)) None
+
+fun unresolved out (m : Meta) = newHirExprVar out m (idNode out m (Ident.Ident [] "_"))
+
+-- --- records ----------------------------------------------------------------------
+
+-- `Point { x = 1, y = 2 }`: the constructor, given each field in order.
+fun recordLiteral out (m : Meta) (r : Rn) (name : String) (values : [(String, HirExpr)]) =
+  match recordNamed r name True with
+  | None -> None
+  | Just fields ->
+      let ordered = inFieldOrder r name fields values True in
+      if V.any M.isNone ordered then
+        let w = bad r "${name} is built with every one of its fields" in
+        None
+      else
+        let ctor = newHirExprVar out m (idNode out m (useName r name)) in
+        Just (V.foldl (\f v -> match v with | Just e -> newHirExprApp out m f e | None -> f) ctor ordered)
+
+-- `Point { x = p }`: the constructor's pattern, `_` for a field not named.
+fun recordPattern out (m : Meta) (r : Rn) (name : String) given =
+  match recordNamed r name True with
+  | None -> newHirPatternWild out m
+  | Just fields ->
+      let ctor = idNode out m (asTerm r (\u -> useName r name)) in
+      newHirPatternCon
+        out
+        m
+        ctor
+        (V.map (\p -> match p with | Just q -> q () | None -> newHirPatternWild out m) (inFieldOrder r name fields given True))
+
 -- `e.x`: the projection of the one record in scope with an `x`.
-fun projection (r : Rn) (e : Expr) (field : String) : Maybe Expr ! { Mut | e } =
+fun projection out (m : Meta) (r : Rn) e (field : String) =
   M.map
-    (\rf -> match rf with | (recName, _) -> Expr.Made (Term.App (Expr.Made (Term.Var "${recName}.${field}")) e))
+    (\rf -> match rf with | (recName, _) -> newHirExprApp out m (newHirExprVar out m (idNode out m (useName r "${recName}.${field}"))) e)
     (theRecordWith r [field])
 
 -- `{ e | x = v }`: `e` taken apart and built again, with `v` for `x`.
-fun recordUpdate (r : Rn) (e : Expr) (values : [(String, Expr)]) : Maybe Expr ! { Mut | e } =
+fun recordUpdate out (m : Meta) (r : Rn) e (values : [(String, HirExpr)]) =
   match theRecordWith r (V.map fst values) with
   | None -> None
   | Just (recName, fields) ->
       let ordered = inFieldOrder r recName fields values True in
       let kept = \f -> "#" ++ f in
-      let pats =
-        V.map
-          (\i ->
-            match V.get ordered i with
-            | Just (Just _) -> Expr.MadePat Pat.Wild
-            | _ -> Expr.MadePat (Pat.Bind (Param.Param (kept (V.getOr "" fields i)) False None None)))
-          (V.range 0 (V.len fields))
-      in
-      let rebuilt =
-        V.foldl
-          (\acc i ->
-            let value = match V.get ordered i with | Just (Just v) -> v | _ -> Expr.Made (Term.Var (kept (V.getOr "" fields i))) in
-            Expr.Made (Term.App acc value))
-          (Expr.Made (Term.Var recName))
-          (V.range 0 (V.len fields))
-      in
-      Just (Expr.Made (Term.Case e [Alt.Alt (Expr.MadePat (Pat.Con recName pats)) (Rhs.Plain rebuilt)]))
+      Just
+        (newHirExprCase out m e [
+           scoped r (\u ->
+             let pats =
+               V.map
+                 (\i ->
+                   match V.get ordered i with
+                   | Just (Just _) -> newHirPatternWild out m
+                   | _ -> newHirPatternVar out m (idNode out m (bindName r (kept (V.getOr "" fields i)))))
+                 (V.range 0 (V.len fields))
+             in
+             let con = newHirPatternCon out m (idNode out m (asTerm r (\v -> useName r recName))) pats in
+             let rebuilt =
+               V.foldl
+                 (\acc i ->
+                   let value =
+                     match V.get ordered i with
+                     | Just (Just v) -> v
+                     | _ -> newHirExprVar out m (idNode out m (useName r (kept (V.getOr "" fields i))))
+                   in
+                   newHirExprApp out m acc value)
+                 (newHirExprVar out m (idNode out m (useName r recName)))
+                 (V.range 0 (V.len fields))
+             in
+             newHirClause out m [con] (newHirRhsPlain out m rebuilt))
+         ])
 
--- --- terms -------------------------------------------------------------------
-
-fun renameGrades (r : Rn) (g : Grade) =
-  match g with
-  | Grade.Grade s t -> H.Grade.Grade (renameTerm r s) (M.map (\x -> renameTerm r x) t)
-
-fun gradeOne () = H.Grade.Grade (H.Term.Lit (Literal.Int 1)) None
-
-fun unresolved () = H.Term.Var (Ident.Ident [] "_")
-
-fun renameTerm (r : Rn) (t : Expr) =
-  match termOf t with
-  | Term.Type -> H.Term.Type
-  | Term.Hole -> H.Term.Hole
-  | Term.Inf -> H.Term.Inf
-  | Term.Lit l -> H.Term.Lit l
-  -- `otherwise` is `True`, unless something else is called that
-  | Term.Var x -> if x == "otherwise" and not (known r x) then H.Term.Lit (Literal.Bool True) else H.Term.Var (useName r x)
-  | Term.App f a ->
-      let f2 = renameTerm r f in
-      H.Term.App f2 (renameTerm r a)
-  | Term.Ann e ty ->
-      let e2 = renameTerm r e in
-      H.Term.Ann e2 (asType r (\u -> renameTerm r ty))
-  | Term.Range a b ->
-      let a2 = renameTerm r a in
-      H.Term.Range a2 (renameTerm r b)
-  | Term.Eff b e ->
-      let b2 = renameTerm r b in
-      H.Term.Eff b2 (renameTerm r e)
-  | Term.Row ls tail ->
-      let ls2 = V.map (\l -> renameTerm r l) ls in
-      H.Term.Row ls2 (M.map (\x -> renameTerm r x) tail)
-  | Term.Handle body clauses ->
-      let body2 = renameTerm r body in
-      H.Term.Handle
-        body2
-        (V.map
-           (\c ->
-             match c with
-             | Clause.Clause op xs e ->
-                 -- `return` is not a name
-                 let op2 = if op != "return" then Just (useName r op) else None in
-                 scoped r (\u ->
-                   let params = V.map (\x -> bindName r x) xs in
-                   HandleClause.HandleClause op2 params (renameTerm r e)))
-           clauses)
-  | Term.Pi x icit g dom cod ->
-      -- neither the domain nor the grades see the name bound
-      let grade =
-        match g with
-        | Just gr -> Just (renameGrades r gr)
-        | None -> if getRef r.linear and icit == Icit.Explicit then Just (gradeOne ()) else None
-      in
-      let dom2 = asType r (\u -> renameTerm r dom) in
-      scoped r (\u ->
-        let x2 = M.map (\n -> bindName r n) x in
-        H.Term.Pi x2 icit grade dom2 (asType r (\v -> renameTerm r cod)))
-  | Term.Lam p body ->
-      scoped r (\u ->
-        let bp = bindParam r p in
-        wrapParam r bp (renameTerm r body))
-  | Term.BoxIntro e -> H.Term.BoxIntro (renameTerm r e)
-  | Term.LetBox x e body ->
-      let e2 = renameTerm r e in
-      scoped r (\u ->
-        let x2 = bindName r x in
-        H.Term.LetBox x2 e2 (renameTerm r body))
-  | Term.Let ds body ->
-      scoped r (\u ->
-        let bs = renameDecls r ds in
-        H.Term.Let [Group.Rec bs] (renameTerm r body))
-  | Term.ArrayLit es -> H.Term.ArrayLit (V.map (\e -> renameTerm r e) es)
-  | Term.RecordLit name values ->
-      (match recordLiteral r name values with
-       | Just built -> renameTerm r built
-       | None -> unresolved ())
-  | Term.Proj e f ->
-      (match projection r e f with
-       | Just read -> renameTerm r read
-       | None -> unresolved ())
-  | Term.Update e values ->
-      (match recordUpdate r e values with
-       | Just rebuilt -> renameTerm r rebuilt
-       | None -> unresolved ())
-  | Term.Seq es ->
-      let items = V.map (\e -> renameTerm r e) es in
-      V.foldr (\h tl -> H.Term.SeqCons h tl) (H.Term.SeqNil) items
-  | Term.Case e alts ->
-      let e2 = renameTerm r e in
-      H.Term.Case e2 (V.map (\a -> match a with | Alt.Alt p rhs -> renameClause r [p] None rhs) alts)
-
--- A signature: the lower-case names it mentions that nothing binds are bound
--- in front of it, implicitly, in order of appearance, their types left to
--- the checker.
-fun renameSig (r : Rn) (ty : Expr) =
-  let free = freeVars ty [] (\x -> known r x) [] in
-  scoped r (\u ->
-    let bound = V.map (\x -> bindName r x) free in
-    let body = asType r (\v -> renameTerm r ty) in
-    V.foldr (\x acc -> H.Term.Pi (Just x) Icit.Implicit None (H.Term.Omitted) acc) body bound)
-
--- One equation or alternative: its patterns bind names for the rest of it,
--- all of them before any `.e` is renamed; then the right-hand side, under a
--- result type if one was written.
-fun renameClause (r : Rn) (pats : [Expr]) (resultTy : Maybe Expr) (rhs : Rhs) =
-  scoped r (\u ->
-    let names = newRef [] in
-    let v = V.foldl (\acc p -> bindPattern r p names) () pats in
-    let pats2 = V.map (\p -> renamePattern r p names) pats in
-    let annotate =
-      \e ->
-        let body = renameTerm r e in
-        match resultTy with
-        | Just ty -> H.Term.Ann body (asType r (\w -> renameTerm r ty))
-        | None -> body
-    in
-    let rhs2 =
-      match rhs with
-      | Rhs.Plain e -> H.Rhs.Plain (annotate e)
-      | Rhs.Guarded gs ->
-          H.Rhs.Guarded
-            (V.map
-               (\g ->
-                 match g with
-                 | (c, e) ->
-                     let c2 = renameTerm r c in
-                     (c2, annotate e))
-               gs)
-      | Rhs.Impossible -> H.Rhs.Impossible
-    in
-    H.Clause.Clause pats2 rhs2)
-
--- Bind a pattern's names, in order, onto `names`.
-fun bindPattern (r : Rn) (p : Expr) (names : Ref [Ident]) =
-  match patOf p with
-  | Pat.Bind (Param.Param x _ _ _) -> setRef names (V.pushBack (getRef names) (bindName r x))
-  | Pat.As x q ->
-      let w = setRef names (V.pushBack (getRef names) (bindName r x)) in
-      bindPattern r q names
-  | Pat.Con _ ps -> V.foldl (\acc q -> bindPattern r q names) () ps
-  | Pat.Seq ps -> V.foldl (\acc q -> bindPattern r q names) () ps
-  | Pat.Record name fs ->
-      (match recordPattern r name fs False with
-       | Just d -> bindPattern r d names
-       | None -> ())
-  | _ -> ()
-
--- The next of the names `bindPattern` bound.
-fun nextName (names : Ref [Ident]) =
-  let ns = getRef names in
-  let w = setRef names (V.drop ns 1) in
-  M.unwrapOr (Ident.Ident [] "_") (V.head ns)
-
--- A pattern, taking the names `bindPattern` bound for it.
-fun renamePattern (r : Rn) (p : Expr) (names : Ref [Ident]) =
-  match patOf p with
-  | Pat.Bind (Param.Param _ unbox g ty) ->
-      let w = if unbox or M.isSome g or M.isSome ty then bad r "this pattern needs a single equation of variables" else () in
-      Pattern.Var (nextName names)
-  | Pat.As _ q ->
-      let x = nextName names in
-      Pattern.As x (renamePattern r q names)
-  | Pat.Con c ps ->
-      let c2 = asTerm r (\u -> useName r c) in
-      Pattern.Con c2 (V.map (\q -> renamePattern r q names) ps)
-  | Pat.Record name fs ->
-      (match recordPattern r name fs True with
-       | Just d -> renamePattern r d names
-       | None -> Pattern.Wild)
-  | Pat.Wild -> Pattern.Wild
-  | Pat.Lit l -> Pattern.Lit l
-  | Pat.Dot e -> Pattern.Dot (asTerm r (\u -> renameTerm r e))
-  | Pat.Seq ps ->
-      let items = V.map (\q -> renamePattern r q names) ps in
-      V.foldr (\h tl -> Pattern.SeqCons h tl) Pattern.SeqNil items
-
--- --- declarations ------------------------------------------------------------
-
--- Each data type's name, and its constructors' under it.
-fun bindDatas (r : Rn) (datas : [Data]) =
-  V.map
-    (\(d : Data) ->
-      let name = bindName r d.name in
-      let cs =
-        V.foldl
-          (\acc c ->
-            match c with
-            | (cname, _) ->
-                let w = if V.any (\x -> fst x == cname) acc then bad r "duplicate binding of ${cname}" else () in
-                V.pushBack acc (cname, fresh r))
-          []
-          d.ctors
-      in
-      let u = H.uniqueOf name in
-      let w1 = setRef r.ctors (Hm.insert u cs (getRef r.ctors)) in
-      let w2 = setRef r.typeNames (Hm.insert u d.name (getRef r.typeNames)) in
-      let w3 = noteTwin r u in
-      (name, V.map (\c -> match c with | (x, cu) -> Ident.Ident [cu] x) cs))
-    datas
-
--- A data type's or an effect's parameters: each kind may mention the
--- parameters before it.
-fun typeParams (r : Rn) (ps : [(String, Maybe Expr)]) =
-  V.map
-    (\p ->
-      match p with
-      | (x, k) ->
-          let k2 = M.map (\t -> asType r (\u -> renameTerm r t)) k in
-          (bindName r x, k2))
-    ps
-
-fun renameDatas (r : Rn) (datas : [Data]) (names : [(Ident, [Ident])]) =
-  V.map
-    (\pair ->
-      match pair with
-      | ((d : Data), (name, ctorNames)) ->
-          scoped r (\u ->
-            let params = typeParams r d.params in
-            let kind = M.map (\k -> asType r (\v -> renameTerm r k)) d.kind in
-            let ctors =
-              V.map
-                (\j ->
-                  let cname = V.getOr (Ident.Ident [] "_") ctorNames j in
-                  match V.get d.ctors j with
-                  | Just (_, Ctor.Fields ts) -> CtorDecl.CtorDecl cname (CtorShape.Fields (V.map (\t -> asType r (\v -> renameTerm r t)) ts))
-                  | Just (_, Ctor.Sig ty) -> CtorDecl.CtorDecl cname (CtorShape.Sig (renameSig r ty))
-                  | None -> CtorDecl.CtorDecl cname (CtorShape.Fields []))
-                (V.range 0 (V.len d.ctors))
-            in
-            let own =
-              \c ->
-                match V.find (\x -> fst x == c) (Hm.getOr [] (H.uniqueOf name) (getRef r.ctors)) with
-                | Just (_, cu) -> Ident.Ident [cu] c
-                | None ->
-                    let w = bad r "${d.name} has no constructor ${c}" in
-                    Ident.Ident [] c
-            in
-            let seq = M.map (\s -> match s with | (nil, cons) -> (own nil, own cons)) d.seq in
-            DataDecl { name, params, kind, ctors, seq, linear = getRef r.linear }))
-    (V.zip datas names)
-
-fun renameEffect (r : Rn) (e : Effect) (names : (Ident, [Ident])) =
-  match names with
-  | (name, opNames) ->
-      scoped r (\u ->
-        let params = typeParams r e.params in
-        let ops =
-          V.map
-            (\j ->
-              match V.get e.ops j with
-              | Just (OpSig.OpSig _ ty many) -> OpDecl.OpDecl (V.getOr (Ident.Ident [] "_") opNames j) (renameSig r ty) many
-              | None -> OpDecl.OpDecl (Ident.Ident [] "_") (H.Term.Hole) False)
-            (V.range 0 (V.len e.ops))
-        in
-        EffectDecl { name, params, ops })
+-- --- terms and patterns: the pass --------------------------------------------------
 
 -- A binder, its name bound in the innermost scope after its annotation is
 -- renamed. An unboxing one, `[x]`, also has the box it receives, which
 -- nothing can name.
 data BoundParam g t = BoundParam Ident (Maybe Ident) (Maybe g) (Maybe t)
 
-fun bindParam (r : Rn) (p : Param) =
-  match p with
-  | Param.Param x unbox g ty ->
-      let grade = M.map (\gr -> renameGrades r gr) g in
-      let ty2 = M.map (\t -> asType r (\u -> renameTerm r t)) ty in
-      let name = bindName r x in
-      let boxed = if unbox then Just (Ident.Ident [fresh r] x) else None in
-      BoundParam.BoundParam name boxed grade ty2
+-- `resolve`: `Surface` to `Hir`, each name made the binder it means, carried
+-- down with the renamer, `r`, whose scopes are what is bound where. A
+-- binder's children are taken `later`, to be renamed in the scope it makes:
+-- a `Pi`'s domain sees nothing of its name and its codomain does. A
+-- pattern answers what writes it, once every name it binds is bound: so an
+-- equation's patterns bind all their names before any `.e` among them is
+-- renamed. What has no case is copied as it is -- an application, an
+-- annotation's term, a row.
+pass! {
+  resolve : Surface -> Hir with r from Expr, Pat, Param
+    | Name { text } -> text
+    | Field { name, value } -> (name, value)
+    | PatField { name, later pat } -> (name, pat r)
+    -- `otherwise` is `True`, unless something else is called that
+    | Expr.Var { name } ->
+        (if name == "otherwise" and not (known r name) then Lit { lit = Literal.Bool True }
+         else Var { ident = idNode out here (useName r name) })
+    | Ann { expr, later ty } -> Ann { expr, ty = asType r (\u -> ty r) }
+    -- neither the domain nor the grades see the name bound
+    | Pi { name, icit, later grade, later dom, later cod } ->
+        (let g =
+           (match grade with
+            | Just f -> Just (f r)
+            | None -> if getRef r.linear and icit == Icit.Explicit then Just (gradeOne out here) else None)
+         in
+         let d = asType r (\u -> dom r) in
+         scoped r (\u ->
+           let x = M.map (\n -> idNode out here (bindName r n)) name in
+           Pi { name = x, icit, grade = g, dom = d, cod = asType r (\v -> cod r) }))
+    | Lam { later param, later body } -> scoped r (\u -> (let bp = param r in wrapParam out here bp (body r)))
+    | Param { name, unbox, grade, later ty } ->
+        (let ty2 = M.map (\f -> asType r (\u -> f r)) ty in
+         let x = bindName r name in
+         let boxed = if unbox then Just (Ident.Ident [fresh r] name) else None in
+         BoundParam.BoundParam x boxed grade ty2)
+    | LetBox { value, name, later body } ->
+        scoped r (\u -> (let x = bindName r name in LetBox { name = idNode out here x, value, body = body r }))
+    | Let { raw decls, later body } ->
+        scoped r (\u ->
+          (let bs = renameDecls src out r decls in
+           Let { groups = [newHirGroupRec out here bs], body = body r }))
+    | Case { scrutinee, raw alts } ->
+        Case {
+          scrutinee,
+          clauses = V.map (\a -> renameClause src out r here [surfaceAltPat src a] None (surfaceAltRhs src a)) alts
+        }
+    | Handle { body, raw clauses } -> Handle { body, clauses = V.map (\c -> handleClause src out r c) clauses }
+    | Expr.Seq { items } -> V.foldr (\h tl -> newHirExprSeqCons out here h tl) (newHirExprSeqNil out here) items
+    | Expr.Record { name, fields } ->
+        (match recordLiteral out here r name fields with
+         | Just built -> built
+         | None -> unresolved out here)
+    | Proj { expr, field } ->
+        (match projection out here r expr field with
+         | Just read -> read
+         | None -> unresolved out here)
+    | Update { expr, fields } ->
+        (match recordUpdate out here r expr fields with
+         | Just rebuilt -> rebuilt
+         | None -> unresolved out here)
+    -- patterns
+    | Bind { raw param } ->
+        (let x = bindName r (surfaceNameText src (surfaceParamName src param)) in
+         let w =
+           if surfaceParamUnbox src param or M.isSome (surfaceParamGrade src param) or M.isSome (surfaceParamTy src param) then
+             bad r "this pattern needs a single equation of variables"
+           else ()
+         in \u -> Pattern.Var { ident = idNode out here x })
+    | Wild {} -> (\u -> Wild {})
+    | Pat.Lit { lit } -> (\u -> Pattern.Lit { lit })
+    | Con { name, args } ->
+        (\u -> Con { ctor = idNode out here (asTerm r (\v -> useName r name)), args = V.map (\a -> a ()) args })
+    | As { name, later pat } ->
+        (let x = bindName r name in
+         let q = pat r in
+         \u -> As { ident = idNode out here x, pat = q () })
+    | Dot { later expr } -> (\u -> Dot { expr = asTerm r (\v -> expr r) })
+    | Pat.Seq { items } ->
+        (\u -> V.foldr (\h tl -> newHirPatternSeqCons out here h tl) (newHirPatternSeqNil out here) (V.map (\i -> i ()) items))
+    | Pat.Record { name, fields } -> (\u -> recordPattern out here r name fields)
+}
 
 -- `\x -> body`, or `\[x] -> body`, which is `\b -> let [x] = b in body`.
-fun wrapParam (r : Rn) p body =
+fun wrapParam out (m : Meta) p body =
   match p with
   | BoundParam.BoundParam name boxed grade ty ->
       (match boxed with
-       | None -> H.Term.Lam name grade ty body
-       | Just b -> H.Term.Lam b None None (H.Term.LetBox name (H.Term.Var b) body))
+       | None -> newHirExprLam out m (idNode out m name) grade ty body
+       | Just b -> newHirExprLam out m (idNode out m b) None None (newHirExprLetBox out m (idNode out m name) (newHirExprVar out m (idNode out m b)) body))
+
+-- `op x k -> e`: `return` is not a name.
+fun handleClause src out (r : Rn) (c : SurfaceClause) =
+  let m = metaSurfaceClause src c in
+  let op = surfaceNameText src (surfaceClauseOp src c) in
+  let op2 = if op != "return" then Just (idNode out m (useName r op)) else None in
+  scoped r (\u ->
+    let params = V.map (\x -> idNode out m (bindName r (surfaceNameText src x))) (surfaceClauseParams src c) in
+    newHirHandleClause out m op2 params (resolveExpr src out r (surfaceClauseBody src c)))
+
+-- A signature: the lower-case names it mentions that nothing binds are bound
+-- in front of it, implicitly, in order of appearance, their types left to
+-- the checker.
+fun renameSig src out (r : Rn) (ty : SurfaceExpr) =
+  let m = metaSurfaceExpr src ty in
+  let free = freeVars src ty [] (\x -> known r x) [] in
+  scoped r (\u ->
+    let bound = V.map (\x -> bindName r x) free in
+    let body = asType r (\v -> resolveExpr src out r ty) in
+    V.foldr (\x acc -> newHirExprPi out m (Just (idNode out m x)) Icit.Implicit None (newHirExprOmitted out m) acc) body bound)
+
+-- One equation or alternative: its patterns bind names for the rest of it,
+-- all of them before any `.e` is renamed; then the right-hand side, under a
+-- result type if one was written.
+fun renameClause src out (r : Rn) (m : Meta) (pats : [SurfacePat]) (resultTy : Maybe SurfaceExpr) (rhs : SurfaceRhs) =
+  scoped r (\u ->
+    let writers = V.map (\p -> resolvePat src out r p) pats in
+    let pats2 = V.map (\w -> w ()) writers in
+    let annotate =
+      \e ->
+        let body = resolveExpr src out r e in
+        match resultTy with
+        | Just ty -> newHirExprAnn out m body (asType r (\w -> resolveExpr src out r ty))
+        | None -> body
+    in
+    let rhs2 =
+      match (src, rhs) with
+      | SurfaceRhsPlain e -> newHirRhsPlain out m (annotate e)
+      | SurfaceRhsGuarded gs ->
+          newHirRhsGuarded
+            out
+            m
+            (V.map
+               (\g ->
+                 let c2 = resolveExpr src out r (surfaceGuardCond src g) in
+                 newHirGuard out m c2 (annotate (surfaceGuardBody src g)))
+               gs)
+      | _ -> newHirRhsImpossible out m
+    in
+    newHirClause out m pats2 rhs2)
+
+-- --- declarations ------------------------------------------------------------------
+
+-- What a module's program declares, read off its tables.
+record Program = {
+  src : SurfaceArena,
+  datas : [SurfaceData],
+  effects : [SurfaceEffect],
+  decls : [SurfaceDecl],
+  uses : [Use],
+  visibility : [(String, Visibility)],
+  terminating : [String],
+  linear : Bool,
+  body : Maybe SurfaceExpr
+}
+
+record Use = {
+  public : Bool,
+  path : [String],
+  glob : Bool,
+  alias : Maybe String,
+  names : Maybe [String]
+}
+
+@pub fun programOf (p : SurfaceProgram) : Program =
+  let a = surfaceArena p in
+  let f = surfaceRoot p in
+  let text = \n -> surfaceNameText a n in
+  Program {
+    src = a,
+    datas = surfaceFileDatas a f,
+    effects = surfaceFileEffects a f,
+    decls = surfaceFileDecls a f,
+    uses =
+      V.map
+        (\u ->
+          Use {
+            public = surfaceUsePublic a u,
+            path = V.map text (surfaceUsePath a u),
+            glob = surfaceUseGlob a u,
+            alias = M.map text (surfaceUseAlias a u),
+            names = if surfaceUseListed a u then Just (V.map text (surfaceUseNames a u)) else None
+          })
+        (surfaceFileUses a f),
+    visibility = V.map (\v -> (text (surfaceShownName a v), surfaceShownVis a v)) (surfaceFileShown a f),
+    terminating = V.map text (surfaceFileTerminating a f),
+    linear = surfaceFileLinear a f,
+    body = surfaceFileBody a f
+  }
+
+fun ctorNameOf (a : SurfaceArena) (c : SurfaceCtor) : String =
+  match (a, c) with
+  | SurfaceCtorFields n _ -> surfaceNameText a n
+  | SurfaceCtorSig n _ -> surfaceNameText a n
+
+fun dataName (a : SurfaceArena) (d : SurfaceData) : String = surfaceNameText a (surfaceDataName a d)
+
+-- Each data type's name, and its constructors' under it.
+fun bindDatas (r : Rn) (a : SurfaceArena) (datas : [SurfaceData]) =
+  V.map
+    (\d ->
+      let dn = dataName a d in
+      let name = bindName r dn in
+      let cs =
+        V.foldl
+          (\acc c ->
+            let cname = ctorNameOf a c in
+            let w = if V.any (\x -> fst x == cname) acc then bad r "duplicate binding of ${cname}" else () in
+            V.pushBack acc (cname, fresh r))
+          []
+          (surfaceDataCtors a d)
+      in
+      let u = H.uniqueOf name in
+      let w1 = setRef r.ctors (Hm.insert u cs (getRef r.ctors)) in
+      let w2 = setRef r.typeNames (Hm.insert u dn (getRef r.typeNames)) in
+      let w3 = noteTwin r u in
+      (name, V.map (\c -> match c with | (x, cu) -> Ident.Ident [cu] x) cs))
+    datas
+
+-- A data type's or an effect's parameters: each kind may mention the
+-- parameters before it.
+fun typeParams src out (r : Rn) (ps : [SurfaceTypeParam]) =
+  V.map
+    (\p ->
+      let m = metaSurfaceTypeParam src p in
+      let k2 = M.map (\t -> asType r (\u -> resolveExpr src out r t)) (surfaceTypeParamKindSig src p) in
+      newHirTypeParam out m (idNode out m (bindName r (surfaceNameText src (surfaceTypeParamName src p)))) k2)
+    ps
+
+fun renameDatas src out (r : Rn) (datas : [SurfaceData]) (names : [(Ident, [Ident])]) =
+  V.map
+    (\pair ->
+      match pair with
+      | (d, (name, ctorNames)) ->
+          let m = metaSurfaceData src d in
+          scoped r (\u ->
+            let params = typeParams src out r (surfaceDataParams src d) in
+            let kind = M.map (\k -> asType r (\v -> resolveExpr src out r k)) (surfaceDataKindSig src d) in
+            let cs = surfaceDataCtors src d in
+            let ctors =
+              V.map
+                (\j ->
+                  let cname = idNode out m (V.getOr (Ident.Ident [] "_") ctorNames j) in
+                  match V.get cs j with
+                  | Just c ->
+                      (match (src, c) with
+                       | SurfaceCtorFields _ ts -> newHirCtorFields out m cname (V.map (\t -> asType r (\v -> resolveExpr src out r t)) ts)
+                       | SurfaceCtorSig _ ty -> newHirCtorSig out m cname (renameSig src out r ty))
+                  | None -> newHirCtorFields out m cname [])
+                (V.range 0 (V.len cs))
+            in
+            let own =
+              \c ->
+                match V.find (\x -> fst x == c) (Hm.getOr [] (H.uniqueOf name) (getRef r.ctors)) with
+                | Just (_, cu) -> Ident.Ident [cu] c
+                | None ->
+                    let w = bad r "${dataName src d} has no constructor ${c}" in
+                    Ident.Ident [] c
+            in
+            let seq =
+              M.map
+                (\s -> newHirSeqPair out m (idNode out m (own (surfaceNameText src (surfaceSeqAttrNil src s)))) (idNode out m (own (surfaceNameText src (surfaceSeqAttrCons src s)))))
+                (surfaceDataSeq src d)
+            in
+            newHirData out m (idNode out m name) params kind ctors seq (getRef r.linear)))
+    (V.zip datas names)
+
+fun renameEffect src out (r : Rn) (e : SurfaceEffect) (names : (Ident, [Ident])) =
+  let m = metaSurfaceEffect src e in
+  match names with
+  | (name, opNames) ->
+      scoped r (\u ->
+        let params = typeParams src out r (surfaceEffectParams src e) in
+        let ops = surfaceEffectOps src e in
+        let written =
+          V.map
+            (\j ->
+              match V.get ops j with
+              | Just o -> newHirOp out m (idNode out m (V.getOr (Ident.Ident [] "_") opNames j)) (renameSig src out r (surfaceOpSigTy src o)) (surfaceOpSigMany src o)
+              | None -> newHirOp out m (idNode out m (Ident.Ident [] "_")) (newHirExprHole out m) False)
+            (V.range 0 (V.len ops))
+        in
+        newHirEffect out m (idNode out m name) params written)
 
 -- A definition: its equations, its name bound, and its signature.
 record Def = {
-  eqs : [Decl],
+  eqs : [SurfaceDecl],
   name : Ident,
-  sig : Maybe Expr
+  sig : Maybe SurfaceExpr
 }
 
-fun renameDecls (r : Rn) (ds : [Decl]) = renameDefs r (bindDecls r ds)
+fun renameDecls src out (r : Rn) (ds : [SurfaceDecl]) = renameDefs src out r (bindDecls src r ds)
+
+-- An equation's name and patterns, if it is one.
+fun equation (a : SurfaceArena) (d : SurfaceDecl) : Maybe (String, [SurfacePat]) =
+  match (a, d) with
+  | SurfaceDeclDef f ps _ _ -> Just (surfaceNameText a f, ps)
+  | _ -> None
 
 -- Pair signatures with equations, and bind each name a block defines.
 -- Equations of one name in a row are one definition, if they have patterns
 -- to tell them apart.
-fun bindDecls (r : Rn) (ds : [Decl]) : [Def] ! { Mut | e } =
+fun bindDecls (a : SurfaceArena) (r : Rn) (ds : [SurfaceDecl]) : [Def] ! { Mut | e } =
   let sigs =
     V.foldl
       (\acc d ->
-        match d with
-        | Decl.Sig x ty ->
-            let w = if V.any (\s -> fst s == x) acc then bad r "duplicate binding of ${x}" else () in
-            V.pushBack acc (x, ty)
+        match (a, d) with
+        | SurfaceDeclSig x ty ->
+            let n = surfaceNameText a x in
+            let w = if V.any (\s -> fst s == n) acc then bad r "duplicate binding of ${n}" else () in
+            V.pushBack acc (n, ty)
         | _ -> acc)
       []
       ds
   in
   let groups =
     V.foldl
-      (\(acc : [[Decl]]) d ->
-        match d with
-        | Decl.Def x ps _ _ ->
+      (\(acc : [[SurfaceDecl]]) d ->
+        match equation a d with
+        | Just (x, ps) ->
             let continues =
-              match M.andThen V.head (V.last acc) with
-              | Just (Decl.Def f qs _ _) -> f == x and not (V.isEmpty qs) and not (V.isEmpty ps)
-              | _ -> False
+              match M.andThen (\g -> M.andThen (equation a) (V.head g)) (V.last acc) with
+              | Just (f, qs) -> f == x and not (V.isEmpty qs) and not (V.isEmpty ps)
+              | None -> False
             in
             if continues then V.pushBack (V.popBack acc) (V.pushBack (M.unwrapOr [] (V.last acc)) d)
             else V.pushBack acc [d]
-        | _ -> acc)
+        | None -> acc)
       []
       ds
   in
   let defs =
     V.map
       (\eqs ->
-        let x = match V.head eqs with | Just (Decl.Def f _ _ _) -> f | _ -> "_" in
+        let x = match M.andThen (equation a) (V.head eqs) with | Just (f, _) -> f | None -> "_" in
         let ident = bindName r x in
         Def { eqs, name = ident, sig = M.map snd (V.find (\s -> fst s == x) sigs) })
       groups
@@ -918,144 +1032,164 @@ fun bindDecls (r : Rn) (ds : [Decl]) : [Def] ! { Mut | e } =
   let w = V.foldl (\acc s -> if V.elem (fst s) defined then acc else bad r "the signature for ${fst s} has no definition") () sigs in
   defs
 
-fun renameDefs (r : Rn) (defs : [Def]) = V.map (\d -> renameDef r d) defs
+fun renameDefs src out (r : Rn) (defs : [Def]) = V.map (\d -> renameDef src out r d) defs
 
-fun simplePat (p : Expr) : Bool ! { Mut | e } =
-  match patOf p with
-  | Pat.Bind _ -> True
-  | Pat.Wild -> True
+fun simplePat (a : SurfaceArena) (p : SurfacePat) : Bool =
+  match kindSurfacePat a p with
+  | SurfacePatKind.Bind -> True
+  | SurfacePatKind.Wild -> True
   | _ -> False
 
-fun renameDef (r : Rn) (dfn : Def) =
-  match V.head dfn.eqs with
-  | Just (Decl.Def _ params inline rhs) ->
+fun renameDef src out (r : Rn) (dfn : Def) =
+  let m = match V.head dfn.eqs with | Just d -> metaSurfaceDecl src d | None -> noMeta in
+  match M.map (\d -> (src, d)) (V.head dfn.eqs) with
+  | Just (SurfaceDeclDef _ params inline rhs) ->
       -- `x : a = e` is a signature written inline; anywhere else an inline
       -- type is the result's
       let inlineSig = M.isNone dfn.sig and M.isSome inline and V.isEmpty params and V.len dfn.eqs == 1 in
       let sig = if inlineSig then inline else dfn.sig in
       let resultTy = if inlineSig then None else inline in
-      let ty = M.map (\t -> renameSig r t) sig in
-      (match rhs with
-       | Rhs.Plain body if V.len dfn.eqs == 1 and V.all simplePat params ->
-           let ps =
-             V.map (\p -> match patOf p with | Pat.Bind q -> q | _ -> Param.Param "_" False None None) params
-           in
-           scoped r (\u ->
-             let v = scopeQuantified r ty in
-             let built =
-               scoped r (\w ->
-                 let bps = V.map (\p -> bindParam r p) ps in
-                 let b = renameTerm r body in
-                 let b2 = match resultTy with | Just t -> H.Term.Ann b (asType r (\x -> renameTerm r t)) | None -> b in
-                 V.foldr (\bp acc -> wrapParam r bp acc) b2 bps)
-             in
-             H.bind dfn.name ty built (getRef r.linear))
-       | _ -> renameMatch r dfn ty)
-  | _ -> H.bind dfn.name None (H.Term.Hole) False
+      let ty = M.map (\t -> renameSig src out r t) sig in
+      let isPlain = kindSurfaceRhs src rhs == SurfaceRhsKind.Plain in
+      if isPlain and V.len dfn.eqs == 1 and V.all (simplePat src) params then
+        scoped r (\u ->
+          let v = scopeQuantified out r ty in
+          let built =
+            scoped r (\w ->
+              let bps =
+                V.map
+                  (\p ->
+                    match (src, p) with
+                    | SurfacePatBind q -> resolveParam src out r q
+                    | _ -> BoundParam.BoundParam (bindName r "_") None None None)
+                  params
+              in
+              let b = resolveExpr src out r (surfaceRhsPlainBody src rhs) in
+              let b2 = match resultTy with | Just t -> newHirExprAnn out m b (asType r (\x -> resolveExpr src out r t)) | None -> b in
+              V.foldr (\bp acc -> wrapParam out m bp acc) b2 bps)
+          in
+          newHirBind out m (idNode out m dfn.name) ty built (getRef r.linear))
+      else renameMatch src out r m dfn ty
+  | _ -> newHirBind out m (idNode out m dfn.name) None (newHirExprHole out m) False
 
 -- A definition by matching: each equation a clause.
-fun renameMatch (r : Rn) (dfn : Def) ty =
+fun renameMatch src out (r : Rn) (m : Meta) (dfn : Def) ty =
   scoped r (\u ->
-    let v = scopeQuantified r ty in
+    let v = scopeQuantified out r ty in
     let clauses =
       V.map
         (\d ->
-          match d with
-          | Decl.Def _ pats resultTy rhs -> renameClause r pats resultTy rhs
-          | _ -> H.Clause.Clause [] (H.Rhs.Impossible))
+          match (src, d) with
+          | SurfaceDeclDef _ pats resultTy rhs -> renameClause src out r (metaSurfaceDecl src d) pats resultTy rhs
+          | _ -> newHirClause out m [] (newHirRhsImpossible out m))
         dfn.eqs
     in
-    H.bind dfn.name ty (H.Term.Match clauses) (getRef r.linear))
+    newHirBind out m (idNode out m dfn.name) ty (newHirExprMatch out m clauses) (getRef r.linear))
+
+-- The binders a signature quantifies over, in front of it: the implicit
+-- `Pi`s it starts with.
+fun quantified out (t : HirExpr) =
+  if kindHirExpr out t != HirExprKind.Pi or hirExprPiIcit out t != Icit.Implicit then []
+  else
+    match hirExprPiName out t with
+    | Just x -> V.append [(hirIdentText out x, hirIdentUniques out x)] (quantified out (hirExprPiCod out t))
+    | None -> []
 
 -- What a signature quantifies over scopes over the equation.
-fun scopeQuantified (r : Rn) ty =
+fun scopeQuantified out (r : Rn) ty =
   match ty with
-  | Just t -> V.foldl (\acc x -> onTop r (\s -> Hm.insert (H.textOf x) [H.uniqueOf x] s)) () (H.quantified t)
+  | Just t -> V.foldl (\acc x -> match x with | (n, us) -> onTop r (\s -> Hm.insert n [V.getOr (0 - 1) us 0] s)) () (quantified out t)
   | None -> ()
 
 -- The lower-case names `t` mentions that are neither bound in it nor
 -- `known`, in order of first appearance.
-fun freeVars (t : Expr) (bound : [String]) known (out : [String]) : [String] ! { Mut | e } =
-  let go = \u o -> freeVars u bound known o in
-  let under = \x u o -> match x with | Just n -> freeVars u (V.pushBack bound n) known o | None -> go u o in
+fun freeVars (a : SurfaceArena) (t : SurfaceExpr) (bound : [String]) known (out : [String]) : [String] ! { Mut | e } =
+  let go = \u o -> freeVars a u bound known o in
+  let under = \x u o -> match x with | Just n -> freeVars a u (V.pushBack bound n) known o | None -> go u o in
   let grades =
     \g o ->
       match g with
-      | Just (Grade.Grade s rr) -> (match rr with | Just x -> go x (go s o) | None -> go s o)
+      | Just gr -> (match surfaceGradeInType a gr with | Just x -> go x (go (surfaceGradeUses a gr) o) | None -> go (surfaceGradeUses a gr) o)
       | None -> o
   in
-  match termOf t with
-  | Term.Var x ->
+  let text = \n -> surfaceNameText a n in
+  match (a, t) with
+  | SurfaceExprVar n ->
+      let x = text n in
       let b = if stringByteLength x > 0 then toInt (stringByteAt x 0) else 0 in
       let lower = (b >= 97 and b <= 122) or b == 95 in
       if lower and not (V.elem x bound) and not (V.elem x out) and not (known x) and x != "otherwise" then V.pushBack out x
       else out
-  | Term.Pi x _ g dom cod -> under x cod (go dom (grades g out))
-  | Term.Lam (Param.Param x _ g ty) body ->
-      let o1 = grades g out in
-      let o2 = match ty with | Just tt -> go tt o1 | None -> o1 in
-      under (Just x) body o2
-  | Term.App f a -> go a (go f out)
-  | Term.Ann f a -> go a (go f out)
-  | Term.Range f a -> go a (go f out)
-  | Term.Eff f a -> go a (go f out)
-  | Term.Row ls tail -> V.foldl (\o l -> go l o) out (V.append ls (match tail with | Just x -> [x] | None -> []))
-  | Term.BoxIntro e -> go e out
-  | Term.Seq es -> V.foldl (\o e -> go e o) out es
-  | Term.ArrayLit es -> V.foldl (\o e -> go e o) out es
-  | Term.RecordLit _ vs -> V.foldl (\o v -> go (snd v) o) out vs
-  | Term.Proj e _ -> go e out
-  | Term.Update e vs -> V.foldl (\o v -> go (snd v) o) (go e out) vs
-  | Term.LetBox x e body -> under (Just x) body (go e out)
-  | Term.Let ds body ->
-      let names = V.concatMap (\d -> match d with | Decl.Def x _ _ _ -> [x] | _ -> []) ds in
-      freeVars body (V.append bound names) known out
-  | Term.Case e _ -> go e out
-  | Term.Handle e _ -> go e out
+  | SurfaceExprPi x _ g dom cod -> under (M.map text x) cod (go dom (grades g out))
+  | SurfaceExprLam p body ->
+      let o1 = grades (surfaceParamGrade a p) out in
+      let o2 = match surfaceParamTy a p with | Just tt -> go tt o1 | None -> o1 in
+      under (Just (text (surfaceParamName a p))) body o2
+  | SurfaceExprApp f x -> go x (go f out)
+  | SurfaceExprAnn f x -> go x (go f out)
+  | SurfaceExprRange f x -> go x (go f out)
+  | SurfaceExprEff f x -> go x (go f out)
+  | SurfaceExprRow ls tail -> V.foldl (\o l -> go l o) out (V.append ls (match tail with | Just x -> [x] | None -> []))
+  | SurfaceExprBox e -> go e out
+  | SurfaceExprSeq es -> V.foldl (\o e -> go e o) out es
+  | SurfaceExprArray es -> V.foldl (\o e -> go e o) out es
+  | SurfaceExprRecord _ fs -> V.foldl (\o f -> go (surfaceFieldValue a f) o) out fs
+  | SurfaceExprProj e _ -> go e out
+  | SurfaceExprUpdate e fs -> V.foldl (\o f -> go (surfaceFieldValue a f) o) (go e out) fs
+  | SurfaceExprLetBox x e body -> under (Just (text x)) body (go e out)
+  | SurfaceExprLet ds body ->
+      let names = V.concatMap (\d -> match equation a d with | Just (x, _) -> [x] | None -> []) ds in
+      freeVars a body (V.append bound names) known out
+  | SurfaceExprCase e _ -> go e out
+  | SurfaceExprHandle e _ -> go e out
   | _ -> out
 
--- --- programs ----------------------------------------------------------------
+-- --- programs ----------------------------------------------------------------------
 
 -- What binding a program's names leaves to do.
 record Bound = {
-  datas : [Data],
+  datas : [SurfaceData],
   dataNames : [(Ident, [Ident])],
   effectNames : [(Ident, [Ident])],
   defs : [Def],
-  natives : [(Ident, Expr)]
+  natives : [(Ident, SurfaceExpr)]
 }
 
 -- The names a program declares, `decls` its declarations (or a `let`'s), all
 -- in the innermost scope.
-fun bindProgram (r : Rn) (prog : Program) (decls : [Decl]) : Bound ! { Mut | e } =
+fun bindProgram (r : Rn) (prog : Program) (decls : [SurfaceDecl]) : Bound ! { Mut | e } =
+  let a = prog.src in
   let effectNames =
     V.map
-      (\(e : Effect) ->
-        let name = bindName r e.name in
-        let ops = V.map (\o -> match o with | OpSig.OpSig x _ _ -> bindName r x) e.ops in
+      (\e ->
+        let name = bindName r (surfaceNameText a (surfaceEffectName a e)) in
+        let ops = V.map (\o -> bindName r (surfaceNameText a (surfaceOpSigName a o))) (surfaceEffectOps a e) in
         let w = setRef r.effectOps (Hm.insert (H.uniqueOf name) (V.map (\o -> (H.textOf o, H.uniqueOf o)) ops) (getRef r.effectOps)) in
         (name, ops))
       prog.effects
   in
-  let dataNames = bindDatas r prog.datas in
-  let natives = V.concatMap (\d -> match d with | Decl.Native x ty -> [(bindName r x, ty)] | _ -> []) decls in
-  let defs = bindDecls r decls in
+  let dataNames = bindDatas r a prog.datas in
+  let natives =
+    V.concatMap (\d -> match (a, d) with | SurfaceDeclNative x ty -> [(bindName r (surfaceNameText a x), ty)] | _ -> []) decls
+  in
+  let defs = bindDecls a r decls in
   -- a record's fields, by their projections, which the parser named `Point.x`
   let w1 =
     V.foldl
       (\acc i ->
         match (V.get prog.datas i, V.get dataNames i) with
-        | (Just (d : Data), Just (name, _)) ->
-            (match d.fields with
-             | Just fs ->
-                 let top = M.unwrapOr Hm.empty (V.last (getRef r.scopes)) in
-                 let found =
-                   V.concatMap
-                     (\f -> match Hm.lookup "${d.name}.${f}" top with | Just ps -> [(f, V.getOr 0 ps 0)] | None -> [])
-                     fs
-                 in
-                 setRef r.fields (Hm.insert (H.uniqueOf name) found (getRef r.fields))
-             | None -> acc)
+        | (Just d, Just (name, _)) ->
+            if surfaceDataIsRecord a d then
+              let top = M.unwrapOr Hm.empty (V.last (getRef r.scopes)) in
+              let found =
+                V.concatMap
+                  (\f ->
+                    let fx = surfaceNameText a f in
+                    match Hm.lookup "${dataName a d}.${fx}" top with | Just ps -> [(fx, V.getOr 0 ps 0)] | None -> [])
+                  (surfaceDataFields a d)
+              in
+              setRef r.fields (Hm.insert (H.uniqueOf name) found (getRef r.fields))
+            else acc
         | _ -> acc)
       ()
       (V.range 0 (V.len prog.datas))
@@ -1071,28 +1205,34 @@ fun bindProgram (r : Rn) (prog : Program) (decls : [Decl]) : Bound ! { Mut | e }
   Bound { datas = prog.datas, dataNames, effectNames, defs, natives }
 
 -- What a program says, its names bound and its `use`s taken.
-fun renameProgram (r : Rn) (prog : Program) (b : Bound) =
-  let datas = renameDatas r b.datas b.dataNames in
+fun renameProgram out (r : Rn) (prog : Program) (b : Bound) =
+  let src = prog.src in
+  let datas = renameDatas src out r b.datas b.dataNames in
   let effects =
-    V.map
+    V.concatMap
       (\i ->
         match (V.get prog.effects i, V.get b.effectNames i) with
-        | (Just e, Just names) -> renameEffect r e names
-        | _ -> EffectDecl { name = Ident.Ident [] "_", params = [], ops = [] })
+        | (Just e, Just names) -> [renameEffect src out r e names]
+        | _ -> [])
       (V.range 0 (V.len prog.effects))
   in
-  let natives = V.map (\n -> match n with | (x, ty) -> NativeDecl.NativeDecl x (renameSig r ty)) b.natives in
-  let binds = renameDefs r b.defs in
+  let natives =
+    V.map
+      (\n -> match n with | (x, ty) -> newHirNative out (metaSurfaceExpr src ty) (idNode out (metaSurfaceExpr src ty) x) (renameSig src out r ty))
+      b.natives
+  in
+  let binds = renameDefs src out r b.defs in
   (datas, effects, natives, binds)
 
 -- Record what module `i` declares, and how visible each is, for the
 -- others' `use`s.
 fun export (r : Rn) (i : Int) (prog : Program) (b : Bound) =
+  let a = prog.src in
   let declared = \x -> match V.find (\v -> fst v == x) prog.visibility with | Just (_, vis) -> vis | None -> Visibility.Private in
   let names =
     V.concat [
-      V.map (\dn -> match dn with | ((d : Data), (n, _)) -> (n, d.visibility)) (V.zip b.datas b.dataNames),
-      V.concatMap (\en -> match en with | ((e : Effect), (n, ops)) -> V.map (\x -> (x, e.visibility)) (V.append [n] ops)) (V.zip prog.effects b.effectNames),
+      V.map (\dn -> match dn with | (d, (n, _)) -> (n, surfaceDataVis a d)) (V.zip b.datas b.dataNames),
+      V.concatMap (\en -> match en with | (e, (n, ops)) -> V.map (\x -> (x, surfaceEffectVis a e)) (V.append [n] ops)) (V.zip prog.effects b.effectNames),
       V.map (\(d : Def) -> (d.name, declared (H.textOf d.name))) b.defs,
       V.map (\nt -> (fst nt, declared (H.textOf (fst nt)))) b.natives
     ]
@@ -1111,19 +1251,19 @@ fun export (r : Rn) (i : Int) (prog : Program) (b : Bound) =
 fun mentionsVisibility (p : Program) : Bool =
   not (V.isEmpty p.visibility)
     or V.any (\(u : Use) -> u.public) p.uses
-    or V.any (\(d : Data) -> d.visibility != Visibility.Private) p.datas
-    or V.any (\(e : Effect) -> e.visibility != Visibility.Private) p.effects
+    or V.any (\d -> surfaceDataVis p.src d != Visibility.Private) p.datas
+    or V.any (\e -> surfaceEffectVis p.src e != Visibility.Private) p.effects
 
 -- What renaming a package made: its data types, effects, natives,
 -- definitions, and, for the root package, its expression and its `main`.
-data Renamed = Renamed [DataDecl] [EffectDecl] [NativeDecl] [Bind] (Maybe H.Term) (Maybe Int)
+data Renamed = Renamed [HirData] [HirEffect] [HirNative] [HirBind] (Maybe HirExpr) (Maybe Int)
 
 -- Rename the modules of package `pkg` (whose modules are `first` on in
 -- `r.modules`), its root's expression if `root`: every module's names, so
 -- that any may mention any other; then what their `use`s bring, twice,
 -- since a `@pub use` may give on what another's brings it (only the second
 -- time says what is wrong); then what each says.
-fun renamePackageAt (r : Rn) (pkg : Int) (first : Int) (progs : [Program]) (root : Bool) (linearPackage : Bool) : Renamed ! { Mut | e } =
+fun renamePackageAt out (r : Rn) (pkg : Int) (first : Int) (progs : [Program]) (root : Bool) (linearPackage : Bool) =
   let n = V.len progs in
   -- a root that is nothing but `let ... in body` is those declarations and
   -- that body
@@ -1132,8 +1272,8 @@ fun renamePackageAt (r : Rn) (pkg : Int) (first : Int) (progs : [Program]) (root
       (\i ->
         match V.get progs i with
         | Just (p : Program) ->
-            (match (V.isEmpty p.decls, M.map termOf p.body) with
-             | (True, Just (Term.Let ds body)) -> if i == 0 and root then (ds, Just body) else (p.decls, None)
+            (match (V.isEmpty p.decls, M.map (\b -> (p.src, b)) p.body) with
+             | (True, Just (SurfaceExprLet ds body)) -> if i == 0 and root then (ds, Just body) else (p.decls, None)
              | _ -> (p.decls, if i == 0 and root then p.body else None))
         | None -> ([], None))
       (V.range 0 n)
@@ -1177,11 +1317,11 @@ fun renamePackageAt (r : Rn) (pkg : Int) (first : Int) (progs : [Program]) (root
       | (Renamed.Renamed ds es ns bs body main, Just (p : Program), Just b, Just (_, rootBody)) ->
           let w = enter r (first + i) in
           let w3 = setRef r.linear (linearPackage or p.linear) in
-          (match renameProgram r p b with
+          (match renameProgram out r p b with
            | (d, e, nt, bnd) ->
                let (body2, main2) =
                  if i == 0 and root then
-                   let bd = M.map (\x -> renameTerm r x) rootBody in
+                   let bd = M.map (\x -> resolveExpr p.src out r x) rootBody in
                    let own = M.unwrapOr Hm.empty (V.last (getRef r.scopes)) in
                    (bd, M.andThen V.head (Hm.lookup "main" own))
                  else (body, main)
@@ -1197,67 +1337,187 @@ fun renamePackageAt (r : Rn) (pkg : Int) (first : Int) (progs : [Program]) (root
 -- modules, the same way), which are renamed first and named from the
 -- uniques before its own: their declarations come in the module beside the
 -- prelude's, and only what they make `@pub` is theirs to give.
-@pub fun renamePackage (name : String) (modules : [([String], Program)]) (prelude : Program) (deps : [(String, [([String], Program)])]) : (Module, [String]) ! { Mut | e } =
-  let r = new () in
-  let w1 = setRef r.scopes (V.append (getRef r.scopes) [Hm.empty, Hm.empty]) in
-  let w2 = setRef r.linear prelude.linear in
-  let pb = bindProgram r prelude prelude.decls in
-  let w3 = V.foldl (\acc u -> renameUse r u) () prelude.uses in
-  match renameProgram r prelude pb with
-  | (pdatas, peffects, pnatives, pbinds) ->
-      let w4 = setRef r.linear False in
-      let w5 = setRef r.base (getRef r.scopes) in
-      -- the root package is 0, its dependencies 1 on
-      let allPackages = V.append [(name, modules)] deps in
-      let w6 = setRef r.packageNames (V.map fst allPackages) in
-      let w7 = setRef r.packageDeps (V.append [V.range 1 (V.len allPackages)] (V.map (\d -> []) deps)) in
-      let w8 = setRef r.visibilityMentioned (V.map (\pm -> V.any (\m -> mentionsVisibility (snd m)) (snd pm)) allPackages) in
-      let mods =
-        V.concatMap
-          (\pi ->
-            match V.get allPackages pi with
-            | Just (_, ms) -> V.map (\m -> Mod { package = pi, path = fst m, own = Hm.empty, imports = Hm.empty, aliases = Hm.empty, exports = Hm.empty }) ms
-            | None -> [])
-          (V.range 0 (V.len allPackages))
-      in
-      let w9 = setRef r.modules mods in
-      let starts = V.foldl (\acc pm -> V.pushBack acc (V.getOr 0 acc (V.len acc - 1) + V.len (snd pm))) [0] allPackages in
-      -- the dependencies, in turn
-      let depParts =
-        V.map
-          (\di ->
-            let lo = getRef r.next in
-            let renamed = renamePackageAt r (di + 1) (V.getOr 0 starts (di + 1)) (V.map snd (snd (V.getOr ("", []) deps di))) False False in
-            (renamed, (lo, getRef r.next, fst (V.getOr ("", []) deps di))))
-          (V.range 0 (V.len deps))
-      in
-      let first = getRef r.next in
-      (match renamePackageAt r 0 0 (V.map snd modules) True False with
-       | Renamed.Renamed datas effects natives binds body main ->
-           let depDatas = V.concatMap (\dp -> match fst dp with | Renamed.Renamed d _ _ _ _ _ -> d) depParts in
-           let depEffects = V.concatMap (\dp -> match fst dp with | Renamed.Renamed _ e _ _ _ _ -> e) depParts in
-           let depNatives = V.concatMap (\dp -> match fst dp with | Renamed.Renamed _ _ n _ _ _ -> n) depParts in
-           let depBinds = V.map (\dp -> match fst dp with | Renamed.Renamed _ _ _ b _ _ -> b) depParts in
-           let groups = V.map (\bs -> Group.Rec bs) (V.filter (\bs -> not (V.isEmpty bs)) (V.concat [[pbinds], depBinds, [binds]])) in
-           let linearBody = match V.head modules with | Just (_, p) -> p.linear | None -> False in
-           let m =
-             Module {
-               datas = V.concat [pdatas, depDatas, datas],
-               effects = V.concat [peffects, depEffects, effects],
-               natives = V.concat [pnatives, depNatives, natives],
-               groups,
-               body,
-               main,
-               first,
-               terminating = getRef r.terminating,
-               linearBody,
-               qualifiers = getRef r.qualifiers,
-               ranges = V.pushBack (V.map snd depParts) (first, getRef r.next, name)
-             }
-           in
-           (m, getRef r.problems))
+@pub fun renamePackage
+    (name : String)
+    (modules : [([String], SurfaceProgram)])
+    (prelude : SurfaceProgram)
+    (deps : [(String, [([String], SurfaceProgram)])])
+    : (Module, [String]) ! { Mut | e } =
+  runSt (\() ->
+    let out = newHirBuilder () in
+    let r = new () in
+    let pre = programOf prelude in
+    let w1 = setRef r.scopes (V.append (getRef r.scopes) [Hm.empty, Hm.empty]) in
+    let w2 = setRef r.linear pre.linear in
+    let pb = bindProgram r pre pre.decls in
+    let w3 = V.foldl (\acc u -> renameUse r u) () pre.uses in
+    match renameProgram out r pre pb with
+    | (pdatas, peffects, pnatives, pbinds) ->
+        let w4 = setRef r.linear False in
+        let w5 = setRef r.base (getRef r.scopes) in
+        -- the root package is 0, its dependencies 1 on
+        let allPackages = V.append [(name, V.map (\m -> (fst m, programOf (snd m))) modules)] (V.map (\d -> (fst d, V.map (\m -> (fst m, programOf (snd m))) (snd d))) deps) in
+        let w6 = setRef r.packageNames (V.map fst allPackages) in
+        let w7 = setRef r.packageDeps (V.append [V.range 1 (V.len allPackages)] (V.map (\d -> []) deps)) in
+        let w8 = setRef r.visibilityMentioned (V.map (\pm -> V.any (\m -> mentionsVisibility (snd m)) (snd pm)) allPackages) in
+        let mods =
+          V.concatMap
+            (\pi ->
+              match V.get allPackages pi with
+              | Just (_, ms) -> V.map (\m -> Mod { package = pi, path = fst m, own = Hm.empty, imports = Hm.empty, aliases = Hm.empty, exports = Hm.empty }) ms
+              | None -> [])
+            (V.range 0 (V.len allPackages))
+        in
+        let w9 = setRef r.modules mods in
+        let starts = V.foldl (\acc pm -> V.pushBack acc (V.getOr 0 acc (V.len acc - 1) + V.len (snd pm))) [0] allPackages in
+        -- the dependencies, in turn
+        let depParts =
+          V.map
+            (\di ->
+              let lo = getRef r.next in
+              let progs = V.map snd (snd (V.getOr ("", []) allPackages (di + 1))) in
+              let renamed = renamePackageAt out r (di + 1) (V.getOr 0 starts (di + 1)) progs False False in
+              (renamed, (lo, getRef r.next, fst (V.getOr ("", []) deps di))))
+            (V.range 0 (V.len deps))
+        in
+        let first = getRef r.next in
+        let rootProgs = V.map snd (snd (V.getOr ("", []) allPackages 0)) in
+        (match renamePackageAt out r 0 0 rootProgs True False with
+         | Renamed.Renamed datas effects natives binds body main ->
+             let depDatas = V.concatMap (\dp -> match fst dp with | Renamed.Renamed d _ _ _ _ _ -> d) depParts in
+             let depEffects = V.concatMap (\dp -> match fst dp with | Renamed.Renamed _ e _ _ _ _ -> e) depParts in
+             let depNatives = V.concatMap (\dp -> match fst dp with | Renamed.Renamed _ _ n _ _ _ -> n) depParts in
+             let depBinds = V.map (\dp -> match fst dp with | Renamed.Renamed _ _ _ b _ _ -> b) depParts in
+             let groups =
+               V.map (\bs -> newHirGroupRec out noMeta bs) (V.filter (\bs -> not (V.isEmpty bs)) (V.concat [[pbinds], depBinds, [binds]]))
+             in
+             let linearBody = match V.head rootProgs with | Just (p : Program) -> p.linear | None -> False in
+             let root =
+               newHirModule out noMeta (V.concat [pdatas, depDatas, datas]) (V.concat [peffects, depEffects, effects]) (V.concat [pnatives, depNatives, natives]) groups body
+             in
+             let arena = freezeHir out in
+             let m = moduleOf arena root in
+             (
+               {
+                 m |
+                 main,
+                 first,
+                 terminating = getRef r.terminating,
+                 linearBody,
+                 qualifiers = getRef r.qualifiers,
+                 ranges = V.pushBack (V.map snd depParts) (first, getRef r.next, name)
+               },
+               getRef r.problems
+             )))
 
 -- Rename a lone module, the root of a package called `Main`, after the
 -- prelude.
-@pub fun renameModule (prog : Program) (prelude : Program) : (Module, [String]) ! { Mut | e } =
+@pub fun renameModule (prog : SurfaceProgram) (prelude : SurfaceProgram) : (Module, [String]) ! { Mut | e } =
   renamePackage package [([], prog)] prelude []
+
+-- --- the checker's data --------------------------------------------------------------
+
+-- The renamed tables as the data the checker still reads (`Hir`'s types),
+-- until it reads the tables themselves.
+fun moduleOf (a : HirArena) (root : HirModule) : Module =
+  Module {
+    datas = V.map (dataOf a) (hirModuleDatas a root),
+    effects = V.map (effectOf a) (hirModuleEffects a root),
+    natives = V.map (\n -> NativeDecl.NativeDecl (identOf a (hirNativeName a n)) (termOf a (hirNativeTy a n))) (hirModuleNatives a root),
+    groups = V.map (groupOf a) (hirModuleGroups a root),
+    body = M.map (termOf a) (hirModuleBody a root),
+    main = None,
+    first = 0,
+    terminating = [],
+    linearBody = False,
+    qualifiers = Hm.empty,
+    ranges = []
+  }
+
+fun identOf (a : HirArena) (x : HirIdent) : Ident = Ident.Ident (hirIdentUniques a x) (hirIdentText a x)
+
+fun gradeOf (a : HirArena) (g : HirGrade) : H.Grade = H.Grade.Grade (termOf a (hirGradeUses a g)) (M.map (termOf a) (hirGradeInType a g))
+
+fun termOf (a : HirArena) (e : HirExpr) : H.Term =
+  let go = termOf a in
+  match (a, e) with
+  | HirExprType -> H.Term.Type
+  | HirExprVar x -> H.Term.Var (identOf a x)
+  | HirExprLit l -> H.Term.Lit l
+  | HirExprPi x icit g dom cod -> H.Term.Pi (M.map (identOf a) x) icit (M.map (gradeOf a) g) (go dom) (go cod)
+  | HirExprLam x g ty body -> H.Term.Lam (identOf a x) (M.map (gradeOf a) g) (M.map go ty) (go body)
+  | HirExprApp f x -> H.Term.App (go f) (go x)
+  | HirExprAnn x ty -> H.Term.Ann (go x) (go ty)
+  | HirExprHole -> H.Term.Hole
+  | HirExprBox x -> H.Term.BoxIntro (go x)
+  | HirExprInf -> H.Term.Inf
+  | HirExprRange l h -> H.Term.Range (go l) (go h)
+  | HirExprLetBox x v body -> H.Term.LetBox (identOf a x) (go v) (go body)
+  | HirExprLet gs body -> H.Term.Let (V.map (groupOf a) gs) (go body)
+  | HirExprCase x cs -> H.Term.Case (go x) (V.map (clauseOf a) cs)
+  | HirExprMatch cs -> H.Term.Match (V.map (clauseOf a) cs)
+  | HirExprOmitted -> H.Term.Omitted
+  | HirExprEff b r -> H.Term.Eff (go b) (go r)
+  | HirExprRow ls tail -> H.Term.Row (V.map go ls) (M.map go tail)
+  | HirExprHandle x cs ->
+      H.Term.Handle
+        (go x)
+        (V.map (\c -> HandleClause.HandleClause (M.map (identOf a) (hirHandleClauseOp a c)) (V.map (identOf a) (hirHandleClauseParams a c)) (go (hirHandleClauseBody a c))) cs)
+  | HirExprSeqNil -> H.Term.SeqNil
+  | HirExprSeqCons h t -> H.Term.SeqCons (go h) (go t)
+  | HirExprArray es -> H.Term.ArrayLit (V.map go es)
+
+fun clauseOf (a : HirArena) (c : HirClause) : H.Clause =
+  let rhs =
+    match (a, hirClauseRhs a c) with
+    | HirRhsPlain e -> H.Rhs.Plain (termOf a e)
+    | HirRhsGuarded gs -> H.Rhs.Guarded (V.map (\g -> (termOf a (hirGuardCond a g), termOf a (hirGuardBody a g))) gs)
+    | HirRhsImpossible -> H.Rhs.Impossible
+  in
+  H.Clause.Clause (V.map (patternOf a) (hirClausePats a c)) rhs
+
+fun patternOf (a : HirArena) (p : HirPattern) : Pattern =
+  let go = patternOf a in
+  match (a, p) with
+  | HirPatternVar x -> Pattern.Var (identOf a x)
+  | HirPatternWild -> Pattern.Wild
+  | HirPatternLit l -> Pattern.Lit l
+  | HirPatternCon c ps -> Pattern.Con (identOf a c) (V.map go ps)
+  | HirPatternAs x q -> Pattern.As (identOf a x) (go q)
+  | HirPatternDot e -> Pattern.Dot (termOf a e)
+  | HirPatternSeqNil -> Pattern.SeqNil
+  | HirPatternSeqCons h t -> Pattern.SeqCons (go h) (go t)
+
+fun bindOf (a : HirArena) (b : HirBind) : Bind =
+  H.bind (identOf a (hirBindName a b)) (M.map (termOf a) (hirBindTy a b)) (termOf a (hirBindRhs a b)) (hirBindLinear a b)
+
+fun groupOf (a : HirArena) (g : HirGroup) : Group =
+  match (a, g) with
+  | HirGroupNonRec b -> Group.NonRec (bindOf a b)
+  | HirGroupRec bs -> Group.Rec (V.map (bindOf a) bs)
+
+fun paramOf (a : HirArena) (p : HirTypeParam) : (Ident, Maybe H.Term) =
+  (identOf a (hirTypeParamName a p), M.map (termOf a) (hirTypeParamKindSig a p))
+
+fun dataOf (a : HirArena) (d : HirData) : DataDecl =
+  DataDecl {
+    name = identOf a (hirDataName a d),
+    params = V.map (paramOf a) (hirDataParams a d),
+    kind = M.map (termOf a) (hirDataKindSig a d),
+    ctors =
+      V.map
+        (\c ->
+          match (a, c) with
+          | HirCtorFields n ts -> CtorDecl.CtorDecl (identOf a n) (CtorShape.Fields (V.map (termOf a) ts))
+          | HirCtorSig n ty -> CtorDecl.CtorDecl (identOf a n) (CtorShape.Sig (termOf a ty)))
+        (hirDataCtors a d),
+    seq = M.map (\s -> (identOf a (hirSeqPairNil a s), identOf a (hirSeqPairCons a s))) (hirDataSeq a d),
+    linear = hirDataLinear a d
+  }
+
+fun effectOf (a : HirArena) (e : HirEffect) : EffectDecl =
+  EffectDecl {
+    name = identOf a (hirEffectName a e),
+    params = V.map (paramOf a) (hirEffectParams a e),
+    ops = V.map (\o -> OpDecl.OpDecl (identOf a (hirOpName a o)) (termOf a (hirOpTy a o)) (hirOpMany a o)) (hirEffectOps a e)
+  }

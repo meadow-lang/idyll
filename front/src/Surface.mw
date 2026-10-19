@@ -1743,3 +1743,28 @@ fun useText (a : SurfaceArena) (u : SurfaceUse) : String =
        V.map (\x -> sx ["terminating", nameIn a x]) (surfaceFileTerminating a f),
        (match surfaceFileBody a f with | Just e -> [sx ["body", exprText a e]] | None -> [])
      ])
+
+-- --- tests -----------------------------------------------------------------------
+
+use Std.Test (assertEq)
+use Lingua.Diagnostic (whereAt)
+
+@test fun operatorsGroupByLevelAndIfIsACase () =
+  assertEq
+    (dumped "x = if 1 + 2 * 3 :: xs then a else b\n")
+    "(linear false)\n(def x () - (= (case (app (app :: (app (app + (lit 1)) (app (app * (lit 2)) (lit 3)))) xs) (alt (lit True) (= a)) (alt (lit False) (= b)))))"
+    "`*` before `+` before `::`, and `if` a `case` on Bool"
+
+@test fun whatIsWrongIsAtItsNode () =
+  assertEq
+    (match parsed "f = 1\nh = 99999999999999999999\n" with
+     | Err ds -> V.map whereAt ds
+     | Ok _ -> [])
+    [spanMeta 10 30]
+    "the number, and nothing else"
+
+@test fun aRecordsProjectionReadsEarlierFieldsOffSelf () =
+  assertEq
+    (dumped "record P = { n : Nat, v : Vec n }\n")
+    "(linear false)\n(data P () - ((P (sig (pi n e - Nat (pi v e - (app Vec n) P))))) - private (n v))\n(sig P.n (pi self e (grade (range (lit 0) (lit 1)) -) P Nat))\n(def P.n ((con P (param n - - -) _)) - (= n))\n(sig P.v (pi self e (grade (range (lit 0) (lit 1)) -) P (app Vec (app P.n self))))\n(def P.v ((con P _ (param v - - -))) - (= v))"
+    "a later field's type reads an earlier one off `self`"

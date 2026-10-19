@@ -19,8 +19,8 @@ does, how it is checked, and why it is built the way it is.
 | Tokens | `Lex.mw` | done: agrees with the Rust lexer on every program |
 | Layout | `Layout.mw` | done: agrees on every program |
 | Grammar | `Syntax.mw` | done: a Lingua `syntax!` grammar |
-| What the tree means | `View.mw` | done: agrees with the Rust parser on every program; errors drawn at the nodes they are about |
-| Renaming | `Rename.mw`, `Hir.mw` | done: packages of modules, after the prelude and their dependencies |
+| What the tree means | `Surface.mw`: a `lang!`, written from the tree by `pass!`es | done: agrees with the Rust parser on every program; errors drawn at the nodes they are about |
+| Renaming | `Rename.mw` (a `pass!` from `Surface` to `Hir`, a `lang!`), `Hir.mw` | done: packages of modules, after the prelude and their dependencies |
 | Dependency order | `Scc.mw` | done |
 | Types | `Check.mw`, `Elab.mw`, `Matching.mw`, `Termination.mw`, `Handlers.mw`, `Sequences.mw`, `Decl.mw`, `Positivity.mw`, `Ctx.mw`, `Usage.mw`, and the machinery under them | done: agrees on every program that gets this far (431, Std's users among them), and on the whole Std package (475 declarations) |
 | The CEK machine | `Cek.mw`, `World.mw` | done: the same answer, in the same number of steps, as `idyll-eval` on every program that runs (211) |
@@ -82,7 +82,7 @@ For the passes so far:
 - **tokens**: each token as its source text, and the layout's virtual ones as
   `«{»`, `«;»`, `«}»`.
 - **parse**: the syntax tree as S-expressions, nothing about where anything
-  was written. `View.mw` writes it from its views of the tree; `w` in
+  was written. `Surface.mw` writes it from a `Surface` program; `w` in
   `front.rs` writes the Rust parser's tree the same way.
 - **rename**: the renamed tree, every name `text@unique`. The two renamers
   number things differently, so the test renumbers both sides' uniques in
@@ -152,13 +152,13 @@ into a parser, a lossless tree (every byte of the source is in it) and a
 typed view of that tree, named by the grammar's labels: a `Lam` node is an
 `IdyllLam`, whose binders are `idyllLamBinders` and whose body is
 `idyllLamBody`; a `Term` is an `IdyllTerm`, one of `Lam`, `LetE`, `CaseE`,
-`IfE`, `HandleE` and `Op`. That typed tree is the syntax `front/` works on.
-There is no second syntax tree built from it.
+`IfE`, `HandleE` and `Op`. Those typed nodes are what the passes after it
+read the tree with.
 
 Lingua's parsers never backtrack: each choice is decided by looking at most
 four tokens ahead. The Rust parser (chumsky) does backtrack, so where it tries
 one form and then another, this grammar reads one form that covers both, and
-`View.mw` decides afterwards which it was:
+`Surface.mw` decides afterwards which it was:
 
 - **An item is a term, then perhaps `! row`, then perhaps `= e` or guards.**
   `f x = e` is an equation, `f : a` a signature, `l + r = e` an operator's
@@ -174,46 +174,55 @@ one form and then another, this grammar reads one form that covers both, and
 `record` is a keyword only before a capital letter (Lingua's `context`
 section); anywhere else it is a name, as it is to the Rust lexer.
 
-### View
+### Lingua's languages and passes
 
-`View.mw` says what the typed tree means: what Idyll makes of each node,
-which is not always what the grammar read. It is a set of functions over
-the tree's nodes, not a pass that builds something. Nothing is built up
-front.
+From here on, each pass of `front/` is what Lingua is built for: a
+**language** declared with `lang!`, and a **pass** to it declared with
+`pass!`.
 
-- An `Expr` is a term or a pattern, held as the place in the tree it was
-  read from: a node (`IdyllTerm`, `IdyllAtom`, ...), or part of one (an
-  operator chain's operands, an annotation past its grades). An `Expr` can
-  also be a term made of other `Expr`s.
-- `term` says what an `Expr` is, one level down: an application, a lambda,
-  a `case`, and so on. Its parts are `Expr`s again, looked at when someone
-  asks for them.
-- `pat` does the same for an `Expr` read as a pattern. A pattern is
-  written as a term (`Cons x xs`, `x :: xs`, `(a, b)`) and read again
-  here.
-- At item level, a `Program` lists the declarations, data types, effects
-  and `use`s. Each holds `Expr`s.
+- A `lang!` names the sorts of a language (`Expr`, `Pat`, `Decl`), each a
+  choice of productions (`App { func : Expr, arg : Expr }`). A program of
+  it is not a tree of values but a few tables: a node is a row number, and
+  every node knows the bytes of the source it came from (its `meta`).
+  Lingua writes the rest: `newSurfaceExprApp out meta f a` to write a node,
+  `surfaceExprAppFunc a e` to read a field, and a pattern per production,
+  `SurfaceExprApp f x`, to `match` on.
+- A `pass!` from one language to another is written as the cases that
+  change something. Lingua writes a function per sort (`resolveExpr`,
+  `resolvePat`), translates every node's children before its case sees
+  them, and copies every production the target has unchanged. A case can
+  take a child `later`, as a function, to translate it in a scope of its
+  own; or `raw`, to look at it before saying how to translate it. A pass
+  carries a context down the tree (`with r`), and its cases are ordinary
+  Meadow.
 
-What the Rust parser does on the way is done here, as terms made of the
-tree's nodes:
+### Surface
+
+`Surface.mw` declares `Surface`, the program as Idyll means it: what the
+Rust parser makes of it, with names still their text. It is written from
+the lossless tree by two passes from the grammar: `lowerSurface` for files,
+terms and atoms, and `lowerPat` for patterns. A pattern is written as a
+term (`Cons x xs`, `x :: xs`, `(a, b)`) and read here again as the pattern
+it is. Most cases look at the node as the tree has it, through the typed
+views (`asIdyllOp node`, `idyllOpTail`), before they say what it is. That
+is where the grammar's single forms are told apart.
+
+What the Rust parser does on the way is done here too, writing new nodes,
+each at the place it was made from:
 
 - curried telescopes, lambdas and dependent function types;
 - `if` as a `case` on `Bool`;
 - tuples as pairs;
-- a record as its data type and one projection per field;
+- a record as its data type and one projection per field. A field's type
+  reads the fields before it off `self`, through the pass's context;
 - an effect alias as a definition;
-- attributes (`@pub`, `@seq`, `@native`, ...) moved onto what they are on.
+- attributes (`@pub`, `@seq`, `@native`, ...), read first and handed down
+  in the context to what they are on.
 
-Since each node is looked at one level at a time, these decisions and
-desugarings are made once, here. Their readers each take what they need:
-the renamer (`Rename.mw` matches on `term` and `pat`), and the writer of
-the parse test's dump.
-
-Something wrong is reported where it is found, as a Lingua `Diagnostic` at
-the node it is about. `parsed` reads every part of a program once (by
-writing it out as the dump does), so a program the Rust parser rejects is
-rejected here too, before anything is renamed. `Idyll errors file.idl`
-draws what it found, with Nettle:
+Something wrong is reported where it is found, with Lingua's `Report`, as a
+`Diagnostic` at the node it is about. A program the Rust parser rejects is
+rejected here too. `Idyll errors file.idl` draws what was found, with
+Nettle:
 
 ```
 Error: only :: joins patterns
@@ -231,8 +240,30 @@ are in `Hir.mw`.
 ### Rename
 
 `Rename.mw` is `compiler/idyllic-rename`: a package of modules, after the
-prelude and the packages it depends on. Its output, `Hir.mw`, is
-`compiler/idyllic-hir`.
+prelude and the packages it depends on. It declares `Hir`, a `lang!` that is
+`compiler/idyllic-hir`: `Surface` with every name resolved to an `Ident`,
+the uniques it may stand for.
+
+Terms and patterns are renamed by a pass, `resolve : Surface -> Hir with r`,
+whose context `r` is the renamer and its scopes. It has a case for each
+production that names or binds something; the rest (applications, rows,
+literals, ...) it copies.
+
+- `Var { name }` becomes the binder the name means.
+- `Lam` and `Pi` take their bodies `later`, so that they are renamed in the
+  scope the binder makes. A `Pi`'s domain sees nothing of its own name.
+- A pattern answers a function that writes it once every name it binds is
+  bound, so an equation's patterns bind all their names before any `.e`
+  among them is renamed.
+- `let`, `case` and handler blocks take their children `raw`, to bind and
+  pair their declarations, and call the pass's own functions inside the
+  scopes those make.
+
+What is around the pass is ordinary code that hands each term and pattern
+to it: a package's modules, their `use`s, and each module's declarations,
+bound and paired. The type checker still reads HIR as data (`Hir.mw`'s
+types); `moduleOf` turns the tables into it, until the checker reads the
+tables itself.
 
 - Each module is a namespace of its own (`src/Collections/List.idl` is
   `Collections.List`, `Lib.idl` the root), whose names others reach with a
@@ -267,9 +298,6 @@ It differs from the Rust renamer in one way, on purpose. A name that several
 every unique it could stand for, so that the type checker can choose between
 them by type (ROADMAP.md, phase 3). The Rust renamer lets the last `use`
 win. No program of the corpus depends on the difference yet.
-
-(Rename.mw writes HIR's constructors through the module's alias,
-`H.Term.App f a`, since both modules have a type called `Term`.)
 
 ### Scc
 
