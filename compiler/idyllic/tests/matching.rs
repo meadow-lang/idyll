@@ -76,8 +76,10 @@ fn head_needs_no_case_for_the_empty_vector() {
 
 #[test]
 fn eulers_fifth_problem_runs() {
-    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/euler/p5.idl")).unwrap();
-    assert_eq!(result(&src), "232792560 : Int");
+    // the module of the Euler example's package, as a lone program: its
+    // `answer` the program's value
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/euler/src/P5.idl")).unwrap();
+    assert_eq!(result(&format!("{src}\nanswer\n")), "232792560 : Int");
 }
 
 // ---------------------------------------------------------------------------

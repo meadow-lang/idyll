@@ -1,0 +1,27 @@
+-- Problem 7: the 10001st prime.
+
+use Std.Bool (not)
+
+-- Whether an odd number from `d` on, up to the square root of `n`,
+-- divides `n`.
+divisible : (n : Int) -> (d : Int) -> Bool ! Div
+divisible n d
+  | n < d * d = False
+  | n % d == 0 = True
+  | otherwise = divisible n (d + 2)
+
+isPrime : (n : Int) -> Bool ! Div
+isPrime n
+  | n < 2 = False
+  | n == 2 = True
+  | n % 2 == 0 = False
+  | otherwise = not (divisible n 3)
+
+-- The `count`th prime from `n` on.
+nthFrom : (count : Int) -> (n : Int) -> Int ! Div
+nthFrom count n
+  | isPrime n = (if count == 1 then n else nthFrom (count - 1) (n + 1))
+  | otherwise = nthFrom count (n + 1)
+
+answer : Int ! Div
+answer = nthFrom 10001 2

@@ -1,0 +1,30 @@
+-- Sorting in place. A mutable array is linear: every operation takes it and
+-- gives it back, and nothing else ever holds it, so nothing ever needs a
+-- copy, and writing to it changes it where it is. In a `@linear` module a
+-- binder that says nothing is used exactly once; one used more often says
+-- so, `[]`.
+
+@linear
+
+use Std.Collections.MArray (MArray, length, read, swap, freeze, thaw)
+
+-- The element at `j` moved left past every greater one before it, the
+-- elements before `j` being in order already. `read` gives the array back
+-- with the element, which is boxed, `[x]`, to be used as often as wanted.
+sink : (m : MArray Int) -> (j : [] Int) -> MArray Int ! Div
+sink m j =
+  if j < 1 then m
+  else case read m (j - 1) of
+    (before, m2) -> case read m2 j of
+      (here, m3) -> let [x] = before in let [y] = here in
+        if y < x then sink (swap m3 (j - 1) j) (j - 1) else m3
+
+-- The elements from `i` up to `n` sunk into place, one after another.
+sortFrom : (m : MArray Int) -> (i : [] Int) -> (n : [] Int) -> MArray Int ! Div
+sortFrom m i n = if i == n then m else sortFrom (sink m i) (i + 1) n
+
+-- An insertion sort, in a copy of `xs` that only it can see.
+@pub
+sort : (xs : [] Array Int) -> Array Int ! Div
+sort xs = case length (thaw xs) of
+  (count, m) -> let [n] = count in freeze (sortFrom m 1 n)

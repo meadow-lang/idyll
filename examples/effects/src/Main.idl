@@ -1,0 +1,55 @@
+-- Effects: what a function does besides compute its result is written in
+-- its type, after a `!`, and given a meaning by a handler. `Log` and
+-- `Search` are effects this package declares; `State`, `Exn` and `Yield`
+-- come with the standard library, and are handled by ordinary functions.
+
+use Std.Console (printLines)
+use Std.Tuple (fst)
+use Std.State (State, get, put, runState)
+use Std.Exn (Exn, throw, toResult)
+use Std.Yield (Yield, yield, collect)
+use Logging (collatz, kept, quiet, printed)
+use Backtracking (triangle, all)
+
+-- State: each line numbered, the next number kept in the state.
+numbered : (lines : List String) -> List String ! State Int
+numbered Nil = Nil
+numbered (line :: rest) =
+  let n = get () in
+  let u = put (n + 1) in
+  (showInt n ++ ". " ++ line) :: numbered rest
+
+-- Exceptions: the mean of some numbers, which there must be some of.
+mean : (xs : [] List Int) -> Int ! Exn String
+mean Nil = throw "the mean of no numbers"
+mean xs = Std.Collections.List.sum xs / Std.Collections.List.length xs
+
+-- Generators: the Fibonacci numbers below `limit`, yielded one at a time.
+fibs : (a : [] Int) -> (b : [] Int) -> (limit : [] Int) -> () ! {Yield Int, Div}
+fibs a b limit = if limit < a + 1 then () else let u = yield a in fibs b (a + b) limit
+
+showResult : (r : Result String Int) -> String
+showResult (Ok n) = "Ok " ++ showInt n
+showResult (Err e) = "Err (" ++ e ++ ")"
+
+showTriangle : (t : (Int, Int, Int)) -> String
+showTriangle (a, b, c) = showInt a ++ "-" ++ showInt b ++ "-" ++ showInt c
+
+-- What a run with the log kept found.
+keptReport : (run : (Int, List String)) -> String
+keptReport (n, ms) = showInt n ++ " steps, " ++ showInt (Std.Collections.List.length ms) ++ " messages"
+
+main : () -> () ! Eff
+main () =
+  let u1 = putStrLn "Collatz from 6, the log printed as it goes:" in
+  let steps = printed (\(u : ()) -> collatz 6) in
+  let u2 = putStrLn ("  " ++ showInt steps ++ " steps") in
+  let u3 = putStrLn ("From 3, the log kept: " ++ keptReport (kept (\(u : ()) -> collatz 3))) in
+  let u4 = putStrLn ("From 27, the log thrown away: " ++ showInt (quiet (\(u : ()) -> collatz 27)) ++ " steps") in
+  let u5 = printLines (fst (runState 1 (\(u : ()) -> numbered #["apples", "pears", "plums"]))) in
+  let u6 = printLines #[
+    "mean of 1 2 3 4: " ++ showResult (toResult (\(u : ()) -> mean #[1, 2, 3, 4])),
+    "mean of nothing: " ++ showResult (toResult (\(u : ()) -> mean Nil))
+  ] in
+  let u7 = putStrLn ("Fibonacci below 100: " ++ Std.String.unwords (Std.Collections.List.map showInt (collect (\(u : ()) -> fibs 0 1 100)))) in
+  putStrLn ("Right triangles with sides up to 20: " ++ Std.String.unwords (Std.Collections.List.map showTriangle (all (\(u : ()) -> triangle 20))))

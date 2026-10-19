@@ -94,7 +94,7 @@ Traits, more of the standard library and the tooling are still to come. The
 | `lib/Std/`     | The standard library                                                                |
 | `rts/`         | The C runtime for native code, until Glade and Silo replace it                      |
 | `cut-corpus/`, `axcut-corpus/` | Every runnable test program, as Cut and as AxCut, with its expected output |
-| `examples/`, `bench/` | Example programs and benchmarks                                              |
+| `examples/`, `bench/` | Example packages, each run with `idyll run` ([examples/README.md](examples/README.md)), and benchmarks |
 
 ## Getting started
 

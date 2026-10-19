@@ -1,0 +1,13 @@
+-- Problem 3: the largest prime factor of 600851475143.
+
+-- The largest prime factor of `n`, which no number below `d` divides: it
+-- is divided by `d` while it can be, and once `d * d` is past it, what is
+-- left is prime.
+largest : (n : Int) -> (d : Int) -> Int ! Div
+largest n d
+  | n < d * d = n
+  | n % d == 0 = (if n == d then d else largest (n / d) d)
+  | otherwise = largest n (d + 1)
+
+answer : Int ! Div
+answer = largest 600851475143 2

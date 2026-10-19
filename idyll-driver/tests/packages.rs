@@ -54,6 +54,24 @@ sum (reverse (Std.Collections.List.range 1 (fromInt 4)))
 }
 
 #[test]
+fn a_native_type_crosses_package_boundaries() {
+    // `MArray` is declared `@native` in Std, and a signature here names it:
+    // Std's compiled package has to give it, as it gives its data types
+    let dir = scratch("native");
+    let app = common::fixture(&dir, "App");
+    common::write(&app.join("src/Main.idl"), "use Std.Collections.MArray (MArray, new, write, freeze)
+
+filled : (n : Int) -> MArray Int
+filled n = write (new n 1) 0 7
+
+arrayGet (freeze (filled 3)) 0 + arrayLen (freeze (filled 3))
+");
+    let out = pipeline::build(&app, Profile::Debug, &common::OPTS);
+    assert!(said(&out).is_empty(), "{:?}", said(&out));
+    assert_eq!(common::value(&out), "10");
+}
+
+#[test]
 fn private_names_do_not_cross_package_boundaries() {
     // `Util` exports `double`, `map`, `scale` and `sum` (all `@pub`) but not
     // `secret`.

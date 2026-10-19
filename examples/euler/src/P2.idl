@@ -1,0 +1,11 @@
+-- Problem 2: the sum of the even Fibonacci numbers up to four million.
+
+-- The even ones from `a` on, `b` the one after it.
+evens : (a : Int) -> (b : Int) -> Int ! Div
+evens a b
+  | 4000000 < a = 0
+  | a % 2 == 0 = a + evens b (a + b)
+  | otherwise = evens b (a + b)
+
+answer : Int ! Div
+answer = evens 1 2

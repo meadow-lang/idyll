@@ -1,0 +1,28 @@
+-- Problem 10: the sum of all the primes below two million, by the sieve of
+-- Eratosthenes, in a mutable array changed in place.
+
+use Std.Collections.MArray (MArray, new, read, write, freeze)
+
+limit : Int
+limit = 2000000
+
+-- `m` with the multiples of `p` from `i` on crossed off.
+crossOff : (m : MArray Bool) -> (p : Int) -> (i : Int) -> MArray Bool ! Div
+crossOff m p i = if limit < i + 1 then m else crossOff (write m i False) p (i + p)
+
+-- `m` with the multiples of every prime from `p` on crossed off.
+sieve : (m : MArray Bool) -> (p : Int) -> MArray Bool ! Div
+sieve m p =
+  if limit < p * p + 1 then m
+  else
+    case read m p of
+      (b, m2) -> let [prime] = b in if prime then sieve (crossOff m2 p (p * p)) (p + 1) else sieve m2 (p + 1)
+
+-- The sum of the numbers from `i` on that the sieve left.
+sumFrom : (primes : Array Bool) -> (i : Int) -> (acc : Int) -> Int ! Div
+sumFrom primes i acc =
+  if i == limit then acc
+  else sumFrom primes (i + 1) (if arrayGet primes i then acc + i else acc)
+
+answer : Int ! Div
+answer = sumFrom (freeze (sieve (new limit True) 2)) 2 0

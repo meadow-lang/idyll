@@ -232,8 +232,9 @@ Two decisions for this phase:
 *Done when:* `append : Vec n a -> Vec m a -> Vec (n + m) a` checks with a
 user-defined `+`, `head : Vec (S n) a -> a` needs no `Nil` case, and Meadow's
 `examples/Euler` runs. **Done** (`compiler/idyllic/tests/matching.rs`; Euler
-is `examples/euler/p5.idl`, and `head` takes its vector at `[0..1]`, since
-it drops the tail), and so are sequence literals.
+is the package `examples/euler`, Project Euler's first ten problems, and
+`head` takes its vector at `[0..1]`, since it drops the tail), and so are
+sequence literals.
 
 ## Phase 2: Effects
 
@@ -1065,3 +1066,24 @@ Not in Meadow, but they will come up along the way:
   GHCi's behaviour, where a new definition shadows the old one and earlier
   definitions keep referring to the old, needs each entry to be a scope of
   its own.
+- **Rough edges the examples found** (2026-10-19). While writing
+  `examples/`, some programs that should check did not. Each example has a
+  workaround in it for now:
+  - A continuation passed to a row-polymorphic function (`choose lo hi k ->
+    each lo hi k`, with `each` polymorphic in `k`'s row) leaves the handled
+    row unsolved ("which Search?"). A fixed row works.
+  - A lambda inside a lambda, both handed to `map`, gives two effect
+    metavariables. The checker reports that one is not allowed by the other
+    instead of unifying them.
+  - `mapSnd f (k ())` in a handler clause counts `k` as resumed more than
+    once, where a function of the user's taking the pair at `[1]` does not.
+  - A `case` whose alternatives start on the next line can't be closed by
+    a `)`, so `let x = (case e of\n  p -> a) in ..` is a parse error. The
+    parse error is also reported at the enclosing definition's `=`, not
+    where the parse failed.
+  - A type-level definition can't be written. `Matrix r c = Vec r (Vec c
+    Int)` doesn't parse, and `matrix a = (a, a)` at `Type -> Type` is
+    "universe too large".
+  - A constructor named `Div` hides the effect `Div` once its type's
+    constructors are brought in, with an unhelpful error ("expected Effect,
+    but this has type .. -> Expr").

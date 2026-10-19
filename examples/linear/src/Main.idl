@@ -1,0 +1,40 @@
+-- Grades: every binder says how often it is used, in square brackets
+-- before its type. `[1]` is exactly once, `[0]` not at run time at all,
+-- `[0..1]` at most once, and `[]`, any number of times, the default in a
+-- module that says nothing. `Sort` and `Tickets` are `@linear` modules,
+-- whose default is `[1]`.
+
+use Std.Console (printLines)
+use Std.Collections.Array (toList)
+use Sort (sort)
+use Tickets (Ticket, issue, redeem, trade)
+
+-- Uses its argument twice, and its type allows exactly that.
+square : (n : [2] Int) -> Int
+square n = n * n
+
+-- The type is only looked at, never computed with: erased, `[0]`.
+identity : (a : [0] Type) -> (x : a) -> a
+identity a x = x
+
+-- May drop its second argument: at most once.
+firstOr : (x : Int) -> (y : [0..1] Int) -> (useFirst : Bool) -> Int
+firstOr x y useFirst = if useFirst then x else y
+
+-- Every ticket issued is redeemed: the pair `trade` gives back holds the
+-- ticket kept, which is redeemed in turn.
+seats : () -> Int
+seats () = case trade (issue 12) (issue 30) of
+  (kept, torn) -> redeem kept + torn
+
+showAll : (xs : List Int) -> String
+showAll xs = Std.String.unwords (Std.Collections.List.map showInt xs)
+
+main : () -> () ! Eff
+main () = printLines #[
+  "square 7: " ++ showInt (square 7),
+  "identity: " ++ showInt (identity Int 42),
+  "firstOr: " ++ showInt (firstOr 1 2 False),
+  "sorted in place: " ++ showAll (toList (sort #[31; 4; 15; 9; 26; 5; 3; 58])),
+  "seats: " ++ showInt (seats ())
+]

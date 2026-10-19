@@ -1,0 +1,30 @@
+-- A resource that has to be used up. A `Ticket` here is linear, as every
+-- value in a `@linear` module is unless it says otherwise: the program that
+-- gets one must redeem it, exactly once. Forgetting it, or redeeming it
+-- twice, is a type error:
+--
+--     lost : (t : Ticket) -> Int
+--     lost t = 0                          -- t has grade 1, but is used never
+--
+--     twice : (t : Ticket) -> Int
+--     twice t = redeem t + redeem t       -- t has grade 1, but is used 2 times
+
+@linear
+
+@pub
+data Ticket = Ticket Int
+
+-- A ticket for a seat.
+@pub
+issue : (seat : Int) -> Ticket
+issue seat = Ticket seat
+
+-- The seat a ticket was for, the ticket used up.
+@pub
+redeem : (t : Ticket) -> Int
+redeem (Ticket seat) = seat
+
+-- Two tickets traded for one: the first is given back, the second torn up.
+@pub
+trade : (keep : Ticket) -> (tear : Ticket) -> (Ticket, Int)
+trade keep tear = (keep, redeem tear)

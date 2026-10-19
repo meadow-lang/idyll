@@ -177,6 +177,9 @@ impl Checker {
             constants.extend(constant(self, &e.name));
             constants.extend(e.ops.iter().filter_map(|op| constant(self, &op.name)));
         }
+        for n in m.natives.iter().filter(|n| own(&n.name.unique)) {
+            constants.extend(constant(self, &n.name));
+        }
         // the definitions: a non-recursive one has a slot, and a value the
         // types may see unless computing it has effects; a recursive one is a
         // constant already

@@ -1,0 +1,45 @@
+-- Dependent types: types that mention values. A vector's length is in its
+-- type, so a matrix's dimensions are too (`Matrix`); an index into it can
+-- carry the proof that it is in range (`Fin`); and a proof about numbers is
+-- a function the checker checks (`Proofs`).
+
+use Std.Console (printLines)
+use Std.Num.Nat (Nat, fromInt, toInt, double)
+use Std.Num.Nat.Nat.*
+use Std.Num.Fin (Fin, fromNat)
+use Std.Collections.Vec (Vec, index)
+use Std.Collections.Vec.Vec.*
+use Matrix (multiply, transpose, rows)
+
+-- A literal `#[..]` makes a vector when the type asks for one, and knows
+-- its length: these are two by three and three by two.
+a : Vec (S (S Z)) (Vec (S (S (S Z))) Int)
+a = #[#[1, 2, 3], #[4, 5, 6]]
+
+b : Vec (S (S (S Z))) (Vec (S (S Z)) Int)
+b = #[#[7, 8], #[9, 10], #[11, 12]]
+
+-- `multiply (fromInt 2) a a` would be a type error: three columns can't
+-- meet two rows.
+
+primes : Vec (S (S (S (S (S Z))))) Int
+primes = #[2, 3, 5, 7, 11]
+
+-- The element at `i`, if `i` is below five. `fromNat` checks it once, and
+-- gives a `Fin` that `index` takes without checking again.
+at : (i : Int) -> String
+at i = case fromNat (fromInt i) (S (S (S (S (S Z))))) of
+  Just k -> showInt (index k primes)
+  Nothing -> "out of range"
+
+main : () -> () ! Eff
+main () =
+  let u1 = printLines #["a times b:"] in
+  let u2 = printLines (rows (multiply (fromInt 2) a b)) in
+  let u3 = printLines #["b transposed:"] in
+  let u4 = printLines (rows (transpose (fromInt 2) b)) in
+  printLines #[
+    "primes at 3: " ++ at 3,
+    "primes at 9: " ++ at 9,
+    "double 21: " ++ showInt (toInt (double (fromInt 21)))
+  ]

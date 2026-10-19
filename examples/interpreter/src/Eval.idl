@@ -1,0 +1,65 @@
+-- Evaluating a program to its value. Going wrong is an effect, `Exn
+-- String`, thrown where it happens; so is counting the steps, `State Int`;
+-- and a program in this language may loop, `Div`. The caller decides what
+-- becomes of each.
+
+use Std.Exn (Exn, throw)
+use Std.State (State, get, put)
+use Syntax (Expr, show)
+use Syntax.Expr.*
+
+-- A value: a number, or a function with the variables it closes over. A
+-- recursive one also has itself.
+@pub
+data Value where
+  Number : Int -> Value
+  Closure : List Value -> Expr -> Value
+  RecClosure : List Value -> Expr -> Value
+
+use Value.*
+
+@pub
+showValue : (v : Value) -> String
+showValue (Number n) = showInt n
+showValue (Closure env body) = "<function>"
+showValue (RecClosure env body) = "<recursive function>"
+
+-- The variable `i` of `env`, or an error if there are fewer.
+lookup : (env : List Value) -> (i : [] Int) -> Value ! {Exn String, Div}
+lookup Nil i = throw "a variable bound nowhere"
+lookup (v :: rest) i = if i == 0 then v else lookup rest (i - 1)
+
+-- The number a value is, or an error if it is a function.
+number : (v : Value) -> Int ! Exn String
+number (Number n) = n
+number (Closure env body) = throw "a function where a number was wanted"
+number (RecClosure env body) = throw "a function where a number was wanted"
+
+tick : () -> () ! State Int
+tick () = put (get () + 1)
+
+@pub
+eval : (env : [] List Value) -> (e : Expr) -> Value ! {Exn String, State Int, Div}
+eval env e = let u = tick () in step env e
+
+step : (env : [] List Value) -> (e : Expr) -> Value ! {Exn String, State Int, Div}
+step env (Num n) = Number n
+step env (Var i) = lookup env i
+step env (Add a b) = Number (number (eval env a) + number (eval env b))
+step env (Sub a b) = Number (number (eval env a) - number (eval env b))
+step env (Mul a b) = Number (number (eval env a) * number (eval env b))
+step env (Divide a b) =
+  let x = number (eval env a) in
+  let y = number (eval env b) in
+  if y == 0 then throw "division by zero" else Number (x / y)
+step env (Lam body) = Closure env body
+step env (Rec body) = RecClosure env body
+step env (App f x) = apply (eval env f) (eval env x)
+step env (IfZero c t e) = if number (eval env c) == 0 then eval env t else eval env e
+step env (Let e body) = eval (eval env e :: env) body
+
+-- A function applied to its argument.
+apply : (f : [] Value) -> (x : [] Value) -> Value ! {Exn String, State Int, Div}
+apply (Number n) x = throw (showInt n ++ " is not a function")
+apply (Closure env body) x = eval (x :: env) body
+apply (RecClosure env body) x = eval (x :: RecClosure env body :: env) body
