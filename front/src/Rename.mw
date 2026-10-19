@@ -1256,7 +1256,24 @@ fun mentionsVisibility (p : Program) : Bool =
 
 -- What renaming a package made: its data types, effects, natives,
 -- definitions, and, for the root package, its expression and its `main`.
-data Renamed = Renamed [HirData] [HirEffect] [HirNative] [HirBind] (Maybe HirExpr) (Maybe Int)
+data Done = Done [HirData] [HirEffect] [HirNative] [HirBind] (Maybe HirExpr) (Maybe Int)
+
+-- A package renamed: its program, and what is known about it beside.
+@pub record Renamed = {
+  hir : HirProgram,
+  main : Maybe Int,
+  -- the first unique the program named its own things with: what came
+  -- before is the builtins' and the prelude's
+  first : Int,
+  terminating : [Int],
+  linearBody : Bool,
+  -- the module each top-level name of a module other than a package's root
+  -- is in (`Collections.List` for `map`), as written before it from outside
+  qualifiers : HashMap Int String,
+  -- the uniques each package named its own things with, and its name: the
+  -- dependencies', then the package's own
+  ranges : [(Int, Int, String)]
+}
 
 -- Rename the modules of package `pkg` (whose modules are `first` on in
 -- `r.modules`), its root's expression if `root`: every module's names, so
@@ -1314,7 +1331,7 @@ fun renamePackageAt out (r : Rn) (pkg : Int) (first : Int) (progs : [Program]) (
   V.foldl
     (\acc i ->
       match (acc, V.get progs i, V.get bound i, V.get parts i) with
-      | (Renamed.Renamed ds es ns bs body main, Just (p : Program), Just b, Just (_, rootBody)) ->
+      | (Done.Done ds es ns bs body main, Just (p : Program), Just b, Just (_, rootBody)) ->
           let w = enter r (first + i) in
           let w3 = setRef r.linear (linearPackage or p.linear) in
           (match renameProgram out r p b with
@@ -1327,9 +1344,9 @@ fun renamePackageAt out (r : Rn) (pkg : Int) (first : Int) (progs : [Program]) (
                  else (body, main)
                in
                let w4 = leave r in
-               Renamed.Renamed (V.append ds d) (V.append es e) (V.append ns nt) (V.append bs bnd) body2 main2)
+               Done.Done (V.append ds d) (V.append es e) (V.append ns nt) (V.append bs bnd) body2 main2)
       | _ -> acc)
-    (Renamed.Renamed [] [] [] [] None None)
+    (Done.Done [] [] [] [] None None)
     (V.range 0 n)
 
 -- Rename a package, its modules each a path and a program, the root first,
@@ -1342,7 +1359,7 @@ fun renamePackageAt out (r : Rn) (pkg : Int) (first : Int) (progs : [Program]) (
     (modules : [([String], SurfaceProgram)])
     (prelude : SurfaceProgram)
     (deps : [(String, [([String], SurfaceProgram)])])
-    : (Module, [String]) ! { Mut | e } =
+    : (Renamed, [String]) ! { Mut | e } =
   runSt (\() ->
     let out = newHirBuilder () in
     let r = new () in
@@ -1383,11 +1400,11 @@ fun renamePackageAt out (r : Rn) (pkg : Int) (first : Int) (progs : [Program]) (
         let first = getRef r.next in
         let rootProgs = V.map snd (snd (V.getOr ("", []) allPackages 0)) in
         (match renamePackageAt out r 0 0 rootProgs True False with
-         | Renamed.Renamed datas effects natives binds body main ->
-             let depDatas = V.concatMap (\dp -> match fst dp with | Renamed.Renamed d _ _ _ _ _ -> d) depParts in
-             let depEffects = V.concatMap (\dp -> match fst dp with | Renamed.Renamed _ e _ _ _ _ -> e) depParts in
-             let depNatives = V.concatMap (\dp -> match fst dp with | Renamed.Renamed _ _ n _ _ _ -> n) depParts in
-             let depBinds = V.map (\dp -> match fst dp with | Renamed.Renamed _ _ _ b _ _ -> b) depParts in
+         | Done.Done datas effects natives binds body main ->
+             let depDatas = V.concatMap (\dp -> match fst dp with | Done.Done d _ _ _ _ _ -> d) depParts in
+             let depEffects = V.concatMap (\dp -> match fst dp with | Done.Done _ e _ _ _ _ -> e) depParts in
+             let depNatives = V.concatMap (\dp -> match fst dp with | Done.Done _ _ n _ _ _ -> n) depParts in
+             let depBinds = V.map (\dp -> match fst dp with | Done.Done _ _ _ b _ _ -> b) depParts in
              let groups =
                V.map (\bs -> newHirGroupRec out noMeta bs) (V.filter (\bs -> not (V.isEmpty bs)) (V.concat [[pbinds], depBinds, [binds]]))
              in
@@ -1395,11 +1412,9 @@ fun renamePackageAt out (r : Rn) (pkg : Int) (first : Int) (progs : [Program]) (
              let root =
                newHirModule out noMeta (V.concat [pdatas, depDatas, datas]) (V.concat [peffects, depEffects, effects]) (V.concat [pnatives, depNatives, natives]) groups body
              in
-             let arena = freezeHir out in
-             let m = moduleOf arena root in
              (
-               {
-                 m |
+               Renamed {
+                 hir = HirProgram (freezeHir out) root,
                  main,
                  first,
                  terminating = getRef r.terminating,
@@ -1412,13 +1427,25 @@ fun renamePackageAt out (r : Rn) (pkg : Int) (first : Int) (progs : [Program]) (
 
 -- Rename a lone module, the root of a package called `Main`, after the
 -- prelude.
-@pub fun renameModule (prog : SurfaceProgram) (prelude : SurfaceProgram) : (Module, [String]) ! { Mut | e } =
+@pub fun renameModule (prog : SurfaceProgram) (prelude : SurfaceProgram) : (Renamed, [String]) ! { Mut | e } =
   renamePackage package [([], prog)] prelude []
 
 -- --- the checker's data --------------------------------------------------------------
 
 -- The renamed tables as the data the checker still reads (`Hir`'s types),
 -- until it reads the tables themselves.
+@pub fun toData (r : Renamed) : Module =
+  let m = moduleOf (hirArena r.hir) (hirRoot r.hir) in
+  {
+    m |
+    main = r.main,
+    first = r.first,
+    terminating = r.terminating,
+    linearBody = r.linearBody,
+    qualifiers = r.qualifiers,
+    ranges = r.ranges
+  }
+
 fun moduleOf (a : HirArena) (root : HirModule) : Module =
   Module {
     datas = V.map (dataOf a) (hirModuleDatas a root),

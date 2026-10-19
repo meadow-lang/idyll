@@ -1,4 +1,5 @@
--- The dependency order of definitions: `compiler/idyllic-scc`.
+-- The dependency order of definitions: `compiler/idyllic-scc`, as a pass
+-- (`regroup`, from `Hir` to `Hir`).
 --
 -- The renamer makes every `let` and the top level one recursive group,
 -- which is the safe guess. This pass makes the groups the definitions'
@@ -12,33 +13,54 @@
 --
 -- The data types are put in order too: a data type's kind, and its
 -- parameters' kinds, may mention only the types before it.
+--
+-- The pass has two cases, the two places groups are: the module, and a
+-- `let`. Everything else it copies as it is.
 
-use Idyll.Hir (Term, Ident, Grade, Group, Bind, Clause, Rhs, Pattern, HandleClause, DataDecl, Module)
-use Idyll.Hir as H
+use Lingua (pass!)
+use Idyll.Rename
+use Idyll.Rename (Hir!)
+use Idyll.Hir (Module)
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
 use Std.Collections.HashMap (HashMap)
 use Std.Maybe as M
 use Std.Maybe.Maybe.*
 
-@pub fun sccModule (m : Module) : Module ! { Mut | e } =
-  -- (each top-level group apart: the prelude's come before the program's)
-  let groups = V.concatMap (\g -> sccGroups [g]) m.groups in
-  { m | groups = groups, datas = orderDatas m.datas, body = M.map sccTerm m.body }
+-- A package's definitions put in order, for the checker.
+@pub fun sccModule (r : Renamed) : Module ! { Mut | e } = toData { r | hir = regroup r.hir }
+
+pass! {
+  pub regroup : Hir -> Hir
+    | Module { raw datas, effects, natives, raw groups, body } ->
+        Module {
+          datas = V.map (\d -> regroupData src out d) (orderDatas src datas),
+          effects,
+          natives,
+          -- each top-level group apart: the prelude's come before the program's
+          groups = V.concatMap (\g -> sccGroups src out [g]) groups,
+          body
+        }
+    | Let { raw groups, body } -> Let { groups = sccGroups src out groups, body }
+}
 
 -- --- data types ----------------------------------------------------------------
 
-fun orderDatas (datas : [DataDecl]) : [DataDecl] ! { Mut | e } =
+fun dataUnique (a : HirArena) (d : HirData) : Int = V.getOr (0 - 1) (hirIdentUniques a (hirDataName a d)) 0
+
+fun orderDatas (a : HirArena) (datas : [HirData]) : [HirData] ! { Mut | e } =
   let index =
-    V.foldl (\acc i -> match V.get datas i with | Just d -> Hm.insert (H.uniqueOf d.name) i acc | None -> acc) Hm.empty (V.range 0 (V.len datas))
+    V.foldl (\acc i -> match V.get datas i with | Just d -> Hm.insert (dataUnique a d) i acc | None -> acc) Hm.empty (V.range 0 (V.len datas))
   in
   let needs =
     V.map
       (\i ->
         match V.get datas i with
         | Just d ->
-            let kinds = V.append (V.concatMap (\p -> match p with | (_, Just k) -> [k] | _ -> []) d.params) (vecOf d.kind) in
-            let mentioned = V.foldl (\s k -> freeInto k s) Hm.empty kinds in
+            let kinds =
+              V.append (V.concatMap (\p -> vecOf (hirTypeParamKindSig a p)) (hirDataParams a d)) (vecOf (hirDataKindSig a d))
+            in
+            let mentioned = V.foldl (\s k -> freeInto a k s) Hm.empty kinds in
             sortInts (V.filter (\j -> j != i) (V.concatMap (\u -> vecOf (Hm.lookup u index)) (Hm.keys mentioned)))
         | None -> [])
       (V.range 0 (V.len datas))
@@ -60,25 +82,23 @@ fun sortInts (xs : [Int]) : [Int] =
 
 -- --- groups ------------------------------------------------------------------
 
-fun sccGroups (groups : [Group]) : [Group] ! { Mut | e } =
-  let binds =
-    V.map
-      (\(b : Bind) -> { b | ty = M.map sccTerm b.ty, rhs = sccTerm b.rhs })
-      (V.concatMap (\g -> match g with | Group.NonRec b -> [b] | Group.Rec bs -> bs) groups)
-  in
-  sccBinds binds
+fun bindsOf (a : HirArena) (g : HirGroup) : [HirBind] =
+  match (a, g) with
+  | HirGroupNonRec b -> [b]
+  | HirGroupRec bs -> bs
 
--- Split a list of definitions into their components, dependencies first,
--- each component's members in the order they came.
-@pub fun sccBinds (binds : [Bind]) : [Group] ! { Mut | e } =
+-- The definitions of `groups` split into their components, dependencies
+-- first, each component's members in the order they came -- and written,
+-- each with what is under it regrouped too.
+fun sccGroups (a : HirArena) out (groups : [HirGroup]) =
+  let binds = V.concatMap (bindsOf a) groups in
   let n = V.len binds in
-  let indexOf =
-    V.foldl (\acc i -> match V.get binds i with | Just b -> Hm.insert (H.uniqueOf b.name) i acc | None -> acc) Hm.empty (V.range 0 n)
-  in
+  let uniqueOf = \b -> V.getOr (0 - 1) (hirIdentUniques a (hirBindName a b)) 0 in
+  let indexOf = V.foldl (\acc i -> match V.get binds i with | Just b -> Hm.insert (uniqueOf b) i acc | None -> acc) Hm.empty (V.range 0 n) in
   let edges =
     V.map
-      (\(b : Bind) ->
-        let free = V.foldl (\s t -> freeInto t s) (freeInto b.rhs Hm.empty) (vecOf b.ty) in
+      (\b ->
+        let free = V.foldl (\s t -> freeInto a t s) (freeInto a (hirBindRhs a b) Hm.empty) (vecOf (hirBindTy a b)) in
         sortInts (V.concatMap (\u -> vecOf (Hm.lookup u indexOf)) (Hm.keys free)))
       binds
   in
@@ -88,16 +108,15 @@ fun sccGroups (groups : [Group]) : [Group] ! { Mut | e } =
       let bs = V.concatMap (\i -> vecOf (V.get binds i)) members in
       let selfEdge = V.len members == 1 and V.elem (V.getOr 0 members 0) (V.getOr [] edges (V.getOr 0 members 0)) in
       let byMatching =
-        V.len bs == 1
-          and (match V.get bs 0 with
-               | Just b -> M.isSome b.ty and (match b.rhs with | Term.Match _ -> True | _ -> False)
-               | None -> False)
+        match (V.len bs, V.get bs 0) with
+        | (1, Just b) -> M.isSome (hirBindTy a b) and kindHirExpr a (hirBindRhs a b) == HirExprKind.Match
+        | _ -> False
       in
-      if V.len bs == 1 and not selfEdge and not byMatching then
-        (match V.get bs 0 with
-         | Just b -> Group.NonRec b
-         | None -> Group.Rec bs)
-      else Group.Rec bs)
+      let written = V.map (\b -> regroupBind a out b) bs in
+      let m = match V.get bs 0 with | Just b -> metaHirBind a b | None -> metaHirGroup a (V.getOr 0 groups 0) in
+      match (V.len bs, V.get written 0) with
+      | (1, Just b) if not selfEdge and not byMatching -> newHirGroupNonRec out m b
+      | _ -> newHirGroupRec out m written)
     (components n edges)
 
 -- The strongly connected components of a graph of `n` nodes, by Tarjan's
@@ -156,116 +175,74 @@ fun popTo (t : Tarjan) (v : Int) (acc : [Int]) : [Int] ! { Mut | e } =
       if w == v then V.pushBack acc w else popTo t v (V.pushBack acc w)
   | None -> acc
 
--- --- every `let`, everywhere ---------------------------------------------------
-
-@pub fun sccTerm (t : Term) : Term ! { Mut | e } =
-  match t with
-  | Term.App f a -> H.Term.App (sccTerm f) (sccTerm a)
-  | Term.SeqCons h tl -> H.Term.SeqCons (sccTerm h) (sccTerm tl)
-  | Term.ArrayLit items -> H.Term.ArrayLit (V.map sccTerm items)
-  | Term.Ann e a -> H.Term.Ann (sccTerm e) (sccTerm a)
-  | Term.Range lo hi -> H.Term.Range (sccTerm lo) (sccTerm hi)
-  | Term.Pi x icit g dom cod -> H.Term.Pi x icit (M.map sccGrade g) (sccTerm dom) (sccTerm cod)
-  | Term.Lam x g ty body -> H.Term.Lam x (M.map sccGrade g) (M.map sccTerm ty) (sccTerm body)
-  | Term.BoxIntro e -> H.Term.BoxIntro (sccTerm e)
-  | Term.LetBox x e body -> H.Term.LetBox x (sccTerm e) (sccTerm body)
-  | Term.Let gs body -> H.Term.Let (sccGroups gs) (sccTerm body)
-  | Term.Case s cs -> H.Term.Case (sccTerm s) (V.map sccClause cs)
-  | Term.Match cs -> H.Term.Match (V.map sccClause cs)
-  | Term.Eff a r -> H.Term.Eff (sccTerm a) (sccTerm r)
-  | Term.Row ls tail -> H.Term.Row (V.map sccTerm ls) (M.map sccTerm tail)
-  | Term.Handle body cs ->
-      H.Term.Handle (sccTerm body) (V.map (\c -> match c with | HandleClause.HandleClause op xs b -> HandleClause.HandleClause op xs (sccTerm b)) cs)
-  | _ -> t
-
-fun sccGrade (g : Grade) : Grade ! { Mut | e } =
-  match g with
-  | Grade.Grade s r -> H.Grade.Grade (sccTerm s) (M.map sccTerm r)
-
-fun sccClause (c : Clause) : Clause ! { Mut | e } =
-  match c with
-  | Clause.Clause ps r ->
-      let rhs =
-        match r with
-        | Rhs.Plain e -> H.Rhs.Plain (sccTerm e)
-        | Rhs.Guarded gs -> H.Rhs.Guarded (V.map (\g -> match g with | (c2, e) -> (sccTerm c2, sccTerm e)) gs)
-        | Rhs.Impossible -> H.Rhs.Impossible
-      in
-      H.Clause.Clause (V.map sccPattern ps) rhs
-
-fun sccPattern (p : Pattern) : Pattern ! { Mut | e } =
-  match p with
-  | Pattern.Con c ps -> Pattern.Con c (V.map sccPattern ps)
-  | Pattern.SeqCons h tl -> Pattern.SeqCons (sccPattern h) (sccPattern tl)
-  | Pattern.As x q -> Pattern.As x (sccPattern q)
-  | Pattern.Dot e -> Pattern.Dot (sccTerm e)
-  | _ -> p
-
 -- --- free names ----------------------------------------------------------------
+
+type Names = HashMap Int Bool
+
+fun uniquesInto (a : HirArena) (x : HirIdent) (s : Names) : Names = V.foldl (\acc u -> Hm.insert u True acc) s (hirIdentUniques a x)
+
+fun uniqueOf (a : HirArena) (x : HirIdent) : Int = V.getOr (0 - 1) (hirIdentUniques a x) 0
 
 -- The uniques a term uses and does not bind, added to a set. (Names are
 -- unique, so what a clause binds cannot be mistaken for anything outside
 -- it, and is left in: only the members of a group are looked up.)
-@pub fun freeInto (t : Term) (s : HashMap Int Bool) : HashMap Int Bool =
-  match t with
-  | Term.Var (Ident.Ident us _) -> V.foldl (\acc u -> Hm.insert u True acc) s us
-  | Term.App f a -> freeInto a (freeInto f s)
-  | Term.Ann f a -> freeInto a (freeInto f s)
-  | Term.Range f a -> freeInto a (freeInto f s)
-  | Term.Eff f a -> freeInto a (freeInto f s)
-  | Term.SeqCons f a -> freeInto a (freeInto f s)
-  | Term.BoxIntro a -> freeInto a s
-  | Term.ArrayLit items -> V.foldl (\acc e -> freeInto e acc) s items
-  | Term.LetBox x e body -> without x (freeInto body (freeInto e s)) s
-  | Term.Pi (Just x) _ g dom cod -> without x (freeInto cod (freeInto dom (gradeInto g s))) s
-  | Term.Pi None _ g dom cod -> freeInto cod (freeInto dom (gradeInto g s))
-  | Term.Lam x g ty body -> without x (freeInto body (V.foldl (\acc a -> freeInto a acc) (gradeInto g s) (vecOf ty))) s
-  | Term.Case sc cs -> V.foldl (\acc c -> clauseInto c acc) (freeInto sc s) cs
-  | Term.Match cs -> V.foldl (\acc c -> clauseInto c acc) s cs
-  | Term.Handle body cs ->
+@pub fun freeInto (a : HirArena) (t : HirExpr) (s : Names) : Names =
+  let go = \e acc -> freeInto a e acc in
+  match (a, t) with
+  | HirExprVar x -> uniquesInto a x s
+  | HirExprApp f x -> go x (go f s)
+  | HirExprAnn f x -> go x (go f s)
+  | HirExprRange f x -> go x (go f s)
+  | HirExprEff f x -> go x (go f s)
+  | HirExprSeqCons f x -> go x (go f s)
+  | HirExprBox x -> go x s
+  | HirExprArray items -> V.foldl (\acc e -> go e acc) s items
+  | HirExprLetBox x e body -> without a x (go body (go e s)) s
+  | HirExprPi (Just x) _ g dom cod -> without a x (go cod (go dom (gradeInto a g s))) s
+  | HirExprPi None _ g dom cod -> go cod (go dom (gradeInto a g s))
+  | HirExprLam x g ty body -> without a x (go body (V.foldl (\acc e -> go e acc) (gradeInto a g s) (vecOf ty))) s
+  | HirExprCase sc cs -> V.foldl (\acc c -> clauseInto a c acc) (go sc s) cs
+  | HirExprMatch cs -> V.foldl (\acc c -> clauseInto a c acc) s cs
+  | HirExprHandle body cs ->
       V.foldl
         (\acc c ->
-          match c with
-          | HandleClause.HandleClause op _ b ->
-              let acc2 = match op with | Just (Ident.Ident us _) -> V.foldl (\a u -> Hm.insert u True a) acc us | None -> acc in
-              freeInto b acc2)
-        (freeInto body s)
+          let acc2 = match hirHandleClauseOp a c with | Just op -> uniquesInto a op acc | None -> acc in
+          go (hirHandleClauseBody a c) acc2)
+        (go body s)
         cs
-  | Term.Row ls tail -> V.foldl (\acc a -> freeInto a acc) (V.foldl (\acc l -> freeInto l acc) s ls) (vecOf tail)
-  | Term.Let gs body ->
-      let binds = V.concatMap (\g -> match g with | Group.NonRec b -> [b] | Group.Rec bs -> bs) gs in
-      let inner = V.foldl (\acc (b : Bind) -> V.foldl (\a ty -> freeInto ty a) (freeInto b.rhs acc) (vecOf b.ty)) Hm.empty binds in
-      let inner2 = freeInto body inner in
-      let kept = V.foldl (\acc (b : Bind) -> Hm.delete (H.uniqueOf b.name) acc) inner2 binds in
+  | HirExprRow ls tail -> V.foldl (\acc e -> go e acc) (V.foldl (\acc l -> go l acc) s ls) (vecOf tail)
+  | HirExprLet gs body ->
+      let binds = V.concatMap (bindsOf a) gs in
+      let inner = V.foldl (\acc b -> V.foldl (\x ty -> go ty x) (go (hirBindRhs a b) acc) (vecOf (hirBindTy a b))) Hm.empty binds in
+      let inner2 = go body inner in
+      let kept = V.foldl (\acc b -> Hm.delete (uniqueOf a (hirBindName a b)) acc) inner2 binds in
       V.foldl (\acc u -> Hm.insert u True acc) s (Hm.keys kept)
   | _ -> s
 
 -- What `inner` has but the binder `x`, added to `outer`... which `inner`
 -- already includes, so: `inner` with `x` taken out unless `outer` had it.
-fun without (x : Ident) (inner : HashMap Int Bool) (outer : HashMap Int Bool) : HashMap Int Bool =
-  let u = H.uniqueOf x in
+fun without (a : HirArena) (x : HirIdent) (inner : Names) (outer : Names) : Names =
+  let u = uniqueOf a x in
   if Hm.member u outer then inner else Hm.delete u inner
 
-fun gradeInto (g : Maybe Grade) (s : HashMap Int Bool) : HashMap Int Bool =
+fun gradeInto (a : HirArena) (g : Maybe HirGrade) (s : Names) : Names =
   match g with
-  | Just (Grade.Grade a r) -> V.foldl (\acc x -> freeInto x acc) (freeInto a s) (vecOf r)
+  | Just gr -> V.foldl (\acc x -> freeInto a x acc) (freeInto a (hirGradeUses a gr) s) (vecOf (hirGradeInType a gr))
   | None -> s
 
-fun clauseInto (c : Clause) (s : HashMap Int Bool) : HashMap Int Bool =
-  match c with
-  | Clause.Clause ps r ->
-      let s2 = V.foldl (\acc p -> patternInto p acc) s ps in
-      match r with
-      | Rhs.Plain e -> freeInto e s2
-      | Rhs.Guarded gs -> V.foldl (\acc g -> match g with | (c2, e) -> freeInto e (freeInto c2 acc)) s2 gs
-      | Rhs.Impossible -> s2
+fun clauseInto (a : HirArena) (c : HirClause) (s : Names) : Names =
+  let s2 = V.foldl (\acc p -> patternInto a p acc) s (hirClausePats a c) in
+  match (a, hirClauseRhs a c) with
+  | HirRhsPlain e -> freeInto a e s2
+  | HirRhsGuarded gs -> V.foldl (\acc g -> freeInto a (hirGuardBody a g) (freeInto a (hirGuardCond a g) acc)) s2 gs
+  | _ -> s2
 
-fun patternInto (p : Pattern) (s : HashMap Int Bool) : HashMap Int Bool =
-  match p with
-  | Pattern.Con (Ident.Ident us _) ps -> V.foldl (\acc q -> patternInto q acc) (V.foldl (\acc u -> Hm.insert u True acc) s us) ps
-  | Pattern.SeqCons h tl -> patternInto tl (patternInto h s)
-  | Pattern.As _ q -> patternInto q s
-  | Pattern.Dot e -> freeInto e s
+fun patternInto (a : HirArena) (p : HirPattern) (s : Names) : Names =
+  match (a, p) with
+  | HirPatternCon c ps -> V.foldl (\acc q -> patternInto a q acc) (uniquesInto a c s) ps
+  | HirPatternSeqCons h tl -> patternInto a tl (patternInto a h s)
+  | HirPatternAs _ q -> patternInto a q s
+  | HirPatternDot e -> freeInto a e s
   | _ -> s
 
 fun vecOf (m : Maybe a) : [a] =
