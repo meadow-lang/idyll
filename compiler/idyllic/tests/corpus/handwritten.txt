@@ -393,3 +393,12 @@ effect Calc where
 
 handle store 40 2 + add2 1 1 with
   add2 a b k -> k (a + b)
+%%%
+f : (m : Maybe Int) -> Int
+f m =
+  let x = (case m of
+    Just n -> n
+    Nothing -> 0) in
+  x + 1
+
+f (Just 4)

@@ -324,3 +324,21 @@ fn terminating_vouches_for_a_recursion_the_checker_cannot_see_end() {
         &["parse error: @terminating goes on a definition's signature, f : a"],
     );
 }
+
+#[test]
+fn a_closing_parenthesis_closes_the_blocks_opened_inside_it() {
+    // the `)` ends the `of` block, as Haskell's parse-error rule would, and
+    // the `in` then the `let`'s
+    ok(
+        "f : (m : Maybe Int) -> Int\nf m =\n  let x = (case m of\n    Just n -> n\n    Nothing -> 0) in\n  x + 1\n\nf (Just 4)",
+        &["f : (m : Maybe Int) -> Int"],
+        Some("Int"),
+    );
+    // and so does a `]`, and indentation inside either is free
+    ok(
+        "g : (m : Maybe Int) -> List Int\ng m = #[case m of\n    Just n -> n\n    Nothing -> 0, 7]\n\ng Nothing",
+        &["g : (m : Maybe Int) -> List Int"],
+        Some("List Int"),
+    );
+    ok("h : Int\nh =\n  let y = (1 +\n 2) in\n  y\n\nh", &["h : Int"], Some("Int"));
+}

@@ -18,8 +18,12 @@
 -- - A line starting at the innermost block's column is a new item of it
 --   (`;`); further right, it goes on with the line before; further left, the
 --   block has ended (`}`), and perhaps more than one.
--- - A block written with explicit braces is left alone, and so is a sequence
---   literal, `#[ … ]`, whose `]` closes any block opened inside it.
+-- - A block written with explicit braces is left alone, and so is what is
+--   inside a sequence literal, `#[ … ]`, brackets or parentheses: it may run
+--   over lines at any indentation. A block opened inside them is laid out as
+--   any is, and their `]` or `)` closes it, as does a `,` between their
+--   items: `(case m of` with its alternatives on the lines after, then `)`,
+--   is one expression.
 -- - A block must open further right than the one it is in, except one that
 --   `where`, `of` or `with` opens with nothing further right: that is empty.
 
@@ -330,15 +334,18 @@ fun indents (ms : [Mark]) (i : Int) (out : [Mark]) : [Mark] =
 
 -- --- laying out -----------------------------------------------------------------
 
--- An open block: the column its lines start at, or 0 for one written with
--- braces (or a sequence literal's), which dedenting does not close.
+-- What opened a block: a herald (or the file itself), whose lines line up
+-- and which dedenting closes; or `{`, `#[`, `[` or `(`, inside which layout
+-- is suspended until what closes them, though a block opened inside them is
+-- laid out as any is.
+data Kind = Layout | Brace | Seq | Bracket | Paren
+
+-- An open block: the column its lines start at, or 0 for one dedenting does
+-- not close.
 record Ctx = {
   column : Int,
   closer : Closer,
-  -- opened by `#[`, and closed by its `]`
-  seq : Bool,
-  -- the plain `[`s opened in it and not yet closed
-  brackets : Int
+  kind : Kind
 }
 
 record State = {
@@ -349,7 +356,7 @@ record State = {
   finish : Int
 }
 
-fun explicit (c : Ctx) : Bool = c.column == 0
+fun explicit (c : Ctx) : Bool = match c.kind with | Kind.Layout -> False | _ -> True
 
 fun emit (st : State) (t : Token) (at : Int) : State =
   { st | out = V.pushBack st.out (Laid { token = t, from = at, to = at }) }
@@ -363,7 +370,11 @@ fun problem (st : State) (at : Int) (message : String) : State =
   { st | problems = V.pushBack st.problems (at, message) }
 
 fun pushed (st : State) (column : Int) (closer : Closer) : State =
-  { st | stack = Ctx { column, closer, seq = False, brackets = 0 } :: st.stack }
+  { st | stack = Ctx { column, closer, kind = Kind.Layout } :: st.stack }
+
+-- A block dedenting does not close: `{`, `#[`, `[` or `(`.
+fun grouped (st : State) (kind : Kind) (closer : Closer) : State =
+  { st | stack = Ctx { column = 0, closer, kind } :: st.stack }
 
 fun popped (st : State) : State =
   match st.stack with
@@ -418,19 +429,24 @@ fun nextTok (ms : [Mark]) (i : Int) : Maybe At =
 fun tok (st : State) (t : At) (ms : [Mark]) (i : Int) : (Int, State) =
   match t.raw with
   | Ok Raw.RBrace -> closeExplicit st t ms i
-  | Ok Raw.LBrace -> (i + 1, pushed (emitTok st t) 0 Closer.Never)
+  | Ok Raw.LBrace -> (i + 1, grouped (emitTok st t) Kind.Brace Closer.Never)
   | Ok Raw.Hash ->
       (match nextTok ms (i + 1) with
-       | Just lb if isLBracket lb ->
-           (i + 2, { (emitTok (emitTok st t) lb) | stack = Ctx { column = 0, closer = Closer.Never, seq = True, brackets = 0 } :: st.stack })
+       | Just lb if isLBracket lb -> (i + 2, grouped (emitTok (emitTok st t) lb) Kind.Seq Closer.Never)
        | _ -> (i + 1, emitTok st t))
-  | Ok Raw.LBracket -> (i + 1, emitTok (bracketOpened st) t)
-  | Ok Raw.RBracket -> (i + 1, emitTok (closeBracket st t.from) t)
+  -- `[` and `(` suspend layout too, until what closes them
+  | Ok Raw.LBracket -> (i + 1, grouped (emitTok st t) Kind.Bracket Closer.Never)
+  | Ok Raw.LParen -> (i + 1, grouped (emitTok st t) Kind.Paren Closer.Never)
+  | Ok Raw.RBracket -> (i + 1, emitTok (closeGroup st closesBracket t.from) t)
+  | Ok Raw.RParen -> (i + 1, emitTok (closeGroup st closesParen t.from) t)
+  -- a `,` separates the items of the group it is in, never of a layout
+  -- block: the blocks opened since the group's item began are over
+  | Ok Raw.Comma -> (i + 1, emitTok (closeLayouts st t.from) t)
   | r ->
       (match (herald r, nextTok ms (i + 1)) with
        -- `let {` / `do {`: written out by hand, but its keyword still closes it
        | (Just closer, Just lb) if byKeyword closer and isLBrace lb ->
-           (i + 2, pushed (emitTok (emitTok st t) lb) 0 closer)
+           (i + 2, grouped (emitTok (emitTok st t) lb) Kind.Brace closer)
        | _ ->
            (match st.stack with
             | ctx :: rest if not (explicit ctx) and closes r ctx.closer ->
@@ -439,39 +455,42 @@ fun tok (st : State) (t : At) (ms : [Mark]) (i : Int) : (Int, State) =
 
 fun isLBracket (a : At) : Bool = match a.raw with | Ok Raw.LBracket -> True | _ -> False
 
-fun bracketOpened (st : State) : State =
-  match st.stack with
-  | top :: rest -> { st | stack = { top | brackets = top.brackets + 1 } :: rest }
-  | [;] -> st
+fun closesBracket (k : Kind) : Bool = match k with | Kind.Seq -> True | Kind.Bracket -> True | _ -> False
 
--- A `]` closes the innermost `[` still open; a sequence literal's closes the
--- blocks opened inside it too.
-fun closeBracket (st : State) (at : Int) : State =
-  match st.stack with
-  | top :: rest if top.brackets > 0 -> { st | stack = { top | brackets = top.brackets - 1 } :: rest }
-  | _ -> closeLiteral st at
+fun closesParen (k : Kind) : Bool = match k with | Kind.Paren -> True | _ -> False
 
--- The layout blocks above the innermost explicit one closed, and it too, if
--- it is a sequence literal with no `[` of its own still open.
-fun closeLiteral (st : State) (at : Int) : State =
-  match literalBelow st.stack with
-  | True -> unwindLiteral st at
-  | False -> st
+-- A `]` or a `)` closes the `#[`, `[` or `(` it matches, and the layout
+-- blocks opened inside it, as Haskell's parse-error rule would: so a `case`
+-- in parentheses may have its alternatives on lines of their own. (One that
+-- matches nothing, or with an explicit `{` in between, is the parser's to
+-- report.)
+fun closeGroup (st : State) (matches : Kind -> Bool) (at : Int) : State =
+  match groupBelow st.stack with
+  | Just c if matches c.kind -> popped (closeLayouts st at)
+  | _ -> st
 
-fun literalBelow (stack : List Ctx) : Bool =
+-- The innermost block that is not a layout block.
+fun groupBelow (stack : List Ctx) : Maybe Ctx =
   match stack with
-  | [;] -> False
-  | c :: rest -> if explicit c then c.seq and c.brackets == 0 else literalBelow rest
+  | [;] -> None
+  | c :: rest -> if explicit c then Just c else groupBelow rest
 
-fun unwindLiteral (st : State) (at : Int) : State =
-  match st.stack with
-  | c :: rest -> if explicit c then { st | stack = rest } else unwindLiteral { (emit st Token.VRBrace at) | stack = rest } at
-  | [;] -> st
+-- The layout blocks above the innermost group closed (or every one, if there
+-- is no group -- but then the file's own block is the last, and stays).
+fun closeLayouts (st : State) (at : Int) : State =
+  match groupBelow st.stack with
+  | None -> st
+  | Just _ ->
+      (match st.stack with
+       | c :: rest if not (explicit c) -> closeLayouts { (emit st Token.VRBrace at) | stack = rest } at
+       | _ -> st)
 
 -- `}` closes a block written with braces; a `let {`'s closing keyword may
 -- come right after it.
 fun closeExplicit (st : State) (t : At) (ms : [Mark]) (i : Int) : (Int, State) =
   match st.stack with
+  -- inside a `#[`, `[` or `(`: the parser reports the `}`
+  | ctx :: _ if explicit ctx and not (isBrace ctx.kind) -> (i + 1, emitTok st t)
   | ctx :: rest if explicit ctx and not (byKeyword ctx.closer) -> (i + 1, { (emitTok st t) | stack = rest })
   | ctx :: rest if explicit ctx ->
       (match nextTok ms (i + 1) with
@@ -479,14 +498,20 @@ fun closeExplicit (st : State) (t : At) (ms : [Mark]) (i : Int) : (Int, State) =
        | _ -> (i + 1, problem st t.from "unexpected closing brace"))
   | _ -> (i + 1, problem st t.from "unexpected closing brace")
 
+fun isBrace (k : Kind) : Bool = match k with | Kind.Brace -> True | _ -> False
+
 -- At the end of the input, every layout block closes; one written with
--- braces that never saw its `}` is a mistake, and stops it.
+-- braces (or a sequence literal) that never saw its end is a mistake, and
+-- stops it. A `[` or `(` never closed is the parser's to report.
 fun closeAll (st : State) : State =
   match st.stack with
   | [;] -> st
   | ctx :: rest ->
-      if explicit ctx then problem st st.finish "not inside a layout context at end of input"
-      else closeAll { (emit st Token.VRBrace st.finish) | stack = rest }
+      (match ctx.kind with
+       | Kind.Layout -> closeAll { (emit st Token.VRBrace st.finish) | stack = rest }
+       | Kind.Bracket -> closeAll { st | stack = rest }
+       | Kind.Paren -> closeAll { st | stack = rest }
+       | _ -> problem st st.finish "not inside a layout context at end of input")
 
 -- --- the step -------------------------------------------------------------------
 
@@ -495,7 +520,7 @@ fun closeAll (st : State) : State =
       let ats = located (lexed input) in
       let ms = indents (blocks ats 0 []) 0 [] in
       let finish = match V.last ats with | Just a -> a.to | None -> 0 in
-      let first = Ctx { column = 1, closer = Closer.Never, seq = False, brackets = 0 } in
+      let first = Ctx { column = 1, closer = Closer.Never, kind = Kind.Layout } in
       let st = run ms 0 (State { stack = first :: [;], out = [Laid { token = Token.VLBrace, from = 0, to = 0 }], problems = [], finish }) in
       Layout { tokens = st.out, problems = st.problems }
 
