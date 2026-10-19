@@ -5,8 +5,7 @@
 //!
 //! ```text
 //!   <package>/target/release/native/<name>(.exe)   the executable
-//!   <package>/target/release/native/<name>.ll      the LLVM IR (`--emit llvm`)
-//!   <package>/target/debug/axcut/<name>.axcut      the AxCut (`--emit axcut`)
+//!   <package>/target/debug/cut/<name>.cut          the Cut (`--emit cut`)
 //!   <package>/target/debug/incremental/            compiled packages, to reuse
 //!   <package>/target/release/...
 //! ```
@@ -36,9 +35,9 @@ pub fn exe_path(root: &Path, profile: Profile, name: &str) -> PathBuf {
     native_dir(root, profile).join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
 }
 
-/// Where package `name`'s AxCut goes as text -- `--emit axcut`.
-pub fn axcut_path(root: &Path, profile: Profile, name: &str) -> PathBuf {
-    profile_dir(root, profile).join("axcut").join(format!("{name}.axcut"))
+/// Where package `name`'s Cut goes as text -- `--emit cut`.
+pub fn cut_path(root: &Path, profile: Profile, name: &str) -> PathBuf {
+    profile_dir(root, profile).join("cut").join(format!("{name}.cut"))
 }
 
 /// Where compiled packages are kept for the next build to reuse -- see

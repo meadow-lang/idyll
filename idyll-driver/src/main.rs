@@ -40,10 +40,10 @@ struct Cli {
     /// Draw diagnostics with ASCII instead of box-drawing characters.
     #[arg(long, global = true)]
     ascii: bool,
-    /// Print the AxCut each program is lowered to, and what running it did
-    /// with memory, before its result.
+    /// Print the Cut each program is lowered to before its result: what
+    /// Meadow's runtimes are given.
     #[arg(long, global = true)]
-    axcut: bool,
+    cut: bool,
     /// In the REPL: dump the HIR (after renaming and the SCC pass) for each
     /// entry.
     #[arg(long)]
@@ -59,9 +59,9 @@ enum Cmd {
         #[arg(default_value = ".")]
         path: PathBuf,
         /// What to write, in place of what a build writes by default -- an
-        /// executable, for a native build: `axcut` (the program as AxCut),
-        /// `llvm` (as LLVM IR) or `exe`. Comma-separated, or repeated.
-        #[arg(long, value_name = "KIND", value_delimiter = ',', value_parser = ["axcut", "llvm", "exe"])]
+        /// executable, for a release build: `cut` (the program as Cut, which
+        /// Meadow's runtimes run) or `exe`. Comma-separated, or repeated.
+        #[arg(long, value_name = "KIND", value_delimiter = ',', value_parser = ["cut", "exe"])]
         emit: Vec<String>,
         #[command(flatten)]
         packages: PackageArgs,
@@ -198,9 +198,9 @@ fn select(selection: &Selection, path: &Path) -> Selected {
 /// `--release` / `--debug` — the build profile — plus the backend, which
 /// overrides whatever the profile chose.
 ///
-/// Debug is the default: the program runs on the AxCut machine. Release
-/// compiles it to native code. Either can be overridden, here or in the
-/// package's `Idyll.toml`.
+/// Debug is the default: the program runs on Glade, Meadow's bytecode.
+/// Release builds it into native code with Silo. Either can be overridden,
+/// here or in the package's `Idyll.toml`.
 #[derive(clap::Args)]
 struct ProfileArgs {
     /// Build with the release profile: native code.
@@ -209,19 +209,19 @@ struct ProfileArgs {
     /// Build with the debug profile (the default).
     #[arg(long)]
     debug: bool,
-    /// How the program runs: `machine` (the AxCut abstract machine, in this
-    /// process) or `native` (compiled by LLVM into an executable; needs
-    /// clang). Debug builds default to `machine` and release builds to
-    /// `native`; `backend = "..."` in a `[profile.<name>]` of `Idyll.toml`
-    /// overrides that, and this overrides both.
-    #[arg(long, value_name = "BACKEND", value_parser = ["machine", "native"], conflicts_with_all = ["native", "machine"])]
+    /// Which of Meadow's runtimes runs the program: `glade` (its bytecode)
+    /// or `silo` (native code, an executable built first). Debug builds
+    /// default to `glade` and release builds to `silo`; `backend = "..."` in
+    /// a `[profile.<name>]` of `Idyll.toml` overrides that, and this
+    /// overrides both.
+    #[arg(long, value_name = "BACKEND", value_parser = ["glade", "silo"], conflicts_with_all = ["silo", "glade"])]
     backend: Option<String>,
-    /// `--backend native`.
-    #[arg(long, conflicts_with = "machine")]
-    native: bool,
-    /// `--backend machine`.
+    /// `--backend silo`.
+    #[arg(long, conflicts_with = "glade")]
+    silo: bool,
+    /// `--backend glade`.
     #[arg(long)]
-    machine: bool,
+    glade: bool,
 }
 
 impl ProfileArgs {
@@ -236,8 +236,8 @@ impl ProfileArgs {
                 .backend
                 .as_deref()
                 .and_then(Backend::parse)
-                .or(self.native.then_some(Backend::Native))
-                .or(self.machine.then_some(Backend::Machine)),
+                .or(self.silo.then_some(Backend::Silo))
+                .or(self.glade.then_some(Backend::Glade)),
         }
     }
 
@@ -282,7 +282,7 @@ fn command() -> ExitCode {
     }
     match cli.cmd {
         // No subcommand → interactive REPL.
-        None => repl::run(&opts, cli.axcut),
+        None => repl::run(&opts, cli.cut),
         Some(Cmd::Build { path, emit, packages, profile }) => {
             let selected = select(&packages.selection(), &path);
             let profile = profile.resolve(&path);
@@ -296,7 +296,7 @@ fn command() -> ExitCode {
             let selection = Selection { packages: package.into_iter().collect(), ..Selection::default() };
             let selected = select(&selection, &path);
             let one = exit_on_error(selected.one("run"));
-            run(one, resolved, &opts, cli.axcut, &args)
+            run(one, resolved, &opts, cli.cut, &args)
         }
         Some(Cmd::Add { what, branch, tag, rev, rename, path }) => {
             let reference = match (branch, tag, rev) {
@@ -460,10 +460,10 @@ fn build_many(paths: &[PathBuf], emit: &[String], profile: Resolved, opts: &Opti
     ExitCode::SUCCESS
 }
 
-/// Write what a build of a program makes: an executable, for a native
-/// build -- or what `emit` asks for instead. A package with nothing to run
-/// is only checked. Answers the profile as it turned out: a native build
-/// nobody asked for gives way to the machine when it cannot be had.
+/// Write what a build of a program makes: an executable, for a Silo build
+/// -- or what `emit` asks for instead. A package with nothing to run is
+/// only checked. Answers the profile as it turned out: a Silo build nobody
+/// asked for gives way to Glade when it cannot be had.
 fn write_artifacts(out: &BuildOutput, name: &str, emit: &[String], profile: Resolved, opts: &Options) -> Result<Resolved, String> {
     if !out.runnable() {
         if !emit.is_empty() {
@@ -472,34 +472,28 @@ fn write_artifacts(out: &BuildOutput, name: &str, emit: &[String], profile: Reso
         return Ok(profile);
     }
     let wants = |kind: &str| emit.iter().any(|e| e == kind);
-    let exe = wants("exe") || (emit.is_empty() && profile.backend == Backend::Native);
+    let exe = wants("exe") || (emit.is_empty() && profile.backend == Backend::Silo);
     if emit.is_empty() && !exe {
         return Ok(profile);
     }
     let Some((root, _)) = &out.package else {
         let why = "a file of its own has no `target` to write to: make it a package with `idyll init`";
         return match profile.fallback() {
-            Some(machine) if emit.is_empty() => {
-                status::warning(format!("`{name}` was not compiled to native code: {why}; it runs on the machine"));
-                Ok(machine)
+            Some(glade) if emit.is_empty() => {
+                status::warning(format!("`{name}` was not built into native code: {why}; it runs on Glade"));
+                Ok(glade)
             }
             _ => Err(format!("`{name}`: {why}")),
         };
     };
     let linked = idyllic::pipeline::link_compiled(&out.packages(), opts);
-    if let Some(Evaluation::Failed(why)) = &linked.evaluation {
-        return Err(format!("`{name}` could not be lowered -- this is a bug in idyll: {why}"));
+    if !linked.not_lowered.is_empty() {
+        return Err(format!("`{name}` could not be lowered to Cut -- this is a bug in idyll: {}", linked.not_lowered.join("; ")));
     }
-    if wants("axcut") {
-        let program = linked.axcut.as_ref().map(ToString::to_string).unwrap_or_default();
-        let file = artifacts::axcut_path(root, profile.profile, name);
-        artifacts::write_text(&file, &program)?;
-        status::status("Emitted", idyll::workspace::shown(&file));
-    }
-    if wants("llvm") {
-        let ir = native::ir(&linked).map_err(|e| e.to_string())?;
-        let file = artifacts::native_dir(root, profile.profile).join(format!("{name}.ll"));
-        artifacts::write_text(&file, &ir)?;
+    if wants("cut") {
+        let program = native::cut(&linked).map_err(|e| e.to_string())?;
+        let file = artifacts::cut_path(root, profile.profile, name);
+        artifacts::write_text(&file, program)?;
         status::status("Emitted", idyll::workspace::shown(&file));
     }
     if !exe {
@@ -508,7 +502,7 @@ fn write_artifacts(out: &BuildOutput, name: &str, emit: &[String], profile: Reso
     match executable(out, &linked, root, name, profile) {
         Ok(_) => Ok(profile),
         Err(native::Failure::Unavailable(why)) if !wants("exe") && profile.fallback().is_some() => {
-            status::warning(format!("`{name}` was not compiled to native code: {why}; it runs on the machine"));
+            status::warning(format!("`{name}` was not built into native code: {why}; it runs on Glade"));
             Ok(profile.fallback().expect("checked"))
         }
         Err(e) => Err(e.to_string()),
@@ -528,14 +522,14 @@ fn executable(
     if out.fingerprint.is_some_and(|f| native::fresh(&exe, f)) {
         return Ok(exe);
     }
-    let ir = native::ir(linked)?;
-    status::status("Linking", format!("{name} ({})", idyll::workspace::shown(&exe)));
-    native::compile(&ir, &exe, out.fingerprint)?;
+    let cut = native::cut(linked)?;
+    status::status("Building", format!("{name} with Silo ({})", idyll::workspace::shown(&exe)));
+    native::compile(cut, &exe, out.fingerprint)?;
     Ok(exe)
 }
 
 /// Build the package at `path` and run it.
-fn run(path: &Path, profile: Resolved, opts: &Options, axcut: bool, args: &[String]) -> ExitCode {
+fn run(path: &Path, profile: Resolved, opts: &Options, cut: bool, args: &[String]) -> ExitCode {
     let started = std::time::Instant::now();
     let out = pipeline::build(path, profile.profile, opts);
     report(&out.problem, &out.reported);
@@ -548,7 +542,7 @@ fn run(path: &Path, profile: Resolved, opts: &Options, axcut: bool, args: &[Stri
         return ExitCode::FAILURE;
     }
     let mut profile = profile;
-    if profile.backend == Backend::Native {
+    if profile.backend == Backend::Silo {
         let made = match &out.package {
             Some((root, _)) => {
                 let linked = idyllic::pipeline::link_compiled(&out.packages(), opts);
@@ -569,7 +563,7 @@ fn run(path: &Path, profile: Resolved, opts: &Options, axcut: bool, args: &[Stri
                 };
             }
             Err(native::Failure::Unavailable(why)) if profile.fallback().is_some() => {
-                status::warning(format!("`{name}` was not compiled to native code: {why}; running it on the machine"));
+                status::warning(format!("`{name}` was not built into native code: {why}; running it on Glade"));
                 profile = profile.fallback().expect("checked");
             }
             Err(e) => {
@@ -581,7 +575,7 @@ fn run(path: &Path, profile: Resolved, opts: &Options, axcut: bool, args: &[Stri
     finished(&profile, started);
     status::status("Running", format!("`{name}`"));
     let ran = idyllic::pipeline::run_compiled(&out.packages(), opts, args.to_vec());
-    if let Some(report) = ran.axcut_report().filter(|_| axcut) {
+    if let Some(report) = ran.cut_report().filter(|_| cut) {
         print!("{report}");
     }
     let shown = ran.display("", "", opts.style);

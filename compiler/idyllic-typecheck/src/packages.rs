@@ -331,7 +331,14 @@ pub fn link(root: &mut TypeCheckResult, deps: &[&CompiledPackage]) {
     }
     root.program = Some(program);
     root.rec_defs = rec_defs;
-    root.typer.import(deps);
+    // and the root's own constants, which its checker has not seen when it
+    // is linked from its compiled package alone: without them, what its
+    // recursive definitions answer has no type to lower by
+    let mut known: Vec<&CompiledPackage> = deps.to_vec();
+    if own.constants.iter().any(|c| c.value.is_none() && !root.typer.knows(c.unique)) {
+        known.push(&own);
+    }
+    root.typer.import(&known);
     // the top-level `let`s: the prelude's, then each package's in order
     let prelude = root.prelude_lets.len();
     root.toplevel = root.toplevel.iter().take(prelude).copied().chain(packages.iter().flat_map(|p| p.lets.iter().map(|(u, ..)| *u))).collect();

@@ -1128,7 +1128,7 @@ fun nativeApp (l : L s) (env : LEnv) (whole : Tm) (ni : (String, Int)) (args : [
              if n == "arrayLen" or n == "arrayPop" then Just [Rep.Ptr]
              else if n == "arrayGet" then Just [Rep.Ptr, Rep.I64]
              else if n == "arrayGetOr" then Just [Rep.Any, Rep.Ptr, Rep.I64]
-             else if n == "arraySet" or n == "marraySet" then Just [Rep.Ptr, Rep.I64, Rep.Any]
+             else if n == "arraySet" then Just [Rep.Ptr, Rep.I64, Rep.Any]
              else if n == "arrayPush" then Just [Rep.Ptr, Rep.Any]
              else if n == "arraySlice" then Just [Rep.Ptr, Rep.I64, Rep.I64]
              else if n == "arrayConcat" then Just [Rep.Ptr, Rep.Ptr]
@@ -1148,8 +1148,7 @@ fun nativeApp (l : L s) (env : LEnv) (whole : Tm) (ni : (String, Int)) (args : [
                 sError l n
             | Just rs ->
                 let params = V.append (V.replicate nparams Param.PSkip) (V.map (\r -> Param.PValue r) rs) in
-                -- a mutable array is the runtime's array, used linearly
-                let op = if n == "marraySet" then "arraySet" else n in
+                let op = n in
                 if V.len args < all then partial l env whole (Head2.HPrim op) (V.take params (V.len args)) (V.map (\x -> Arg.Of x) args) k
                 else
                   let values = V.slice args nparams all in
@@ -1979,13 +1978,15 @@ fun makeEscape (l : L s) (escape : Sym) =
 -- The natives the runtime has no primitive for, as code of the program's
 -- own, made of the array primitives it does have: each a `def` generic in
 -- the element type, made the first time a program uses it. A mutable array
--- is the runtime's array, used linearly.
+-- is the runtime's mutable one, written in place (the `st` primitives); a
+-- read and a write give it back, and freezing and thawing copy it.
 
 fun nativeHelper (l : L s) (n : String) : Maybe (Sym, [Param]) ! { Mut, St s | e } =
   let values =
     if V.elem n ["arrayToList", "arrayFromList", "marrayLen", "marrayFreeze", "marrayThaw"] then Just [Rep.Ptr]
     else if n == "marrayNew" then Just [Rep.I64, Rep.Any]
     else if n == "marrayGet" then Just [Rep.Ptr, Rep.I64]
+    else if n == "marraySet" then Just [Rep.Ptr, Rep.I64, Rep.Any]
     else if n == "stringByteAt" then Just [Rep.Str, Rep.I64]
     else None
   in
@@ -2084,25 +2085,11 @@ fun makeGeneric (l : L s) (n : String) (sym : Sym) : Maybe () ! { Mut, St s | e 
          let w2 = push (mk go [Binder.Binder lv Rep.Ptr, Binder.Binder acc Rep.Ptr] k2 (sCut l (var lv) (kCase l arms))) in
          Just ()
      | _ -> None)
+  -- `n` copies of `x`
   else if n == "marrayNew" then
-    let go = A.child sym "go" in
     let count = name l "n" in
     let x = name l "x" in
-    let body = sInvoke l go [var d, var count, var x, pArray l []] [kv] in
-    let w = push (mk sym [Binder.Binder count Rep.I64, Binder.Binder x elem] k body) in
-    let k2 = name l "k" in
-    let left = name l "n" in
-    let x2 = name l "x" in
-    let acc = name l "acc" in
-    let pushed = name l "a" in
-    let fewer = name l "m" in
-    let u = name l "u" in
-    let w2 = name l "u" in
-    let more =
-      sPrim l "arrayPush" [var acc, var x2] [bind pushed Rep.Ptr (sPrim l "sub" [var left, pInt l 1] [bind fewer Rep.I64 (sInvoke l go [var d, var fewer, var x2, var pushed] [kVar l k2])])]
-    in
-    let body2 = sPrim l "lt" [pInt l 0, var left] [bind u Rep.Unit (sCut l (var acc) (kVar l k2)), bind w2 Rep.Unit more] in
-    let w3 = push (mk go [Binder.Binder left Rep.I64, Binder.Binder x2 elem, Binder.Binder acc Rep.Ptr] k2 body2) in
+    let w = push (mk sym [Binder.Binder count Rep.I64, Binder.Binder x elem] k (sPrim l "stNewArray" [var count, var x] [kv])) in
     Just ()
   -- a read gives back the array, with what it read boxed
   else if n == "marrayLen" then
@@ -2111,7 +2098,7 @@ fun makeGeneric (l : L s) (n : String) (sym : Sym) : Maybe () ! { Mut, St s | e 
         let m = name l "m" in
         let len = name l "n" in
         let answer = pCon l pair [pTuple l [var len], var m] in
-        push (mk sym [Binder.Binder m Rep.Ptr] k (sPrim l "arrayLen" [var m] [bind len Rep.I64 (sCut l answer kv)])))
+        push (mk sym [Binder.Binder m Rep.Ptr] k (sPrim l "stArrayLen" [var m] [bind len Rep.I64 (sCut l answer kv)])))
       (preludeCtor l "Pair")
   else if n == "marrayGet" then
     M.map
@@ -2120,11 +2107,21 @@ fun makeGeneric (l : L s) (n : String) (sym : Sym) : Maybe () ! { Mut, St s | e 
         let i = name l "i" in
         let e = name l "e" in
         let answer = pCon l pair [pTuple l [var e], var m] in
-        push (mk sym [Binder.Binder m Rep.Ptr, Binder.Binder i Rep.I64] k (sPrim l "arrayGet" [var m, var i] [bind e elem (sCut l answer kv)])))
+        push (mk sym [Binder.Binder m Rep.Ptr, Binder.Binder i Rep.I64] k (sPrim l "stGetArray" [var m, var i] [bind e elem (sCut l answer kv)])))
       (preludeCtor l "Pair")
-  -- the same array, under the other type
+  -- written in place, and given back
+  else if n == "marraySet" then
+    let m = name l "m" in
+    let i = name l "i" in
+    let x = name l "x" in
+    let u = name l "u" in
+    let body = sPrim l "stSetArray" [var m, var i, var x] [bind u Rep.Unit (sCut l (var m) kv)] in
+    let w = push (mk sym [Binder.Binder m Rep.Ptr, Binder.Binder i Rep.I64, Binder.Binder x elem] k body) in
+    Just ()
+  -- a copy, under the other type
   else if n == "marrayFreeze" or n == "marrayThaw" then
     let m = name l "m" in
-    let w = push (mk sym [Binder.Binder m Rep.Ptr] k (sCut l (var m) kv)) in
+    let op = if n == "marrayFreeze" then "stFreeze" else "stThaw" in
+    let w = push (mk sym [Binder.Binder m Rep.Ptr] k (sPrim l op [var m] [kv])) in
     Just ()
   else None

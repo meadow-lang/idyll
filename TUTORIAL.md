@@ -102,7 +102,6 @@ double : (_ : [1] Int [2]) -> Int
 | `:find <query>`      | search, by name or by type (see below)           |
 | `:prove <type>`      | look for a term of a type (see below)            |
 | `:ir [stages] <code>` | the code at each stage of the compiler (see below) |
-| `:machine` / `:eval` / `:native` | choose what runs entries (see below) |
 | `:time` / `:time <expr>` | time every entry from now on, or just this one |
 | `:tour`              | a guided tour of the language (see below)        |
 | `:help`              | list the commands                                |
@@ -167,28 +166,24 @@ scroll, and **Esc** closes it. The stages are:
 | `ast`     | the parser's syntax tree                                       |
 | `hir`     | names resolved (`n#91`), definitions grouped by what they use  |
 | `core`    | the checker's elaborated Core: implicit arguments, boxes and grades explicit |
-| `axcut`   | AxCut, the sequent-calculus IR the machine runs                |
-| `inlined` | the same, inlined: what the native compiler is given           |
-| `llvm`    | LLVM IR                                                        |
-| `cut`     | Cut, the shared back end's IR (see [How programs run](#how-programs-run)) |
+| `cut`     | Cut, what Meadow's runtimes run (see [How programs run](#how-programs-run)) |
 
 `:ir <code>` shows every stage, `:ir core,cut <code>` just those, and `:ir`
 alone the last entry. The code can take several lines: start them with
 **Alt-Enter**, and end with an empty line. The declarations made so far
-are in scope, and the stages from AxCut on show what the block makes
-together with whatever of the session and the prelude it uses. A block of
+are in scope, and the Cut stage shows what the block makes together with
+whatever of the session and the prelude it uses. A block of
 declarations alone is shown lowered with its definitions kept, though
 nothing calls them yet. When the output isn't a terminal, the stages are
 printed one after another instead.
 
-### Machines
+### Where entries run
 
-Entries run on the AxCut machine, which also checks that a program leaves
-no memory behind. `:eval` runs them on the reference interpreter, the
-specification the compiler is tested against, and `:native` compiles each
-with LLVM and runs it (this needs `clang`, and what native code can't do yet
-runs on the machine, which it says). `:machine` goes back. `:time` reports
-how long each entry took, from checking to answer.
+Each entry is lowered to Cut and run on Glade, Meadow's bytecode, as every
+Idyll program is (see [How programs run](#how-programs-run)): the REPL needs
+`meadow` installed. An entry that is still running after 20 seconds is
+stopped, and the prompt comes back (`IDYLL_TIMEOUT` sets how many). `:time`
+reports how long each entry took, from checking to answer.
 
 ### The tour
 
@@ -1020,15 +1015,16 @@ type. A recursion that goes on taking its argument apart is known to
 stop, needs no `Div`, and can even compute inside a type; see
 [Computing in types](#computing-in-types) and [Div](#div).
 
-A recursion doesn't have to end to be run. The REPL gives up on one that
-hasn't ended after a million steps — which is also what happens to one
-that *would* end, but not soon; for those,
-[compile the program](#compiling-to-native-code).
+A recursion doesn't have to end to be run. The REPL stops one that
+hasn't ended after 20 seconds — which is also what happens to one that
+*would* end, but not soon; for those, run the program with `idyll run`,
+which waits as long as it takes, or
+[compile it to native code](#compiling-to-native-code).
 
 ```
 > let loop : Int -> Int ! Div = \n -> loop n in loop 0
 : Int
-(still running after 1000000 steps; stopped)
+(still running after 20 seconds; stopped)
 ```
 
 Mutually recursive bindings work too, as long as each one has a
@@ -1228,7 +1224,7 @@ sum : (_ : [1] List Int) -> Int
 ```
 
 `sum` uses its list exactly once, and that means something at run time:
-each cell is freed as it is matched (see [Memory](#memory)).
+nothing else holds a cell, so a runtime can free each as it is matched.
 
 A list can also be written out: `#[1, 2, 3]` is `1 :: 2 :: 3 :: Nil`. (The
 `#` is there because bare brackets are the grades'.)
@@ -1384,7 +1380,7 @@ one, and `#[;]` the empty array.
 #[10; 99; 30] : Array Int
 > arrayGet #[10; 20; 30] 5
 : Int
-(stopped: index 5 is out of bounds for an array of length 3)
+(stopped: arrayGet: index 5 out of bounds (len 3))
 ```
 
 An index outside the array stops the program, as dividing by zero does.
@@ -2297,7 +2293,7 @@ Error: effects not allowed
    │ ╰── this has the effects {Console, Ask}, but its type allows {Div, Console, Fs, Process, Random, Time, Test, Abort}
 ```
 
-A file with a `main` is run with `idyllic hello.idl`; what comes after
+A file with a `main` is run with `idyllic hello.idl` (in `compiler/`); what comes after
 `--` on that command line is what `args ()` gives it (and `argv ()`, as an array), and `exit n`
 becomes its exit code. It compiles the same way as any other program
 (see [Compiling to native code](#compiling-to-native-code)), and the
@@ -2457,7 +2453,7 @@ idyll run -- a b          # with arguments, for args ()
 
 ```
    Compiling Hello v0.1.0 (/home/me/hello)
-    Finished `debug` profile [machine] in 0.02s
+    Finished `debug` profile [glade] in 0.02s
      Running `Hello`
 Hello, world!
 ```
@@ -2470,25 +2466,22 @@ long as nothing it was compiled from has changed (its sources, the
 packages it depends on, the compiler). Editing a dependency recompiles it
 and what depends on it, and nothing else. `idyll clean` removes `target/`.
 
-### Profiles: the machine and native code
+### Profiles: Glade and Silo
 
-A build has a *profile*: `--debug` (the default) or `--release`. Debug runs
-the program on the AxCut abstract machine, in the `idyll` process, which
-starts at once. Release compiles it with LLVM into an executable under
-`target/release/native/` (this needs clang and lld), and runs that. A
-program native code cannot compile (or a lone file, which has no
-`target/` to put an executable in) runs on the machine instead, with a
-warning. A package's `Idyll.toml` can change
-what a profile means, and a flag (`--backend machine`, `--native`) wins
-over both:
+A build has a *profile*: `--debug` (the default) or `--release`. Either
+way the program is lowered to Cut and handed to Meadow's runtimes. Debug
+runs it on Glade, Meadow's bytecode, which starts at once. Release builds
+it with Silo into an executable under `target/release/native/`, and runs
+that. A lone file, which has no `target/` to put an executable in, runs on
+Glade instead, with a warning. A package's `Idyll.toml` can change what a
+profile means, and a flag (`--backend glade`, `--silo`) wins over both:
 
 ```toml
 [profile.release]
-backend = "machine"      # or "native"
+backend = "glade"        # or "silo"
 ```
 
-`idyll build --emit axcut,llvm` writes the program as AxCut, or as LLVM IR,
-under `target/`.
+`idyll build --emit cut` writes the program as Cut under `target/`.
 
 ### Dependencies
 
@@ -3167,57 +3160,40 @@ Holes work in types too: `let x : _ = 5 in x` finds `_ = Int`.
 
 ## How programs run
 
-A program that checks is lowered to **AxCut**, a small intermediate
-language based on the sequent calculus (Schuster, Müller, Ostermann &
-Brachthäuser, *Compiling Classical Sequent Calculus to Stock Hardware*,
-2025), and run on an abstract machine. Evaluation is call-by-value: a
-function's argument is computed before the call, and a `let`'s value
-before its body.
+A program that checks is lowered to **Cut**, the intermediate language
+Idyll shares with [Meadow](https://github.com/meadow-lang/meadow), and
+handed to Meadow's runtimes to run (`meadow cut`): **Glade**, its
+bytecode, which starts at once and runs the REPL and debug builds, and
+**Silo**, which compiles to native code, for release builds. Idyll has no
+runtime of its own; what a program does with memory and with the world is
+Meadow's. So running a program needs `meadow` installed (`meadowup`
+installs it; `IDYLL_MEADOW` names another).
 
-Pass `--axcut` to see what your program became. This is
-`(\(x : Int) -> ([x] : Int [1])) 5`:
-
-```
-define main : () =
-  new f_0 = (){
-    apply(x_1, k_2) ⇒
-      substitute [k_2 ↦ k_2, x_1 ↦ x_1];
-      let box_3 = box(x_1);
-      substitute [box_3 ↦ box_3, k_2 ↦ k_2];
-      invoke k_2 ret };
-  extern lit 5 { (n_4) ⇒
-  new k_5 = (){
-    ret(r_6) ⇒
-      extern halt(r_6) {} };
-  substitute [n_4 ↦ n_4, k_5 ↦ k_5, f_0 ↦ f_0];
-  invoke f_0 apply }
-
-[5] : Int [1]
-```
-
-There are no expressions in AxCut, only statements, and no call stack. A
-function is an object with one method, `apply(x, k)`, where `k` is where
-to send the result; a continuation is an object with one method,
-`ret(r)`. Calling and returning are the same statement, `invoke`. `let`
-builds a record and `switch` opens one, which is all a box is at run time
-— its grade has done its work by then.
-
-The variables in scope form an ordered list, and `substitute` is the only
-statement that may reorder, copy or drop them; everything else uses up
-what it names, from the end. (On real hardware the list is the registers,
-and a `substitute` is a move.) You can see Idyll's linearity in it: above,
-no variable is ever copied. Where a program uses a variable twice, the
-copy is explicit:
+Cut is based on the sequent calculus, as AxCut is (Schuster, Müller,
+Ostermann & Brachthäuser, *Compiling Classical Sequent Calculus to Stock
+Hardware*, 2025). Evaluation is call-by-value: a function's argument is
+computed before the call, and a `let`'s value before its body. Pass
+`--cut` to see what your program became, or use `:ir cut` in the REPL.
+This is `double n = n * 2`:
 
 ```
-substitute [b_4 ↦ b_4, k_5 ↦ k_5, f_1 ↦ f_1, b_4' ↦ b_4];
-let box_6 = box(b_4');
+def idyll:Main/double (n_1: i64; k_2: ptr) =
+  prim mul(n_1, 2; k_2)
 ```
 
-A recursive definition becomes a labelled block of its own, and a call to
-it a `jump`. A call in tail position passes its continuation along
-instead of making a new one, so a loop runs in constant space — for as
-long as it is allowed to (see [Recursion](#recursion)).
+There are no expressions in Cut, only statements. A function takes its
+arguments and a continuation, `k`, where to send its result, and a
+statement cuts a value against a continuation (`<v | k>`), calls a
+definition, or does a primitive. `μ̃ x. s` is a continuation that names the
+value it is given `x` and goes on with `s`. Every value says how it is
+represented — an `i64`, a `str`, a `ptr` to something on the heap — and a
+box, whose grade has done its work by then, is only a heap object.
+
+A top-level definition with no parameters is a `val`, computed once,
+before the program starts; one with parameters is a `def`. A program's
+effects are Cut effects: an operation no handler of the program's own
+takes is done by the runtime, as the Meadow operation it is declared to
+be (`Console.writeOutput`, `Process.argv`, ...).
 
 ### Erasure
 
@@ -3226,96 +3202,32 @@ Whatever has grade `0` is not just unused at run time, it is not
 argument, for one — is never evaluated, and a grade-`0` box is never
 filled. That is why such an argument has to be pure (see
 [Types are total](#types-are-total)): its effects would never happen.
+Nothing erased reaches Cut at all.
 
 ```
 > (\(n : [0] Int) -> 5) (6 * 7)
 5 : Int
 ```
 
-### Memory
-
-There is no garbage collector. `let` and `new` take a block of memory,
-and `switch` and `invoke` give it back, so in linear code every block has
-one owner and is recycled the moment it is opened: a continuation is
-allocated by a call and freed by the return, which is a stack's behaviour
-without a stack.
-
-Sharing is where **reference counts** come in, and only there. A
-`substitute` that copies a variable adds to its block's count, one that
-drops a variable takes away from it, and *nothing else ever touches a
-count* — so a program that uses everything linearly never writes one.
-Opening a block then checks whether anyone else holds it: if not its
-contents simply move out; if so they are copied, and shared in turn.
-Dropping is lazy: a dead block's contents are dealt with only when the
-block is reused, so discarding a large structure costs the same as
-discarding a small one. Counting is enough — there is nothing for it to
-miss — because values are never modified, so they can't form cycles.
-
-`--axcut` also reports what a run did. A linear program, then one that
-passes a box twice:
-
-```
-memory: 3 blocks acquired (2 fresh, 1 reused), at most 2 at once; 0 shares, 0 erases, 3 of 3 releases unique
-memory: 4 blocks acquired (3 fresh, 1 reused), at most 3 at once; 1 shares, 0 erases, 4 of 5 releases unique
-```
-
-Your grades and this bookkeeping are checked against each other: a
-variable is never copied more often than its grade allows, so a linear
-variable is never copied at all. What a grade can't promise is that the
-*value* a linear variable holds is unshared — a caller may hand the same
-box to two linear parameters — which is why opening a block looks at its
-count instead of trusting the type.
-
 ### Compiling to native code
 
-With [clang](https://clang.llvm.org) installed, the compiler's `-o` compiles
-a program to an executable, by way of LLVM (in `compiler/`):
+A release build is native code: `idyll run --release` in a package builds
+it with Silo and runs the executable, and `idyll build --release` leaves it
+under `target/release/native/`. For a lone file, the compiler's `-o` does
+the same (in `compiler/`), and its `--release` builds it and runs it at
+once:
 
 ```sh
 cargo run --release -- program.idl -o program.exe
 ./program.exe
 ```
 
-`--emit-llvm out.ll` writes the LLVM IR instead (or as well), and `--axcut`
-shows the AxCut it is made from. Memory is managed exactly as
-[above](#memory), by a few dozen lines of C that are linked in and inlined.
-Two things are done differently from the interpreter, both for speed:
+A program run for its `main` prints what `main` prints and no answer at
+all.
 
-* **Inlining.** A function that is known where it is called — written
-  there, bound by a `let`, or a definition that isn't recursive — is
-  replaced by its body if it is used once or is small, and a constructor
-  that is matched on straight away is never built. `id (id 7)` compiles to
-  the number 7. What is left goes to LLVM, which inlines as it sees fit.
-* **Continuations live on the machine stack.** In AxCut, where a call
-  returns to is an object like any other, and the interpreter keeps it on
-  the heap. But it is linear, and is only ever passed down to a call or
-  returned to — a stack frame's life. So compiled code calls with `call`
-  and returns with `ret`, and what the continuation closed over stays in
-  the caller's frame. A call in tail position is a *guaranteed* tail call,
-  so a loop runs in constant space however long it goes on; other recursion
-  takes a frame per call, from a stack of 1 GB (on Windows and macOS, where
-  the linker decides; elsewhere it is `ulimit -s`'s).
-
-  Except in a program with a handler. A handler's clause is given the
-  rest of the computation as a resumption, `k`, which it may call later,
-  more than once, or never — after the stack it would come back to has
-  gone. So a program with a handler is compiled as the interpreter runs
-  it: every continuation is on the heap, every call is a tail call, and the
-  handlers in force are a stack the runtime keeps. An operation finds the
-  nearest handler with a clause for it, and takes that handler and the
-  ones above it out of force into the resumption, which puts them back
-  when it is called. That costs an allocation per call that isn't a tail
-  call, which is why only programs with handlers pay it.
-
-One thing differs from the REPL: only an `Int`, `Bool`, `String` or `()`
-answer is printed; anything else prints `<value>`. A program run for its
-`main` prints what `main` prints and no answer at all. The world's
-operations, which the runtime handles, compile to calls into it, unless a
-handler of the program's own takes them first.
-
-`bench/run.sh` compares compiled Idyll with other languages on three small
-programs; `bench/README.md` has the numbers, and what they do and don't
-mean.
+`bench/run.sh` compares Idyll with other languages on three small
+programs; `bench/README.md` has the numbers, measured when Idyll still had
+a native back end of its own, and what they do and don't mean.
 
 ## Reading error messages
 

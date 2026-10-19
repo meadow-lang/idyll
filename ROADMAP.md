@@ -100,8 +100,9 @@ and the tour has steps for it.
     (`[a; b]`) and `#[a, b]` is an array.
 - **The back ends are Glade and Silo**, which stay Meadow's (as BEAM is
   Elixir's) and become a back end Idyll compiles to through Cut; see *Back
-  ends* below. Idyll's own `rts/` and `idyllic-llvm` stay until Idyll's
-  corpus runs on both (decided with Chris, 2026-10-02).
+  ends* below. Idyll's own `rts/` and `idyllic-llvm` stayed until Idyll's
+  corpus ran on both (decided with Chris, 2026-10-02); they, and the AxCut
+  machine, were retired on 2026-10-19 (step 5).
 - **A constructor may share its type's name** (Meadow's `Pair`, made by
   `Pair`), and the `Mk` prefix is gone from Idyll's code. The bare name is
   the type where a type is written (a signature, an annotation, a function
@@ -285,15 +286,15 @@ sequence literals.
   (`0`, `1`, `0..1`, more), and every grade works: Idyll's AxCut machine
   keeps the handlers in force on a stack of its own, and a resumption is an
   ordinary heap consumer, so resuming twice is just invoking it twice
-  (`compiler/idyllic-seq/src/machine.rs`; the reference interpreter
-  `idyll-eval` agrees). Native code compiles every grade too: a program
+  (the machine, `idyllic-seq`, retired 2026-10-19: the reference
+  interpreter `idyll-eval` agrees, and Glade and Silo run every grade
+  through Cut). Native code compiled every grade too: a program
   with a handler is compiled with its continuations on the heap, as the
   AxCut paper has them, so every call is a tail call and a resumption can
   outlive the stack; the runtime keeps the handlers in force, a handler is
   a table of clauses keyed by operation, and `perform` captures the
   handlers above the one it finds into the resumption
-  (`compiler/idyllic-llvm`, `rts/idyll_rt.c`; `tests/llvm.rs` checks it
-  against the machine, multi-shot included). Programs without a handler
+  (`idyllic-llvm` and `rts/idyll_rt.c`, retired 2026-10-19). Programs without a handler
   keep stack continuations. An operation says how often its handlers may
   resume it: unmarked, at most once, and `@many` for more, which a clause is
   checked against (decided with Chris, for the shared back end, which needs
@@ -330,10 +331,9 @@ sequence literals.
   program with a `main` and no expression of its own runs `main ()`, and
   `main` must be `() -> () ! Eff` (or fewer effects), inferred or written.
   An operation of the world's that no handler of the program's own takes
-  is done by the runtime, in `compiler/idyllic-world/` for the AxCut
-  machine and `idyll-eval` both, and by `idyll_op_*` functions in
-  `rts/idyll_rt.c` for native code (where a handler of the program's own
-  is searched for first). The REPL and `idyllic file.idl -- args` talk to
+  is done by the runtime: Meadow's, as the operation of its own the
+  prelude's `native` table binds it to (and, for the reference
+  interpreter, `compiler/idyllic-world/`). The REPL and `idyllic file.idl -- args` talk to
   the real world; tests to a captured one, whose output is kept, input
   empty and randomness seeded. `exit n` is the process's exit code. Giving
   up with a message is the prelude's `Abort` effect (`abort : {a : Type} ->
@@ -732,7 +732,8 @@ shows a type.
   - **The fragment, and its compiler.** A module marked for it (say
     `@extract`) must be first-order, monomorphic once erased, closure-free,
     and use only `Mem`'s data and machine integers. A back end of its own
-    lowers it to C or LLVM; `idyllic-llvm` is half of that already. Code in
+    lowers it to C or LLVM; the retired `idyllic-llvm` (in git history
+    before 2026-10-19) is half of that already. Code in
     it is called from the rest through a foreign interface; everything else
     stays on Cut, Glade and Silo.
 
@@ -824,7 +825,8 @@ Work split: each session changes only its own repository.
   `putErr` and exiting 1. `cut-corpus/` holds every program of the test
   corpora and the tutorial's sessions that runs (188 of them, every one
   lowering) as Cut, with what it prints, its answer and its exit status
-  (`compiler/idyllic/examples/cut_corpus.rs`). Run through `meadow-cut`
+  (`idyll-eval/examples/cut_corpus.rs`, the reference interpreter's
+  answers). Run through `meadow-cut`
   (meadow f46bb2a, 2026-10-02), 185 of 188 agreed; Idyll then escaped
   strings in answers as its REPL does and marked programs using `Random`
   or the clock `nondeterministic`, after which 186 agree, the other two
@@ -848,23 +850,37 @@ Work split: each session changes only its own repository.
     back end leaves out the top-level and recursive definitions a program
     never uses (`idyllic-typecheck/src/prune.rs`), so the prelude costs
     nothing when it isn't called.
-- [~] **Step 4**: a shared corpus, on which the reference interpreter, the
-  AxCut machine, Glade and Silo agree in CI. `cut-corpus/` is it (221
-  programs: 198 pure, 5 with the world's effects, 18 with handlers). The
-  reference interpreter agrees with all of it, and since 2026-10-18 so do
-  Glade and Silo, all 221 on each, on meadow from its `idyll-dev` branch
-  (Meadow's Cut lowering, its handler fix PR 11, and Idyll's own fixes to
-  representation variables and array elements). Left: running it in CI.
-- [ ] **Step 5**: Idyll's build tool on Glade (debug) and Silo (release);
-  `idyllic-llvm` and `rts/idyll_rt.c` retired once Idyll's corpus, tutorial
-  and benchmarks pass on both.
+- [~] **Step 4**: a shared corpus, on which the reference interpreter,
+  Glade and Silo agree in CI. `cut-corpus/` is it (241 programs: 216 pure,
+  6 with the world's effects, 19 with handlers), its answers the reference
+  interpreter's (`idyll-eval/examples/cut_corpus.rs`). Glade and Silo agree
+  with all 241 on each (2026-10-19, meadow `idyll-dev` 98daaba; 221 of them
+  since 2026-10-18, after Meadow's Cut lowering, its handler fix PR 11, and
+  Idyll's own fixes to representation variables and array elements).
+  `idyll-eval/tests/spec.rs` holds Glade to the interpreter on the whole
+  test corpus and tutorial too. Left: running it in CI.
+- [x] **Step 5**: Idyll's build tool on Glade (debug) and Silo (release),
+  done 2026-10-19. Every program is lowered to Cut and handed to `meadow
+  cut` (`compiler/idyllic/src/meadow.rs`): the REPL, `idyll run` and the
+  compiler run on Glade, a release build is an executable Silo builds
+  (`idyll-driver/src/native.rs`), and the profiles' backends are `glade`
+  and `silo`. Idyll's own runtimes are gone: the AxCut machine and its
+  inliner (`idyllic-seq`), the LLVM back end (`idyllic-llvm`), the C
+  runtime (`rts/`) and `axcut-corpus/`. The reference interpreter stays as
+  the specification, which `idyll-eval/tests/spec.rs` now holds Glade to.
+  Found on the way, and fixed: a program linked from its compiled package
+  alone lowered what its recursive definitions answer as `any`; a mutable
+  array was Cut's persistent array, which a write copies, and is Meadow's
+  `st` array now, written in place; and, in Meadow, `Process.argv` gave a
+  vector to a program without vector roles, and a val that performs was
+  never run unless read. Left: the benchmarks, rerun on Silo.
 - [ ] **Step 6**: calling between languages.
 - [~] **Arrays**: `Array a` and `#[a; b]` literals are done (see phase 1),
   natively and in Cut. Left: array patterns, and an `Array n a` sized in
   its type.
 - [x] **One integer semantics.** Decided with Chris: `Int` is the runtime's
   primitive 64-bit integer, untagged, wrapping, in registers, as Meadow's is.
-  Idyll's REPL, AxCut machine, reference interpreter and type checker all
+  Idyll's REPL, AxCut machine (since retired), reference interpreter and type checker all
   compute that way now (`Prim::on_ints` in `idyllic-builtins`); a literal
   that does not fit is a parse error. `BigInt` comes later, as a type of
   its own.

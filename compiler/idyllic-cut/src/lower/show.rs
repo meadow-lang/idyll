@@ -2,8 +2,8 @@
 //!
 //! The runtimes print only strings (`docs/CUT.md`: `answer` is `none` or
 //! `str`), so a program whose value is anything else is given code that
-//! turns it into one, in the form Idyll's REPL, AxCut machine and reference
-//! interpreter show it: `42`, `True`, `()`, `"text"`, `[v]`, `#[1; 2]`,
+//! turns it into one, in the form Idyll's REPL and reference interpreter
+//! show it: `42`, `True`, `()`, `"text"`, `[v]`, `#[1; 2]`,
 //! `(1, True)`, `x :: xs`, `Just (Ok 3)`. Then every implementation's answer
 //! can be compared as text.
 //!

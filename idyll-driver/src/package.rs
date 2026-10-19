@@ -29,12 +29,12 @@
 //! backend = "machine"      # "machine" | "native"
 //!
 //! [profile.release]
-//! backend = "native"
+//! backend = "glade"
 //! ```
 //!
-//! `backend` says how the program runs: on the AxCut abstract machine, in
-//! this process (`"machine"`, debug's), or compiled by LLVM into an
-//! executable (`"native"`, release's).
+//! `backend` says which of Meadow's runtimes runs the program: Glade, its
+//! bytecode (`"glade"`, debug's), or Silo, which builds an executable
+//! (`"silo"`, release's).
 //!
 //! Only the keys that are present are overridden; the rest keep the profile's
 //! built-in meaning (see [`crate::Profile`]). A command-line flag wins over
@@ -1020,8 +1020,8 @@ fn parse_manifest(text: &str, dir: &Path) -> (Manifest, Inherits) {
                     // `--native`, as a switch
                     "native" => {
                         p.backend = match unquote(value) {
-                            "true" => Some(crate::profile::Backend::Native),
-                            "false" => Some(crate::profile::Backend::Machine),
+                            "true" => Some(crate::profile::Backend::Silo),
+                            "false" => Some(crate::profile::Backend::Glade),
                             _ => None,
                         }
                     }

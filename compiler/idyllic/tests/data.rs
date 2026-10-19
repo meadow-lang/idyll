@@ -200,19 +200,13 @@ fn a_long_list_needs_no_stack() {
 }
 
 #[test]
-fn consuming_a_list_frees_it_as_it_goes() {
-    // a linear traversal: every cell is unique, released as it is matched and
-    // reused by the next allocation
+fn a_list_is_built_and_consumed_twice() {
+    // a linear traversal, twice (what it does with memory is the runtime's)
     let src = "build : (n : [] Int) -> List Int -> List Int ! Div\nbuild n acc = if n == 0 then acc else build (n - 1) (n :: acc)\n\n\
                sum : List Int -> Int -> Int\nsum xs acc = case xs of\n  Nil -> acc\n  y :: ys -> sum ys (acc + y)\n\n\
                sum (build 1000 Nil) 0 + sum (build 1000 Nil) 0\n";
     let out = run(src);
     assert_eq!(out.evaluation, Some(Evaluation::Value("1001000".into())));
-    let m = out.memory.expect("it ran");
-    assert!(m.was_linear(), "{m}");
-    // the second list is built entirely out of the first one's cells
-    assert!(m.fresh <= 1002, "{m}");
-    assert_eq!((m.leaked, m.miscounted), (0, 0));
 }
 
 /// A constructor's field is linear in every module: what goes into a value

@@ -2,7 +2,8 @@
 
 Each directory here is a package: an `Idyll.toml` and a `src/` whose
 `Main.idl` has the `main` that runs. To run one, go into its directory and
-run `idyll run`. Add `--release` for native code (this needs clang).
+run `idyll run`, which runs it on Glade, Meadow's bytecode. Add `--release`
+for native code, built by Silo. Either needs `meadow` installed.
 
 | Package | What it shows |
 | --- | --- |
@@ -13,9 +14,9 @@ run `idyll run`. Add `--release` for native code (this needs clang).
 | [`linear/`](linear) | Grades: `[0]`, `[1]`, `[0..1]`, `[2]`, and `@linear` modules: an insertion sort in place on an `MArray`, and tickets that have to be redeemed exactly once |
 | [`interpreter/`](interpreter) | An interpreter for a small functional language, read from its text (strings and characters taken apart, a recursive-descent parser), with closures and recursion. Errors are `Exn`, and steps are counted with `State` |
 
-`euler` sets `backend = "native"` for its debug profile. Its sieve runs for
-longer than the abstract machine's step limit, so even a plain `idyll run`
-compiles it to native code.
+`euler` sets `backend = "silo"` for its debug profile: its sieve does
+millions of writes to an array of two million, so even a plain `idyll run`
+builds it into native code.
 
 `idyll-driver/tests/examples.rs` builds every package here and checks what
 each prints. The front/ differentials (`compiler/idyllic/tests/front.rs`)

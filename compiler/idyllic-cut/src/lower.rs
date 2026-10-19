@@ -175,6 +175,17 @@ fn zonk(solutions: &[Option<Rc<Core>>], c: &Rc<Core>) -> Rc<Core> {
 }
 
 pub fn lower(tc: &mut TypeCheckResult, package: &str) -> Result<Program, Vec<String>> {
+    lower_with(tc, package, None)
+}
+
+/// The same, with `mark` written in front of the answer, so that whoever
+/// runs it can tell the answer from what the program printed before it:
+/// Meadow writes the answer right after.
+pub fn lower_marked(tc: &mut TypeCheckResult, package: &str, mark: &str) -> Result<Program, Vec<String>> {
+    lower_with(tc, package, Some(mark))
+}
+
+fn lower_with(tc: &mut TypeCheckResult, package: &str, mark: Option<&str>) -> Result<Program, Vec<String>> {
     // an answer is shown with the prelude's `showInt`, so it stays
     let show_int = tc.symbols.iter().find(|(_, (p, path))| p == "Prelude" && path == "showInt").map(|(u, _)| *u);
     if !tc.ran_main {
@@ -265,7 +276,19 @@ pub fn lower(tc: &mut TypeCheckResult, package: &str) -> Result<Program, Vec<Str
     let shown = match &body_type {
         Some(ty) if !ran_main => {
             let ty = l.typer.eval_type(&env.scope, ty);
-            l.show_answer(&env.scope, &ty, Consumer::Var(k.clone()))
+            let k_answer = match mark {
+                Some(mark) => {
+                    let s = l.name("s");
+                    let marked = Statement::Prim(
+                        CONCAT.into(),
+                        prim_args(CONCAT, vec![Producer::Str(mark.to_string()), Producer::Var(s.clone())]),
+                        vec![Consumer::Var(k.clone())],
+                    );
+                    Consumer::MuTilde(Binder { name: s, rep: Rep::Str }, Box::new(marked))
+                }
+                None => Consumer::Var(k.clone()),
+            };
+            l.show_answer(&env.scope, &ty, k_answer)
         }
         _ => None,
     };
@@ -993,7 +1016,7 @@ impl Lower<'_> {
             Native::ArrayLen | Native::ArrayPop => &[Rep::Ptr],
             Native::ArrayGet => &[Rep::Ptr, Rep::I64],
             Native::ArrayGetOr => &[Rep::Any, Rep::Ptr, Rep::I64],
-            Native::ArraySet | Native::MArraySet => &[Rep::Ptr, Rep::I64, Rep::Any],
+            Native::ArraySet => &[Rep::Ptr, Rep::I64, Rep::Any],
             Native::ArrayPush => &[Rep::Ptr, Rep::Any],
             Native::ArraySlice => &[Rep::Ptr, Rep::I64, Rep::I64],
             Native::ArrayConcat => &[Rep::Ptr, Rep::Ptr],
@@ -1011,8 +1034,7 @@ impl Lower<'_> {
             }
         };
         let params: Vec<Param> = (0..info.params).map(|_| Param::Skip).chain(reps.iter().cloned().map(Param::Value)).collect();
-        // a mutable array is the runtime's array, used linearly
-        let op = if n == Native::MArraySet { "arraySet".to_string() } else { n.name().to_string() };
+        let op = n.name().to_string();
         if args.len() < all {
             return self.partial(env, whole, Head2::Prim(op), &params[..args.len()], args, k);
         }

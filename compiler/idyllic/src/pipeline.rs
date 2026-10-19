@@ -1,5 +1,6 @@
 //! The compiler pipeline: lex → layout → parse → rename → SCC → type check,
-//! and then — for a program that checks — lower to AxCut → linearize → run.
+//! and then — for a program that checks — lower to Cut, and run it on
+//! Meadow's runtimes ([`crate::meadow`]).
 //!
 //! Every pass reports plain [`Diagnostic`]s, collected here in pass order.  A
 //! parse failure does not short-circuit the report: whatever the lexer and
@@ -7,10 +8,9 @@
 
 use idyllic_diagnostics::{self as diagnostics, Diagnostic, OutputStyle};
 use idyllic_span::{LineIndex, SourceMap, Span, Spanned};
-use idyllic_llvm as llvm;
-use idyllic_world::World;
+use crate::meadow::{self, Outcome, Running};
 use {
-    idyllic_seq as seq, idyllic_layout as layout, idyllic_lexer as lexer, idyllic_parser as parser,
+    idyllic_layout as layout, idyllic_lexer as lexer, idyllic_parser as parser,
     idyllic_rename as rename, idyllic_scc as scc, idyllic_typecheck as typecheck,
 };
 
@@ -35,11 +35,11 @@ pub struct Output {
     pub decls: Vec<(String, String)>,
     /// The HIR dump, when [`Options::debug`] is set.
     pub hir: Option<String>,
-    /// The program as AxCut, if it checked and has an expression to run.
-    pub axcut: Option<seq::Program>,
-    /// The same, inlined: what the native compiler is given.  (What is run
-    /// here, and shown, is the program as it was lowered.)
-    pub native: Option<seq::Program>,
+    /// The program as Cut, which Meadow's runtimes run, if it checked and
+    /// was lowered.
+    pub cut: Option<String>,
+    /// What lowering it said, if it could not be lowered.
+    pub not_lowered: Vec<String>,
     /// What running it came to.
     pub evaluation: Option<Evaluation>,
     /// What running it wrote to the console, if its world was captured (see
@@ -50,10 +50,6 @@ pub struct Output {
     /// Whether what was run is `main ()`, for a program with a `main` and no
     /// expression of its own.  Its value, `()`, is not shown.
     pub ran_main: bool,
-    /// What it did with memory, if it ran to the end.
-    pub memory: Option<seq::machine::Memory>,
-    /// How compiled code should print the answer.
-    pub result_kind: llvm::ResultKind,
     /// The elaborated program, if checking got that far: what is lowered,
     /// and what the reference interpreter (`idyll-eval`) runs.
     pub checked: Option<typecheck::TypeCheckResult>,
@@ -240,8 +236,9 @@ fn collect_modules(
 /// `Eff` is the effects the runtime handles, which are what a program's top
 /// level, and so its `main`, may have: Meadow's, less the ones Idyll has no
 /// means for yet (`Mut`'s references and `Thread`'s threads).  An operation
-/// of one of them that no handler of the program's own takes is done by the
-/// runtime (see `idyllic_world`, and `rts/idyll_rt.c` for native code).
+/// of one of them that no handler of the program's own takes is done by
+/// Meadow's runtime, as the operation of its own it is declared `native` to
+/// be (`docs/CUT.md` in Meadow).
 pub const PRELUDE: &str = "\
 @linear
 
@@ -419,10 +416,14 @@ fn read(map: &mut SourceMap, name: &str, text: &str, diagnostics: &mut Vec<Diagn
     }
 }
 
-/// How many steps the AxCut machine gives a program before giving up
-/// on it.  Nothing checks that a recursion ends; and one that does, but not
-/// soon, is what the native compiler is for.
-pub const FUEL: u64 = 1_000_000;
+/// How long a program run with its output kept (a test's), or a REPL
+/// entry, may run before it is stopped: `IDYLL_TIMEOUT` seconds, or 20.
+/// Nothing checks that a recursion ends. A program run live (`idyll run`)
+/// has as long as it likes.
+pub fn timeout() -> std::time::Duration {
+    let secs = std::env::var("IDYLL_TIMEOUT").ok().and_then(|s| s.parse().ok()).unwrap_or(20);
+    std::time::Duration::from_secs(secs)
+}
 
 /// What running a program came to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -431,79 +432,56 @@ pub enum Evaluation {
     Value(String),
     /// A value with nothing to show: a function, a type.
     Opaque,
-    /// Still running after [`FUEL`] steps.
-    OutOfFuel,
+    /// Still running when its time was up.
+    TimedOut(std::time::Duration),
     /// Stopped by an error of the program's own: dividing by zero, a failed
     /// test.
     Stopped(String),
     /// Ended by the program itself, with `exit`, and this exit code.
     Exited(i32),
-    /// The compiler produced a program it could not run.  That is a bug in
-    /// the compiler, never in the program.
+    /// The program could not be run: the compiler made Cut Meadow would not
+    /// take, or there is no `meadow` to run it. Never the program's fault.
     Failed(String),
 }
 
-/// What [`evaluate`] comes to: the program as run, and as compiled; what
-/// running it came to, did with memory, and printed.
+/// What [`evaluate`] comes to: the program as Cut, what running it came to,
+/// and what it printed.
 struct Ran {
-    program: seq::Program,
-    native: Option<seq::Program>,
-    evaluation: Evaluation,
-    memory: Option<seq::machine::Memory>,
+    cut: Option<String>,
+    not_lowered: Vec<String>,
+    evaluation: Option<Evaluation>,
     printed: String,
     errors: String,
 }
 
-/// Lower, hold the result to its grades, infer the substitutions, and run,
-/// in `world`; with none, only lower.
-fn evaluate(checked: &typecheck::TypeCheckResult, world: Option<World>) -> Option<Ran> {
-    let failed = |program, why: String| Ran {
-        program,
-        native: None,
-        evaluation: Evaluation::Failed(why),
-        memory: None,
-        printed: String::new(),
-        errors: String::new(),
+/// Lower to Cut, and run it as `running` says; with nothing to say, only
+/// lower.
+fn evaluate(checked: &mut typecheck::TypeCheckResult, running: Option<&Running>) -> Ran {
+    let lowered = match running {
+        // (run, the answer is marked, to be told from what was printed)
+        Some(_) => idyllic_cut::lower::lower_marked(checked, "Main", &meadow::ANSWER_MARK.to_string()),
+        None => idyllic_cut::lower::lower(checked, "Main"),
     };
-    let lowered = match seq::lower::lower(checked)? {
-        Ok(lowered) => lowered,
-        Err(e) => return Some(failed(seq::Program::default(), e.to_string())),
-    };
-    let program = seq::linearize::linearize(&lowered);
-    // a variable used more often than its grade allows: the type checker
-    // and the lowering disagree, and one of them is wrong
-    if let Some(violation) = seq::grades::check(&lowered).first() {
-        return Some(failed(program, violation.to_string()));
-    }
-    // only now: inlining lets an argument be used as its parameter was,
-    // which is not what the argument's own grade says
-    let native = Some(seq::linearize::linearize(&seq::inline::inline(&lowered)));
-    let Some(mut world) = world else {
-        let evaluation = Evaluation::Opaque;
-        return Some(Ran { program, native, evaluation, memory: None, printed: String::new(), errors: String::new() });
-    };
-    use seq::machine::MachineError;
-    let (evaluation, memory) = match seq::machine::run_in(&program, FUEL, &mut world) {
-        Ok(outcome) if outcome.memory.leaked + outcome.memory.miscounted > 0 => {
-            let m = outcome.memory;
-            let why = format!("{} blocks leaked and {} miscounted", m.leaked, m.miscounted);
-            (Evaluation::Failed(why), Some(m))
+    let cut = match lowered {
+        Ok(program) => program.to_string(),
+        Err(why) => {
+            let evaluation = running.map(|_| Evaluation::Failed(format!("not lowered to Cut: {}", why.join("; "))));
+            return Ran { cut: None, not_lowered: why, evaluation, printed: String::new(), errors: String::new() };
         }
-        Ok(outcome) => (outcome.answer.map_or(Evaluation::Opaque, Evaluation::Value), Some(outcome.memory)),
-        Err(MachineError::OutOfFuel) => (Evaluation::OutOfFuel, None),
-        Err(MachineError::Exited(code)) => (Evaluation::Exited(code), None),
-        Err(
-            e @ (MachineError::DivisionByZero
-            | MachineError::TestFailed(_)
-            | MachineError::OutOfBounds { .. }
-            | MachineError::EmptyArray
-            | MachineError::ByteOutOfBounds { .. }
-            | MachineError::NotACharacter(_)),
-        ) => (Evaluation::Stopped(e.to_string()), None),
-        Err(e) => (Evaluation::Failed(e.to_string()), None),
     };
-    let (printed, errors) = world.into_streams();
-    Some(Ran { program, native, evaluation, memory, printed, errors })
+    let Some(running) = running else {
+        return Ran { cut: Some(cut), not_lowered: Vec::new(), evaluation: None, printed: String::new(), errors: String::new() };
+    };
+    let ran = meadow::run(&cut, running);
+    let evaluation = match ran.outcome {
+        Outcome::Answered(Some(answer)) => Evaluation::Value(answer),
+        Outcome::Answered(None) => Evaluation::Opaque,
+        Outcome::Exited(code) => Evaluation::Exited(code),
+        Outcome::Stopped(why) => Evaluation::Stopped(why),
+        Outcome::TimedOut(after) => Evaluation::TimedOut(after),
+        Outcome::Failed(why) => Evaluation::Failed(why),
+    };
+    Ran { cut: Some(cut), not_lowered: Vec::new(), evaluation: Some(evaluation), printed: ran.printed, errors: ran.errors }
 }
 
 impl Output {
@@ -511,15 +489,10 @@ impl Output {
         self.diagnostics.iter().any(Diagnostic::is_error)
     }
 
-    /// The program as it was lowered to AxCut, and what running it did with
-    /// memory, for `--axcut`; `None` if it never got as far as lowering.
-    pub fn axcut_report(&self) -> Option<String> {
-        let program = self.axcut.as_ref()?;
-        let mut out = format!("{program}\n\n");
-        if let Some(memory) = &self.memory {
-            out.push_str(&format!("{memory}\n\n"));
-        }
-        Some(out)
+    /// The program as it was lowered to Cut, for `--cut`; `None` if it
+    /// never got as far as lowering.
+    pub fn cut_report(&self) -> Option<String> {
+        self.cut.as_ref().map(|cut| format!("{cut}\n"))
     }
 
     /// Everything a user should see: rendered diagnostics, then what the
@@ -552,8 +525,8 @@ impl Output {
                     out.push('\n');
                 }
                 match &self.evaluation {
-                    Some(Evaluation::OutOfFuel) => {
-                        out.push_str(&format!("(still running after {FUEL} steps; stopped)\n"));
+                    Some(Evaluation::TimedOut(after)) => {
+                        out.push_str(&format!("(still running after {} seconds; stopped)\n", after.as_secs()));
                     }
                     Some(Evaluation::Stopped(why)) => out.push_str(&format!("(stopped: {why})\n")),
                     // (a program run for its `main` says nothing of it)
@@ -561,7 +534,7 @@ impl Output {
                         out.push_str(&format!("(exited with {code})\n"));
                     }
                     Some(Evaluation::Failed(why)) => {
-                        out.push_str(&format!("(could not be run — this is a bug in idyllic: {why})\n"));
+                        out.push_str(&format!("(could not be run: {why})\n"));
                     }
                     _ => {}
                 }
@@ -586,13 +559,19 @@ impl Output {
 /// Run the whole pipeline over one source text.  Never fails.  A program
 /// with a `main` and no expression of its own runs `main ()`.
 pub fn run(src: &str, opts: &Options) -> Output {
-    run_with(src, opts, true, Stage::Run(world(opts, Vec::new())))
+    run_with(src, opts, true, Stage::Run(running(opts, Vec::new())))
+}
+
+/// The same, stopped if it is still running after `timeout`, rather than
+/// [`timeout()`]'s.
+pub fn run_within(src: &str, opts: &Options, timeout: std::time::Duration) -> Output {
+    run_with(src, opts, true, Stage::Run(Running { timeout: Some(timeout), ..running(opts, Vec::new()) }))
 }
 
 /// The same, for a program given command-line arguments: what `args ()`
 /// gives it.
 pub fn run_program(src: &str, opts: &Options, args: Vec<String>) -> Output {
-    run_with(src, opts, true, Stage::Run(world(opts, args)))
+    run_with(src, opts, true, Stage::Run(running(opts, args)))
 }
 
 /// Everything short of running: what the native compiler wants.  (Running
@@ -603,7 +582,13 @@ pub fn compile(src: &str, opts: &Options) -> Output {
 
 /// A package, run (with these arguments for its `main`).
 pub fn run_package(package: &PackageSource, opts: &Options, args: Vec<String>) -> Output {
-    build(package, Deps::default(), opts, true, Stage::Run(world(opts, args)))
+    build(package, Deps::default(), opts, true, Stage::Run(running(opts, args)))
+}
+
+/// The same, on `runtime`: Silo, for native code.
+pub fn run_package_on(package: &PackageSource, opts: &Options, args: Vec<String>, runtime: meadow::Runtime) -> Output {
+    let running = Running { runtime, ..running(opts, args) };
+    build(package, Deps::default(), opts, true, Stage::Run(running))
 }
 
 /// A package, everything short of running it.
@@ -614,7 +599,7 @@ pub fn compile_package(package: &PackageSource, opts: &Options) -> Output {
 /// A package compiled against what it depends on, and run (with these
 /// arguments for its `main`): it is linked with them first.
 pub fn run_package_with(package: &PackageSource, deps: Deps<'_>, opts: &Options, args: Vec<String>) -> Output {
-    build(package, deps, opts, true, Stage::Run(world(opts, args)))
+    build(package, deps, opts, true, Stage::Run(running(opts, args)))
 }
 
 /// A package compiled against what it depends on, and linked with them if
@@ -630,14 +615,12 @@ pub fn check(src: &str, opts: &Options) -> Output {
     run_with(src, opts, false, Stage::Check)
 }
 
-/// The world a program runs in: the real one, or a captured one (see
-/// [`Options::live`]), with these arguments for it.
-pub fn world(opts: &Options, args: Vec<String>) -> World {
-    if opts.live {
-        World::live(args)
-    } else {
-        World::captured()
-    }
+/// How a program is run: on Glade, with these arguments for it, talking to
+/// the real streams or kept (see [`Options::live`]), and, kept, for as long
+/// as [`timeout`] allows.
+pub fn running(opts: &Options, args: Vec<String>) -> Running {
+    let timeout = (!opts.live).then(timeout);
+    Running { runtime: meadow::Runtime::Glade, args, live: opts.live, timeout }
 }
 
 /// A package checked against what it depends on, and no more: neither
@@ -653,7 +636,7 @@ pub fn check_package_with(package: &PackageSource, deps: Deps<'_>, opts: &Option
 /// follows those it depends on, the program's own last.  What a build runs
 /// when nothing needed compiling.
 pub fn run_compiled(packages: &[&CompiledPackage], opts: &Options, args: Vec<String>) -> Output {
-    linked(packages, opts, Stage::Run(world(opts, args)))
+    linked(packages, opts, Stage::Run(running(opts, args)))
 }
 
 /// The same, everything short of running it: what native code is made from.
@@ -684,10 +667,10 @@ fn linked(packages: &[&CompiledPackage], opts: &Options, stage: Stage) -> Output
 pub(crate) enum Stage {
     /// check it
     Check,
-    /// and lower it, for the machine and for native code
+    /// and lower it, to Cut
     Lower,
-    /// and run it, in this world
-    Run(World),
+    /// and run it, as this says
+    Run(Running),
 }
 
 fn run_with(src: &str, opts: &Options, entry: bool, stage: Stage) -> Output {
@@ -775,14 +758,12 @@ pub(crate) fn front(package: &PackageSource, deps: Deps<'_>, opts: &Options, ent
                 body_type: None,
                 decls: Vec::new(),
                 hir: None,
-                axcut: None,
-                native: None,
+                cut: None,
+                not_lowered: Vec::new(),
                 evaluation: None,
                 printed: String::new(),
                 errors: String::new(),
                 ran_main: false,
-                memory: None,
-                result_kind: llvm::ResultKind::Other,
                 checked: None,
                 declarations: Vec::new(),
             });
@@ -950,7 +931,7 @@ fn doc_above(text: &str, line: usize) -> Option<String> {
 
 /// The rest of the pipeline, for a program checked (and linked).
 pub(crate) fn finish(
-    checked: typecheck::TypeCheckResult,
+    mut checked: typecheck::TypeCheckResult,
     diagnostics: Vec<Diagnostic>,
     sources: SourceMap,
     decls: Vec<(String, String)>,
@@ -958,41 +939,28 @@ pub(crate) fn finish(
     stage: Stage,
 ) -> Output {
     let ran_main = checked.ran_main;
-    // only a program that checks is run: the machine takes the types' word
-    // for it that every call has a function and every unboxing a box
+    // only a program that checks is lowered and run, and only one with a
+    // program: what only declares has nothing to run
+    let runs = !diagnostics.iter().any(Diagnostic::is_error) && checked.program.is_some();
     let ran = match stage {
-        _ if diagnostics.iter().any(Diagnostic::is_error) => None,
+        _ if !runs => None,
         Stage::Check => None,
-        Stage::Lower => evaluate(&checked, None),
-        Stage::Run(world) => evaluate(&checked, Some(world)),
+        Stage::Lower => Some(evaluate(&mut checked, None)),
+        Stage::Run(running) => Some(evaluate(&mut checked, Some(&running))),
     };
-    let (axcut, native, evaluation, memory, printed, errors) = match ran {
-        Some(r) => (Some(r.program), r.native, Some(r.evaluation), r.memory, r.printed, r.errors),
-        None => (None, None, None, None, String::new(), String::new()),
-    };
-
-    use idyllic_builtins::Builtin;
-    use idyllic_typecheck::core::Core;
-    let result_kind = match checked.body_type.as_deref() {
-        _ if ran_main => llvm::ResultKind::Main,
-        Some(Core::LitTy(Builtin::Int)) => llvm::ResultKind::Int,
-        Some(Core::LitTy(Builtin::Bool)) => llvm::ResultKind::Bool,
-        Some(Core::LitTy(Builtin::Unit)) => llvm::ResultKind::Unit,
-        Some(Core::LitTy(Builtin::Str)) => llvm::ResultKind::Str,
-        Some(Core::LitTy(Builtin::Char)) => llvm::ResultKind::Char,
-        _ => llvm::ResultKind::Other,
+    let (cut, not_lowered, evaluation, printed, errors) = match ran {
+        Some(r) => (r.cut, r.not_lowered, r.evaluation, r.printed, r.errors),
+        None => (None, Vec::new(), None, String::new(), String::new()),
     };
 
     Output {
         diagnostics,
-        result_kind,
-        axcut,
-        native,
+        cut,
+        not_lowered,
         evaluation,
         printed,
         errors,
         ran_main,
-        memory,
         body_type: checked.body_type.as_ref().map(|ty| ty.to_string()),
         decls,
         hir,
@@ -1022,7 +990,7 @@ pub enum Mode {
     Check,
     /// and lower it, for whoever runs it some other way
     Lower,
-    /// and run it on the AxCut machine
+    /// and run it on Glade
     Run,
 }
 
@@ -1047,7 +1015,9 @@ impl Session {
         let stage = match mode {
             Mode::Check => Stage::Check,
             Mode::Lower => Stage::Lower,
-            Mode::Run => Stage::Run(world(opts, Vec::new())),
+            // stopped if it runs on: an entry that does not end must give
+            // the prompt back, though it prints as it goes
+            Mode::Run => Stage::Run(Running { timeout: Some(timeout()), ..running(opts, Vec::new()) }),
         };
         // defining `main` is not running it: that is `main ()`
         let mut output = run_with(&source, opts, false, stage);

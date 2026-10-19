@@ -147,8 +147,9 @@ fn structural_recursion_is_total() {
 
 #[test]
 fn a_program_may_diverge() {
-    let out = accepts(&format!("{SPIN}spin 0\n"));
-    assert_eq!(out.evaluation, Some(Evaluation::OutOfFuel));
+    let opts = Options { debug: false, style: OutputStyle::PLAIN, live: false };
+    let out = pipeline::run_within(&format!("{SPIN}spin 0\n"), &opts, std::time::Duration::from_secs(2));
+    assert!(matches!(out.evaluation, Some(Evaluation::TimedOut(_))), "{:?}", out.evaluation);
 }
 
 // ---------------------------------------------------------------------------
@@ -214,8 +215,12 @@ fn an_erased_proof_can_be_matched_on() {
     );
     let out = accepts(&src);
     assert_eq!(out.evaluation, Some(Evaluation::Value("Cons 1 Nil".into())));
-    // and nothing is looked at: no switch on the proof
-    assert!(!out.axcut.expect("lowered").to_string().contains("switch"));
+    // and nothing is looked at: no case on the proof, in the program's own
+    // code (the prelude's has cases of its own)
+    let cut = out.cut.expect("lowered");
+    let own = &cut[cut.find("def idyll:Main/transport").expect("transport is lowered")..];
+    let own = &own[..own.find("\n\n").unwrap_or(own.len())];
+    assert!(!own.contains("case {"), "{own}");
 }
 
 #[test]
@@ -418,21 +423,6 @@ fn an_operation_takes_arguments() {
 }
 
 #[test]
-fn the_native_back_end_compiles_handlers() {
-    // with its continuations on the heap, and the runtime keeping the
-    // handlers in force (run natively in tests/llvm.rs)
-    let out = run(&format!("{ASK}{SUM3}handle sum3 () with\n  ask _ k -> k 10\n"));
-    let program = out.native.expect("lowered");
-    let ir = idyllic_llvm::emit(&program, idyllic_llvm::ResultKind::Int).expect("compiled");
-    assert!(ir.contains("call void @idyll_handle("), "{ir}");
-    assert!(ir.contains("call ptr @idyll_capture("), "{ir}");
-    // and a program without a handler keeps its continuations on the stack
-    let out = run("(\\(x : Int) -> x + 1) 41");
-    let ir = idyllic_llvm::emit(&out.native.expect("lowered"), idyllic_llvm::ResultKind::Int).expect("compiled");
-    assert!(!ir.contains("@idyll_handle"), "{ir}");
-}
-
-#[test]
 fn a_producer_can_go_on_for_ever_if_its_consumer_stops() {
     // Meadow's streams, in small: `from` yields for ever, and the handler
     // stops resuming it after five
@@ -609,7 +599,8 @@ fn exit_and_a_failed_test_end_the_program() {
     let out = accepts("main () = let u = putStrLn \"bye\" in exit 3\n");
     assert_eq!((out.printed.as_str(), &out.evaluation), ("bye\n", &Some(Evaluation::Exited(3))));
     let out = accepts("main () = fail \"two is not three\"\n");
-    assert_eq!(out.evaluation, Some(Evaluation::Stopped("test failed: two is not three".into())));
+    // with the message, as the runtime words it
+    assert!(matches!(&out.evaluation, Some(Evaluation::Stopped(why)) if why.contains("two is not three")), "{:?}", out.evaluation);
 }
 
 #[test]

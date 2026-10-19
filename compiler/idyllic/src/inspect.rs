@@ -3,18 +3,17 @@
 //! The block is compiled as an entry of a session would be, with the
 //! session's declarations in scope, and each stage's form of it is rendered
 //! as text: the tokens as layout leaves them, the syntax tree, the HIR, the
-//! checker's Core, AxCut as lowered and as inlined, LLVM IR, and Cut, the
-//! shared back end's upper IR.  The early stages show the block alone; Core
-//! shows the block's definitions and expression; the IRs after it show the
-//! whole program the block makes, which is what is lowered: the block, and
-//! whatever of the session and the prelude it uses.
+//! checker's Core, and Cut, the IR Meadow's runtimes run.  The early stages
+//! show the block alone; Core shows the block's definitions and expression;
+//! Cut shows the whole program the block makes, which is what is lowered:
+//! the block, and whatever of the session and the prelude it uses.
 //!
 //! A block of declarations alone has nothing to run, and a back end leaves
 //! out what nothing uses; so it is lowered as a program whose expression is
 //! `()`, with its definitions kept whether or not anything calls them (see
 //! [`idyllic_typecheck::TypeCheckResult::roots`]).
 
-use crate::pipeline::{self, Deps, Front, Options, PackageSource, Stage};
+use crate::pipeline::{self, Deps, Front, Options, PackageSource};
 use idyllic_diagnostics::{self as diagnostics, Diagnostic};
 use idyllic_lexer::token::Token;
 use idyllic_span::LineIndex;
@@ -29,10 +28,7 @@ pub const STAGES: &[(&str, &str)] = &[
     ("ast", "the parser's syntax tree"),
     ("hir", "names resolved to uniques, definitions grouped by what they use"),
     ("core", "the checker's elaborated Core: implicit arguments, boxes and grades explicit"),
-    ("axcut", "AxCut, the sequent-calculus IR the machine runs, substitutions inferred"),
-    ("inlined", "the same, inlined: what the native compiler is given"),
-    ("llvm", "LLVM IR, from the inlined AxCut"),
-    ("cut", "Cut, the shared back end's upper IR (docs/CUT.md in Meadow)"),
+    ("cut", "Cut, the IR Meadow's runtimes, Glade and Silo, run (docs/CUT.md in Meadow)"),
 ];
 
 /// What [`inspect`] makes of a block.
@@ -128,41 +124,17 @@ pub fn inspect(earlier: &str, entry: &str, opts: &Options, wanted: &[&str]) -> I
     if wants("core") {
         put("core", Ok(core(&checked, &entry_defs, !declares_only)));
     }
-    if !(wants("axcut") || wants("inlined") || wants("llvm") || wants("cut")) {
+    if !wants("cut") {
         return Inspection { stages, errors: None };
     }
+    let _ = (diagnostics, sources, decls);
     // what it uses of Std is lowered with it
     let std_package = crate::stdlib::compiled();
     let linking = pipeline::to_link(&checked, &[&*std_package]);
     if !linking.is_empty() {
         idyllic_typecheck::packages::link(&mut checked, &linking);
     }
-    let mut lowered = pipeline::finish(checked, diagnostics, sources, decls, None, Stage::Lower);
-    let failed = match &lowered.evaluation {
-        Some(pipeline::Evaluation::Failed(why)) => Some(format!("it could not be lowered: {why}")),
-        _ => None,
-    };
-    let text = |p: Option<&idyllic_seq::Program>| match (&failed, p) {
-        (Some(why), _) => Err(why.clone()),
-        (None, Some(p)) => Ok(p.to_string()),
-        (None, None) => Err("it was not lowered".to_string()),
-    };
-    if wants("axcut") {
-        put("axcut", text(lowered.axcut.as_ref()));
-    }
-    if wants("inlined") {
-        put("inlined", text(lowered.native.as_ref()));
-    }
-    if wants("llvm") {
-        put("llvm", text(lowered.native.as_ref()).and_then(|_| {
-            let native = lowered.native.as_ref().expect("lowered");
-            idyllic_llvm::emit(native, lowered.result_kind).map_err(|why| format!("not compiled to native code: {why}"))
-        }));
-    }
-    if wants("cut") {
-        let checked = lowered.checked.as_mut().expect("checked");
-        put("cut", idyllic_cut::lower::lower(checked, "Main").map(|p| p.to_string()).map_err(|why| why.join("\n")));
-    }
+    put("cut", idyllic_cut::lower::lower(&mut checked, "Main").map(|p| p.to_string()).map_err(|why| why.join("\n")));
     Inspection { stages, errors: None }
 }
 

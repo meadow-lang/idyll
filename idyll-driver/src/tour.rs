@@ -126,7 +126,7 @@ pub const STEPS: &[Step] = &[
             "accepts: `:prove {a : Type} -> a -> a` finds `\\x -> x`.",
             "",
             "`:ir` shows what a block of code is at every stage of the compiler,",
-            "from tokens to LLVM and Cut. Run one of these, then `:ir`.",
+            "from tokens to Cut. Run one of these, then `:ir`.",
         ],
         examples: &[ok("showInt (6 * 7)"), ok("\\(x : Int) -> x + 1")],
     },

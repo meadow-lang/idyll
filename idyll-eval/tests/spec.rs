@@ -3,29 +3,31 @@
 //!
 //! What is checked, for every well-typed program in the corpus:
 //!
-//! * the AxCut machine, running the program as lowered, agrees with the
-//!   interpreter;
-//! * so does the machine running it inlined, which is what native code is
-//!   compiled from;
+//! * the program, lowered to Cut and run on Glade, Meadow's bytecode, as
+//!   every Idyll program is run, agrees with the interpreter;
 //! * and the interpreter never gets stuck: a program that type checks has
 //!   somewhere to go at every step.
 //!
-//! Agreement is on the answer as the REPL shows it, and on there being
-//! nothing to show (a function, a type), and on what was printed.  Neither implementation can decide
-//! whether a program stops, so both get a generous budget; a program that
-//! exhausts it in both is taken to diverge, which is agreement too.
+//! Agreement is on the answer as the REPL shows it, on there being nothing
+//! to show (a function, a type), and on what was printed. A program that
+//! ends itself agrees on its exit code, and one stopped by an error of its
+//! own (dividing by zero, a failed test) on being stopped: Glade words the
+//! error its own way. Neither side can decide whether a program stops: the
+//! interpreter gets a generous budget of steps, and a program that exhausts
+//! it is taken to diverge, which whatever Glade does agrees with. A program
+//! that uses random numbers or the clock agrees only on how it ended.
 //!
 //! The corpus is the compiler's test corpus and every REPL session in the
 //! tutorial.  (Not the benchmarks: they are sized for native code, and would
-//! only ever run out of fuel here.)
+//! only ever run out of fuel here.) It needs `meadow` on the path, as
+//! running any Idyll program does.
 
 use idyllic::pipeline::{self, Evaluation, Options, Output, Session};
 use idyllic_diagnostics::OutputStyle;
-use idyllic_seq::machine::{self, MachineError};
 use idyllic_world::World;
 use std::path::Path;
 
-/// Steps the interpreter is given, and statements the machine is.
+/// Steps the interpreter is given.
 const FUEL: u64 = 5_000_000;
 
 const OPTIONS: Options = Options { debug: false, style: OutputStyle::PLAIN, live: false };
@@ -36,8 +38,10 @@ enum Answer {
     Shown(String),
     Opaque,
     Diverges,
-    /// the program ended itself, with `exit` or `fail`: how, as both say it
-    Ended(String),
+    /// the program ended itself, with `exit`, and this code
+    Exited(i32),
+    /// an error of the program's own stopped it
+    Stopped,
     /// what was printed on the way to the answer
     Printed(String, Box<Answer>),
 }
@@ -54,6 +58,23 @@ fn printing(printed: String, answer: Answer) -> Answer {
     }
 }
 
+/// How it ended, without what was printed on the way.
+fn ending(answer: Answer) -> Answer {
+    match answer {
+        Answer::Printed(_, answer) => ending(*answer),
+        other => other,
+    }
+}
+
+/// The same, with what it came to, if a value, left unshown.
+fn unanswered(answer: Answer) -> Answer {
+    match answer {
+        Answer::Shown(_) => Answer::Opaque,
+        Answer::Printed(printed, answer) => Answer::Printed(printed, Box::new(unanswered(*answer))),
+        other => other,
+    }
+}
+
 fn reference(out: &Output) -> Result<Option<Answer>, String> {
     let Some(checked) = &out.checked else { return Ok(None) };
     use idyll_eval::EvalError;
@@ -64,34 +85,14 @@ fn reference(out: &Output) -> Result<Option<Answer>, String> {
         None => Ok(None),
         Some(Ok(o)) => Ok(Some(answer(printed, o.answer))),
         Some(Err(EvalError::OutOfFuel)) => Ok(Some(Answer::Diverges)),
-        Some(Err(e @ (EvalError::Exited(_) | EvalError::TestFailed(_) | EvalError::Stopped(_)))) => {
-            Ok(Some(printing(printed, Answer::Ended(e.to_string()))))
-        }
+        Some(Err(EvalError::Exited(code))) => Ok(Some(printing(printed, Answer::Exited(code)))),
+        Some(Err(EvalError::TestFailed(_) | EvalError::Stopped(_))) => Ok(Some(printing(printed, Answer::Stopped))),
         Some(Err(e)) => Err(e.to_string()),
     }
 }
 
-fn machine(program: &idyllic_seq::Program) -> Result<Answer, String> {
-    let mut world = World::captured();
-    let result = machine::run_in(program, FUEL, &mut world);
-    let printed = world.into_output();
-    match result {
-        Ok(o) if o.memory.leaked + o.memory.miscounted > 0 => Err(o.memory.to_string()),
-        Ok(o) => Ok(answer(printed, o.answer)),
-        Err(MachineError::OutOfFuel) => Ok(Answer::Diverges),
-        Err(
-            e @ (MachineError::Exited(_)
-            | MachineError::TestFailed(_)
-            | MachineError::DivisionByZero
-            | MachineError::OutOfBounds { .. }
-            | MachineError::EmptyArray),
-        ) => Ok(printing(printed, Answer::Ended(e.to_string()))),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-/// Hold one program's output to the specification.  Returns whether there
-/// was anything to compare.
+/// Hold one program's run on Glade to the specification.  Returns whether
+/// there was anything to compare.
 fn check(what: &str, src: &str, out: &Output, failures: &mut Vec<String>) -> bool {
     if out.has_errors() {
         return false;
@@ -100,37 +101,38 @@ fn check(what: &str, src: &str, out: &Output, failures: &mut Vec<String>) -> boo
         Ok(Some(spec)) => spec,
         Ok(None) => return false,
         Err(why) => {
-            failures.push(format!("{what}: the reference interpreter got {why}\n{src}"));
+            failures.push(format!("{what}: the reference interpreter got {why}
+{src}"));
             return true;
         }
     };
-    // the pipeline's own run gives up sooner than we do; re-run to be sure
-    let programs = [("lowered", out.axcut.as_ref()), ("inlined", out.native.as_ref())];
-    for (how, program) in programs {
-        let Some(program) = program else {
-            failures.push(format!("{what}: nothing was {how}\n{src}"));
-            continue;
-        };
-        match machine(program) {
-            Ok(got) if got == spec => {}
-            Ok(got) => failures.push(format!("{what}: the machine ({how}) gave {got:?}, the specification {spec:?}\n{src}")),
-            Err(why) => failures.push(format!("{what}: the machine ({how}) failed: {why}\n{src}")),
-        }
+    if spec == Answer::Diverges {
+        return true;
     }
-    // and what the REPL showed
-    let shown = match &out.evaluation {
+    // a program run for its `main` answers nothing on Glade, which the
+    // interpreter shows as `main`'s `()`
+    let spec = if out.ran_main { unanswered(spec) } else { spec };
+    let ran = match &out.evaluation {
         Some(Evaluation::Value(v)) => answer(out.printed.clone(), Some(v.clone())),
         Some(Evaluation::Opaque) => answer(out.printed.clone(), None),
-        Some(Evaluation::OutOfFuel) => return true,
-        Some(Evaluation::Exited(code)) => printing(out.printed.clone(), Answer::Ended(format!("exited with {code}"))),
-        Some(Evaluation::Stopped(why)) => printing(out.printed.clone(), Answer::Ended(why.clone())),
+        Some(Evaluation::TimedOut(_)) => Answer::Diverges,
+        Some(Evaluation::Exited(code)) => printing(out.printed.clone(), Answer::Exited(*code)),
+        Some(Evaluation::Stopped(_)) => printing(out.printed.clone(), Answer::Stopped),
         other => {
-            failures.push(format!("{what}: the pipeline gave {other:?}\n{src}"));
+            failures.push(format!("{what}: the pipeline gave {other:?}
+{src}"));
             return true;
         }
     };
-    if shown != spec {
-        failures.push(format!("{what}: the REPL showed {shown:?}, the specification {spec:?}\n{src}"));
+    // what a random number or the clock gave cannot be expected again (the
+    // interpreter's world is seeded, Glade's is not): only how it ended can
+    let nondeterministic = out.cut.as_deref().is_some_and(|cut| {
+        ["Random.", "Time.now", "Time.monotonic"].iter().any(|op| cut.contains(&format!("perform idyll:Prelude/{op}")))
+    });
+    let (ran, spec) = if nondeterministic { (ending(ran), ending(spec)) } else { (ran, spec) };
+    if ran != spec {
+        failures.push(format!("{what}: Glade gave {ran:?}, the specification {spec:?}
+{src}"));
     }
     true
 }
@@ -148,6 +150,8 @@ fn report(checked: usize, at_least: usize, failures: Vec<String>) {
 
 #[test]
 fn the_compiler_test_corpus() {
+    // what does not end is stopped sooner than a REPL entry is
+    std::env::set_var("IDYLL_TIMEOUT", "5");
     let (mut checked, mut failures) = (0, Vec::new());
     for corpus in ["handwritten", "exhaustive", "tutorial"] {
         let text = read(&format!("../compiler/idyllic/tests/corpus/{corpus}.txt"));
@@ -168,6 +172,7 @@ mod tutorial_examples;
 /// it is entered into that session, as the tutorial's own test does.
 #[test]
 fn every_tutorial_session() {
+    std::env::set_var("IDYLL_TIMEOUT", "5");
     let (mut checked, mut failures) = (0, Vec::new());
     let mut session = Session::default();
     let mut block = 0;

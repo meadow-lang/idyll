@@ -5,9 +5,10 @@
 //! made the first time a program uses it, out of the array primitives the
 //! runtime does have.
 //!
-//! A mutable array is the runtime's array, used linearly: Cut's arrays are
-//! persistent, so a write copies where Idyll's own back ends write in
-//! place, which changes how fast it is and nothing else.
+//! A mutable array is the runtime's mutable one, written in place (the
+//! `st` primitives): Cut's own arrays are persistent, and a write to one
+//! copies it. A read and a write give the array back, as Idyll's types
+//! say; freezing and thawing copy it, once.
 //!
 //! And `stringByteAt`, whose byte the runtime gives as a `u8`: made an
 //! `Int`.
@@ -25,6 +26,7 @@ impl Lower<'_> {
             }
             Native::MArrayNew => (&[Rep::I64, Rep::Any], true),
             Native::MArrayGet => (&[Rep::Ptr, Rep::I64], true),
+            Native::MArraySet => (&[Rep::Ptr, Rep::I64, Rep::Any], true),
             Native::StringByteAt => (&[Rep::Str, Rep::I64], false),
             _ => return None,
         };
@@ -127,34 +129,11 @@ impl Lower<'_> {
                 let params = vec![Binder { name: l, rep: Rep::Ptr }, Binder { name: acc, rep: Rep::Ptr }];
                 self.defs.push(def(&go, params, &k2, body));
             }
-            // `x`, pushed `n` times
+            // `n` copies of `x`
             Native::MArrayNew => {
-                let go = symbol.child("go");
                 let (count, x) = (self.name("n"), self.name("x"));
-                let body = Statement::Call(go.clone(), vec![var(&d), var(&count), var(&x), Producer::Array(Vec::new())], vec![kv()]);
+                let body = Statement::Prim("stNewArray".into(), vec![var(&count), var(&x)], vec![kv()]);
                 self.defs.push(def(symbol, vec![Binder { name: count, rep: Rep::I64 }, Binder { name: x, rep: elem.clone() }], &k, body));
-                let (k2, left, x, acc, pushed, fewer, u, w) =
-                    (self.name("k"), self.name("n"), self.name("x"), self.name("acc"), self.name("a"), self.name("m"), self.name("u"), self.name("u"));
-                let more = Statement::Prim(
-                    "arrayPush".into(),
-                    vec![var(&acc), var(&x)],
-                    vec![bind(&pushed, Rep::Ptr, Statement::Prim(
-                        "sub".into(),
-                        vec![var(&left), Producer::Int(1)],
-                        vec![bind(&fewer, Rep::I64, Statement::Call(go.clone(), vec![var(&d), var(&fewer), var(&x), var(&pushed)], vec![Consumer::Var(k2.clone())]))],
-                    ))],
-                );
-                let body = Statement::Prim(
-                    "lt".into(),
-                    vec![Producer::Int(0), var(&left)],
-                    vec![bind(&u, Rep::Unit, Statement::Cut(var(&acc), Consumer::Var(k2.clone()))), bind(&w, Rep::Unit, more)],
-                );
-                let params = vec![
-                    Binder { name: left, rep: Rep::I64 },
-                    Binder { name: x, rep: elem.clone() },
-                    Binder { name: acc, rep: Rep::Ptr },
-                ];
-                self.defs.push(def(&go, params, &k2, body));
             }
             // a read gives back the array, with what it read boxed: the
             // prelude's `Pair`, the box the IR's one-element tuple
@@ -162,20 +141,32 @@ impl Lower<'_> {
                 let pair = self.prelude_ctor("Pair")?;
                 let (m, len) = (self.name("m"), self.name("n"));
                 let answer = Producer::Con(pair, vec![Producer::Tuple(vec![var(&len)]), var(&m)]);
-                let body = Statement::Prim("arrayLen".into(), vec![var(&m)], vec![bind(&len, Rep::I64, Statement::Cut(answer, kv()))]);
+                let body = Statement::Prim("stArrayLen".into(), vec![var(&m)], vec![bind(&len, Rep::I64, Statement::Cut(answer, kv()))]);
                 self.defs.push(def(symbol, vec![Binder { name: m, rep: Rep::Ptr }], &k, body));
             }
             Native::MArrayGet => {
                 let pair = self.prelude_ctor("Pair")?;
                 let (m, i, e) = (self.name("m"), self.name("i"), self.name("e"));
                 let answer = Producer::Con(pair, vec![Producer::Tuple(vec![var(&e)]), var(&m)]);
-                let body = Statement::Prim("arrayGet".into(), vec![var(&m), var(&i)], vec![bind(&e, elem.clone(), Statement::Cut(answer, kv()))]);
+                let body = Statement::Prim("stGetArray".into(), vec![var(&m), var(&i)], vec![bind(&e, elem.clone(), Statement::Cut(answer, kv()))]);
                 self.defs.push(def(symbol, vec![Binder { name: m, rep: Rep::Ptr }, Binder { name: i, rep: Rep::I64 }], &k, body));
             }
-            // the same array, under the other type
+            // written in place, and given back
+            Native::MArraySet => {
+                let (m, i, x, u) = (self.name("m"), self.name("i"), self.name("x"), self.name("u"));
+                let body = Statement::Prim(
+                    "stSetArray".into(),
+                    vec![var(&m), var(&i), var(&x)],
+                    vec![bind(&u, Rep::Unit, Statement::Cut(var(&m), kv()))],
+                );
+                let params = vec![Binder { name: m, rep: Rep::Ptr }, Binder { name: i, rep: Rep::I64 }, Binder { name: x, rep: elem.clone() }];
+                self.defs.push(def(symbol, params, &k, body));
+            }
+            // a copy, under the other type
             Native::MArrayFreeze | Native::MArrayThaw => {
                 let m = self.name("m");
-                let body = Statement::Cut(var(&m), kv());
+                let op = if n == Native::MArrayFreeze { "stFreeze" } else { "stThaw" };
+                let body = Statement::Prim(op.into(), vec![var(&m)], vec![kv()]);
                 self.defs.push(def(symbol, vec![Binder { name: m, rep: Rep::Ptr }], &k, body));
             }
             Native::StringByteAt => self.make_byte_at(symbol),

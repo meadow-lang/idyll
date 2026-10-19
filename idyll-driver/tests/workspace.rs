@@ -44,7 +44,7 @@ Util = { path = "libs/util" }
 Text = { path = "libs/text" }
 
 [profile.release]
-backend = "machine"
+backend = "glade"
 "#,
     );
     write(&root.join("libs/util/Idyll.toml"), "[package]\nname = \"Util\"\nversion.workspace = true\n");
@@ -230,14 +230,14 @@ fn every_member_builds_with_the_root_profiles() {
     write(
         &root.join("app/Idyll.toml"),
         "[package]\nname = \"App\"\n\n[dependencies]\nUtil = { workspace = true }\n\
-         Text = { workspace = true }\n\n[profile.release]\nbackend = \"native\"\n",
+         Text = { workspace = true }\n\n[profile.release]\nbackend = \"silo\"\n",
     );
     let resolved = Resolved::resolve(Profile::Release, &root.join("app"), ProfileConfig::default());
-    assert_eq!(resolved.backend, Backend::Machine, "the root's");
+    assert_eq!(resolved.backend, Backend::Glade, "the root's");
     assert!(resolved.backend_named, "a member's own is ignored");
 
-    // On the machine, as the root says, whatever the member says -- so no
-    // clang is needed for this to run.
+    // On Glade, as the root says, whatever the member says -- so no Silo
+    // build is needed for this to run.
     let (ok, output) = idyll(&root, &["run", "-p", "App", "--release"]);
     assert!(ok, "{output}");
     assert!(output.contains(RAN), "{output}");

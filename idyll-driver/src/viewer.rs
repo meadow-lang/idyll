@@ -2,8 +2,7 @@
 //!
 //! A pop-up like the finder's, with a tab for each stage of the compiler
 //! (see `idyllic::inspect`): what the block of code is as tokens, as a syntax
-//! tree, as HIR, as Core, as AxCut (lowered, then inlined), as LLVM IR, and
-//! as Cut, the shared back end's IR.  `←`/`→` (or `Tab`, or a stage's number)
+//! tree, as HIR, as Core, and as Cut, the IR Meadow's runtimes run.  `←`/`→` (or `Tab`, or a stage's number)
 //! move between them, and `↑`/`↓`, `PgUp`/`PgDn`, `Home`/`End` scroll.
 //!
 //! [`Viewer`] takes keys and draws frames and knows nothing of a terminal,

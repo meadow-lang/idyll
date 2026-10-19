@@ -193,7 +193,8 @@ uint32_t Sum_sum(uint32_t len, uint32_t *b) { return Sum_go(len, b, 0U, 0U); }
 The restrictions on `@extract` are what make this always possible. No
 closures means no heap-allocated environments; monomorphic once erased means
 no run-time descriptors; machine integers means no boxed numbers. The back
-end is small, and `idyllic-llvm` already covers some of the same ground.
+end is small, and the retired `idyllic-llvm` (in git history before
+2026-10-19) already covered some of the same ground.
 
 ## How it meets the rest of Idyll
 

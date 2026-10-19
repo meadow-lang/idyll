@@ -290,9 +290,11 @@ fn a_native_with_no_primitive_is_a_def_of_the_programs_own() {
     // a list that is not written out is pushed, element by element
     let text = lowered("f : List Int -> Array Int\nf xs = arrayFromList xs\n\nf (1 :: Nil)\n");
     has(&text, "def idyll:Main/\"#arrayFromList\".go <'a_N = d_N> (d_N: desc, l_N: ptr, acc_N: ptr; k_N: ptr) =");
-    // a mutable array is the runtime's, and a read gives it back with what
-    // it read boxed
+    // a mutable array is the runtime's mutable one, written in place -- not
+    // a persistent array, which a write copies -- and given back by a write
     let text = lowered("Std.Collections.MArray.freeze (Std.Collections.MArray.write (Std.Collections.MArray.new 2 0) 1 5)\n");
-    has(&text, "def idyll:Main/\"#marrayNew\"");
-    has(&text, "prim arraySet(");
+    has(&text, "prim stNewArray(n_N, x_N; k_N)");
+    has(&text, "prim stSetArray(m_N, i_N, x_N; μ̃ u_N: unit.\n    <m_N | k_N>)");
+    has(&text, "prim stFreeze(m_N; k_N)");
+    assert!(!text.contains("prim arraySet("), "{text}");
 }

@@ -577,7 +577,10 @@ field, one per array type, the prelude's `showInt` for integers, and
 `#escape` for strings, and for a character the same escape between single
 quotes. A native the runtime has no primitive for (`arrayToList`, the
 mutable arrays) becomes a `def` of the program's own, built of the array
-primitives it does have. The string natives are the runtime's own
+primitives it does have. A mutable array is the runtime's own, written in
+place (`stNewArray`, `stSetArray`, `stFreeze`, ...), not Cut's persistent
+array, which a write copies: a read or a write gives it back, as Idyll's
+types say. The string natives are the runtime's own
 primitives, of the same names (`stringSlice`, `stringToChars`,
 `charCode`, ...), but for `stringByteAt`, whose byte the runtime gives as
 a `u8`: its `def` makes it an `Int` with `toInt`. A character is Cut's

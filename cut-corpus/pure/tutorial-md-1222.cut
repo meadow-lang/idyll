@@ -2,9 +2,14 @@ cut 0
 entry idyll:Main/"#entry"
 answer str
 
+data idyll:Prelude/List <'a0> { Nil; "::"('a0, ptr) }
+
 data idyll:Prelude/DigitFuel { Spent; More(ptr) }
 
-data idyll:Main/Point { Point(i64, i64) }
+roles {
+  nil = idyll:Prelude/List.Nil
+  cons = idyll:Prelude/List."::"
+}
 
 val idyll:Prelude/digitFuel : ptr =
   <idyll:Prelude/DigitFuel.Spent | μ̃ v_20: ptr.
@@ -85,14 +90,19 @@ def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) =
               idyll:Prelude/digitString(v_71; k_63)))))
   }>
 
-def idyll:Main/"#show Point" (x_77: ptr; k_78: ptr) =
-  <x_77 | case {
-    idyll:Main/Point.Point(f_79: i64, f_80: i64) =>
-      idyll:Prelude/showInt(f_79; μ̃ s_81: str.
-        idyll:Prelude/showInt(f_80; μ̃ s_82: str.
-          prim concatStrings(["Point", " ", s_81, " ", s_82]; k_78)))
+def idyll:Main/sum (xs_75: ptr; k_76: ptr) =
+  <xs_75 | case {
+    idyll:Prelude/List.Nil =>
+      <0 | k_76>;
+    idyll:Prelude/List."::"(y_77: i64, ys_78: ptr) =>
+      idyll:Main/sum(ys_78; μ̃ v_79: i64.
+        prim add(y_77, v_79; k_76))
   }>
 
-def idyll:Main/"#entry" (; k_75: ptr) =
-  <idyll:Main/Point.Point(1, 2) | μ̃ answer_76: ptr.
-    idyll:Main/"#show Point"(answer_76; k_75)>
+def idyll:Main/"#entry" (; k_81: ptr) =
+  <idyll:Prelude/List.Nil | μ̃ v_86: ptr.
+    <idyll:Prelude/List."::"(3, v_86) | μ̃ v_85: ptr.
+      <idyll:Prelude/List."::"(2, v_85) | μ̃ v_84: ptr.
+        <idyll:Prelude/List."::"(1, v_84) | μ̃ v_83: ptr.
+          idyll:Main/sum(v_83; μ̃ answer_82: i64.
+            idyll:Prelude/showInt(answer_82; k_81))>>>>

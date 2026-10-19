@@ -119,6 +119,11 @@ impl Typer {
         let _ = self.chk.import(&ctx, deps);
     }
 
+    /// Whether the constant `u` has a type here.
+    pub fn knows(&self, u: usize) -> bool {
+        self.chk.constants.contains_key(&u)
+    }
+
     /// Where an elaborated program starts: the builtins, then the
     /// primitives.
     pub fn scope(&self) -> Scope {

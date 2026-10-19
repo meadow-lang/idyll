@@ -29,14 +29,14 @@ by a newline, then its `answer:` text with no newline after it; and its exit
 status is `exit:`. That is what `meadow-cut`'s runner gives: what the program
 wrote, then the `answer str` exactly as it is.
 
-The answers are those of Idyll's AxCut machine, which
-`idyll-eval/tests/spec.rs` holds to the reference interpreter's.
+The answers are the reference interpreter's, Idyll's specification
+(`idyll-eval/`), so that no runtime is checked against itself.
 
 A program that does not lower yet is listed in `not-lowered.txt`, with why.
 Today there are none.
 
-Generated; don't edit by hand. To regenerate, from `compiler/`:
+Generated; don't edit by hand. To regenerate, from `idyll-eval/`:
 
 ```sh
-cargo run --release -p idyllic --example cut_corpus -- ../cut-corpus
+cargo run --release --example cut_corpus -- ../cut-corpus
 ```

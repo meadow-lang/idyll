@@ -98,7 +98,8 @@ fn a_chain_of_packages_links_in_order() {
     );
     assert!(out.diagnostics.is_empty(), "{:#?}", diags(&out));
     assert_eq!(out.printed, "40\nhello\n");
-    assert!(matches!(out.evaluation, Some(Evaluation::Value(_))), "{:?}", out.evaluation);
+    // it ran to the end: a `main` run has no answer to show
+    assert_eq!(out.evaluation, Some(Evaluation::Opaque));
 }
 
 #[test]

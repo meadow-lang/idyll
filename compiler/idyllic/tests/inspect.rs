@@ -51,8 +51,6 @@ fn a_block_of_declarations_is_lowered_with_them_kept() {
     // nothing calls `double`, and it is lowered all the same
     let cut = stage("", "double : Int -> Int\ndouble n = n * 2\n", "cut");
     assert!(cut.contains("def idyll:Main/double (n_") && cut.contains("prim mul(n_"), "{cut}");
-    let axcut = stage("", "double : Int -> Int\ndouble n = n * 2\n", "axcut");
-    assert!(axcut.contains("extern mul"), "{axcut}");
 }
 
 #[test]
@@ -66,8 +64,6 @@ fn the_sessions_declarations_are_in_scope() {
     assert!(cut.contains("def idyll:Main/double"), "{cut}");
     assert!(cut.contains("def idyll:Prelude/showInt"), "{cut}");
     assert!(!cut.contains("putStrLn"), "{cut}");
-    let llvm = stage(earlier, "double 21", "llvm");
-    assert!(llvm.contains("define"), "{llvm}");
 }
 
 #[test]

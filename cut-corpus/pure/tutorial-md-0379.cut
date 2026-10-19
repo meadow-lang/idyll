@@ -1,6 +1,6 @@
 cut 0
 entry idyll:Main/"#entry"
-answer none
+answer str
 
 data idyll:Prelude/DigitFuel { Spent; More(ptr) }
 
@@ -83,5 +83,94 @@ def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) =
               idyll:Prelude/digitString(v_71; k_63)))))
   }>
 
+def idyll:Main/"#escape" (s_87: str; k_89: ptr) =
+  prim stringByteLength(s_87; μ̃ n_88: i64.
+    idyll:Main/"#escape".go(s_87, 0, 0, n_88, ""; k_89))
+
+def idyll:Main/"#escape".go (s_90: str, start_91: i64, i_92: i64, n_93: i64, acc_94: str; k_95: ptr) =
+  prim eq(i_92, n_93; μ̃ u_105: unit.
+    prim stringByteAt(s_90, i_92; μ̃ b_96: i64.
+      idyll:Main/"#escape".byte(b_96; μ̃ e_97: str.
+        prim add(i_92, 1; μ̃ j_99: i64.
+          prim stringByteLength(e_97; μ̃ len_98: i64.
+            prim eq(len_98, 0; μ̃ u_103: unit.
+              prim stringSlice(s_90, start_91, i_92; μ̃ run_100: str.
+                prim concatStrings([acc_94, run_100, e_97]; μ̃ acc_101: str.
+                  idyll:Main/"#escape".go(s_90, j_99, j_99, n_93, acc_101; k_95))), μ̃ u_104: unit.
+              idyll:Main/"#escape".go(s_90, start_91, j_99, n_93, acc_94; k_95)))))), μ̃ u_106: unit.
+    prim stringSlice(s_90, start_91, n_93; μ̃ run_102: str.
+      prim concatStrings([acc_94, run_102]; k_95)))
+
+def idyll:Main/"#escape".byte (b_107: i64; k_108: ptr) =
+  prim eq(b_107, 34; μ̃ u_131: unit.
+    prim eq(b_107, 92; μ̃ u_129: unit.
+      prim eq(b_107, 10; μ̃ u_127: unit.
+        prim eq(b_107, 9; μ̃ u_125: unit.
+          prim eq(b_107, 13; μ̃ u_123: unit.
+            prim eq(b_107, 0; μ̃ u_121: unit.
+              prim eq(b_107, 127; μ̃ u_119: unit.
+                prim lt(b_107, 32; μ̃ u_117: unit.
+                  <"" | k_108>, μ̃ u_118: unit.
+                  prim div(b_107, 16; μ̃ hi_109: i64.
+                    prim mod(b_107, 16; μ̃ lo_110: i64.
+                      prim add(hi_109, 1; μ̃ hi_111: i64.
+                        prim add(lo_110, 1; μ̃ lo_112: i64.
+                          prim stringSlice("0123456789abcdef", hi_109, hi_111; μ̃ d_113: str.
+                            prim stringSlice("0123456789abcdef", lo_110, lo_112; μ̃ d_114: str.
+                              prim eq(hi_109, 0; μ̃ u_115: unit.
+                                prim concatStrings(["\\u{", d_113, d_114, "}"]; k_108), μ̃ u_116: unit.
+                                prim concatStrings(["\\u{", d_114, "}"]; k_108))))))))), μ̃ u_120: unit.
+                prim div(b_107, 16; μ̃ hi_109: i64.
+                  prim mod(b_107, 16; μ̃ lo_110: i64.
+                    prim add(hi_109, 1; μ̃ hi_111: i64.
+                      prim add(lo_110, 1; μ̃ lo_112: i64.
+                        prim stringSlice("0123456789abcdef", hi_109, hi_111; μ̃ d_113: str.
+                          prim stringSlice("0123456789abcdef", lo_110, lo_112; μ̃ d_114: str.
+                            prim eq(hi_109, 0; μ̃ u_115: unit.
+                              prim concatStrings(["\\u{", d_113, d_114, "}"]; k_108), μ̃ u_116: unit.
+                              prim concatStrings(["\\u{", d_114, "}"]; k_108))))))))), μ̃ u_122: unit.
+              <"\\0" | k_108>), μ̃ u_124: unit.
+            <"\\r" | k_108>), μ̃ u_126: unit.
+          <"\\t" | k_108>), μ̃ u_128: unit.
+        <"\\n" | k_108>), μ̃ u_130: unit.
+      <"\\\\" | k_108>), μ̃ u_132: unit.
+    <"\\\"" | k_108>)
+
+def idyll:Main/"#items Array Char" (xs_77: ptr, i_78: i64, n_79: i64; k_80: ptr) =
+  prim arrayGet(xs_77, i_78; μ̃ e_81: char.
+    prim charCode(e_81; μ̃ code_133: i64.
+      prim eq(code_133, 39; μ̃ u_138: unit.
+        prim eq(code_133, 34; μ̃ u_136: unit.
+          prim charsToString([e_81]; μ̃ s_134: str.
+            idyll:Main/"#escape"(s_134; μ̃ e_135: str.
+              prim concatStrings(["'", e_135, "'"]; μ̃ s_82: str.
+                prim add(i_78, 1; μ̃ j_83: i64.
+                  prim eq(j_83, n_79; μ̃ u_85: unit.
+                    idyll:Main/"#items Array Char"(xs_77, j_83, n_79; μ̃ s_84: str.
+                      prim concatStrings([s_82, "; ", s_84]; k_80)), μ̃ u_86: unit.
+                    <s_82 | k_80>))))), μ̃ u_137: unit.
+          <"'\"'" | μ̃ s_82: str.
+            prim add(i_78, 1; μ̃ j_83: i64.
+              prim eq(j_83, n_79; μ̃ u_85: unit.
+                idyll:Main/"#items Array Char"(xs_77, j_83, n_79; μ̃ s_84: str.
+                  prim concatStrings([s_82, "; ", s_84]; k_80)), μ̃ u_86: unit.
+                <s_82 | k_80>))>), μ̃ u_139: unit.
+        <"'\\''" | μ̃ s_82: str.
+          prim add(i_78, 1; μ̃ j_83: i64.
+            prim eq(j_83, n_79; μ̃ u_85: unit.
+              idyll:Main/"#items Array Char"(xs_77, j_83, n_79; μ̃ s_84: str.
+                prim concatStrings([s_82, "; ", s_84]; k_80)), μ̃ u_86: unit.
+              <s_82 | k_80>))>)))
+
+def idyll:Main/"#show Array Char" (xs_140: ptr; k_142: ptr) =
+  prim arrayLen(xs_140; μ̃ n_141: i64.
+    prim eq(n_141, 0; μ̃ u_146: unit.
+      idyll:Main/"#items Array Char"(xs_140, 0, n_141; μ̃ s_143: str.
+        prim eq(n_141, 1; μ̃ u_144: unit.
+          prim concatStrings(["#[", s_143, "]"]; k_142), μ̃ u_145: unit.
+          prim concatStrings(["#[", s_143, ";]"]; k_142))), μ̃ u_147: unit.
+      <"#[;]" | k_142>))
+
 def idyll:Main/"#entry" (; k_75: ptr) =
-  <unit | k_75>
+  prim stringToChars("héllo"; μ̃ answer_76: ptr.
+    idyll:Main/"#show Array Char"(answer_76; k_75))

@@ -191,7 +191,7 @@ fn arrays() {
     assert_eq!(value(&format!("{a}xs : Array Int\nxs = #[10; 20; 30]\n\nStd.Collections.List.map (\\(i : Std.Num.Fin.Fin (Std.Collections.Array.size xs)) -> at xs i) (indices xs)")), "10 :: 20 :: 30 :: Nil");
     // an index outside an array stops the program, as dividing by zero does
     let out = pipeline::run("arrayGet #[1; 2] 5", &OPTS);
-    assert_eq!(out.evaluation, Some(Evaluation::Stopped("index 5 is out of bounds for an array of length 2".into())));
+    assert_eq!(out.evaluation, Some(Evaluation::Stopped("arrayGet: index 5 out of bounds (len 2)".into())));
 }
 
 #[test]
@@ -220,6 +220,16 @@ fn mutable_arrays() {
     assert_eq!(value(&format!("{m}case read (new 2 21) 1 of\n  (b, m2) -> let [x] = b in (x + x, freeze m2)")), "(42, #[21; 21])");
     // and, in a linear module, dropping the array is an error
     assert!(!rejected(&format!("@linear\n\n{m}case read (new 2 21) 1 of\n  (b, m2) -> let [x] = b in x + x")).is_empty());
+}
+
+#[test]
+fn a_mutable_array_is_written_in_place() {
+    // a million writes to an array of a million: a write that copied the
+    // array would take hours, and the run would time out
+    let m = "use Std.Collections.MArray (MArray, new, write, freeze)\n\n\
+             fill : (m : MArray Int) -> (i : Int) -> MArray Int ! Div\n\
+             fill m i = if i == 1000000 then m else fill (write m i i) (i + 1)\n\n";
+    assert_eq!(value(&format!("{m}arrayGet (freeze (fill (new 1000000 0) 0)) 999999")), "999999");
 }
 
 #[test]
@@ -273,7 +283,7 @@ fn characters_are_their_own_type() {
     assert_eq!(value(&format!("{kind}(kind 'a', kind '\\n', kind 'z')")), "(\"a\", \"newline\", \"other\")");
     // and a code point that is no character stops the program
     let out = pipeline::run("charFromCode 55296", &OPTS);
-    assert_eq!(out.evaluation, Some(Evaluation::Stopped("55296 is not a Unicode scalar value".into())));
+    assert_eq!(out.evaluation, Some(Evaluation::Stopped("charFromCode: 55296 is not a Unicode scalar value".into())));
 }
 
 #[test]

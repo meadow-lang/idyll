@@ -2,10 +2,9 @@
 //!
 //! This is the specification of what an Idyll program *computes*.  It is
 //! meant to be read, and to be obviously right, rather than to be fast: the
-//! compiler lowers the same Core to AxCut, runs it on the paper's abstract
-//! machine (`idyllic_seq::machine`), and compiles it to native code, and all
-//! of that has to agree with what happens here.  `tests/spec.rs` holds it to
-//! that.
+//! compiler lowers the same Core to Cut, which Meadow's runtimes run --
+//! Glade, its bytecode, and Silo, native code -- and what they compute has
+//! to agree with what happens here.  `tests/spec.rs` holds Glade to that.
 //!
 //! # The machine
 //!

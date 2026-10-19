@@ -2,8 +2,8 @@
 //! ([`package`], [`workspace`]), dependencies fetched from git and pinned in
 //! `idyll.lock` ([`git`], [`lock`], [`semver`]), the package graph compiled in
 //! order with each unchanged package read back from the last build
-//! ([`pipeline`], [`incremental`]), and programs run on the AxCut machine or
-//! compiled to native code ([`native`]).
+//! ([`pipeline`], [`incremental`]), and programs lowered to Cut and run on
+//! Meadow's runtimes: Glade, or Silo for native code ([`native`]).
 //!
 //! The REPL's searching is here too: [`find`] (by name, or by type, as
 //! Hoogle does), [`prove`] (a term of a type), and the pop-ups that show
