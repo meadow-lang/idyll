@@ -20,7 +20,6 @@
 use Lingua (pass!)
 use Idyll.Rename
 use Idyll.Rename (Hir!)
-use Idyll.Hir (Module)
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
 use Std.Collections.HashMap (HashMap)
@@ -28,7 +27,7 @@ use Std.Maybe as M
 use Std.Maybe.Maybe.*
 
 -- A package's definitions put in order, for the checker.
-@pub fun sccModule (r : Renamed) : Module ! { Mut | e } = toData { r | hir = regroup r.hir }
+@pub fun sccModule (r : Renamed) : Renamed ! { Mut | e } = { r | hir = regroup r.hir }
 
 pass! {
   pub regroup : Hir -> Hir

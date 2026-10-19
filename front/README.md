@@ -21,8 +21,8 @@ does, how it is checked, and why it is built the way it is.
 | Grammar | `Syntax.mw` | done: a Lingua `syntax!` grammar |
 | What the tree means | `Surface.mw`: a `lang!`, written from the tree by `pass!`es | done: agrees with the Rust parser on every program; errors drawn at the nodes they are about |
 | Renaming | `Rename.mw` (a `pass!` from `Surface` to `Hir`, a `lang!`), `Hir.mw` | done: packages of modules, after the prelude and their dependencies |
-| Dependency order | `Scc.mw` | done |
-| Types | `Check.mw`, `Elab.mw`, `Matching.mw`, `Termination.mw`, `Handlers.mw`, `Sequences.mw`, `Decl.mw`, `Positivity.mw`, `Ctx.mw`, `Usage.mw`, and the machinery under them | done: agrees on every program that gets this far (431, Std's users among them), and on the whole Std package (475 declarations) |
+| Dependency order | `Scc.mw` (a `pass!` from `Hir` to `Hir`) | done |
+| Types | `Elab.mw` (a `pass!` from `Hir` to `Elaborated`, a `lang!`), `Check.mw`, `Matching.mw`, `Termination.mw`, `Handlers.mw`, `Sequences.mw`, `Decl.mw`, `Positivity.mw`, `Ctx.mw`, `Usage.mw`, and the machinery under them | done: agrees on every program that gets this far (431, Std's users among them), and on the whole Std package (475 declarations) |
 | The CEK machine | `Cek.mw`, `World.mw` | done: the same answer, in the same number of steps, as `idyll-eval` on every program that runs (211) |
 | Cut | `Lower.mw`, `Typer.mw`, `Prune.mw`, `CutAst.mw`, `Emit.mw` | done: the same Cut as `idyllic-cut` on every program that lowers (212) |
 
@@ -261,9 +261,9 @@ literals, ...) it copies.
 
 What is around the pass is ordinary code that hands each term and pattern
 to it: a package's modules, their `use`s, and each module's declarations,
-bound and paired. The type checker still reads HIR as data (`Hir.mw`'s
-types); `moduleOf` turns the tables into it, until the checker reads the
-tables itself.
+bound and paired. What it answers is the package's tables, with what is
+known beside them (`Renamed`: its `main`, the uniques each package named
+its things with, ...). `dumped` writes the HIR out for the rename test.
 
 - Each module is a namespace of its own (`src/Collections/List.idl` is
   `Collections.List`, `Lib.idl` the root), whose names others reach with a
@@ -301,7 +301,9 @@ win. No program of the corpus depends on the difference yet.
 
 ### Scc
 
-`Scc.mw` is `compiler/idyllic-scc`. The renamer makes every `let`, and the
+`Scc.mw` is `compiler/idyllic-scc`, as a pass from `Hir` to `Hir`, `regroup`,
+with two cases: the module and a `let`, the two places groups are. It
+copies everything else. The renamer makes every `let`, and the
 top level, one recursive group, which is the safe guess. This pass makes the
 groups the definitions' strongly connected components (Tarjan's algorithm,
 which finds each after the ones it uses): a definition that does not reach
@@ -317,11 +319,36 @@ data type's kind may mention only the types before it.
 The type checker is `compiler/idyllic-typecheck` ported, in slices, each
 checked against the Rust checker on every program.
 
-**How a definition is checked.** Bidirectionally (`Elab.mw`): `infer` works
-a term's type out, and `check` is told it. Both turn the term into Core, the
-fully explicit language of `Core.mw`, and both give back the term's `Usage`
-(`Usage.mw`): how often it uses each variable, and the effects of what it
-calls. The rules are Granule's, read bottom-up:
+**How a definition is checked.** Bidirectionally, by a pass,
+`elab : Hir -> Elaborated with cx` (`Elab.mw`), with a case for each of
+`Hir`'s expressions. The context `cx` carries the checker's state, the
+variables in scope, and a goal:
+
+- with no goal, a case infers the term's type (`infer`);
+- with one, it checks the term against it (`check`).
+
+Every case first does what checking always does (`within`). A goal that
+failed already is not looked at again. Where an implicit function is wanted,
+its argument is bound there, and the term is checked against what is under
+it. Then the case does its own work. A lambda, a box, a grade literal, a
+`case` or a handler is told its type and uses it. Any other term is
+inferred, and the type found must be a subtype of the goal (`fallback`).
+
+Most cases take their children `raw` and elaborate them where they say, in
+the context they give them. What a child is decides how: `()` where a type
+is wanted, an omitted type in a signature, `a + b` where a grade is. The
+matcher, the handlers and the declarations read the same tables. Each
+clause's right-hand side is handed back to the pass at the leaf of the case
+tree it wins.
+
+A case answers the term in Core, the fully explicit language of `Core.mw`,
+with its type and its `Usage` (`Usage.mw`): how often the term uses each
+variable, and the effects of what it calls. The checker computes with Core
+as data, since normalisation by evaluation reads it, makes values of it and
+quotes them back in the middle of checking. What it hands on is
+`Elaborated` (`Elaborated.mw`), the same Core as a Lingua language: the
+pass's target. The whole module is checked inside one `runSt` whose state
+is `Elaborated`'s tables. The usage rules are Granule's, read bottom-up:
 
 - a variable uses itself once, and the uses of two subterms add;
 - `f e`, where `f : (x : [r] a) -> b`, uses what `e` uses `r` times over,
@@ -368,8 +395,9 @@ another type it may occur only where that type is positive itself (a rose
 tree's `List (Rose a)`), which is decided for each type's parameters in
 turn.
 
-**The module** (`Check.mw`): the declarations, the definitions in the order
-`Scc.mw` found, the expression; then the holes are reported, the kept
+**The module** (`Check.mw`) is read off the renamed program's tables: the
+declarations, then the definitions in the order `Scc.mw` found, then the
+expression; then the holes are reported, the kept
 questions asked a last time, unconstrained row variables closed to no
 effects, and any metavariable nothing solved reported. The context
 (`Ctx.mw`) starts with the builtin types and the primitive operations at the

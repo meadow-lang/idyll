@@ -39,7 +39,7 @@ use Idyll.Surface
 use Idyll.Surface (Surface!)
 use Idyll.Hir (Icit, Literal, Visibility)
 use Std.St (runSt)
-use Idyll.Hir (Ident, Pattern, Bind, Group, CtorShape, CtorDecl, DataDecl, OpDecl, EffectDecl, NativeDecl, HandleClause, Module)
+use Idyll.Hir (Ident)
 use Idyll.Hir as H
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
@@ -1430,121 +1430,148 @@ fun renamePackageAt out (r : Rn) (pkg : Int) (first : Int) (progs : [Program]) (
 @pub fun renameModule (prog : SurfaceProgram) (prelude : SurfaceProgram) : (Renamed, [String]) ! { Mut | e } =
   renamePackage package [([], prog)] prelude []
 
--- --- the checker's data --------------------------------------------------------------
+-- --- writing ---------------------------------------------------------------------
 
--- The renamed tables as the data the checker still reads (`Hir`'s types),
--- until it reads the tables themselves.
-@pub fun toData (r : Renamed) : Module =
-  let m = moduleOf (hirArena r.hir) (hirRoot r.hir) in
-  {
-    m |
-    main = r.main,
-    first = r.first,
-    terminating = r.terminating,
-    linearBody = r.linearBody,
-    qualifiers = r.qualifiers,
-    ranges = r.ranges
-  }
+-- `dumped` writes a package's own part as the rename test compares it with
+-- the Rust renamer's HIR: a line for each declaration, every name as
+-- `text@unique`. The Rust side (`compiler/idyllic/tests/front.rs`) writes
+-- its HIR the same way, and the test renumbers the uniques of both in the
+-- order they first appear, so that what is compared is which use is of
+-- which binder, not how the two renamers count.
 
-fun moduleOf (a : HirArena) (root : HirModule) : Module =
-  Module {
-    datas = V.map (dataOf a) (hirModuleDatas a root),
-    effects = V.map (effectOf a) (hirModuleEffects a root),
-    natives = V.map (\n -> NativeDecl.NativeDecl (identOf a (hirNativeName a n)) (termOf a (hirNativeTy a n))) (hirModuleNatives a root),
-    groups = V.map (groupOf a) (hirModuleGroups a root),
-    body = M.map (termOf a) (hirModuleBody a root),
-    main = None,
-    first = 0,
-    terminating = [],
-    linearBody = False,
-    qualifiers = Hm.empty,
-    ranges = []
-  }
+fun sx (parts : [String]) : String = "(" ++ S.join " " parts ++ ")"
 
-fun identOf (a : HirArena) (x : HirIdent) : Ident = Ident.Ident (hirIdentUniques a x) (hirIdentText a x)
+fun opt (f : a -> String) (m : Maybe a) : String =
+  match m with
+  | Just x -> f x
+  | None -> "-"
 
-fun gradeOf (a : HirArena) (g : HirGrade) : H.Grade = H.Grade.Grade (termOf a (hirGradeUses a g)) (M.map (termOf a) (hirGradeInType a g))
+fun flag (yes : String) (b : Bool) : String = if b then yes else "-"
 
-fun termOf (a : HirArena) (e : HirExpr) : H.Term =
-  let go = termOf a in
-  match (a, e) with
-  | HirExprType -> H.Term.Type
-  | HirExprVar x -> H.Term.Var (identOf a x)
-  | HirExprLit l -> H.Term.Lit l
-  | HirExprPi x icit g dom cod -> H.Term.Pi (M.map (identOf a) x) icit (M.map (gradeOf a) g) (go dom) (go cod)
-  | HirExprLam x g ty body -> H.Term.Lam (identOf a x) (M.map (gradeOf a) g) (M.map go ty) (go body)
-  | HirExprApp f x -> H.Term.App (go f) (go x)
-  | HirExprAnn x ty -> H.Term.Ann (go x) (go ty)
-  | HirExprHole -> H.Term.Hole
-  | HirExprBox x -> H.Term.BoxIntro (go x)
-  | HirExprInf -> H.Term.Inf
-  | HirExprRange l h -> H.Term.Range (go l) (go h)
-  | HirExprLetBox x v body -> H.Term.LetBox (identOf a x) (go v) (go body)
-  | HirExprLet gs body -> H.Term.Let (V.map (groupOf a) gs) (go body)
-  | HirExprCase x cs -> H.Term.Case (go x) (V.map (clauseOf a) cs)
-  | HirExprMatch cs -> H.Term.Match (V.map (clauseOf a) cs)
-  | HirExprOmitted -> H.Term.Omitted
-  | HirExprEff b r -> H.Term.Eff (go b) (go r)
-  | HirExprRow ls tail -> H.Term.Row (V.map go ls) (M.map go tail)
+fun identText (a : HirArena) (x : HirIdent) : String = H.ident (identOf a x)
+
+fun gradeText (a : HirArena) (g : HirGrade) : String = sx ["grade", termText a (hirGradeUses a g), opt (termText a) (hirGradeInType a g)]
+
+fun termText (a : HirArena) (t : HirExpr) : String =
+  let go = termText a in
+  let id = identText a in
+  match (a, t) with
+  | HirExprType -> "Type"
+  | HirExprVar x -> id x
+  | HirExprLit l -> H.literal l
+  | HirExprPi x icit g dom cod ->
+      sx ["pi", opt id x, (match icit with | Icit.Explicit -> "e" | Icit.Implicit -> "i"), opt (gradeText a) g, go dom, go cod]
+  | HirExprLam x g ty body -> sx ["lam", id x, opt (gradeText a) g, opt go ty, go body]
+  | HirExprApp f x -> sx ["app", go f, go x]
+  | HirExprAnn x ty -> sx ["ann", go x, go ty]
+  | HirExprHole -> "_"
+  | HirExprBox x -> sx ["box", go x]
+  | HirExprInf -> "inf"
+  | HirExprRange l h -> sx ["range", go l, go h]
+  | HirExprLetBox x v body -> sx ["letbox", id x, go v, go body]
+  | HirExprLet gs body -> sx ["let", sx (V.map (groupText a) gs), go body]
+  | HirExprCase x cs -> sx (V.append ["case", go x] (V.map (clauseText a) cs))
+  | HirExprMatch cs -> sx (V.append ["match"] (V.map (clauseText a) cs))
+  | HirExprOmitted -> "?"
+  | HirExprEff b r -> sx ["eff", go b, go r]
+  | HirExprRow ls tail -> sx ["row", sx (V.map go ls), opt go tail]
   | HirExprHandle x cs ->
-      H.Term.Handle
-        (go x)
-        (V.map (\c -> HandleClause.HandleClause (M.map (identOf a) (hirHandleClauseOp a c)) (V.map (identOf a) (hirHandleClauseParams a c)) (go (hirHandleClauseBody a c))) cs)
-  | HirExprSeqNil -> H.Term.SeqNil
-  | HirExprSeqCons h t -> H.Term.SeqCons (go h) (go t)
-  | HirExprArray es -> H.Term.ArrayLit (V.map go es)
+      sx (V.append ["handle", go x] (V.map (\c -> sx ["clause", opt id (hirHandleClauseOp a c), sx (V.map id (hirHandleClauseParams a c)), go (hirHandleClauseBody a c)]) cs))
+  | HirExprSeqNil -> "nil"
+  | HirExprSeqCons h tl -> sx ["cons", go h, go tl]
+  | HirExprArray es -> sx (V.append ["array"] (V.map go es))
 
-fun clauseOf (a : HirArena) (c : HirClause) : H.Clause =
+fun clauseText (a : HirArena) (c : HirClause) : String =
   let rhs =
     match (a, hirClauseRhs a c) with
-    | HirRhsPlain e -> H.Rhs.Plain (termOf a e)
-    | HirRhsGuarded gs -> H.Rhs.Guarded (V.map (\g -> (termOf a (hirGuardCond a g), termOf a (hirGuardBody a g))) gs)
-    | HirRhsImpossible -> H.Rhs.Impossible
+    | HirRhsPlain e -> sx ["=", termText a e]
+    | HirRhsGuarded gs -> sx (V.append ["guards"] (V.map (\g -> sx [termText a (hirGuardCond a g), termText a (hirGuardBody a g)]) gs))
+    | _ -> "impossible"
   in
-  H.Clause.Clause (V.map (patternOf a) (hirClausePats a c)) rhs
+  sx ["clause", sx (V.map (patternText a) (hirClausePats a c)), rhs]
 
-fun patternOf (a : HirArena) (p : HirPattern) : Pattern =
-  let go = patternOf a in
+fun patternText (a : HirArena) (p : HirPattern) : String =
+  let go = patternText a in
+  let id = identText a in
   match (a, p) with
-  | HirPatternVar x -> Pattern.Var (identOf a x)
-  | HirPatternWild -> Pattern.Wild
-  | HirPatternLit l -> Pattern.Lit l
-  | HirPatternCon c ps -> Pattern.Con (identOf a c) (V.map go ps)
-  | HirPatternAs x q -> Pattern.As (identOf a x) (go q)
-  | HirPatternDot e -> Pattern.Dot (termOf a e)
-  | HirPatternSeqNil -> Pattern.SeqNil
-  | HirPatternSeqCons h t -> Pattern.SeqCons (go h) (go t)
+  | HirPatternVar x -> id x
+  | HirPatternWild -> "_"
+  | HirPatternLit l -> H.literal l
+  | HirPatternCon c ps -> sx (V.append ["con", id c] (V.map go ps))
+  | HirPatternAs x q -> sx ["as", id x, go q]
+  | HirPatternDot e -> sx ["dot", termText a e]
+  | HirPatternSeqNil -> "pnil"
+  | HirPatternSeqCons h tl -> sx ["pcons", go h, go tl]
 
-fun bindOf (a : HirArena) (b : HirBind) : Bind =
-  H.bind (identOf a (hirBindName a b)) (M.map (termOf a) (hirBindTy a b)) (termOf a (hirBindRhs a b)) (hirBindLinear a b)
+fun uniqueIn (a : HirArena) (x : HirIdent) : Int = V.getOr (0 - 1) (hirIdentUniques a x) 0
 
-fun groupOf (a : HirArena) (g : HirGroup) : Group =
+-- A binding; `terminating`, if it is one `@terminating` vouches for.
+fun bindText (a : HirArena) (terminating : [Int]) (b : HirBind) : String =
+  let x = hirBindName a b in
+  sx [
+    "bind",
+    identText a x,
+    opt (termText a) (hirBindTy a b),
+    termText a (hirBindRhs a b),
+    flag "linear" (hirBindLinear a b),
+    flag "terminating" (V.elem (uniqueIn a x) terminating)
+  ]
+
+fun groupText (a : HirArena) (g : HirGroup) : String =
   match (a, g) with
-  | HirGroupNonRec b -> Group.NonRec (bindOf a b)
-  | HirGroupRec bs -> Group.Rec (V.map (bindOf a) bs)
+  | HirGroupNonRec b -> sx ["nonrec", bindText a [] b]
+  | HirGroupRec bs -> sx (V.append ["rec"] (V.map (bindText a []) bs))
 
-fun paramOf (a : HirArena) (p : HirTypeParam) : (Ident, Maybe H.Term) =
-  (identOf a (hirTypeParamName a p), M.map (termOf a) (hirTypeParamKindSig a p))
+fun typeParamText (a : HirArena) (p : HirTypeParam) : String =
+  sx [identText a (hirTypeParamName a p), opt (termText a) (hirTypeParamKindSig a p)]
 
-fun dataOf (a : HirArena) (d : HirData) : DataDecl =
-  DataDecl {
-    name = identOf a (hirDataName a d),
-    params = V.map (paramOf a) (hirDataParams a d),
-    kind = M.map (termOf a) (hirDataKindSig a d),
-    ctors =
-      V.map
-        (\c ->
-          match (a, c) with
-          | HirCtorFields n ts -> CtorDecl.CtorDecl (identOf a n) (CtorShape.Fields (V.map (termOf a) ts))
-          | HirCtorSig n ty -> CtorDecl.CtorDecl (identOf a n) (CtorShape.Sig (termOf a ty)))
-        (hirDataCtors a d),
-    seq = M.map (\s -> (identOf a (hirSeqPairNil a s), identOf a (hirSeqPairCons a s))) (hirDataSeq a d),
-    linear = hirDataLinear a d
-  }
+fun dataText (a : HirArena) (d : HirData) : String =
+  sx [
+    "data",
+    identText a (hirDataName a d),
+    sx (V.map (typeParamText a) (hirDataParams a d)),
+    opt (termText a) (hirDataKindSig a d),
+    sx
+      (V.map
+         (\c ->
+           match (a, c) with
+           | HirCtorFields n ts -> sx [identText a n, sx (V.append ["fields"] (V.map (termText a) ts))]
+           | HirCtorSig n ty -> sx [identText a n, sx ["sig", termText a ty]])
+         (hirDataCtors a d)),
+    opt (\q -> sx ["seq", identText a (hirSeqPairNil a q), identText a (hirSeqPairCons a q)]) (hirDataSeq a d),
+    flag "linear" (hirDataLinear a d)
+  ]
 
-fun effectOf (a : HirArena) (e : HirEffect) : EffectDecl =
-  EffectDecl {
-    name = identOf a (hirEffectName a e),
-    params = V.map (paramOf a) (hirEffectParams a e),
-    ops = V.map (\o -> OpDecl.OpDecl (identOf a (hirOpName a o)) (termOf a (hirOpTy a o)) (hirOpMany a o)) (hirEffectOps a e)
-  }
+fun effectText (a : HirArena) (e : HirEffect) : String =
+  sx [
+    "effect",
+    identText a (hirEffectName a e),
+    sx (V.map (typeParamText a) (hirEffectParams a e)),
+    sx (V.map (\o -> sx ["op", identText a (hirOpName a o), flag "many" (hirOpMany a o), termText a (hirOpTy a o)]) (hirEffectOps a e))
+  ]
+
+-- The program's own part of a package, a line each: its data types,
+-- effects, natives and bindings, then its body, its `main` and whether it is
+-- linear.
+@pub fun dumped (r : Renamed) : String =
+  let a = hirArena r.hir in
+  let root = hirRoot r.hir in
+  let own = \x -> uniqueIn a x >= r.first in
+  let binds = V.concatMap (\g -> match (a, g) with | HirGroupNonRec b -> [b] | HirGroupRec bs -> bs) (hirModuleGroups a root) in
+  S.join
+    "\n"
+    (V.concat [
+       V.map (dataText a) (V.filter (\d -> own (hirDataName a d)) (hirModuleDatas a root)),
+       V.map (effectText a) (V.filter (\e -> own (hirEffectName a e)) (hirModuleEffects a root)),
+       V.map
+         (\n -> sx ["native", identText a (hirNativeName a n), termText a (hirNativeTy a n)])
+         (V.filter (\n -> own (hirNativeName a n)) (hirModuleNatives a root)),
+       V.map (bindText a r.terminating) (V.filter (\b -> own (hirBindName a b)) binds),
+       (match hirModuleBody a root with | Just e -> [sx ["body", termText a e]] | None -> []),
+       (match r.main with | Just u -> [sx ["main", "main@" ++ show u]] | None -> []),
+       [sx ["linear", if r.linearBody then "true" else "false"]]
+     ])
+
+-- An identifier, as the checker's context keeps one: the uniques a name
+-- may stand for, and its text.
+@pub fun identOf (a : HirArena) (x : HirIdent) : Ident = Ident.Ident (hirIdentUniques a x) (hirIdentText a x)

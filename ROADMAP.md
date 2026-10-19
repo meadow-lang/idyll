@@ -951,11 +951,13 @@ do yet `(unsupported)`, and the tests count those apart.
 - [ ] CI, with MeadowBoot's prerelease for the `meadow` it needs.
 - [ ] **The rest of the passes on Lingua's `lang!`/`pass!`**, as MeadowBoot's
   are (Chris, 2026-10-18: "that's the whole point of Lingua"). Done:
-  `Surface` and `Hir` are languages, and the parser's lowering and the
-  renamer are passes. Next: the checker reading `Hir`'s tables rather than
-  the data `moduleOf` makes of them, `Scc` as a pass on `Hir`, the checker's
-  output (its elaborated Core) a language that the CEK machine and the Cut
-  lowering read, and the lowering a pass from it to the Cut package's own
+  `Surface`, `Hir` and `Elaborated` are languages; the parser's lowering,
+  the renamer, `Scc` (`regroup`) and the checker (`elab : Hir ->
+  Elaborated`, bidirectional through its context's goal) are passes, and
+  nothing reads HIR as data any more. The checker computes with Core as data
+  inside, where normalisation by evaluation needs it. Next: the checked
+  program written out as `Elaborated`, the CEK machine and the Cut lowering
+  reading it there, and the lowering a pass from it to the Cut package's own
   `lang!`, as MeadowBoot's `Seq` lowers its Core.
 
 *Done when:* `front/` compiles the corpus and the tutorial to Cut that Glade

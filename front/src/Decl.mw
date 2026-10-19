@@ -28,14 +28,66 @@ use Idyll.Eval (force, apply, eval, quote, toPoly)
 use Idyll.Unify (sortOf)
 use Idyll.Ctx (Ctx, Info)
 use Idyll.Ctx as X
-use Idyll.Elab (checkType, inferType, declareConstant, manyEffectKind, keyOf)
-use Idyll.Hir (Term, Ident, DataDecl, CtorDecl, CtorShape, EffectDecl, OpDecl, NativeDecl)
+use Idyll.Elab (checkType, inferType, declareConstant, manyEffectKind, keyOf, hirOf)
+use Idyll.Hir (Ident)
 use Idyll.Hir as H
+use Idyll.Rename
 use Idyll.Positivity (Shape, checkPositivity)
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
 use Std.Maybe as M
 use Std.Maybe.Maybe.*
+
+-- --- the declarations, read off the renamed program's tables -----------------
+
+record DataDecl = {
+  name : Ident,
+  params : [(Ident, Maybe HirExpr)],
+  kind : Maybe HirExpr,
+  ctors : [CtorDecl],
+  seq : Maybe (Ident, Ident)
+}
+
+data CtorShape = Fields [HirExpr] | Sig HirExpr
+
+data CtorDecl = CtorDecl Ident CtorShape
+
+record EffectDecl = {
+  name : Ident,
+  params : [(Ident, Maybe HirExpr)],
+  ops : [OpDecl]
+}
+
+data OpDecl = OpDecl Ident HirExpr Bool
+
+data NativeDecl = NativeDecl Ident HirExpr
+
+fun paramsOf (h : HirArena) (ps : [HirTypeParam]) : [(Ident, Maybe HirExpr)] =
+  V.map (\p -> (identOf h (hirTypeParamName h p), hirTypeParamKindSig h p)) ps
+
+fun dataOf (h : HirArena) (d : HirData) : DataDecl =
+  DataDecl {
+    name = identOf h (hirDataName h d),
+    params = paramsOf h (hirDataParams h d),
+    kind = hirDataKindSig h d,
+    ctors =
+      V.map
+        (\c ->
+          match (h, c) with
+          | HirCtorFields n ts -> CtorDecl.CtorDecl (identOf h n) (CtorShape.Fields ts)
+          | HirCtorSig n ty -> CtorDecl.CtorDecl (identOf h n) (CtorShape.Sig ty))
+        (hirDataCtors h d),
+    seq = M.map (\q -> (identOf h (hirSeqPairNil h q), identOf h (hirSeqPairCons h q))) (hirDataSeq h d)
+  }
+
+fun effectOf (h : HirArena) (e : HirEffect) : EffectDecl =
+  EffectDecl {
+    name = identOf h (hirEffectName h e),
+    params = paramsOf h (hirEffectParams h e),
+    ops = V.map (\o -> OpDecl.OpDecl (identOf h (hirOpName h o)) (hirOpTy h o) (hirOpMany h o)) (hirEffectOps h e)
+  }
+
+fun nativeOf (h : HirArena) (n : HirNative) : NativeDecl = NativeDecl.NativeDecl (identOf h (hirNativeName h n)) (hirNativeTy h n)
 
 fun pi (name : String) (grade : Grade) (icit : Icit) (dom : Core) (cod : Core) : Core =
   Core.Pi name icit (C.grade grade) (C.grade G.defaultInType) dom cod
@@ -45,7 +97,7 @@ fun declare (tc : Tc) (x : Ident) (name : String) (ty : Core) =
 
 -- The parameters `(a : k) ..` checked, each under the ones before: their
 -- kinds, and the context with them bound.
-fun paramKinds (tc : Tc) (ctx : Ctx) (params : [(Ident, Maybe Term)]) : ([Core], Ctx) ! { Mut | e } =
+fun paramKinds (tc : Tc) (ctx : Ctx) (params : [(Ident, Maybe HirExpr)]) : ([Core], Ctx) ! { Mut | e } =
   V.foldl
     (\acc p ->
       match (acc, p) with
@@ -60,21 +112,22 @@ fun paramKinds (tc : Tc) (ctx : Ctx) (params : [(Ident, Maybe Term)]) : ([Core],
     params
 
 -- The parameters bound again, from their kinds.
-fun bindParams (tc : Tc) (ctx : Ctx) (params : [(Ident, Maybe Term)]) (ks : [Core]) : Ctx ! { Mut | e } =
+fun bindParams (tc : Tc) (ctx : Ctx) (params : [(Ident, Maybe HirExpr)]) (ks : [Core]) : Ctx ! { Mut | e } =
   V.foldl
     (\c pk -> match pk with | ((x, _), k) -> X.bind c (Just x) (H.textOf x) (eval tc c.env k))
     ctx
     (V.zip params ks)
 
 -- `{a : k} -> .. -> ty`, the parameters implicit and erased.
-fun underParams (params : [(Ident, Maybe Term)]) (ks : [Core]) (ty : Core) (grade : Grade) (icit : Icit) : Core =
+fun underParams (params : [(Ident, Maybe HirExpr)]) (ks : [Core]) (ty : Core) (grade : Grade) (icit : Icit) : Core =
   V.foldl (\acc pk -> match pk with | ((x, _), k) -> pi (H.textOf x) grade icit k acc) ty (V.reverse (V.zip params ks))
 
 -- --- data types ----------------------------------------------------------------------
 
 -- The module's data types: all their kinds first, then all the
 -- constructors, so that a constructor may mention any of them.
-@pub fun declareDatas (tc : Tc) (ctx : Ctx) (datas : [DataDecl]) : Ctx ! { Mut | e } =
+@pub fun declareDatas (tc : Tc) (ctx : Ctx) (rows : [HirData]) : Ctx ! { Mut | e } =
+  let datas = V.map (\d -> dataOf (hirOf tc) d) rows in
   let (ctx1, kinds) =
     V.foldl
       (\acc (d : DataDecl) ->
@@ -176,7 +229,7 @@ fun telescopeEnd (tc : Tc) (lvl : Int) (ty : Value) : (Int, Value) ! { Mut | e }
 
 -- `C t ..`: the constructor's type under the parameters, `t -> .. -> T a ..`,
 -- each field linear.
-fun ctorFields (tc : Tc) (d : DataDecl) (params : Ctx) (fields : [Term]) : (Core, Int, Int, [(Int, Value)]) ! { Mut | e } =
+fun ctorFields (tc : Tc) (d : DataDecl) (params : Ctx) (fields : [HirExpr]) : (Core, Int, Int, [(Int, Value)]) ! { Mut | e } =
   let (elaborated, under, found) =
     V.foldl
       (\acc f ->
@@ -203,10 +256,10 @@ fun ctorFields (tc : Tc) (d : DataDecl) (params : Ctx) (fields : [Term]) : (Core
 -- `C : ty`: the constructor's type under the parameters, checked to end in
 -- the type at its parameters and then at indices, and how many implicit
 -- arguments and fields it has.
-fun ctorSig (tc : Tc) (d : DataDecl) (params : Ctx) (paramsAt : Int) (sig : Term) (indices : Int) : (Core, Int, Int, [(Int, Value)]) ! { Mut | e } =
+fun ctorSig (tc : Tc) (d : DataDecl) (params : Ctx) (paramsAt : Int) (sig : HirExpr) (indices : Int) : (Core, Int, Int, [(Int, Value)]) ! { Mut | e } =
   let (sigC0, _) = checkType tc params sig in
   -- the fields it gives no grade are linear, as a list of fields is
-  let sigC = linearFields sig sigC0 in
+  let sigC = linearFields (hirOf tc) sig sigC0 in
   let sigV = eval tc params.env sigC in
   let (binders, last) = walk tc (X.types params) [] sigV in
   let n = V.len d.params in
@@ -257,18 +310,19 @@ fun walk (tc : Tc) (types : [(String, Value)]) (acc : [(Int, Icit, Value, Value,
 
 -- A constructor's signature with each of its own arrows that says no grade
 -- linear, as a field written `C a` is.
-fun linearFields (sig : Term) (core : Core) : Core =
-  match (sig, core) with
-  | (Term.Pi _ icit ann _ cod, Core.Pi name i grade inType dom c) ->
+fun linearFields (h : HirArena) (sig : HirExpr) (core : Core) : Core =
+  match ((h, sig), core) with
+  | (HirExprPi _ icit ann _ cod, Core.Pi name i grade inType dom c) ->
       let g = if M.isNone ann and icit == Icit.Explicit then C.grade G.one else grade in
-      Core.Pi name i g inType dom (linearFields cod c)
+      Core.Pi name i g inType dom (linearFields h cod c)
   | _ -> core
 
 -- --- effects -------------------------------------------------------------------------
 
 -- Each effect: `E : (a : k) -> .. -> Effect`, or `Effect []` if a handler
 -- may resume one of its operations more than once.
-@pub fun declareEffects (tc : Tc) (ctx : Ctx) (effects : [EffectDecl]) : Ctx ! { Mut | e } =
+@pub fun declareEffects (tc : Tc) (ctx : Ctx) (rows : [HirEffect]) : Ctx ! { Mut | e } =
+  let effects = V.map (\e -> effectOf (hirOf tc) e) rows in
   V.foldl
     (\c (e : EffectDecl) ->
       let (ks, _) = paramKinds tc c e.params in
@@ -283,7 +337,8 @@ fun linearFields (sig : Term) (core : Core) : Core =
     effects
 
 -- Then their operations, once the data types they mention are declared.
-@pub fun declareOps (tc : Tc) (ctx : Ctx) (effects : [EffectDecl]) : Ctx ! { Mut | e } =
+@pub fun declareOps (tc : Tc) (ctx : Ctx) (rows : [HirEffect]) : Ctx ! { Mut | e } =
+  let effects = V.map (\e -> effectOf (hirOf tc) e) rows in
   V.foldl
     (\c (e : EffectDecl) ->
       match Hm.lookup (H.uniqueOf e.name) (getRef tc.effects) with
@@ -360,7 +415,8 @@ fun native (name : String) : Maybe (Bool, Int) =
 
 -- The natives of one kind: the types, or the operations. A name that is
 -- no native is reported with the operations.
-@pub fun declareNatives (tc : Tc) (ctx : Ctx) (natives : [NativeDecl]) (types : Bool) : Ctx ! { Mut | e } =
+@pub fun declareNatives (tc : Tc) (ctx : Ctx) (rows : [HirNative]) (types : Bool) : Ctx ! { Mut | e } =
+  let natives = V.map (\n -> nativeOf (hirOf tc) n) rows in
   V.foldl
     (\c nd ->
       match nd with

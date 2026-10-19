@@ -27,6 +27,10 @@
 -- A variable split on is used as a scrutinee is, once; its fields come out
 -- with its grade times theirs (a data type's fields are linear, so with
 -- its grade). A name in a pattern is another name for the slot it matched.
+--
+-- Clauses, patterns and right-hand sides are `Hir`'s rows, read off the
+-- renamed program's tables; a right-hand side is elaborated by the pass
+-- (`check`), at each leaf it wins.
 
 use Idyll.Hir (Icit, Literal)
 use Idyll.Core (Core, Builtin, Prim, Note, Head, CaseAlt)
@@ -43,9 +47,10 @@ use Idyll.Usage (Usage)
 use Idyll.Usage as U
 use Idyll.Ctx (Ctx, Info)
 use Idyll.Ctx as X
-use Idyll.Elab (check, infer, insert, freshMeta, closeEffects, leaveKey, leaveBinder, lam, gradeFits, defaultGrade, mentions, keyOf, effectsOf)
-use Idyll.Hir (Term, Ident, Clause, Pattern, Rhs)
+use Idyll.Elab (check, infer, insert, freshMeta, closeEffects, leaveKey, leaveBinder, lam, gradeFits, defaultGrade, mentions, keyOf, effectsOf, hirOf)
+use Idyll.Hir (Ident)
 use Idyll.Hir as H
+use Idyll.Rename
 use Idyll.Sequences (seqPatternCtors)
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
@@ -60,7 +65,7 @@ data Target = Slot Int | Val Value Value
 -- One equation on its way through: the clause, its position, its patterns
 -- for arguments not bound yet, its patterns and what they are matched
 -- against, its names settled, and its dot patterns.
-data Problem = Problem Clause Int [Pattern] [(Pattern, Target)] [(Ident, Target)] [(Term, Target)]
+data Problem = Problem HirClause Int [HirPattern] [(HirPattern, Target)] [(Ident, Target)] [(HirExpr, Target)]
 
 data How = ByCon | ByLit Literal
 
@@ -100,19 +105,21 @@ fun vecOf (m : Maybe a) : [a] =
   | Just x -> [x]
   | None -> []
 
-fun clauseOf (p : Problem) : Clause = match p with | Problem.Problem c _ _ _ _ _ -> c
+fun clauseOf (p : Problem) : HirClause = match p with | Problem.Problem c _ _ _ _ _ -> c
 
-fun patsOf (c : Clause) : [Pattern] = match c with | Clause.Clause ps _ -> ps
+fun patsOf (hir : HirArena) (c : HirClause) : [HirPattern] = hirClausePats hir c
 
-fun rhsOf (c : Clause) : Rhs = match c with | Clause.Clause _ r -> r
+fun rhsOf (hir : HirArena) (c : HirClause) : HirRhs = hirClauseRhs hir c
 
-fun isImpossible (r : Rhs) : Bool = match r with | Rhs.Impossible -> True | _ -> False
+fun isImpossible (hir : HirArena) (r : HirRhs) : Bool = kindHirRhs hir r == HirRhsKind.Impossible
 
 -- The pattern under any as-patterns.
-fun peel (p : Pattern) : Pattern =
-  match p with
-  | Pattern.As _ q -> peel q
+fun peel (hir : HirArena) (p : HirPattern) : HirPattern =
+  match (hir, p) with
+  | HirPatternAs _ q -> peel hir q
   | _ -> p
+
+fun uniqueIn (hir : HirArena) (x : HirIdent) : Int = V.getOr (0 - 1) (hirIdentUniques hir x) 0
 
 fun ctorOf (tc : Tc) (c : Int) : CtorInfo ! { Mut | e } =
   M.unwrapOr (CtorInfo.CtorInfo "?" (0 - 1) 0 0 0) (T.ctorInfo tc c)
@@ -122,14 +129,15 @@ fun isCtor (tc : Tc) (c : Int) : Bool ! { Mut | e } = M.isSome (T.ctorInfo tc c)
 -- --- entry points ------------------------------------------------------------------
 
 -- A function defined by equations, against its type.
-@pub fun elabMatch (tc : Tc) (ctx : Ctx) (clauses : [Clause]) (goal : Value) : (Core, Usage) ! { Mut | e } =
-  let arity = match V.head clauses with | Just c -> V.len (patsOf c) | None -> 0 in
+@pub fun elabMatch (tc : Tc) (ctx : Ctx) (clauses : [HirClause]) (goal : Value) : (Core, Usage) ! { Mut | e } =
+  let hir = hirOf tc in
+  let arity = match V.head clauses with | Just c -> V.len (patsOf hir c) | None -> 0 in
   let problems =
     V.concatMap
       (\i ->
         match V.get clauses i with
         | Just c ->
-            if V.len (patsOf c) == arity then [Problem.Problem c i (patsOf c) [] [] []]
+            if V.len (patsOf hir c) == arity then [Problem.Problem c i (patsOf hir c) [] [] []]
             else
               let w = T.error tc "ClauseArity" in
               []
@@ -141,8 +149,9 @@ fun isCtor (tc : Tc) (c : Int) : Bool ! { Mut | e } = M.isSome (T.ctorInfo tc c)
 
 -- A function defined by equations, with no signature: its type found from
 -- them, starting from how many arguments it takes.
-@pub fun inferMatch (tc : Tc) (ctx : Ctx) (clauses : [Clause]) : (Core, Value, Usage) ! { Mut | e } =
-  let arity = match V.head clauses with | Just c -> V.len (patsOf c) | None -> 0 in
+@pub fun inferMatch (tc : Tc) (ctx : Ctx) (clauses : [HirClause]) : (Core, Value, Usage) ! { Mut | e } =
+  let hir = hirOf tc in
+  let arity = match V.head clauses with | Just c -> V.len (patsOf hir c) | None -> 0 in
   let (under, doms) =
     V.foldl
       (\acc i ->
@@ -167,7 +176,8 @@ fun isCtor (tc : Tc) (c : Int) : Bool ! { Mut | e } = M.isSome (T.ctorInfo tc c)
 
 -- `case scrutinee of clauses`. A variable is matched where it is, so the
 -- match refines it; anything else is bound to a slot of its own first.
-@pub fun caseOf (tc : Tc) (ctx : Ctx) (scrutinee : Term) (clauses : [Clause]) (expected : Maybe Value) : (Core, Value, Usage) ! { Mut | e } =
+@pub fun caseOf (tc : Tc) (ctx : Ctx) (scrutinee : HirExpr) (clauses : [HirClause]) (expected : Maybe Value) : (Core, Value, Usage) ! { Mut | e } =
+  let hir = hirOf tc in
   let (sC0, sTy0, sU) = infer tc ctx scrutinee in
   let (sC, sTy) = insert tc ctx sC0 sTy0 in
   match force tc sTy with
@@ -181,12 +191,20 @@ fun isCtor (tc : Tc) (c : Int) : Bool ! { Mut | e } = M.isSome (T.ctorInfo tc c)
       let problems =
         \slot ->
           V.concatMap
-            (\i -> match V.get clauses i with | Just c -> [Problem.Problem c i [] (V.map (\p -> (p, Target.Slot slot)) (patsOf c)) [] []] | None -> [])
+            (\i -> match V.get clauses i with | Just c -> [Problem.Problem c i [] (V.map (\p -> (p, Target.Slot slot)) (patsOf hir c)) [] []] | None -> [])
             (V.range 0 (V.len clauses))
       in
       -- `if 1 then ..`: said about the condition, once
       let boolPattern =
-        V.any (\c -> match M.map peel (V.head (patsOf c)) with | Just (Pattern.Lit (Literal.Bool _)) -> True | _ -> False) clauses
+        V.any
+          (\c ->
+            match V.head (patsOf hir c) with
+            | Just p ->
+                (match (hir, peel hir p) with
+                 | HirPatternLit l -> (match l with | Literal.Bool _ -> True | _ -> False)
+                 | _ -> False)
+            | None -> False)
+          clauses
       in
       let notBool = boolPattern and not (unify tc ctx.lvl sTy (Value.LitTy Builtin.Bool)) in
       if notBool then
@@ -195,8 +213,8 @@ fun isCtor (tc : Tc) (c : Int) : Bool ! { Mut | e } = M.isSome (T.ctorInfo tc c)
         (Core.Error, Value.Error, U.unknown ())
       else
         let variable =
-          match scrutinee with
-          | Term.Var x -> X.boundSlot ctx x
+          match (hir, scrutinee) with
+          | HirExprVar x -> X.boundSlot ctx (identOf hir x)
           | _ -> None
         in
         (match variable with
@@ -213,7 +231,8 @@ fun isCtor (tc : Tc) (c : Int) : Bool ! { Mut | e } = M.isSome (T.ctorInfo tc c)
              let (n, rest) = U.take usage (Just key) in
              (Core.Let "_" sC core, goal, U.add rest (U.scale sU n)))
 
-fun runMatch (tc : Tc) (ctx : Ctx) (clauses : [Clause]) (problems : [Problem]) (goal : Value) (args : [Int]) (failed : Bool) : (Core, Usage) ! { Mut | e } =
+fun runMatch (tc : Tc) (ctx : Ctx) (clauses : [HirClause]) (problems : [Problem]) (goal : Value) (args : [Int]) (failed : Bool) : (Core, Usage) ! { Mut | e } =
+  let hir = hirOf tc in
   let m =
     Matcher {
       used = newRef (V.replicate (V.len clauses) False),
@@ -235,7 +254,7 @@ fun runMatch (tc : Tc) (ctx : Ctx) (clauses : [Clause]) (problems : [Problem]) (
         (\acc i ->
           match V.get clauses i with
           | Just c ->
-              if not (V.getOr True (getRef m.used) i) and not (isImpossible (rhsOf c)) and plausible tc ctx m c then T.error tc "UnreachableClause"
+              if not (V.getOr True (getRef m.used) i) and not (isImpossible hir (rhsOf hir c)) and plausible tc ctx m c then T.error tc "UnreachableClause"
               else ()
           | None -> ())
         ()
@@ -267,6 +286,7 @@ fun tree (tc : Tc) (m : Matcher) (ctx : Ctx) (problems : [Problem]) (goal : Valu
 
 -- Bind the next argument, for every problem's next pattern.
 fun intro (tc : Tc) (m : Matcher) (ctx : Ctx) (problems : [Problem]) (goal0 : Value) : (Core, Usage) ! { Mut | e } =
+  let hir = hirOf tc in
   let goal = force tc goal0 in
   match goal with
   | Value.Pi name icit grade _ dom cod ->
@@ -284,9 +304,9 @@ fun intro (tc : Tc) (m : Matcher) (ctx : Ctx) (problems : [Problem]) (goal0 : Va
               | None ->
                   (match p with
                    | Problem.Problem _ _ pending _ _ _ ->
-                       (match V.head pending with
-                        | Just (Pattern.Var x) -> Just (H.textOf x)
-                        | Just (Pattern.As x _) -> Just (H.textOf x)
+                       (match M.map (\q -> (hir, q)) (V.head pending) with
+                        | Just (HirPatternVar x) -> Just (hirIdentText hir x)
+                        | Just (HirPatternAs x _) -> Just (hirIdentText hir x)
                         | _ -> None)))
             None
             problems
@@ -337,6 +357,7 @@ fun tooManyPatterns (tc : Tc) (m : Matcher) : (Core, Usage) ! { Mut | e } =
 -- Settle what can be settled of a problem's patterns, left to right, until
 -- one waits on a variable or disagrees.
 fun simplify (tc : Tc) (ctx : Ctx) (p : Problem) : (Step, Problem) ! { Mut | e } =
+  let hir = hirOf tc in
   match p with
   | Problem.Problem clause index pending constraints bindings dots ->
       (match V.head constraints with
@@ -344,15 +365,15 @@ fun simplify (tc : Tc) (ctx : Ctx) (p : Problem) : (Step, Problem) ! { Mut | e }
        | Just (pat, target) ->
            let rest = V.drop constraints 1 in
            let again = \cs bs ds -> simplify tc ctx (Problem.Problem clause index pending cs bs ds) in
-           (match pat with
-            | Pattern.Var x -> again rest (V.pushBack bindings (x, target)) dots
-            | Pattern.Wild -> again rest bindings dots
-            | Pattern.As x q -> again (V.append [(q, target)] rest) (V.pushBack bindings (x, target)) dots
-            | Pattern.Dot e -> again rest bindings (V.pushBack dots (e, target))
-            | Pattern.Lit (Literal.Str _) ->
+           (match (hir, pat) with
+            | HirPatternVar x -> again rest (V.pushBack bindings (identOf hir x, target)) dots
+            | HirPatternWild -> again rest bindings dots
+            | HirPatternAs x q -> again (V.append [(q, target)] rest) (V.pushBack bindings (identOf hir x, target)) dots
+            | HirPatternDot e -> again rest bindings (V.pushBack dots (e, target))
+            | HirPatternLit (Literal.Str _) ->
                 let w = T.error tc "StringPattern" in
                 (Step.Failed, p)
-            | Pattern.Lit lit ->
+            | HirPatternLit lit ->
                 let want = Value.LitTy (C.literalBuiltin lit) in
                 let ty = targetType ctx target in
                 if not (unify tc ctx.lvl ty want) then
@@ -368,8 +389,8 @@ fun simplify (tc : Tc) (ctx : Ctx) (p : Problem) : (Step, Problem) ! { Mut | e }
                             let how = match lit with | Literal.Bool _ -> How.ByCon | _ -> How.ByLit lit in
                             (Step.Splits k how, p)
                         | v -> (cannotSplit tc v, p)))
-            | Pattern.Con c args ->
-                let us = H.uniquesOf c in
+            | HirPatternCon c args ->
+                let us = hirIdentUniques hir c in
                 if V.len us != 1 then
                   -- the renamer reported an unknown name already; and a
                   -- name several `use`s give is not chosen between yet
@@ -378,10 +399,11 @@ fun simplify (tc : Tc) (ctx : Ctx) (p : Problem) : (Step, Problem) ! { Mut | e }
                 else conStep tc ctx p (V.getOr 0 us 0) args target rest
             -- `#[p, q]`: taken apart with the constructors of what it is
             -- matched against
-            | Pattern.SeqNil -> seqStep tc ctx p target rest []
-            | Pattern.SeqCons h tl -> seqStep tc ctx p target rest [h, tl]))
+            | HirPatternSeqNil -> seqStep tc ctx p target rest []
+            | HirPatternSeqCons hd tl -> seqStep tc ctx p target rest [hd, tl]
+            | _ -> (Step.Failed, p)))
 
-fun seqStep (tc : Tc) (ctx : Ctx) (p : Problem) (target : Target) (rest : [(Pattern, Target)]) (args : [Pattern]) : (Step, Problem) ! { Mut | e } =
+fun seqStep (tc : Tc) (ctx : Ctx) (p : Problem) (target : Target) (rest : [(HirPattern, Target)]) (args : [HirPattern]) : (Step, Problem) ! { Mut | e } =
   let ty = targetType ctx target in
   match seqPatternCtors tc ctx ty with
   | Just (nil, cons) -> conStep tc ctx p (if V.isEmpty args then nil else cons) args target rest
@@ -390,7 +412,7 @@ fun seqStep (tc : Tc) (ctx : Ctx) (p : Problem) (target : Target) (rest : [(Patt
       (Step.Failed, p)
 
 -- A constructor pattern, `cu args`, against what it is matched with.
-fun conStep (tc : Tc) (ctx : Ctx) (p : Problem) (cu : Int) (args : [Pattern]) (target : Target) (rest : [(Pattern, Target)]) : (Step, Problem) ! { Mut | e } =
+fun conStep (tc : Tc) (ctx : Ctx) (p : Problem) (cu : Int) (args : [HirPattern]) (target : Target) (rest : [(HirPattern, Target)]) : (Step, Problem) ! { Mut | e } =
   match p with
   | Problem.Problem clause index pending _ bindings dots ->
       let again = \cs -> simplify tc ctx (Problem.Problem clause index pending cs bindings dots) in
@@ -425,16 +447,17 @@ fun conStep (tc : Tc) (ctx : Ctx) (p : Problem) (cu : Int) (args : [Pattern]) (t
 -- Whether a clause no case reached at least makes sense, as far as its
 -- outermost patterns go: a constructor of another type is an error, not an
 -- unreachable clause.
-fun plausible (tc : Tc) (ctx : Ctx) (m : Matcher) (clause : Clause) : Bool ! { Mut | e } =
+fun plausible (tc : Tc) (ctx : Ctx) (m : Matcher) (clause : HirClause) : Bool ! { Mut | e } =
+  let hir = hirOf tc in
   V.foldl
     (\ok pt ->
       if not ok then False
       else
         match pt with
         | (pat, ty) ->
-            (match peel pat with
-             | Pattern.Con c _ ->
-                 let u = H.uniqueOf c in
+            (match (hir, peel hir pat) with
+             | HirPatternCon c _ ->
+                 let u = uniqueIn hir c in
                  if u < 0 then False
                  else
                    (match T.ctorInfo tc u with
@@ -453,7 +476,7 @@ fun plausible (tc : Tc) (ctx : Ctx) (m : Matcher) (clause : Clause) : Bool ! { M
                              False))
              | _ -> True))
     True
-    (V.zip (patsOf clause) (getRef m.argTypes))
+    (V.zip (patsOf hir clause) (getRef m.argTypes))
 
 fun cannotSplit (tc : Tc) (v : Value) : Step ! { Mut | e } =
   let w = match v with | Value.Error -> () | _ -> T.error tc "CannotSplit" in
@@ -505,18 +528,19 @@ fun targetType (ctx : Ctx) (t : Target) : Value =
 -- The first problem has won: its right-hand side checked, with its names
 -- bound.
 fun leaf (tc : Tc) (m : Matcher) (ctx : Ctx) (p : Problem) (rest : [Problem]) (goal : Value) : (Core, Usage) ! { Mut | e } =
+  let hir = hirOf tc in
   match p with
   | Problem.Problem clause index _ _ bindings dots ->
       let w = setRef m.used (V.set (getRef m.used) index True) in
-      (match rhsOf clause with
-       | Rhs.Impossible ->
+      (match (hir, rhsOf hir clause) with
+       | HirRhsImpossible ->
            (match emptySplit tc m ctx with
             | Just found -> found
             | None ->
                 let w2 = T.error tc "NotImpossible" in
                 let w3 = fail m in
                 nothing ())
-       | rhs ->
+       | (_, rhs) ->
            let (inner, lets) =
              V.foldl
                (\acc b ->
@@ -546,10 +570,10 @@ fun leaf (tc : Tc) (m : Matcher) (ctx : Ctx) (p : Problem) (rest : [Problem]) (g
                dots
            in
            let (body, usage) =
-             match rhs with
-             | Rhs.Plain e -> check tc inner e goal
-             | Rhs.Guarded gs -> guards tc m inner gs rest goal
-             | Rhs.Impossible -> nothing ()
+             match (hir, rhs) with
+             | HirRhsPlain e -> check tc inner e goal
+             | HirRhsGuarded gs -> guards tc m inner (V.map (\g -> (hirGuardCond hir g, hirGuardBody hir g)) gs) rest goal
+             | _ -> nothing ()
            in
            let zero = gradeValue G.zero in
            let u2 = V.foldl (\u l -> match l with | (x, _) -> leaveBinder tc inner x zero u False) usage (V.reverse lets) in
@@ -557,7 +581,7 @@ fun leaf (tc : Tc) (m : Matcher) (ctx : Ctx) (p : Problem) (rest : [Problem]) (g
 
 -- `| g = e | ..`: the first guard that holds; if none does, the clauses
 -- after this one.
-fun guards (tc : Tc) (m : Matcher) (ctx : Ctx) (gs : [(Term, Term)]) (rest : [Problem]) (goal : Value) : (Core, Usage) ! { Mut | e } =
+fun guards (tc : Tc) (m : Matcher) (ctx : Ctx) (gs : [(HirExpr, HirExpr)]) (rest : [Problem]) (goal : Value) : (Core, Usage) ! { Mut | e } =
   match V.head gs with
   | None -> tree tc m ctx rest goal
   | Just (g, e) ->
@@ -739,6 +763,7 @@ fun telescope (tc : Tc) (whole : Value) (inner : Ctx) (delta : [(Int, Int, Strin
 -- A name for the `i`th argument of constructor `c`, from the first pattern
 -- that names it.
 fun fieldHint (tc : Tc) (ctx : Ctx) (problems : [Problem]) (k : Int) (c : Int) (i : Int) : Maybe String ! { Mut | e } =
+  let hir = hirOf tc in
   let params = match ctorOf tc c with | CtorInfo.CtorInfo _ _ _ ps _ -> ps in
   let constraints = V.concatMap (\p -> match p with | Problem.Problem _ _ _ cs _ _ -> cs) problems in
   V.foldl
@@ -750,12 +775,12 @@ fun fieldHint (tc : Tc) (ctx : Ctx) (problems : [Problem]) (k : Int) (c : Int) (
            | (pat, target) ->
                if not (targetsSlot tc ctx target k) then None
                else
-                 (match peel pat with
-                  | Pattern.Con c2 args ->
-                      if H.uniqueOf c2 != c or i < params then None
+                 (match (hir, peel hir pat) with
+                  | HirPatternCon c2 args ->
+                      if uniqueIn hir c2 != c or i < params then None
                       else
-                        (match M.map peel (V.get args (i - params)) with
-                         | Just (Pattern.Var x) -> Just (H.textOf x)
+                        (match M.map (\q -> (hir, peel hir q)) (V.get args (i - params)) with
+                         | Just (HirPatternVar x) -> Just (hirIdentText hir x)
                          | _ -> None)
                   | _ -> None)))
     None
@@ -768,14 +793,15 @@ fun targetsSlot (tc : Tc) (ctx : Ctx) (target : Target) (k : Int) : Bool ! { Mut
 
 -- Whether a problem needs slot `k` to be this number.
 fun wantsLiteral (tc : Tc) (ctx : Ctx) (p : Problem) (k : Int) (lit : Literal) : Bool ! { Mut | e } =
+  let hir = hirOf tc in
   match p with
   | Problem.Problem _ _ _ cs _ _ ->
       V.any
         (\ct ->
           match ct with
           | (pat, target) ->
-              (match peel pat with
-               | Pattern.Lit l -> l == lit and targetsSlot tc ctx target k
+              (match (hir, peel hir pat) with
+               | HirPatternLit l -> l == lit and targetsSlot tc ctx target k
                | _ -> False))
         cs
 

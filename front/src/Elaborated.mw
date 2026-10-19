@@ -1,0 +1,60 @@
+-- The elaborated program, as a Lingua language: `Elaborated` is Core, what
+-- the checker makes of `Hir` (`Elab`'s pass, `elab : Hir -> Elaborated`)
+-- -- every argument there, implicit ones included; variables de Bruijn
+-- indices, their names beside them for printing; matching a tree of
+-- `case`s; what the back end needs to know noted (`Runtime`).
+--
+-- The checker computes with Core as data (`Core.Core`): normalisation by
+-- evaluation reads it, makes values of it and quotes them back, in the
+-- middle of checking. What it hands on -- to the CEK machine and to the Cut
+-- lowering -- is this language.
+
+use Lingua (lang!)
+use Idyll.Hir (Icit, Literal)
+use Idyll.Core (Builtin, Prim, Head)
+use Idyll.Grade (Grade)
+
+@pub lang! {
+  pub Elaborated
+  Term + Type { level : Int }
+  Term + LitTy { builtin : Builtin }
+  Term + Lit { lit : Literal }
+  Term + Prim { prim : Prim }
+  Term + Var { index : Int, name : String }
+  -- a recursive definition, a constructor or a data type, by its unique
+  Term + Opaque { unique : Int, name : String }
+  Term + Meta { number : Int }
+  -- `(x : (grade, inType) dom) -> cod`; the name is `_` for a plain arrow
+  Term + Pi { name : String, icit : Icit, grade : Term, inType : Term, dom : Term, cod : Term }
+  Term + Lam { name : String, body : Term }
+  Term + App { func : Term, arg : Term }
+  -- `a [r]`
+  Term + BoxTy { grade : Term, ty : Term }
+  Term + BoxIntro { expr : Term }
+  Term + Unbox { expr : Term }
+  Term + Let { name : String, value : Term, body : Term }
+  Term + GradeLit { value : Grade }
+  Term + GradeAdd { lhs : Term, rhs : Term }
+  Term + GradeMul { lhs : Term, rhs : Term }
+  Term + GradeRange { lo : Term, hi : Term }
+  Term + Case { scrutinee : Term, alts : [Alt] }
+  Term + Runtime { note : Note, expr : Term }
+  -- `b ! e`
+  Term + Comp { ty : Term, row : Term }
+  -- an effect row: the effects, then the row variables
+  Term + Row { labels : [Term], tails : [Term] }
+  -- `handle body with { return ..; op .. }`
+  Term + Handle { body : Term, ret : Term, ops : [OpClause] }
+  Term + Error {}
+  -- what an alternative matches, the constructor's name, the names its
+  -- body binds (the last innermost), and the body
+  Alt + Alt { head : Head, name : String, vars : [String], body : Term }
+  -- a handler's clause: the operation's unique and name, how many of its
+  -- implicit arguments are erased, and its body
+  OpClause + OpClause { op : Int, name : String, erased : Int, body : Term }
+  -- an argument never used at run time; the variable a lambda binds, its
+  -- grade if a constant and its type; a `case` its type forces
+  Note + Erased {}
+  Note + Binds { grade : Maybe Grade, ty : Maybe Term }
+  Note + Forced {}
+}

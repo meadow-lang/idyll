@@ -30,7 +30,8 @@ use Idyll.Layout (dumped)
 use Idyll.Syntax (parseIdyll)
 use Idyll.Surface (SurfaceProgram)
 use Idyll.Surface as Surface
-use Idyll.Rename (renameModule, renamePackage, toData)
+use Idyll.Rename (renameModule, renamePackage)
+use Idyll.Rename as Rename
 use Idyll.Hir as Hir
 use Std.String as S
 use Std.Maybe as M
@@ -150,7 +151,7 @@ fun renamed prelude (text : String) : String ! { Mut | e } =
   | Err _ -> "(error)"
   | Ok prog ->
       (match renameModule prog prelude with
-       | (m, problems) -> if V.isEmpty problems then Hir.dumped (toData m) else "(error)")
+       | (m, problems) -> if V.isEmpty problems then Rename.dumped m else "(error)")
 
 -- A program checked after the prelude, as `Check` writes it; `(error)` if
 -- it does not parse or rename.

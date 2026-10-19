@@ -5,6 +5,11 @@
 -- means at once, which a cell of the metacontext gives: `Eval.force` looks a
 -- solution up whenever it meets a metavariable's head.
 
+use Idyll.Rename (HirArena, HirExpr, freezeHir, newHirBuilder)
+use Idyll.Elab (Cx)
+use Idyll.Usage (Usage)
+use Idyll.Usage as U
+use Std.St (runSt)
 use Idyll.Value (Value, Env)
 use Idyll.Core (Core)
 use Std.Collections.Vector as V
@@ -54,6 +59,10 @@ use Std.Maybe.Maybe.*
 @pub data OpInfo = OpInfo String Int Int Int Int Bool
 
 @pub record Tc = {
+  -- the renamed program being checked, whose tables everything reads
+  hir : Ref HirArena,
+  -- the elaborating pass's function for an expression (`Elab.install`)
+  elab : Ref (Cx -> HirExpr -> (Core, Value, Usage) ! { Mut }),
   metas : Ref [Meta],
   -- the type of every constant (a data type, a constructor, a recursive
   -- definition), by its unique
@@ -116,6 +125,8 @@ use Std.Maybe.Maybe.*
 
 @pub fun new () =
   Tc {
+    hir = newRef (runSt (\() -> freezeHir (newHirBuilder ()))),
+    elab = newRef (\cx t -> (Core.Error, Value.Error, U.unknown ())),
     metas = newRef [],
     constants = newRef Hm.empty,
     problems = newRef [],

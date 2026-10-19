@@ -22,9 +22,10 @@ use Idyll.Usage (Usage)
 use Idyll.Usage as U
 use Idyll.Ctx (Ctx)
 use Idyll.Ctx as X
-use Idyll.Elab (check, insert, applyTo, freshMeta, depends)
-use Idyll.Hir (Term, Ident)
+use Idyll.Elab (check, insert, applyTo, freshMeta, depends, hirOf)
+use Idyll.Hir (Ident)
 use Idyll.Hir as H
+use Idyll.Rename
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
 use Std.Maybe as M
@@ -41,7 +42,7 @@ fun seqCtors (tc : Tc) (ty : Value) : Maybe (Int, Int) ! { Mut | e } =
 fun defaultSeq (tc : Tc) : Maybe (Int, Int) ! { Mut | e } = Hm.lookup (getRef tc.list) (getRef tc.seqs)
 
 -- A literal checked against `expected`, which is not a metavariable.
-@pub fun checkSeq (tc : Tc) (ctx : Ctx) (t : Term) (expected : Value) : (Core, Usage) ! { Mut | e } =
+@pub fun checkSeq (tc : Tc) (ctx : Ctx) (t : HirExpr) (expected : Value) : (Core, Usage) ! { Mut | e } =
   match seqCtors tc expected with
   | None ->
       let w = T.error tc "NotASequence" in
@@ -55,7 +56,7 @@ fun defaultSeq (tc : Tc) : Maybe (Int, Int) ! { Mut | e } = Hm.lookup (getRef tc
         (Core.Error, usage)
 
 -- A literal with nothing to say what it is: a `List`.
-@pub fun inferSeq (tc : Tc) (ctx : Ctx) (t : Term) : (Core, Value, Usage) ! { Mut | e } =
+@pub fun inferSeq (tc : Tc) (ctx : Ctx) (t : HirExpr) : (Core, Value, Usage) ! { Mut | e } =
   match defaultSeq tc with
   | Just ctors -> buildSeq tc ctx t ctors None
   | None -> failed ()
@@ -63,10 +64,10 @@ fun defaultSeq (tc : Tc) : Maybe (Int, Int) ! { Mut | e } = Hm.lookup (getRef tc
 -- `#[]` is `nil`, and `#[a, ..]` is `cons a #[..]`; with an expected type,
 -- `cons`'s result is made that type first, so that the parts are checked
 -- against what they must be.
-fun buildSeq (tc : Tc) (ctx : Ctx) (t : Term) (ctors : (Int, Int)) (expected : Maybe Value) : (Core, Value, Usage) ! { Mut | e } =
+fun buildSeq (tc : Tc) (ctx : Ctx) (t : HirExpr) (ctors : (Int, Int)) (expected : Maybe Value) : (Core, Value, Usage) ! { Mut | e } =
   let (nil, cons) = ctors in
-  match t with
-  | Term.SeqCons hd rest ->
+  match (hirOf tc, t) with
+  | HirExprSeqCons hd rest ->
       let (fC0, fTy0, fU) = seqCtor tc ctx cons in
       let (fC, fTy) = insert tc ctx fC0 fTy0 in
       let w =
@@ -123,7 +124,7 @@ fun params (tc : Tc) (ctx : Ctx) (kind : Value) (core : Core) : Core ! { Mut | e
 
 -- `#[a; b; c]`: its elements checked against `elem` (or a new metavariable
 -- for their type), and the array made of them.
-@pub fun arrayLiteral (tc : Tc) (ctx : Ctx) (items : [Term]) (elem0 : Maybe Value) : (Core, Value, Usage) ! { Mut | e } =
+@pub fun arrayLiteral (tc : Tc) (ctx : Ctx) (items : [HirExpr]) (elem0 : Maybe Value) : (Core, Value, Usage) ! { Mut | e } =
   let names = getRef tc.nativeNames in
   match (Hm.lookup "Array" names, Hm.lookup "arrayFromList" names) with
   | (Just array, Just fromList) ->

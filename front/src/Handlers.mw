@@ -27,9 +27,10 @@ use Idyll.Usage (Usage)
 use Idyll.Usage as U
 use Idyll.Ctx (Ctx)
 use Idyll.Ctx as X
-use Idyll.Elab (check, infer, insert, freshMeta, leaveBinder, lam, keyOf)
-use Idyll.Hir (Term, Ident, HandleClause)
+use Idyll.Elab (check, infer, insert, freshMeta, leaveBinder, lam, keyOf, hirOf)
+use Idyll.Hir (Ident)
 use Idyll.Hir as H
+use Idyll.Rename
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
 use Std.Maybe as M
@@ -39,17 +40,35 @@ fun failed () : (Core, Value, Usage) = (Core.Error, Value.Error, U.unknown ())
 
 fun gradeValue g : Value = Va.polyValue (Va.polyConstant g)
 
-fun opOf (c : HandleClause) : Maybe Ident = match c with | HandleClause.HandleClause op _ _ -> op
+-- A handler's clause, read off the renamed program's tables: its
+-- operation (none for `return`), what it binds, and its body.
+record Clause = {
+  op : Maybe Ident,
+  params : [Ident],
+  body : HirExpr
+}
 
-fun paramsOf (c : HandleClause) : [Ident] = match c with | HandleClause.HandleClause _ xs _ -> xs
+fun clausesOf (hir : HirArena) (cs : [HirHandleClause]) : [Clause] =
+  V.map
+    (\c ->
+      Clause {
+        op = M.map (\x -> identOf hir x) (hirHandleClauseOp hir c),
+        params = V.map (\x -> identOf hir x) (hirHandleClauseParams hir c),
+        body = hirHandleClauseBody hir c
+      })
+    cs
 
-fun bodyOf (c : HandleClause) : Term = match c with | HandleClause.HandleClause _ _ b -> b
+fun opOf (c : Clause) : Maybe Ident = c.op
+
+fun paramsOf (c : Clause) : [Ident] = c.params
+
+fun bodyOf (c : Clause) : HirExpr = c.body
 
 fun opInfo (tc : Tc) (u : Int) : OpInfo ! { Mut | e } =
   M.unwrapOr (OpInfo.OpInfo "?" (0 - 1) 0 0 0 False) (Hm.lookup u (getRef tc.ops))
 
 -- Which effect the clauses handle: the one their operations all belong to.
-fun effectOf (tc : Tc) (clauses : [HandleClause]) : Maybe (Maybe Int) ! { Mut | e } =
+fun effectOf (tc : Tc) (clauses : [Clause]) : Maybe (Maybe Int) ! { Mut | e } =
   V.foldl
     (\acc c ->
       match (acc, opOf c) with
@@ -77,7 +96,8 @@ fun effectOf (tc : Tc) (clauses : [HandleClause]) : Maybe (Maybe Int) ! { Mut | 
     clauses
 
 -- `handle body with clauses`, against `expected` if there is one.
-@pub fun handled (tc : Tc) (ctx : Ctx) (body : Term) (clauses : [HandleClause]) (expected : Maybe Value) : (Core, Value, Usage) ! { Mut | e } =
+@pub fun handled (tc : Tc) (ctx : Ctx) (body : HirExpr) (written : [HirHandleClause]) (expected : Maybe Value) : (Core, Value, Usage) ! { Mut | e } =
+  let clauses = clausesOf (hirOf tc) written in
   match effectOf tc clauses with
   | None -> failed ()
   | Just None ->
@@ -88,10 +108,10 @@ fun effectOf (tc : Tc) (clauses : [HandleClause]) : Maybe (Maybe Int) ! { Mut | 
        | None -> failed ()
        | Just info -> handleEffect tc ctx body clauses expected eff info)
 
-fun clausesFor (clauses : [HandleClause]) (op : Int) : [HandleClause] =
+fun clausesFor (clauses : [Clause]) (op : Int) : [Clause] =
   V.filter (\c -> match opOf c with | Just x -> H.uniqueOf x == op | None -> False) clauses
 
-fun handleEffect (tc : Tc) (ctx : Ctx) (body : Term) (clauses : [HandleClause]) (expected : Maybe Value) (eff : Int) (info : EffectInfo) : (Core, Value, Usage) ! { Mut | e } =
+fun handleEffect (tc : Tc) (ctx : Ctx) (body : HirExpr) (clauses : [Clause]) (expected : Maybe Value) (eff : Int) (info : EffectInfo) : (Core, Value, Usage) ! { Mut | e } =
   match info with
   | EffectInfo.EffectInfo effName kinds ops ->
       let missing = V.filter (\op -> V.isEmpty (clausesFor clauses op)) ops in
@@ -180,7 +200,7 @@ fun handleEffect (tc : Tc) (ctx : Ctx) (body : Term) (clauses : [HandleClause]) 
 
 -- One operation's clause: its Core, and its usage, which counts as often as
 -- the operation may be performed.
-fun opClause (tc : Tc) (ctx : Ctx) (clauses : [HandleClause]) (op : Int) (args : [Value]) (result : Value) (resumed : Value) (effName : String) : Maybe (OpClause, Usage) ! { Mut | e } =
+fun opClause (tc : Tc) (ctx : Ctx) (clauses : [Clause]) (op : Int) (args : [Value]) (result : Value) (resumed : Value) (effName : String) : Maybe (OpClause, Usage) ! { Mut | e } =
   match (V.head (clausesFor clauses op), opInfo tc op) with
   | (None, _) -> None
   | (Just c, OpInfo.OpInfo opName _ _ _ arity many) ->
