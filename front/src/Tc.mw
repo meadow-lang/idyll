@@ -10,7 +10,7 @@ use Idyll.Elab (Cx)
 use Idyll.Usage (Usage)
 use Idyll.Usage as U
 use Std.St (runSt)
-use Idyll.Value (Value, Env)
+use Idyll.Value (Value, Env, Poly)
 use Idyll.Core (Core)
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
@@ -29,6 +29,10 @@ use Std.Maybe.Maybe.*
 -- A metavariable: where it was made (a node of the HIR), where it came
 -- from, and its type if that is known.
 @pub data MetaInfo = MetaInfo Int Origin (Maybe MetaTy)
+
+-- A use that had to fit a grade still being worked out: at what length of
+-- context, what was used, what was allowed, and whether it is a field's.
+@pub data Waiting = Waiting Int Poly Value Bool
 
 @pub data Meta = Unsolved MetaInfo | Solved Value MetaInfo
 
@@ -77,6 +81,19 @@ use Std.Maybe.Maybe.*
   -- mention, with which of their arguments it may: to be pruned of the
   -- others, and the solution tried again (see `Unify.solve`)
   prunes : Ref [(Int, [Bool])],
+  -- the grades being worked out, of the parameters that say none in a module
+  -- that is not linear, with the constraints that waited on each (see
+  -- `Elab.settleGrade`)
+  inferred : Ref (HashMap Int [Waiting]),
+  -- the joins of two alternatives' uses that mention a grade still being
+  -- worked out, each standing for `join(p, q)` until it can be (see
+  -- `Elab.joinUsage`), in the order they were made
+  joins : Ref [(Int, Poly, Poly)],
+  -- how many of the explicit arrows ahead are a definition's parameters, on
+  -- its signature's spine (or its lambdas): given to the next term inferred,
+  -- which hands it to its `Pi` or `Lam` as `spineHere`
+  inferSpine : Ref Int,
+  spineHere : Ref Int,
   -- what was wrong, by the name the Rust checker gives the kind of error
   errors : Ref [String],
   holes : Ref [HoleAt],
@@ -136,6 +153,10 @@ use Std.Maybe.Maybe.*
     problems = newRef [],
     opened = newRef [],
     prunes = newRef [],
+    inferred = newRef Hm.empty,
+    joins = newRef [],
+    inferSpine = newRef 0,
+    spineHere = newRef 0,
     errors = newRef [],
     holes = newRef [],
     postponed = newRef [],

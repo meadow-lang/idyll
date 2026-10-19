@@ -32,7 +32,7 @@ use Idyll.Value (Value, Elim, Env, Closure, Row, Poly)
 use Idyll.Value as Va
 use Idyll.Grade (Grade)
 use Idyll.Grade as G
-use Idyll.Tc (Tc, Meta, MetaInfo, MetaTy, Origin, HoleAt, Postponed)
+use Idyll.Tc (Tc, Meta, MetaInfo, MetaTy, Origin, HoleAt, Postponed, Waiting)
 use Idyll.Tc as T
 use Idyll.Eval (force, apply, eval, quote, row, rowParts, toPoly, splitComp, comp, renormalise)
 use Idyll.Unify (subtype, unify, sibling, effectsFit, shownRow, rowHasError, rowKind, sortOf)
@@ -52,6 +52,7 @@ use Idyll.Handlers (handled)
 use Idyll.Sequences (checkSeq, inferSeq, arrayLiteral, arrayElement)
 use Idyll.Termination (checkTermination, arity)
 use Std.Collections.Vector as V
+use Std.Sort as Srt
 use Std.Collections.HashMap as Hm
 use Std.String as S
 use Std.Maybe as M
@@ -309,7 +310,9 @@ fun fitsMeta (tc : Tc) (ctx : Ctx) (m : Int) (ty : Value) : Bool ! { Mut | e } =
 
 -- `used ⊑ allowed`, monomial by monomial; failing that, with a
 -- metavariable involved, the two made equal.
-@pub(pkg) fun gradeFits (tc : Tc) (ctx : Ctx) (used0 : Poly) (allowed0 : Value) : Bool ! { Mut | e } =
+@pub(pkg) fun gradeFits (tc : Tc) (ctx : Ctx) (used0 : Poly) (allowed0 : Value) : Bool ! { Mut | e } = gradeFitsAt tc ctx.lvl used0 allowed0
+
+fun gradeFitsAt (tc : Tc) (lvl : Int) (used0 : Poly) (allowed0 : Value) : Bool ! { Mut | e } =
   let used = renormalise tc used0 in
   let allowed = toPoly tc allowed0 in
   if Va.asConstant allowed == Just G.any then True
@@ -319,26 +322,30 @@ fun fitsMeta (tc : Tc) (ctx : Ctx) (m : Int) (ty : Value) : Bool ! { Mut | e } =
     else
       let keys = V.append (Va.polyKeys used) (Va.polyKeys allowed) in
       if V.all (\k -> G.fits (Va.coefficient used k) (Va.coefficient allowed k)) keys then True
-      else V.any isFlex atoms and unify tc ctx.lvl (Va.polyValue used) (Va.polyValue allowed)
+      else V.any isFlex atoms and unify tc lvl (Va.polyValue used) (Va.polyValue allowed)
 
 -- Leaving a binder: the uses of what is charged to `key` must fit its
 -- grade. `()` may be used less than its grade says: there is nothing to
 -- lose by dropping one.
 @pub(pkg) fun leaveKey (tc : Tc) (ctx : Ctx) (key : Maybe Int) (allowed : Value) (usage : Usage) (inType : Bool) : Usage ! { Mut | e } =
   let (used, rest) = U.take usage key in
+  let unit =
+    match key with
+    | Just k -> M.map (\t -> force tc t) (X.typeOfKey ctx k)
+    | None -> None
+  in
+  let isUnit = match unit with | Just (Value.LitTy Builtin.Unit) -> True | _ -> False in
+  -- a parameter that says no grade: its grade is worked out from its uses,
+  -- here, and what waited on it is checked against it
+  let w0 =
+    match unsettled tc allowed with
+    | Just m -> settleGrade tc m (if U.isUnknown rest then None else Just used) isUnit
+    | None -> ()
+  in
   if U.isUnknown rest then rest
-  else if gradeFits tc ctx used allowed then rest
+  else if fitsOrWaits tc ctx used allowed False then rest
   else
-    let unit =
-      match key with
-      | Just k -> M.map (\t -> force tc t) (X.typeOfKey ctx k)
-      | None -> None
-    in
-    let unitFits =
-      match unit with
-      | Just (Value.LitTy Builtin.Unit) -> gradeFits tc ctx used (Va.polyValue (Va.polyJoin (toPoly tc allowed) (Va.polyZero ())))
-      | _ -> False
-    in
+    let unitFits = isUnit and gradeFits tc ctx used (Va.polyValue (Va.polyJoin (toPoly tc allowed) (Va.polyZero ()))) in
     if unitFits then rest
     else
       let w = T.error tc "UsageMismatch" in
@@ -346,6 +353,204 @@ fun fitsMeta (tc : Tc) (ctx : Ctx) (m : Int) (ty : Value) : Bool ! { Mut | e } =
 
 @pub(pkg) fun leaveBinder (tc : Tc) (ctx : Ctx) (x : Ident) (allowed : Value) (usage : Usage) (inType : Bool) : Usage ! { Mut | e } =
   leaveKey tc ctx (keyOf x) allowed usage inType
+
+-- --- grades worked out ---------------------------------------------------------------
+
+-- A grade for a parameter that says none, to be worked out from its uses: a
+-- constant, so its metavariable is applied to nothing, and a type whose
+-- arrows' grades are being worked out does not depend on the parameters
+-- before them for that.
+fun inferredGrade (tc : Tc) (ctx : Ctx) (name : String) : (Core, Value) ! { Mut | e } =
+  let m = T.newMeta tc (MetaInfo.MetaInfo 0 (Origin.Inferred ("the grade of " ++ name)) None) in
+  let w = setRef tc.inferred (Hm.insert m [] (getRef tc.inferred)) in
+  (Core.Meta m, eval tc ctx.env (Core.Meta m))
+
+-- Two alternatives' usages joined: each count the larger of the two, as
+-- `U.join` makes it; but a count that mentions a grade still being worked
+-- out is a metavariable of its own, standing for the join, and worked out
+-- with it. Joined coefficient by coefficient, `join(1, ?g)` would be `0..1 +
+-- 0..1 ?g`, which is `0..2` once `?g` is `1`, where the join is `1`: a
+-- parameter used in one equation and handed to the recursion in the other
+-- could never be linear.
+@pub(pkg) fun joinUsage (tc : Tc) (a : Usage) (b : Usage) : Usage ! { Mut | e } =
+  U.joinWith a b (\p q ->
+    if M.isSome (waitsOn tc p) or M.isSome (waitsOn tc q) then
+      let j = T.newMeta tc (MetaInfo.MetaInfo 0 (Origin.Inferred "the larger of two uses") None) in
+      let w = setRef tc.joins (V.pushBack (getRef tc.joins) (j, p, q)) in
+      Va.polyAtom (Value.Flex j [])
+    else Va.polyJoin p q)
+
+-- A join metavariable still standing for its join: what it joins.
+fun unsolvedJoin (tc : Tc) (n : Int) : Maybe (Poly, Poly) ! { Mut | e } =
+  match T.meta tc n with
+  | Just (Meta.Unsolved _) -> M.map (\t -> match t with | (_, p, q) -> (p, q)) (V.find (\t -> match t with | (j, _, _) -> j == n) (getRef tc.joins))
+  | _ -> None
+
+-- The first grade still being worked out that `p` mentions, itself or in a
+-- join it mentions.
+fun waitsOn (tc : Tc) (p : Poly) : Maybe Int ! { Mut | e } =
+  V.foldl
+    (\acc a ->
+      match acc with
+      | Just m -> Just m
+      | None ->
+          (match unsettled tc a with
+           | Just m -> Just m
+           | None ->
+               (match force tc a with
+                | Value.Flex n _ ->
+                    (match unsolvedJoin tc n with
+                     | Just (jp, jq) -> (match waitsOn tc jp with | Just m -> Just m | None -> waitsOn tc jq)
+                     | None -> None)
+                | _ -> None)))
+    None
+    (V.concatMap fst (Va.polyTerms p))
+
+-- Solve each join whose parts no longer wait on anything, now that a grade
+-- is settled; one with a grade variable in it, at `[]`.
+fun solveJoins (tc : Tc) : () ! { Mut | e } =
+  let ready =
+    V.filter
+      (\t -> match t with | (j, p, q) -> M.isSome (unsolvedJoin tc j) and M.isNone (waitsOn tc p) and M.isNone (waitsOn tc q))
+      (getRef tc.joins)
+  in
+  if V.isEmpty ready then
+    setRef tc.joins (V.filter (\t -> match t with | (j, _, _) -> M.isSome (unsolvedJoin tc j)) (getRef tc.joins))
+  else
+    let w =
+      V.foldl
+        (\u t ->
+          match t with
+          | (j, p, q) ->
+              let g =
+                match (gradeUnder tc p (0 - 1) G.any, gradeUnder tc q (0 - 1) G.any) with
+                | (Just a, Just b) -> G.join a b
+                | _ -> G.any
+              in
+              match T.meta tc j with
+              | Just (Meta.Unsolved _) -> T.solve tc j (eval tc (Va.emptyEnv ()) (Core.GradeLit g))
+              | _ -> ())
+        ()
+        ready
+    in
+    solveJoins tc
+
+-- The metavariable of a grade still being worked out, if `g` is one.
+fun unsettled (tc : Tc) (g : Value) : Maybe Int ! { Mut | e } =
+  match force tc g with
+  | Value.Flex m _ ->
+      if Hm.member m (getRef tc.inferred) then (match T.meta tc m with | Just (Meta.Unsolved _) -> Just m | _ -> None) else None
+  | _ -> None
+
+-- Whether `used` fits `allowed`, as `gradeFits` says; or, if `allowed`
+-- mentions a grade still being worked out (a field's, of a parameter that
+-- says none), true for now, the question kept for when it is settled.
+@pub(pkg) fun fitsOrWaits (tc : Tc) (ctx : Ctx) (used : Poly) (allowed : Value) (field : Bool) : Bool ! { Mut | e } = fitsOrWaitsAt tc ctx.lvl used allowed field
+
+fun fitsOrWaitsAt (tc : Tc) (lvl : Int) (used : Poly) (allowed : Value) (field : Bool) : Bool ! { Mut | e } =
+  let waits = match waitsOn tc (toPoly tc allowed) with | Just m -> Just m | None -> waitsOn tc used in
+  match waits with
+  | Just m ->
+      let waits = Hm.getOr [] m (getRef tc.inferred) in
+      let w = setRef tc.inferred (Hm.insert m (V.pushBack waits (Waiting.Waiting lvl used allowed field)) (getRef tc.inferred)) in
+      True
+  | None -> gradeFitsAt tc lvl used allowed
+
+-- Settle a parameter's grade, which said none: the tightest of `1`, `0..1`
+-- and `[]` its uses (`used`, if known) and what waited on it allow, as an
+-- everyday grade is; never `0`, which would erase it. In trying each, the
+-- grade is that one wherever it occurs, and any other grade still being
+-- worked out is taken at `[]`. What waited on it is then checked against it.
+-- A `()` may be used as often as wanted, whatever its grade says, so its
+-- grade stays `[]`, as is written least.
+fun settleGrade (tc : Tc) (m : Int) (used : Maybe Poly) (unit : Bool) : () ! { Mut | e } =
+  let waiting = Hm.getOr [] m (getRef tc.inferred) in
+  let candidates = [G.one, M.unwrapOr G.any (G.range G.zero G.one), G.any] in
+  let tries =
+    \c ->
+      match used with
+      | None -> False
+      | Just u ->
+          let direct = not unit and (match gradeUnder tc u m c with | Just g -> G.fits g c | None -> False) in
+          direct
+            and V.all
+              (\w ->
+                match w with
+                | Waiting.Waiting _ wu wa _ ->
+                    (match (gradeUnder tc wu m c, gradeUnder tc (toPoly tc wa) m c) with
+                     | (Just a, Just b) -> G.fits a b
+                     | _ -> False))
+              waiting
+  in
+  settleAs tc m (M.unwrapOr G.any (V.find tries candidates))
+
+-- `p`'s grade with `m` taken at `c` and every other grade still being worked
+-- out at `[]`; nothing if it mentions anything else not known.
+fun gradeUnder (tc : Tc) (p : Poly) (m : Int) (c : Grade) : Maybe Grade ! { Mut | e } =
+  V.foldl
+    (\acc t ->
+      match (acc, t) with
+      | (Just total, (atoms, coefficient)) ->
+          let product =
+            V.foldl
+              (\pr a ->
+                match pr with
+                | Just g ->
+                    (match force tc a with
+                     | Value.Flex n _ ->
+                         if n == m then Just (G.mul g c)
+                         else if Hm.member n (getRef tc.inferred) then Just (G.mul g G.any)
+                         else
+                           -- a join still standing: worked out from its parts
+                           (match unsolvedJoin tc n with
+                            | Just (jp, jq) ->
+                                (match (gradeUnder tc jp m c, gradeUnder tc jq m c) with
+                                 | (Just a, Just b) -> Just (G.mul g (G.join a b))
+                                 | _ -> None)
+                            | None -> None)
+                     | _ -> None)
+                | None -> None)
+              (Just coefficient)
+              atoms
+          in
+          M.map (\pg -> G.add total pg) product
+      | _ -> None)
+    (Just G.zero)
+    (Va.polyTerms (renormalise tc p))
+
+-- Solve a grade being worked out as `g`, and check what waited on it.
+fun settleAs (tc : Tc) (m : Int) (g : Grade) : () ! { Mut | e } =
+  match Hm.lookup m (getRef tc.inferred) with
+  | None -> ()
+  | Just waiting ->
+      let w = setRef tc.inferred (Hm.delete m (getRef tc.inferred)) in
+      let w2 = match T.meta tc m with | Just (Meta.Unsolved _) -> T.solve tc m (eval tc (Va.emptyEnv ()) (Core.GradeLit g)) | _ -> () in
+      let w3 = solveJoins tc in
+      V.foldl
+        (\u wt ->
+          match wt with
+          | Waiting.Waiting wlvl wu wa field ->
+              if fitsOrWaitsAt tc wlvl wu wa field then ()
+              else T.error tc (if field then "FieldUsage" else "UsageMismatch"))
+        ()
+        waiting
+
+-- The grades being worked out that nothing settled (a parameter whose
+-- definition did not check), but those in `keep`: `[]`, in the order they
+-- were made.
+fun settleRest (tc : Tc) (keep : [Int]) : () ! { Mut | e } =
+  let rest = Srt.sort (V.filter (\m -> not (V.elem m keep)) (Hm.keys (getRef tc.inferred))) in
+  V.foldl (\u m -> settleAs tc m G.any) () rest
+
+-- How many explicit parameters a definition's equations take: its lambdas,
+-- or its clauses' patterns. Only those of its signature's arrows are its
+-- parameters, whose grades may be worked out from it; a function it returns
+-- is a value, whose type is as written.
+fun parameters (h : HirArena) (rhs : HirExpr) : Int =
+  match (h, rhs) with
+  | HirExprLam _ _ _ body -> 1 + parameters h body
+  | HirExprMatch clauses -> (match V.head clauses with | Just c -> V.len (hirClausePats h c) | None -> 0)
+  | _ -> 0
 
 -- --- bindings ----------------------------------------------------------------------
 
@@ -384,13 +589,15 @@ fun checkAgainstSig (tc : Tc) (ctx : Ctx) (rhs : HirExpr) (sig : HirExpr) (vsig 
   result
 
 -- A signature's type and the effects it allows: `x : b ! e`.
-fun signature (tc : Tc) (ctx : Ctx) (sig : HirExpr) : (HirExpr, Core, Value) ! { Mut | e } =
+fun signature (tc : Tc) (ctx : Ctx) (sig : HirExpr) (params : Int) : (HirExpr, Core, Value) ! { Mut | e } =
   let (ty, allowed) =
     match (hirOf tc, sig) with
     | HirExprEff ty r -> (ty, checkRow tc ctx r)
     | _ -> (sig, Core.Row [] [])
   in
+  let w = setRef tc.inferSpine params in
   let (_, vsig) = checkType tc ctx ty in
+  let w2 = setRef tc.inferSpine 0 in
   (ty, allowed, vsig)
 
 -- What the program declares, for the dump: at the top level only.
@@ -412,10 +619,13 @@ fun checkGroupIn (tc : Tc) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, Maybe
       let b = BindOf { name = bindName h hb, ty = hirBindTy h hb, rhs = hirBindRhs h hb } in
       let (rhs, ty, usage) =
         match b.ty with
-        -- no signature: inferred, and the definition is transparent
-        | None -> infer tc ctx b.rhs
+        -- no signature: inferred, and the definition is transparent (its
+        -- parameters' grades worked out from its body)
+        | None ->
+            let w = setRef tc.inferSpine (parameters h b.rhs) in
+            infer tc ctx b.rhs
         | Just sig ->
-            let (sigTy, allowed, vsig) = signature tc ctx sig in
+            let (sigTy, allowed, vsig) = signature tc ctx sig (parameters h b.rhs) in
             let (rhsC, usage) = checkAgainstSig tc ctx b.rhs sigTy vsig in
             let w =
               match effectsOf tc usage with
@@ -450,7 +660,11 @@ fun checkGroupIn (tc : Tc) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, Maybe
             | None ->
                 let w = T.error tc "RecursiveBindingNeedsSignature" in
                 Value.Error
-            | Just sig -> snd (checkType tc ctx sig))
+            | Just sig ->
+                let w = setRef tc.inferSpine (parameters h b.rhs) in
+                let ty = snd (checkType tc ctx sig) in
+                let w2 = setRef tc.inferSpine 0 in
+                ty)
           bs
       in
       -- each a constant, so that unification cannot unfold one forever
@@ -534,7 +748,10 @@ fun enterLet (tc : Tc) (ctx : Ctx) (groups : [HirGroup]) : (Ctx, [Pending], [May
     (\acc g ->
       match acc with
       | (c, ps, ws) ->
+          -- (an enclosing definition's grades are not this group's to settle)
+          let outer = Hm.keys (getRef tc.inferred) in
           let (next, p, wr) = checkGroup tc c g in
+          let s = settleRest tc outer in
           -- what had to wait for the rest of the definition to be known
           let a = retryPostponed tc False in
           -- and at the top level, the rows it left open are closed
@@ -631,6 +848,10 @@ fun leaveGroups (usage : Usage) (pending : [Pending]) : Usage =
 -- A term's type, worked out, and the term in Core. Implicit arguments are
 -- not inserted at the end: the places that need a function or a type do.
 @pub fun infer (tc : Tc) (ctx : Ctx) (t : HirExpr) : (Core, Value, Usage) ! { Mut | e } =
+  -- only a signature's own arrows are its spine, not a type inside one
+  let spine = getRef tc.inferSpine in
+  let w = setRef tc.inferSpine 0 in
+  let w2 = setRef tc.spineHere spine in
   elaborate tc (Cx { tc, ctx, goal = None }) t
 
 -- The pass's function for an expression, as `install` set it up for the
@@ -937,12 +1158,18 @@ fun inferRange (tc : Tc) (ctx : Ctx) (lo : HirExpr) (hi : HirExpr) : (Core, Valu
 
 -- `(x : [r] a) -> b`: it lives in the larger of its parts' universes.
 fun inferPi (tc : Tc) (ctx : Ctx) (mx : Maybe Ident) (icit : Icit) (ann : Maybe HirGrade) (dom : HirExpr) (cod : HirExpr) : (Core, Value, Usage) ! { Mut | e } =
+  let spine = getRef tc.spineHere in
   let h = hirOf tc in
+  let name = match mx with | Just x -> H.textOf x | None -> "_" in
   let default = if icit == Icit.Implicit then G.zero else defaultGrade tc in
   let (gs, its) = binderGrades tc ctx ann default in
-  let (grade, _) = gs in
+  -- a parameter of a definition that says no grade, in a module that is
+  -- not linear: its grade is worked out from the body
+  let grade =
+    if spine > 0 and icit == Icit.Explicit and M.isNone ann and not (getRef tc.linear) then fst (inferredGrade tc ctx name)
+    else fst gs
+  in
   let (inType, inTypeV) = its in
-  let name = match mx with | Just x -> H.textOf x | None -> "_" in
   let (domC, domV, domLevel, domU) =
     if kindHirExpr h dom == HirExprKind.Omitted then
       -- a variable a signature mentions without binding it: its type is
@@ -952,6 +1179,8 @@ fun inferPi (tc : Tc) (ctx : Ctx) (mx : Maybe Ident) (icit : Icit) (ann : Maybe 
     else inferType tc ctx dom
   in
   let ctx2 = X.bind ctx mx name domV in
+  -- the codomain goes on with the spine, one parameter fewer
+  let w0 = setRef tc.inferSpine (if icit == Icit.Explicit then (if spine > 0 then spine - 1 else 0) else spine) in
   let (codC, codLevel, codU) =
     match (h, cod) with
     | HirExprEff ty r ->
@@ -970,6 +1199,7 @@ fun inferPi (tc : Tc) (ctx : Ctx) (mx : Maybe Ident) (icit : Icit) (ann : Maybe 
   (Core.Pi name icit grade inType domC codC, Value.Type (maxOf domLevel codLevel), U.add domU codU2)
 
 fun inferLam (tc : Tc) (ctx : Ctx) (x : Ident) (ann : Maybe HirGrade) (tyAnn : Maybe HirExpr) (body : HirExpr) : (Core, Value, Usage) ! { Mut | e } =
+  let spine = getRef tc.spineHere in
   let h = hirOf tc in
   let name = H.textOf x in
   let dom =
@@ -979,9 +1209,14 @@ fun inferLam (tc : Tc) (ctx : Ctx) (x : Ident) (ann : Maybe HirGrade) (tyAnn : M
   in
   let w = if M.isSome (M.andThen (\g -> hirGradeInType h g) ann) then T.error tc "UncheckedInTypeGrade" else () in
   let (gs, its) = binderGrades tc ctx ann (defaultGrade tc) in
-  let grade = snd gs in
+  -- a parameter of a definition with no signature, which says no grade:
+  -- its uses will. (Not any lambda's: one whose type is inferred may then be
+  -- what others must have exactly, as a handler's clauses must.)
+  let grade = if spine > 0 and M.isNone ann and not (getRef tc.linear) then snd (inferredGrade tc ctx name) else snd gs in
   let inType = snd its in
   let ctx2 = X.graded (X.bind ctx (Just x) name dom) grade in
+  -- the body goes on with the definition's parameters
+  let w1 = setRef tc.inferSpine (if spine > 0 then spine - 1 else 0) in
   let (bodyC, bodyTy, usage) = infer tc ctx2 body in
   -- what calling it does is what its body does
   let effects = row tc (U.effectsOf usage) in

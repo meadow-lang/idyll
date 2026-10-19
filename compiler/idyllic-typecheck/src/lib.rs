@@ -985,6 +985,38 @@ pub struct Checker {
     /// with which of their arguments it may (see [`Checker::solve`]): to be
     /// pruned of the others, and the solution tried again.
     prunes: std::cell::RefCell<Vec<(MetaVar, Vec<bool>)>>,
+    /// The grades being worked out, of the parameters that say none in a
+    /// module that is not linear (see [`Checker::settle_grade`]).
+    inferred: HashMap<MetaVar, Inferred>,
+    /// The joins of two alternatives' uses that mention a grade still being
+    /// worked out, each standing for `join(p, q)` until it can be worked out
+    /// (see [`Checker::join_usage`]), in the order they were made.
+    joins: Vec<(MetaVar, Poly, Poly)>,
+    /// How many of the explicit arrows ahead are a definition's parameters,
+    /// on its signature's spine (or its lambdas, with none): those that say
+    /// no grade have theirs worked out.
+    infer_spine: usize,
+}
+
+/// A parameter's grade being worked out: how many variables its meta is
+/// applied to, and the constraints on it that waited for it, to be checked
+/// once it is settled.
+#[derive(Clone)]
+struct Inferred {
+    args: usize,
+    waiting: Vec<Waiting>,
+}
+
+/// A use that had to fit a grade still being worked out.
+#[derive(Clone)]
+struct Waiting {
+    ctx: Ctx,
+    node: NodeId,
+    name: String,
+    used: Poly,
+    allowed: Rc<Value>,
+    /// a field's, with what it is a field of; `None` for a binder's
+    field: Option<Option<String>>,
 }
 
 /// What is known about a constructor.  At run time it is its `tag` and its
@@ -1153,6 +1185,9 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         postponed: Vec::new(),
         opened: Vec::new(),
         prunes: Default::default(),
+        inferred: HashMap::new(),
+        joins: Vec::new(),
+        infer_spine: 0,
     };
     let ctx = Ctx::initial(&tc);
     let ctx = tc.import(&ctx, deps);

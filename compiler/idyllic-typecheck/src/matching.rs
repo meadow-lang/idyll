@@ -668,7 +668,8 @@ impl Checker {
             CaseAlt { head: Head::Bool(true), name: "True".into(), vars: Vec::new(), body: e_c },
             CaseAlt { head: Head::Bool(false), name: "False".into(), vars: Vec::new(), body: f_c },
         ];
-        (Rc::new(Core::Case(g_c, Rc::new(alts))), g_usage + e_usage.join(f_usage))
+        let either = self.join_usage(m.node, e_usage, f_usage);
+        (Rc::new(Core::Case(g_c, Rc::new(alts))), g_usage + either)
     }
 
     /// Branch on the variable in slot `k`.
@@ -685,13 +686,9 @@ impl Checker {
         let used = self.split_use(ctx, k);
         let mut forced = false;
         let mut alts = Vec::new();
-        let mut usage: Option<Usage> = None;
-        let mut join = |u: Usage| {
-            usage = Some(match usage.take() {
-                None => u,
-                Some(v) => v.join(u),
-            })
-        };
+        // the alternatives' usages, joined once they are all known
+        let mut parts: Vec<Usage> = Vec::new();
+        let mut join = |u: Usage| parts.push(u);
         match how {
             Split::Lit(lit) => {
                 // a character is compared by its code point
@@ -725,7 +722,8 @@ impl Checker {
                     CaseAlt { head: Head::Bool(true), name: "True".into(), vars: Vec::new(), body: yes },
                     CaseAlt { head: Head::Bool(false), name: "False".into(), vars: Vec::new(), body: no },
                 ];
-                return (Rc::new(Core::Case(test, Rc::new(alts))), used + yes_usage.join(no_usage));
+                let both = self.join_usage(m.node, yes_usage, no_usage);
+                return (Rc::new(Core::Case(test, Rc::new(alts))), used + both);
             }
             Split::Con => {
                 let ty = self.force(ctx.binders[k].ty.clone());
@@ -803,6 +801,7 @@ impl Checker {
                 }
             }
         }
+        let usage = parts.into_iter().reduce(|a, b| self.join_usage(m.node, a, b));
         let case = Rc::new(Core::Case(scrutinee, Rc::new(alts)));
         match forced {
             true => (Rc::new(Core::Runtime(Note::Forced, case)), usage.unwrap_or_else(Usage::none)),
@@ -822,7 +821,7 @@ impl Checker {
         whole: Option<String>,
     ) {
         let used = usage.take(Some(key));
-        if usage.is_unknown() || self.grade_fits(ctx, &used, allowed.clone()) {
+        if usage.is_unknown() || self.fits_or_waits(ctx, node, name, &used, allowed.clone(), Some(whole.clone())) {
             return;
         }
         let used = self.quote(ctx.lvl, used.into_value());

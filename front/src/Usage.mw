@@ -13,6 +13,7 @@ use Idyll.Value (Value, Poly)
 use Idyll.Value as Va
 use Idyll.Grade as G
 use Std.Collections.Vector as V
+use Std.Sort as Srt
 use Std.Maybe.Maybe.*
 
 @pub data Usage = Usage [(Int, Poly)] Bool [Value]
@@ -62,6 +63,14 @@ fun keysOf (a : [(Int, Poly)]) (b : [(Int, Poly)]) : [Int] =
   match (a, b) with
   | (Usage.Usage ca ka ea, Usage.Usage cb kb eb) ->
       let cs = V.map (\x -> (x, Va.polyJoin (countOf ca x) (countOf cb x))) (keysOf ca cb) in
+      Usage.Usage cs (ka or kb) (V.append ea eb)
+
+-- The same, each count joined as `f` says, the variables in order of their
+-- uniques.
+@pub fun joinWith (a : Usage) (b : Usage) (f : Poly -> Poly -> Poly ! e) : Usage ! e =
+  match (a, b) with
+  | (Usage.Usage ca ka ea, Usage.Usage cb kb eb) ->
+      let cs = V.map (\x -> (x, f (countOf ca x) (countOf cb x))) (Srt.sort (keysOf ca cb)) in
       Usage.Usage cs (ka or kb) (V.append ea eb)
 
 -- A variable's count, and the usage without it (its binder is being

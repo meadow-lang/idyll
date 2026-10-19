@@ -39,7 +39,7 @@ fn the_early_stages_show_the_block_alone() {
 #[test]
 fn core_shows_the_definitions_and_the_expression() {
     let core = stage("", "double : Int -> Int\ndouble n = n * 2\n\ndouble 21", "core");
-    assert_eq!(core, "double : Int -> Int\ndouble = \\n -> * n 2\n\ndouble 21");
+    assert_eq!(core, "double : (_ : [1] Int) -> Int\ndouble = \\n -> * n 2\n\ndouble 21");
     // a recursive definition is among them, a type former is not run
     let nat = "data Nat = Z | S Nat\n\nuse Nat.*\n\nplus : Nat -> Nat -> Nat\nplus Z m = m\nplus (S n) m = S (plus n m)\n";
     let core = stage("", nat, "core");

@@ -42,10 +42,10 @@
 --   State             a state, as an effect: get, put, and running with one
 --   Yield             generators, as an effect: yield, and collecting a list
 --
--- Std is unrestricted, as a module that says nothing is: what a function
--- takes it may use as often as it likes, so its signatures say nothing
--- about grades. A function from any module fits them. The exceptions say
--- so: proofs take what only the types need with [0], and
--- `Collections.MArray`, whose arrays are changed in place, is linear, and
--- takes an array once. (Std was linear until 2026-10-17; ROADMAP.md says
--- why it is no longer.)
+-- Std is not a linear module, and its signatures say little about grades:
+-- each parameter's grade is worked out from its definition, as anywhere,
+-- the tightest of 1, 0..1 and [] its body allows (`length` takes its list
+-- with [0..1], `sum` with 1). Proofs take what only the types need with
+-- [0], and `Collections.MArray`, whose arrays are changed in place, is
+-- linear, and takes an array once. (Std was linear until 2026-10-17, then
+-- unrestricted; ROADMAP.md says why.)

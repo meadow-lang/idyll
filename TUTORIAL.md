@@ -89,7 +89,7 @@ later entries can use them, until you `:reset` or leave.
 > double : Int [2] -> Int
 double [n] = n + n
 
-double : Int [2] -> Int
+double : (_ : [1] Int [2]) -> Int
 > double [21]
 42 : Int
 ```
@@ -399,7 +399,7 @@ A character pattern is matched as a number is:
 kind 'a' = "the first letter"
 kind c = "another"
 
-kind : Char -> String
+kind : (_ : [1] Char) -> String
 > kind 'a'
 "the first letter" : String
 ```
@@ -510,9 +510,10 @@ second example, `x` gets its type `Int` from the annotation.
 ## Grades
 
 Every binder has a **grade**: how many times the function uses it, as in
-[Granule](https://granule-project.github.io). A binder that says nothing
-has grade `[]`, *any number of times*, so an ordinary function is written
-as in any functional language:
+[Granule](https://granule-project.github.io). A lambda's binder that says
+nothing has grade `[]`, *any number of times*, so an ordinary function is
+written as in any functional language (a definition's parameters have
+theirs worked out instead: see [Worked-out grades](#worked-out-grades)):
 
 ```
 > \(x : Int) -> 5
@@ -601,6 +602,44 @@ type gets its grade from it:
 : (x : [2] Int) -> Int
 ```
 
+### Worked-out grades
+
+A definition's parameter that says no grade gets the tightest one its
+body allows, of the grades used every day: `1` if it is used exactly
+once, `0..1` if at most once, and `[]` otherwise. Never `0`, which would
+erase it: say `[0]` for that.
+
+```
+> inc : Int -> Int
+inc n = n + 1
+
+inc : (_ : [1] Int) -> Int
+> pick : Bool -> Int -> Int -> Int
+pick b x y = if b then x else y
+
+pick : (_ : [1] Bool) -> (_ : [0..1] Int) -> (_ : [0..1] Int) -> Int
+> double : Int -> Int
+double n = n + n
+
+double : Int -> Int
+```
+
+The grade is part of the type, so a caller sees it, and the tighter it is
+the more a caller may pass: something it may use only once can go where
+`inc` takes its argument, and not where `double` takes its. A function
+whose grades are tighter than another's fits where that one is wanted,
+as `inc` does where `Int -> Int` is. Recursion is worked out too: a
+parameter used in one equation and handed on unchanged to the recursion
+in another is used once, so `plus` below takes both its arguments
+linearly. A function of functions, like `twice f x = f (f x)`, uses `x`
+as often as `f` uses its argument, which a type `Int -> Int` leaves at
+`[]`.
+
+A lambda on its own keeps `[]`, as its type may then be what another must
+have exactly (a handler's clauses each give one), and so does a parameter
+of type `()`, which may be used as often as wanted whatever its grade
+says.
+
 ### Linear modules
 
 A module that is mostly about resources can make `1` the default instead:
@@ -619,13 +658,14 @@ Error: usage mismatch
 ```
 
 A type is printed as the module it is in reads it: there, `(x : Int)` is
-linear, and an unrestricted binder is written `(x : [] Int)`. The prelude
-is a linear module, so that the data types it declares (`List`, `Maybe`,
-`Result`, pairs) can hold anything, resources too. The standard library is
-not: its functions use what they are given as often as they like, so their
-signatures say nothing about grades, and a function from any module fits
-them. `Std.Collections.MArray`, whose arrays are changed in place, is the
-one linear module of it (see [The standard library](#the-standard-library)).
+linear, and an unrestricted binder is written `(x : [] Int)`. Nothing is
+worked out in a linear module: a parameter that says nothing is linear.
+The prelude is a linear module, so that the data types it declares
+(`List`, `Maybe`, `Result`, pairs) can hold anything, resources too. The
+standard library is not: its parameters' grades are worked out as any
+definition's are, and `Std.Collections.MArray`, whose arrays are changed
+in place, is the one linear module of it (see [The standard
+library](#the-standard-library)).
 
 ### Grades flow through calls
 
@@ -730,7 +770,7 @@ function type changes, except that an implicit argument is erased (grade
 > let id : {a : Type} -> a -> a = \x -> x in id 3
 3 : Int
 > let id : {a : Type} -> a -> a = \x -> x in id
-: {a : Type} -> a -> a
+: {a : Type} -> (_ : [1] a) -> a
 ```
 
 An implicit argument is only filled in where there is something to fill
@@ -746,9 +786,9 @@ too large a type is an error of its own:
 > id : {a : Type} -> a -> a
 id x = x
 
-id : {a : Type} -> a -> a
+id : {a : Type} -> (_ : [1] a) -> a
 > (\f -> f) id
-: {a : Type} -> a -> a
+: {a : Type} -> (_ : [1] a) -> a
 > id id 1
 1 : Int
 > id id
@@ -804,11 +844,11 @@ can end with an expression to check against them.
 > id : {a : Type} -> a -> a
 id x = x
 
-id : {a : Type} -> a -> a
+id : {a : Type} -> (_ : [1] a) -> a
 > flip : {a b c : Type} -> (a -> b -> c) -> b -> a -> c
 flip f y x = f x y
 
-flip : {a : Type} -> {b : Type} -> {c : Type} -> (a -> b -> c) -> b -> a -> c
+flip : {a : Type} -> {b : Type} -> {c : Type} -> (_ : [1] a -> b -> c) -> b -> a -> c
 > flip (\(n : Int) (m : Int) -> n + m) 1 (id 2)
 3 : Int
 ```
@@ -836,7 +876,7 @@ Things to know:
   succ (n : Int) = n + one
 
   one : Int
-  succ : (n : Int) -> Int
+  succ : (n : [1] Int) -> Int
   ```
 
 - The variables a signature binds implicitly are in scope in the equation,
@@ -1109,7 +1149,7 @@ fromMaybe [d] m = case m of
   Nothing -> d
   Just x -> x
 
-fromMaybe : {a : Type} -> a [0..1] -> Maybe a -> a
+fromMaybe : {a : Type} -> (_ : [1] a [0..1]) -> Maybe a -> a
 > fromMaybe [1] (Just 100)
 100 : Int
 ```
@@ -1182,7 +1222,7 @@ sum xs = case xs of
   Nil -> 0
   y :: ys -> y + sum ys
 
-sum : List Int -> Int
+sum : (_ : [1] List Int) -> Int
 > sum (1 :: 2 :: 3 :: Nil)
 6 : Int
 ```
@@ -1220,7 +1260,7 @@ Point.Point : (_ : [1] Int) -> (_ : [1] Int) -> Point
 > flip : Point -> Point
 flip (Point x y) = Point y x
 
-flip : Point -> Point
+flip : (_ : [1] Point) -> Point
 > flip (Point 1 2)
 Point 2 1 : Point
 ```
@@ -1240,7 +1280,7 @@ a pair works on all of them:
 > swap : (Int, Bool) -> (Bool, Int)
 swap (n, b) = (b, n)
 
-swap : (Int, Bool) -> (Bool, Int)
+swap : (_ : [1] (Int, Bool)) -> (Bool, Int)
 > swap (1, True)
 (True, 1) : (Bool, Int)
 > (1, "two", 3)
@@ -1423,14 +1463,14 @@ Nat.S : (_ : [1] Nat) -> Nat
 half (S (S n)) = S (half n)
 half _ = Z
 
-half : Nat -> Nat
+half : (_ : [1] Nat) -> Nat
 > half (S (S (S (S (S Z)))))
 S (S Z) : Nat
 > second : List Int -> Int
 second (_ :: y :: _) = y
 second _ = 0
 
-second : List Int -> Int
+second : (_ : [0..1] List Int) -> Int
 > second (1 :: 2 :: 3 :: Nil)
 2 : Int
 ```
@@ -1467,7 +1507,7 @@ classify xs = case xs of
   x :: _ | x < 0 -> 1
   _ -> 2
 
-classify : List Int -> Int
+classify : (_ : [0..1] List Int) -> Int
 > classify (0 - 1 :: Nil)
 1 : Int
 ```
@@ -1591,7 +1631,7 @@ Cons 1 (Cons 2 (Cons 3 Nil)) : Vec (S (S (S Z))) Int
 total #[] = 0
 total (Cons x xs) = x + total xs
 
-total : {n : Nat} -> Vec n Int -> Int
+total : {n : Nat} -> (_ : [1] Vec n Int) -> Int
 > total #[4, 5, 6]
 15 : Int
 ```
@@ -1662,12 +1702,12 @@ Vec.Cons : {a : Type} -> {n : Nat} -> (_ : [1] a) -> (_ : [1] Vec n a) -> Vec (S
 plus Z m = m
 plus (S n) m = S (plus n m)
 
-plus : Nat -> Nat -> Nat
+plus : (_ : [1] Nat) -> (_ : [1] Nat) -> Nat
 > append : Vec n a -> Vec m a -> Vec (plus n m) a
 append Nil ys = ys
 append (Cons x xs) ys = Cons x (append xs ys)
 
-append : {n : Nat} -> {a : Type} -> {m : Nat} -> Vec n a -> Vec m a -> Vec (plus n m) a
+append : {n : Nat} -> {a : Type} -> {m : Nat} -> (_ : [1] Vec n a) -> (_ : [1] Vec m a) -> Vec (plus n m) a
 > append (Cons 1 Nil) (Cons 2 (Cons 3 Nil))
 Cons 1 (Cons 2 (Cons 3 Nil)) : Vec (S (S (S Z))) Int
 ```
@@ -1698,7 +1738,7 @@ Nat.S : (_ : [1] Nat) -> Nat
 plus Z m = m
 plus (S n) m = S (plus n m)
 
-plus : Nat -> Nat -> Nat
+plus : (_ : [1] Nat) -> (_ : [1] Nat) -> Nat
 > data Eq : Nat -> Nat -> Type where
   Refl : Eq x x
 use Eq.*
@@ -1708,12 +1748,12 @@ Eq.Refl : {x : Nat} -> Eq x x
 > cong : Eq x y -> Eq (S x) (S y)
 cong Refl = Refl
 
-cong : {x : Nat} -> {y : Nat} -> Eq x y -> Eq (S x) (S y)
+cong : {x : Nat} -> {y : Nat} -> (_ : [1] Eq x y) -> Eq (S x) (S y)
 > plusZero : (n : Nat) -> Eq (plus n Z) n
 plusZero Z = Refl
 plusZero (S k) = cong (plusZero k)
 
-plusZero : (n : Nat) -> Eq (plus n Z) n
+plusZero : (n : [1] Nat) -> Eq (plus n Z) n
 ```
 
 `plusZero` needs both halves of this section: `plus (S k) Z` computes to
@@ -1742,7 +1782,7 @@ Fin.FS : {n : Nat} -> (_ : [1] Fin n) -> Fin (S n)
 > noFin : Fin Z -> Int
 noFin i impossible
 
-noFin : Fin Z -> Int
+noFin : (_ : [1] Fin Z) -> Int
 > nope : Nat -> Int
 nope n impossible
 
@@ -1883,7 +1923,7 @@ Vec.Cons : {a : Type} -> {n : Nat} -> (_ : [1] a) -> (_ : [1] Vec n a) -> Vec (S
 > cast : (p : [0] Eq n m) -> Vec n a -> Vec m a
 cast Refl v = v
 
-cast : {n : Nat} -> {m : Nat} -> {a : Type} -> (p : [0] Eq n m) -> Vec n a -> Vec m a
+cast : {n : Nat} -> {m : Nat} -> {a : Type} -> (p : [0] Eq n m) -> (_ : [1] Vec n a) -> Vec m a
 > cast Refl (Cons 1 Nil)
 Cons 1 Nil : Vec (S Z) Int
 ```
@@ -1956,7 +1996,7 @@ fail : () -> Int ! Fail
 > safeDiv : Int -> Int -> Int ! Fail
 safeDiv a b = if b == 0 then fail () else a / b
 
-safeDiv : Int -> Int -> Int ! Fail
+safeDiv : (_ : [0..1] Int) -> Int -> Int ! Fail
 > handle safeDiv 7 0 with
   return x -> x
   fail _ k -> 0
@@ -2101,7 +2141,7 @@ log : Int -> () ! Log
 > addAsk : Int -> Int ! Ask
 addAsk n = n + ask ()
 
-addAsk : Int -> Int ! Ask
+addAsk : (_ : [1] Int) -> Int ! Ask
 > logged : Int -> Int ! Log
 logged n = let u = log n in n
 
@@ -2109,7 +2149,7 @@ logged : Int -> Int ! Log
 > compose : (f : b -> c ! e) -> (g : a -> b ! e) -> (x : a) -> c ! e
 compose f g x = f (g x)
 
-compose : {b : Type} -> {c : Type} -> {e : Effect} -> {a : Type} -> (f : b -> c ! e) -> (g : a -> b ! e) -> (x : a) -> c ! e
+compose : {b : Type} -> {c : Type} -> {e : Effect} -> {a : Type} -> (f : [1] b -> c ! e) -> (g : a -> b ! e) -> (x : a) -> c ! e
 > both n = compose logged addAsk n
 
 both : (n : Int) -> Int ! {Ask, Log}
@@ -2571,18 +2611,16 @@ A module and its type share a name, so its constructors are
 3 : Int
 ```
 
-Grades run through it all. The library is a [linear
-module](#linear-modules), so it can hold resources: a function takes what
-it uses once at `1`, what it may drop or only looks at with `[0..1]`, and
-what it uses many times with `[]`. `length` drops the elements, so takes
-the list with `[0..1]`. A function you hand it fits whatever grades its
-own arguments have: `map` calls its function for each element, so takes
-it with `[]`, and gives it each element at a grade of its own, `r`, which
-is the grade `map` takes the list with. Mapping a function that uses its
-argument once takes the list once, and its cells are freed as `map` goes;
-mapping one that says nothing of its argument (`[]`) takes the list with
-`[]`. A fold hands what its function made back to that function, so takes
-it, the start and the list with `[]`; [Working out
+Grades run through it all, [worked out](#worked-out-grades) from each
+definition: a function takes what it uses once at `1`, what it may drop or
+only looks at with `[0..1]`, and what it uses many times with `[]`.
+`length` drops the elements, so takes the list with `[0..1]`; `sum` adds
+each, so takes it with `1`; `append` takes both its lists with `1`. A
+function you hand it fits wherever its grades are within those asked for:
+`map` calls its function for each element, so takes it with `[]`, and the
+function it is given may use its argument any number of times, so the list
+is taken with `[]` too. A fold hands what its function made back to that
+function, so takes it, the start and the list with `[]`; [Working out
 grades](#working-out-grades) shows why.
 
 Where a type can say more, it does. A vector's length is in its type, so
@@ -2629,7 +2667,7 @@ use Std.Num.Nat.Nat.*
 use Std.Eq (Eq)
 use Std.Dec (isYes)
 > plusComm
-: (n : Nat) -> (m : Nat) -> Eq Nat (plus n m) (plus m n)
+: (n : [1] Nat) -> (m : Nat) -> Eq Nat (plus n m) (plus m n)
 > three : Eq (plus (S Z) (S (S Z))) (plus (S (S Z)) (S Z))
 three = plusComm (S Z) (S (S Z))
 
@@ -2664,7 +2702,7 @@ Exceptions, state and generators are effects with handlers, as in
 > safeDiv : Int -> Int -> Int ! Exn String
 safeDiv a b = if b == 0 then throw "divide by zero" else a / b
 
-safeDiv : Int -> Int -> Int ! Exn String
+safeDiv : (_ : [0..1] Int) -> Int -> Int ! Exn String
 > toResult (\(u : ()) -> safeDiv 7 0)
 Err "divide by zero" : Result String Int
 ```
@@ -2718,11 +2756,11 @@ duplicates it, can be written honestly by asking for a box:
 > drop : {a : Type} -> a [0] -> ()
 drop [x] = ()
 
-drop : {a : Type} -> a [0] -> ()
+drop : {a : Type} -> (_ : [1] a [0]) -> ()
 > copy : Int [2] -> Int
 copy [x] = x + x
 
-copy : Int [2] -> Int
+copy : (_ : [1] Int [2]) -> Int
 > (\[d] x -> x) : {t : Type} -> t [0..1] -> t -> t
 : {t : Type} -> t [0..1] -> t -> t
 ```
@@ -2745,7 +2783,7 @@ once and `y` twice — so it needs `x` 3 times and `y` 6 times:
 > foo : Int [3] -> Int [6] -> Int [3]
 foo [x] [y] = [x + y + y]
 
-foo : Int [3] -> Int [6] -> Int [3]
+foo : (_ : [1] Int [3]) -> Int [6] -> Int [3]
 ```
 
 Give it an `Int [5]` for `y` instead and the arithmetic no longer works
@@ -2888,7 +2926,7 @@ used `s * r` times.
 > compose : {a b c : Type} -> {r s : Grade} -> (f : (y : [s] b) -> c) -> (g : [s] ((x : [r] a) -> b)) -> (x : [s * r] a) -> c
 compose f g x = f (g x)
 
-compose : {a : Type} -> {b : Type} -> {c : Type} -> {r : Grade} -> {s : Grade} -> (f : (y : [s] b) -> c) -> (g : [s] (x : [r] a) -> b) -> (x : [r * s] a) -> c
+compose : {a : Type} -> {b : Type} -> {c : Type} -> {r : Grade} -> {s : Grade} -> (f : [1] (y : [s] b) -> c) -> (g : [s] (x : [r] a) -> b) -> (x : [r * s] a) -> c
 ```
 
 `twice f x = f (f x)` hands `f x` to `f`: so `f` is used once outside and

@@ -19,15 +19,16 @@
 //! never charged for its *types*: signatures, annotations and grades are
 //! elaborated for their meaning and their usage dropped.
 
-use super::core::{lit_builtin, Core, Level, Lvl, Note};
+use super::core::{lit_builtin, Core, Level, Lvl, MetaVar, Note};
 use super::value::{vvar, Closure, Elim, Poly, VTy, Value};
 use super::positivity::{DataShape, Field};
 use super::matching::mentions;
-use super::{BinderInfo, Checker, CtorInfo, Ctx, HoleInfo, MetaOrigin, MetaTy, RecDef, TypeErrorKind, Usage};
+use super::{BinderInfo, Checker, CtorInfo, Ctx, HoleInfo, MetaEntry, MetaOrigin, MetaTy, RecDef, TypeErrorKind, Usage};
 use idyllic_ast::{Icit, Lit};
 use idyllic_builtins::{Builtin, Prim};
 use crate::grade::Grade;
 use idyllic_hir::{self as hir, NodeId, TermKind};
+use std::collections::HashSet;
 use std::rc::Rc;
 
 /// What a binding group still owes once its scope has been checked: the
@@ -399,6 +400,225 @@ impl Checker {
         flexible && self.unify(ctx.lvl, used.clone().into_value(), allowed.clone().into_value())
     }
 
+    /// A grade for a parameter that says none, to be worked out from its
+    /// uses (see [`Self::settle_grade`]).
+    /// It is a constant, so its meta is applied to nothing: a type whose
+    /// arrows' grades are being worked out does not depend on the
+    /// parameters before them for that.
+    pub(super) fn inferred_grade(&mut self, ctx: &Ctx, node: NodeId, name: &str) -> (Rc<Core>, Rc<Value>) {
+        let m = self.new_meta(node, MetaOrigin::Inferred(format!("the grade of {name}")), None);
+        self.inferred.insert(m, super::Inferred { args: 0, waiting: Vec::new() });
+        let c = Rc::new(Core::Meta(m));
+        let v = self.eval(&ctx.env, &c);
+        (c, v)
+    }
+
+    /// Two alternatives' usages joined: each count the larger of the two,
+    /// as [`Usage::join`] makes it; but a count that mentions a grade still
+    /// being worked out is a meta of its own, standing for the join, and
+    /// worked out with it. Joined coefficient by coefficient, `join(1, ?g)`
+    /// would be `0..1 + 0..1 ?g`, which is `0..2` once `?g` is `1`, where
+    /// the join is `1`: a parameter used in one equation and handed to the
+    /// recursion in the other could never be linear.
+    pub(super) fn join_usage(&mut self, node: NodeId, mut a: Usage, b: Usage) -> Usage {
+        let keys: std::collections::BTreeSet<usize> = a.counts.keys().chain(b.counts.keys()).copied().collect();
+        let mut theirs = b.counts;
+        for k in keys {
+            let p = a.counts.remove(&k).unwrap_or_default();
+            let q = theirs.remove(&k).unwrap_or_default();
+            let joined = if self.waits_on(&p).is_some() || self.waits_on(&q).is_some() {
+                let j = self.new_meta(node, MetaOrigin::Inferred("the larger of two uses".into()), None);
+                self.joins.push((j, p, q));
+                Poly::atom(Rc::new(Value::Flex(j, Default::default())))
+            } else {
+                p.join(q)
+            };
+            a.counts.insert(k, joined);
+        }
+        a.unknown |= b.unknown;
+        a.effects.extend(b.effects);
+        a
+    }
+
+    /// A join meta still standing for its join: what it joins.
+    fn unsolved_join(&self, n: MetaVar) -> Option<(Poly, Poly)> {
+        if !matches!(self.metas[n], MetaEntry::Unsolved(_)) {
+            return None;
+        }
+        self.joins.iter().find(|(j, _, _)| *j == n).map(|(_, p, q)| (p.clone(), q.clone()))
+    }
+
+    /// The first grade still being worked out that `p` mentions, itself or
+    /// in a join it mentions.
+    fn waits_on(&self, p: &Poly) -> Option<MetaVar> {
+        for (atoms, _) in p.terms() {
+            for a in atoms {
+                if let Some(m) = self.unsettled(a) {
+                    return Some(m);
+                }
+                if let Value::Flex(n, _) = &*self.force(a.clone()) {
+                    if let Some((p, q)) = self.unsolved_join(*n) {
+                        if let Some(m) = self.waits_on(&p).or_else(|| self.waits_on(&q)) {
+                            return Some(m);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Solve each join whose parts no longer wait on anything, now that a
+    /// grade is settled; one with a grade variable in it, at `[]`.
+    fn solve_joins(&mut self) {
+        loop {
+            let ready: Vec<(MetaVar, Poly, Poly)> = self
+                .joins
+                .iter()
+                .filter(|(j, p, q)| matches!(self.metas[*j], MetaEntry::Unsolved(_)) && self.waits_on(p).is_none() && self.waits_on(q).is_none())
+                .cloned()
+                .collect();
+            if ready.is_empty() {
+                break;
+            }
+            for (j, p, q) in ready {
+                let none = usize::MAX;
+                let g = match (self.grade_under(&p, none, Grade::ANY), self.grade_under(&q, none, Grade::ANY)) {
+                    (Some(a), Some(b)) => a.join(b),
+                    _ => Grade::ANY,
+                };
+                if let MetaEntry::Unsolved(info) = &self.metas[j] {
+                    let info = info.clone();
+                    let value = self.eval(&Default::default(), &Rc::new(Core::GradeLit(g)));
+                    self.metas[j] = MetaEntry::Solved(value, info);
+                }
+            }
+        }
+        self.joins.retain(|(j, _, _)| matches!(self.metas[*j], MetaEntry::Unsolved(_)));
+    }
+
+    /// The meta of a grade still being worked out, if `g` is one.
+    fn unsettled(&self, g: &Rc<Value>) -> Option<MetaVar> {
+        match &*self.force(g.clone()) {
+            Value::Flex(m, _) if self.inferred.contains_key(m) && matches!(self.metas[*m], MetaEntry::Unsolved(_)) => Some(*m),
+            _ => None,
+        }
+    }
+
+    /// Whether `used` fits `allowed`, as [`Self::grade_fits`] says; or, if
+    /// `allowed` mentions a grade still being worked out (a field's, of a
+    /// parameter that says none), true for now, the question kept for when
+    /// that grade is settled.
+    pub(super) fn fits_or_waits(
+        &mut self,
+        ctx: &Ctx,
+        node: NodeId,
+        name: &str,
+        used: &Poly,
+        allowed: Rc<Value>,
+        field: Option<Option<String>>,
+    ) -> bool {
+        let poly = self.to_poly(self.force(allowed.clone()));
+        if let Some(m) = self.waits_on(&poly).or_else(|| self.waits_on(used)) {
+            let waiting = super::Waiting { ctx: ctx.clone(), node, name: name.to_string(), used: used.clone(), allowed, field };
+            self.inferred.get_mut(&m).expect("unsettled").waiting.push(waiting);
+            return true;
+        }
+        self.grade_fits(ctx, used, allowed)
+    }
+
+    /// Settle a parameter's grade, which said none: the tightest of `1`,
+    /// `0..1` and `[]` that its uses (`used`, if known) and what waited on it
+    /// allow, as an everyday grade is; never `0`, which would erase it. In
+    /// trying each, the grade is that one wherever it occurs (a recursive
+    /// call's argument, a field of what it matched), and any other grade
+    /// still being worked out is taken at `[]`. What waited on it is then
+    /// checked against it. A `()` may be used as often as wanted, whatever
+    /// its grade says, so its grade stays `[]`, as is written least.
+    fn settle_grade(&mut self, m: MetaVar, used: Option<&Poly>, unit: bool) {
+        let waiting = self.inferred.get(&m).map(|i| i.waiting.clone()).unwrap_or_default();
+        let candidates = [Grade::ONE, Grade::range(Grade::ZERO, Grade::ONE).expect("0 <= 1"), Grade::ANY];
+        let mut chosen = Grade::ANY;
+        if let (Some(used), false) = (used, unit) {
+            for c in candidates {
+                let direct = self.grade_under(used, m, c).is_some_and(|u| u.fits(c));
+                let rest = waiting.iter().all(|w| {
+                    let allowed = self.to_poly(self.force(w.allowed.clone()));
+                    match (self.grade_under(&w.used, m, c), self.grade_under(&allowed, m, c)) {
+                        (Some(u), Some(a)) => u.fits(a),
+                        _ => false,
+                    }
+                });
+                if direct && rest {
+                    chosen = c;
+                    break;
+                }
+            }
+        }
+        self.settle_as(m, chosen);
+    }
+
+    /// `p`'s grade with the meta `m` taken at `c` and every other grade
+    /// still being worked out at `[]`; `None` if it mentions anything else
+    /// not known (a grade variable).
+    fn grade_under(&mut self, p: &Poly, m: MetaVar, c: Grade) -> Option<Grade> {
+        let p = self.renormalise(p);
+        let mut total = Grade::ZERO;
+        for (atoms, coefficient) in p.terms() {
+            let mut product = coefficient;
+            for a in atoms {
+                let g = match &*self.force(a.clone()) {
+                    Value::Flex(n, _) if *n == m => c,
+                    Value::Flex(n, _) if self.inferred.contains_key(n) => Grade::ANY,
+                    // a join still standing: worked out from its parts
+                    Value::Flex(n, _) => {
+                        let (p, q) = self.unsolved_join(*n)?;
+                        self.grade_under(&p, m, c)?.join(self.grade_under(&q, m, c)?)
+                    }
+                    _ => return None,
+                };
+                product = product * g;
+            }
+            total = total + product;
+        }
+        Some(total)
+    }
+
+    /// Solve a grade being worked out as `g`, and check what waited on it.
+    fn settle_as(&mut self, m: MetaVar, g: Grade) {
+        let Some(inferred) = self.inferred.remove(&m) else { return };
+        if let MetaEntry::Unsolved(info) = &self.metas[m] {
+            let info = info.clone();
+            let body = (0..inferred.args).fold(Rc::new(Core::GradeLit(g)), |body, _| Rc::new(Core::Lam("_".into(), body)));
+            let value = self.eval(&Default::default(), &body);
+            self.metas[m] = MetaEntry::Solved(value, info);
+        }
+        self.solve_joins();
+        for w in inferred.waiting {
+            if self.fits_or_waits(&w.ctx, w.node, &w.name, &w.used, w.allowed.clone(), w.field.clone()) {
+                continue;
+            }
+            let used = self.quote(w.ctx.lvl, w.used.into_value());
+            let allowed = self.quote(w.ctx.lvl, w.allowed);
+            let kind = match w.field {
+                Some(whole) => TypeErrorKind::FieldUsage { name: w.name, used, allowed, whole },
+                None => TypeErrorKind::UsageMismatch { name: w.name, used, allowed, in_type: false },
+            };
+            self.error(w.node, kind);
+        }
+    }
+
+    /// The grades being worked out that nothing settled (a parameter whose
+    /// definition did not check), but those in `keep`: `[]`.
+    pub(super) fn settle_rest(&mut self, keep: &HashSet<MetaVar>) {
+        // in the order they were made, as front/ settles them
+        let mut rest: Vec<MetaVar> = self.inferred.keys().copied().filter(|m| !keep.contains(m)).collect();
+        rest.sort_unstable();
+        for m in rest {
+            self.settle_as(m, Grade::ANY);
+        }
+    }
+
     /// Leaving `x`'s binder: its uses must fit its grade.  `ctx` is the
     /// context inside the binder.
     pub(super) fn leave_binder(
@@ -425,13 +645,20 @@ impl Checker {
         in_type: bool,
     ) {
         let used = usage.take(key);
-        if usage.is_unknown() || self.grade_fits(ctx, &used, allowed.clone()) {
-            return;
-        }
         // `()` is the only value of its type, so there is nothing to lose by
         // dropping one: a `Unit` may be used less than its grade says
         let unit = ctx.binders.iter().rev().find(|b| key.is_some() && b.key == key).map(|b| self.force(b.ty.clone()));
-        if matches!(unit.as_deref(), Some(Value::LitTy(Builtin::Unit))) {
+        let is_unit = matches!(unit.as_deref(), Some(Value::LitTy(Builtin::Unit)));
+        // a parameter that says no grade: its grade is worked out from its
+        // uses, here, and what waited on it is checked against it
+        if let Some(m) = self.unsettled(&allowed) {
+            let unknown = usage.is_unknown();
+            self.settle_grade(m, (!unknown).then_some(&used), is_unit);
+        }
+        if usage.is_unknown() || self.fits_or_waits(ctx, node, name, &used, allowed.clone(), None) {
+            return;
+        }
+        if is_unit {
             let at_most = self.to_poly(allowed.clone()).join(Poly::zero()).into_value();
             if self.grade_fits(ctx, &used, at_most) {
                 return;
@@ -494,7 +721,11 @@ impl Checker {
             hir::BindGroup::NonRec(b) => {
                 let (rhs, ty, usage) = match &b.ty {
                     // no signature: infer, and let the definition be transparent
-                    None => self.infer(ctx, &b.rhs),
+                    // (its parameters' grades worked out from its body)
+                    None => {
+                        self.infer_spine = parameters(&b.rhs);
+                        self.infer(ctx, &b.rhs)
+                    }
                     // `x : b ! e`: computing `x` may have the effects `e`; a
                     // signature with no row allows none
                     Some(sig) => {
@@ -502,7 +733,9 @@ impl Checker {
                             TermKind::Eff(ty, row) => (&**ty, self.check_row(ctx, row)),
                             _ => (sig, Rc::new(Core::Row(Vec::new(), Vec::new()))),
                         };
+                        self.infer_spine = parameters(&b.rhs);
                         let (_, vsig) = self.check_type(ctx, sig);
+                        self.infer_spine = 0;
                         let (rhs, usage) = self.check_against_sig(ctx, &b.rhs, sig, vsig.clone());
                         if let Some(effects) = self.effects_of(&usage) {
                             let allowed = self.eval(&ctx.env, &allowed);
@@ -544,7 +777,12 @@ impl Checker {
                             self.error(b.id, TypeErrorKind::RecursiveBindingNeedsSignature(b.name.text.clone()));
                             Rc::new(Value::Error)
                         }
-                        Some(sig) => self.check_type(ctx, sig).1,
+                        Some(sig) => {
+                            self.infer_spine = parameters(&b.rhs);
+                            let ty = self.check_type(ctx, sig).1;
+                            self.infer_spine = 0;
+                            ty
+                        }
                     })
                     .collect();
                 // 2. declare all of them as opaque constants, so unification
@@ -618,7 +856,10 @@ impl Checker {
         let mut ctx = ctx.clone();
         let (mut pending, mut wraps) = (Vec::new(), Vec::new());
         for g in groups {
+            // (an enclosing definition's grades are not this group's to settle)
+            let outer: HashSet<MetaVar> = self.inferred.keys().copied().collect();
             let (next, p, w) = self.check_group(&ctx, g);
+            self.settle_rest(&outer);
             // what had to wait for the rest of the definition to be known
             self.retry_postponed(false);
             // and at the top level, the rows it left open are closed
@@ -718,6 +959,8 @@ impl Checker {
         let nid = t.id;
         let err = || (Rc::new(Core::Error), Rc::new(Value::Error), Usage::unknown());
         let universe = |n: Level| Rc::new(Value::Type(n));
+        // only a signature's own arrows are its spine, not a type inside one
+        let spine = std::mem::replace(&mut self.infer_spine, 0);
         let result: (Rc<Core>, VTy, Usage) = match &t.kind {
             TermKind::Type => (Rc::new(Core::Type(0)), universe(1), Usage::none()),
             // `Type n` is `Type` applied to a level, which is how it parses.
@@ -812,9 +1055,16 @@ impl Checker {
             // quantifying over `Type` is not itself in `Type`, which is what
             // keeps the hierarchy from collapsing into `Type : Type`.
             TermKind::Pi(mx, icit, ann, dom, cod) => {
+                let name = mx.as_ref().map_or("_", |x| x.text.as_str()).to_string();
                 let default = if *icit == Icit::Implicit { Grade::ZERO } else { self.default_grade() };
                 let ((grade, _), (in_type, in_type_v)) = self.binder_grades(ctx, ann.as_ref(), default);
-                let name = mx.as_ref().map_or("_", |x| x.text.as_str()).to_string();
+                // a parameter of a definition that says no grade, in a module
+                // that is not linear: its grade is worked out from the body
+                let grade = if spine > 0 && *icit == Icit::Explicit && ann.is_none() && !self.linear {
+                    self.inferred_grade(ctx, nid, &name).0
+                } else {
+                    grade
+                };
                 let (dom_c, dom_v, dom_level, dom_usage) = match &dom.kind {
                     // a variable a signature mentions without binding it:
                     // its type is for unification to find, in whatever
@@ -828,6 +1078,8 @@ impl Checker {
                     _ => self.infer_type(ctx, dom),
                 };
                 let ctx2 = ctx.bind(mx.as_ref(), &name, dom_v);
+                // the codomain goes on with the spine, one parameter fewer
+                self.infer_spine = if *icit == Icit::Explicit { spine.saturating_sub(1) } else { spine };
                 let (cod_c, cod_level, mut cod_usage) = match &cod.kind {
                     // `a -> b ! e`
                     TermKind::Eff(ty, row) => {
@@ -861,7 +1113,14 @@ impl Checker {
                     self.error(nid, TypeErrorKind::UncheckedInTypeGrade(name.clone()));
                 }
                 let ((_, grade), (_, in_type)) = self.binder_grades(ctx, ann.as_ref(), self.default_grade());
+                // a parameter of a definition with no signature, which says
+                // no grade: its uses will. (Not any lambda's: one whose type
+                // is inferred may then be what others must have exactly, as
+                // a handler's clauses must.)
+                let grade = if spine > 0 && ann.is_none() && !self.linear { self.inferred_grade(ctx, nid, &name).1 } else { grade };
                 let ctx2 = ctx.bind(Some(x), &name, dom.clone()).graded(&grade);
+                // the body goes on with the definition's parameters
+                self.infer_spine = spine.saturating_sub(1);
                 let (body_c, body_ty, mut usage) = self.infer(&ctx2, body);
                 // what calling it does is what its body does
                 let effects = self.row(usage.take_effects().into_iter());
@@ -1539,6 +1798,18 @@ impl Checker {
 }
 
 /// A constructor's signature, `C : a -> Vec n a -> Vec (S n) a`, with each of
+/// How many explicit parameters a definition's equations take: its
+/// lambdas, or its clauses' patterns. Only those of its signature's arrows
+/// are its parameters, whose grades may be worked out from it; a function
+/// it returns is a value, whose type is as written.
+fn parameters(rhs: &hir::Term) -> usize {
+    match &rhs.kind {
+        TermKind::Lam(_, _, _, body) => 1 + parameters(body),
+        TermKind::Match(clauses) => clauses.first().map_or(0, |c| c.pats.len()),
+        _ => 0,
+    }
+}
+
 /// its fields that says no grade linear, in any module, as a field of a
 /// constructor written `C a (Vec n a)` is. Only the constructor's own
 /// arrows: a field's type (`(a -> b) -> T`'s `a -> b`) keeps the module's

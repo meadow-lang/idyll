@@ -47,7 +47,7 @@ use Idyll.Usage (Usage)
 use Idyll.Usage as U
 use Idyll.Ctx (Ctx, Info)
 use Idyll.Ctx as X
-use Idyll.Elab (check, infer, insert, freshMeta, closeEffects, leaveKey, leaveBinder, lam, gradeFits, defaultGrade, mentions, keyOf, effectsOf, hirOf)
+use Idyll.Elab (check, infer, insert, freshMeta, closeEffects, leaveKey, leaveBinder, lam, gradeFits, fitsOrWaits, joinUsage, defaultGrade, mentions, keyOf, effectsOf, hirOf)
 use Idyll.Hir (Ident)
 use Idyll.Hir as H
 use Idyll.Rename
@@ -593,12 +593,12 @@ fun guards (tc : Tc) (m : Matcher) (ctx : Ctx) (gs : [(HirExpr, HirExpr)]) (rest
        | _ ->
            let (fC, fU) = guards tc m ctx (V.drop gs 1) rest goal in
            let alts = [CaseAlt.CaseAlt (Head.BoolLit True) "True" [] eC, CaseAlt.CaseAlt (Head.BoolLit False) "False" [] fC] in
-           (Core.Case gC alts, U.add gU (U.join eU fU)))
+           (Core.Case gC alts, U.add gU (joinUsage tc eU fU)))
 
-fun joined (acc : Maybe Usage) (u : Usage) : Maybe Usage =
+fun joined (tc : Tc) (acc : Maybe Usage) (u : Usage) : Maybe Usage ! { Mut | e } =
   match acc with
   | None -> Just u
-  | Just v -> Just (U.join v u)
+  | Just v -> Just (joinUsage tc v u)
 
 -- Branch on the variable in slot `k`.
 fun split (tc : Tc) (m : Matcher) (ctx : Ctx) (problems : [Problem]) (goal : Value) (k : Int) (how : How) : (Core, Usage) ! { Mut | e } =
@@ -623,7 +623,7 @@ fun split (tc : Tc) (m : Matcher) (ctx : Ctx) (problems : [Problem]) (goal : Val
       let rest = V.filter (\p -> not (wantsLiteral tc ctx p k lit)) problems in
       let (no, noU) = tree tc m ctx rest goal in
       let alts = [CaseAlt.CaseAlt (Head.BoolLit True) "True" [] yes, CaseAlt.CaseAlt (Head.BoolLit False) "False" [] no] in
-      (Core.Case test alts, U.add used (U.join yesU noU))
+      (Core.Case test alts, U.add used (joinUsage tc yesU noU))
   | How.ByCon ->
       (match force tc (X.typeAt ctx k) with
        | Value.LitTy Builtin.Bool ->
@@ -636,7 +636,7 @@ fun split (tc : Tc) (m : Matcher) (ctx : Ctx) (problems : [Problem]) (goal : Val
                       | Unified.Refined ctx2 sigma ->
                           let (body, u) = tree tc m ctx2 (resubstProblems tc ctx.lvl sigma problems) (refineGoal tc ctx.lvl sigma goal) in
                           let name = if b then "True" else "False" in
-                          (V.pushBack alts (CaseAlt.CaseAlt (Head.BoolLit b) name [] body), joined usage u)
+                          (V.pushBack alts (CaseAlt.CaseAlt (Head.BoolLit b) name [] body), joined tc usage u)
                       | _ -> (alts, usage)))
                ([], None)
                [True, False]
@@ -686,7 +686,7 @@ fun splitData (tc : Tc) (m : Matcher) (ctx : Ctx) (problems : [Problem]) (goal :
                  let u2 = V.foldl (\uu dl -> match dl with | (_, key, _, grade) -> leaveField tc ctx3 key grade uu) u (V.reverse delta) in
                  let vars = V.map (\dl -> match dl with | (_, _, hint, _) -> hint) delta in
                  let name = match ctorOf tc c with | CtorInfo.CtorInfo n _ _ _ _ -> n in
-                 (V.pushBack alts (CaseAlt.CaseAlt (Head.Con c) name vars body), joined usage u2)))
+                 (V.pushBack alts (CaseAlt.CaseAlt (Head.Con c) name vars body), joined tc usage u2)))
       ([], None)
       cases
   in
@@ -698,7 +698,7 @@ fun splitData (tc : Tc) (m : Matcher) (ctx : Ctx) (problems : [Problem]) (goal :
 fun leaveField (tc : Tc) (ctx : Ctx) (key : Int) (allowed : Value) (usage : Usage) : Usage ! { Mut | e } =
   let (used, rest) = U.take usage (Just key) in
   if U.isUnknown rest then rest
-  else if gradeFits tc ctx used allowed then rest
+  else if fitsOrWaits tc ctx used allowed True then rest
   else
     let w = T.error tc "FieldUsage" in
     rest
