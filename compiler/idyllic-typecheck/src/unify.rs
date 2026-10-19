@@ -335,9 +335,29 @@ impl Checker {
     // -----------------------------------------------------------------------
 
     /// Solve `?m sp =? rhs`.
+    ///
+    /// A meta in `rhs` applied to variables `?m` may not depend on (`?n x y`,
+    /// where `?m` is made outside the binder of `y`) is *pruned*: solved as
+    /// `\x y. ?n' x` with a new `?n'` that takes only what `?m` may mention,
+    /// and the solution tried again. So a meta made inside a lambda, or a
+    /// handler's clause, can meet one made outside it.
     fn solve(&mut self, gamma: Lvl, m: MetaVar, sp: &Spine, rhs: Rc<Value>) -> bool {
         let Some(pren) = self.invert(gamma, sp) else { return false };
-        let Some(body) = self.rename(m, &pren, rhs) else { return false };
+        self.prunes.borrow_mut().clear();
+        let body = loop {
+            if let Some(body) = self.rename(m, &pren, rhs.clone()) {
+                break body;
+            }
+            let prunes = std::mem::take(&mut *self.prunes.borrow_mut());
+            if prunes.is_empty() {
+                return false;
+            }
+            for (n, keep) in prunes {
+                if !self.prune(n, &keep) {
+                    return false;
+                }
+            }
+        };
         // abstract over the spine: ?m := \x y z. body
         let solution = pren
             .names
@@ -357,6 +377,46 @@ impl Checker {
             return true;
         }
         self.metas[m] = MetaEntry::Solved(value, info);
+        true
+    }
+
+    /// Solve `?n` as `\x1 .. xk. ?n' (the xi `keep` says)`, with a new `?n'`.
+    /// Not if the type `?n` must have mentions its context, which the new
+    /// meta might then lack.
+    fn prune(&mut self, n: MetaVar, keep: &[bool]) -> bool {
+        let info = match &self.metas[n] {
+            MetaEntry::Unsolved(info) => info.clone(),
+            // pruned already, by an earlier occurrence
+            MetaEntry::Solved(..) => return true,
+        };
+        let ty = match &info.ty {
+            None => None,
+            Some(mt) => {
+                let closed = PartialRenaming { dom: 0, cod: mt.types.len(), map: HashMap::new(), names: Vec::new() };
+                let is_closed = self.rename(n, &closed, mt.ty.clone()).is_some();
+                // (what that would have pruned is not to be)
+                self.prunes.borrow_mut().clear();
+                if !is_closed || mt.spine.len() != keep.len() {
+                    return false;
+                }
+                let spine = mt.spine.iter().zip(keep).filter(|(_, k)| **k).map(|(l, _)| *l).collect();
+                Some(super::MetaTy { types: mt.types.clone(), spine, ty: mt.ty.clone() })
+            }
+        };
+        let fresh = self.new_meta(info.node, info.origin.clone(), ty);
+        if let Some(at) = self.opened.iter().position(|(o, _)| *o == n) {
+            let kept = keep.iter().filter(|k| **k).count();
+            self.opened[at] = (fresh, kept);
+        }
+        let len = keep.len();
+        let body = keep
+            .iter()
+            .enumerate()
+            .filter(|(_, k)| **k)
+            .fold(Rc::new(Core::Meta(fresh)), |acc, (i, _)| Rc::new(Core::App(acc, Rc::new(Core::Var(len - 1 - i, format!("x{i}"))))));
+        let solution = (0..len).rev().fold(body, |acc, i| Rc::new(Core::Lam(format!("x{i}"), acc)));
+        let value = self.eval(&Default::default(), &solution);
+        self.metas[n] = MetaEntry::Solved(value, info);
         true
     }
 
@@ -476,6 +536,12 @@ impl Checker {
                 if *m2 == m {
                     return None;
                 }
+                // applied to variables out of scope: pruned of them, if its
+                // spine is a pattern, and then tried again
+                if let Some(keep) = self.prunable(pren, sp) {
+                    self.prunes.borrow_mut().push((*m2, keep));
+                    return None;
+                }
                 return self.rename_spine(m, pren, Rc::new(Core::Meta(*m2)), sp);
             }
             Value::Rigid(k, n, sp) => {
@@ -532,6 +598,22 @@ impl Checker {
                 r.tails.iter().map(|(_, a)| self.rename(m, pren, a.clone())).collect::<Option<_>>()?,
             ),
         }))
+    }
+
+    /// Which of a meta's arguments are in scope, if its spine is distinct
+    /// variables (a pattern) and some are not; `None` otherwise.
+    fn prunable(&self, pren: &PartialRenaming, sp: &Spine) -> Option<Vec<bool>> {
+        let mut seen = std::collections::HashSet::new();
+        let mut keep = Vec::new();
+        for elim in sp {
+            let Elim::App(v) = elim else { return None };
+            let Value::Rigid(k, _, args) = &*self.force(v.clone()) else { return None };
+            if !args.is_empty() || !seen.insert(*k) {
+                return None;
+            }
+            keep.push(pren.map.contains_key(k));
+        }
+        (!keep.iter().all(|k| *k)).then_some(keep)
     }
 
     fn rename_spine(&self, m: MetaVar, pren: &PartialRenaming, head: Rc<Core>, sp: &Spine) -> Option<Rc<Core>> {

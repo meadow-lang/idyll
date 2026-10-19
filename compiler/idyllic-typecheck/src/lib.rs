@@ -981,6 +981,10 @@ pub struct Checker {
     /// definition they were made in has been checked, if nothing filled
     /// them. Each with how many arguments it is applied to.
     opened: Vec<(MetaVar, usize)>,
+    /// The metas a solution met applied to variables it may not mention,
+    /// with which of their arguments it may (see [`Checker::solve`]): to be
+    /// pruned of the others, and the solution tried again.
+    prunes: std::cell::RefCell<Vec<(MetaVar, Vec<bool>)>>,
 }
 
 /// What is known about a constructor.  At run time it is its `tag` and its
@@ -1148,6 +1152,7 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         lets: 0,
         postponed: Vec::new(),
         opened: Vec::new(),
+        prunes: Default::default(),
     };
     let ctx = Ctx::initial(&tc);
     let ctx = tc.import(&ctx, deps);

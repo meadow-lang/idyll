@@ -631,3 +631,25 @@ fn a_constructor_does_not_hide_an_effect_of_its_name() {
     // and outside one, the constructor is what it is
     assert_eq!(ty(&format!("{op}Div")), "Op");
 }
+
+#[test]
+fn a_row_variable_made_inside_a_lambda_meets_one_made_outside() {
+    // the inner `map`'s row is a metavariable over `x`, the outer's is not:
+    // the inner one is pruned of `x`, and the two are one
+    let src = "use Std.Collections.List (map)\n\n\
+               table : (xs : List Int) -> (ys : List Int) -> List (List Int)\n\
+               table xs ys = map (\\(x : Int) -> map (\\(y : Int) -> x * y) ys) xs\n\n\
+               table #[1, 2] #[3, 4]";
+    assert_eq!(accepts(src).evaluation, Some(Evaluation::Value("(3 :: 4 :: Nil) :: (6 :: 8 :: Nil) :: Nil".into())));
+    // and a resumption handed to a function polymorphic in its row: that
+    // row's variable, made in the clause, is pruned of the clause's binders
+    let search = "effect Search where\n  @many choose : Int -> Int -> Int\n\n\
+                  each : (lo : [] Int) -> (hi : [] Int) -> (k : [] (Int -> List a ! {Div | r})) -> List a ! {Div | r}\n\
+                  each lo hi k = if hi < lo then Nil else Std.Collections.List.append (k lo) (each (lo + 1) hi k)\n\n\
+                  all : (body : () -> a ! {Search, Div | r}) -> List a ! {Div | r}\n\
+                  all body = handle body () with\n  return x -> x :: Nil\n  choose lo hi k -> each lo hi k\n\n\
+                  all (\\() -> let a = choose 1 2 in let b = choose a 2 in (a, b))";
+    assert_eq!(accepts(search).evaluation, Some(Evaluation::Value("(1, 1) :: (1, 2) :: (2, 2) :: Nil".into())));
+    // which also lets an argument's type be found from how it is used
+    assert_eq!(ty("(\\f -> f 1) (\\n -> True)"), "Bool");
+}

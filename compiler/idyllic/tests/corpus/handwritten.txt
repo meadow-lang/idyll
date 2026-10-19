@@ -436,3 +436,23 @@ count : (n : Int) -> Int ! {Div, Console}
 count n = if n == 0 then 0 else count (n - 1)
 
 (count 3, Div)
+%%%
+effect Search where
+  @many choose : Int -> Int -> Int
+
+each : (lo : [] Int) -> (hi : [] Int) -> (k : [] (Int -> List a ! {Div | r})) -> List a ! {Div | r}
+each lo hi k = if hi < lo then Nil else Std.Collections.List.append (k lo) (each (lo + 1) hi k)
+
+all : (body : () -> a ! {Search, Div | r}) -> List a ! {Div | r}
+all body = handle body () with
+  return x -> x :: Nil
+  choose lo hi k -> each lo hi k
+
+all (\(u : ()) -> let a = choose 1 3 in let b = choose a 3 in (a, b))
+%%%
+use Std.Collections.List (map)
+
+table : (xs : List Int) -> (ys : List Int) -> List (List Int)
+table xs ys = map (\(x : Int) -> map (\(y : Int) -> x * y) ys) xs
+
+table #[1, 2] #[3, 4]

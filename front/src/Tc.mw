@@ -73,6 +73,10 @@ use Std.Maybe.Maybe.*
   -- how many arguments it is applied to: closed to the empty row when the
   -- definition they were made in has been checked, if nothing filled them
   opened : Ref [(Int, Int)],
+  -- the metavariables a solution met applied to variables it may not
+  -- mention, with which of their arguments it may: to be pruned of the
+  -- others, and the solution tried again (see `Unify.solve`)
+  prunes : Ref [(Int, [Bool])],
   -- what was wrong, by the name the Rust checker gives the kind of error
   errors : Ref [String],
   holes : Ref [HoleAt],
@@ -131,6 +135,7 @@ use Std.Maybe.Maybe.*
     constants = newRef Hm.empty,
     problems = newRef [],
     opened = newRef [],
+    prunes = newRef [],
     errors = newRef [],
     holes = newRef [],
     postponed = newRef [],

@@ -141,7 +141,7 @@ fn every_program_in_the_corpora_has_representations() {
             // a program that uses Std has Std's definitions among its own
             // `let`s, some of whose types really are unknown when compiled
             // (`subst`'s `px : p x`)
-            if src.contains("use Std.") {
+            if src.contains("Std.") {
                 continue;
             }
             let out = pipeline::compile(src, &Options { debug: false, style: OutputStyle::PLAIN, live: false });

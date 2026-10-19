@@ -353,12 +353,17 @@ fun invert (tc : Tc) (gamma : Int) (sp : [Elim]) : Maybe Renaming ! { Mut | e } 
     (Just (Renaming.Renaming (V.len sp) gamma Hm.empty []))
     (V.zip (V.range 0 (V.len sp)) sp)
 
--- `?m sp =? rhs`.
+-- `?m sp =? rhs`. A metavariable in `rhs` applied to variables `?m` may not
+-- depend on (`?n x y`, where `?m` is made outside the binder of `y`) is
+-- pruned of them: solved as `\x y. ?n' x` with a new `?n'` that takes only
+-- what `?m` may mention, and the solution tried again. So a metavariable
+-- made inside a lambda, or a handler's clause, can meet one made outside it.
 fun solve (tc : Tc) (gamma : Int) (m : Int) (sp : [Elim]) (rhs : Value) : Bool ! { Mut | e } =
   match invert tc gamma sp with
   | None -> False
   | Just pren ->
-      match rename tc m pren rhs with
+      let w0 = setRef tc.prunes [] in
+      match renamePruning tc m pren rhs with
       | None -> False
       | Just body ->
           match pren with
@@ -377,6 +382,85 @@ fun solve (tc : Tc) (gamma : Int) (m : Int) (sp : [Elim]) (rhs : Value) : Bool !
               | None ->
                   let v = T.solve tc m value in
                   True
+
+-- `rename`, pruning what it asks to be pruned and trying again.
+fun renamePruning (tc : Tc) (m : Int) (pren : Renaming) (rhs : Value) : Maybe Core ! { Mut | e } =
+  match rename tc m pren rhs with
+  | Just body -> Just body
+  | None ->
+      let prunes = getRef tc.prunes in
+      let w = setRef tc.prunes [] in
+      if V.isEmpty prunes then None
+      else if pruneAll tc prunes 0 then renamePruning tc m pren rhs
+      else None
+
+fun pruneAll (tc : Tc) (prunes : [(Int, [Bool])]) (i : Int) : Bool ! { Mut | e } =
+  match V.get prunes i with
+  | None -> True
+  | Just (n, keep) -> if prune tc n keep then pruneAll tc prunes (i + 1) else False
+
+-- Solve `?n` as `\x1 .. xk. ?n' (the xi `keep` says)`, with a new `?n'`. Not
+-- if the type `?n` must have mentions its context, which the new one might
+-- then lack.
+fun prune (tc : Tc) (n : Int) (keep : [Bool]) : Bool ! { Mut | e } =
+  match T.meta tc n with
+  | None -> False
+  -- pruned already, by an earlier occurrence
+  | Just (Meta.Solved _ _) -> True
+  | Just (Meta.Unsolved (MetaInfo.MetaInfo node origin mty)) ->
+      let ty =
+        match mty with
+        | None -> Just None
+        | Just (MetaTy.MetaTy types spine t) ->
+            let closed = rename tc n (Renaming.Renaming 0 (V.len types) Hm.empty []) t in
+            -- (what that would have pruned is not to be)
+            let w = setRef tc.prunes [] in
+            if M.isNone closed or V.len spine != V.len keep then None
+            else
+              let kept = V.concatMap (\p -> match p with | (l, k) -> if k then [l] else []) (V.zip spine keep) in
+              Just (Just (MetaTy.MetaTy types kept t))
+      in
+      match ty with
+      | None -> False
+      | Just mt ->
+          let fresh = T.newMeta tc (MetaInfo.MetaInfo node origin mt) in
+          let count = V.len (V.filter (\k -> k) keep) in
+          let w1 = setRef tc.opened (V.map (\o -> match o with | (o2, c) -> if o2 == n then (fresh, count) else (o2, c)) (getRef tc.opened)) in
+          let len = V.len keep in
+          let body =
+            V.foldl
+              (\acc p -> match p with | (i, k) -> if k then Core.App acc (Core.Var (len - 1 - i) "x${show i}") else acc)
+              (Core.Meta fresh)
+              (V.zip (V.range 0 len) keep)
+          in
+          let solution = V.foldr (\i acc -> Core.Lam "x${show i}" acc) body (V.range 0 len) in
+          let w2 = T.solve tc n (eval tc (Va.emptyEnv ()) solution) in
+          True
+
+-- Which of a metavariable's arguments are in scope, if its spine is distinct
+-- variables (a pattern) and some are not; nothing otherwise.
+fun prunable (tc : Tc) (pren : Renaming) (sp : [Elim]) : Maybe [Bool] ! { Mut | e } =
+  match pren with
+  | Renaming.Renaming _ _ mp _ ->
+      let picked =
+        V.foldl
+          (\acc e ->
+            match acc with
+            | None -> None
+            | Just (seen, keep) ->
+                (match e with
+                 | Elim.App v ->
+                     (match force tc v with
+                      | Value.Rigid k _ args ->
+                          if V.isEmpty args and not (V.elem k seen) then Just (V.pushBack seen k, V.pushBack keep (Hm.member k mp)) else None
+                      | _ -> None)
+                 | _ -> None))
+          (Just ([], []))
+          sp
+      in
+      match picked with
+      | Just (_, keep) -> if V.all (\k -> k) keep then None else Just keep
+      | None -> None
 
 -- What is wrong with a solution, if anything: the kind of error.
 fun violation (tc : Tc) (info : MetaInfo) (solution : Value) : Maybe String ! { Mut | e } =
@@ -450,7 +534,16 @@ fun rename (tc : Tc) (m : Int) (pren : Renaming) (v : Value) : Maybe Core ! { Mu
       | Value.LitTy b -> Just (Core.LitTy b)
       | Value.Lit x -> Just (Core.Lit x)
       | Value.Error -> Just Core.Error
-      | Value.Flex m2 sp -> if m2 == m then None else renameSpine tc m pren (Core.Meta m2) sp
+      | Value.Flex m2 sp ->
+          if m2 == m then None
+          else
+            -- applied to variables out of scope: pruned of them, if its spine
+            -- is a pattern, and then tried again
+            (match prunable tc pren sp with
+             | Just keep ->
+                 let w = setRef tc.prunes (V.pushBack (getRef tc.prunes) (m2, keep)) in
+                 None
+             | None -> renameSpine tc m pren (Core.Meta m2) sp)
       | Value.Rigid k n sp ->
           (match Hm.lookup k mp with
            | Just k2 -> renameSpine tc m pren (Core.Var (dom - k2 - 1) n) sp
