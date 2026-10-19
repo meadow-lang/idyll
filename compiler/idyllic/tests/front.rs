@@ -424,7 +424,7 @@ mod h {
 
 // --- the parse, written out ---------------------------------------------------
 //
-// As `front/src/Ast.mw` writes it: an S-expression a line for each part of the
+// As `front/src/View.mw` writes it: an S-expression a line for each part of the
 // program, nothing about where anything was written; `(error)` for a program
 // the lexer, the layout or the parser found anything wrong with.
 

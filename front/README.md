@@ -19,7 +19,7 @@ does, how it is checked, and why it is built the way it is.
 | Tokens | `Lex.mw` | done: agrees with the Rust lexer on every program |
 | Layout | `Layout.mw` | done: agrees on every program |
 | Grammar | `Syntax.mw` | done: a Lingua `syntax!` grammar |
-| Parsing | `Parse.mw`, `Ast.mw` | done: agrees with the Rust parser on every program |
+| What the tree means | `View.mw` | done: agrees with the Rust parser on every program; errors drawn at the nodes they are about |
 | Renaming | `Rename.mw`, `Hir.mw` | done: packages of modules, after the prelude and their dependencies |
 | Dependency order | `Scc.mw` | done |
 | Types | `Check.mw`, `Elab.mw`, `Matching.mw`, `Termination.mw`, `Handlers.mw`, `Sequences.mw`, `Decl.mw`, `Positivity.mw`, `Ctx.mw`, `Usage.mw`, and the machinery under them | done: agrees on every program that gets this far (431, Std's users among them), and on the whole Std package (475 declarations) |
@@ -43,6 +43,7 @@ cd front
 meadow test                                   # its own unit tests
 meadow run . -- tokens file.idl               # the tokens, after layout
 meadow run . -- parse file.idl                # the syntax tree, as S-expressions
+meadow run . -- errors file.idl               # what is wrong with its syntax, drawn where it is
 meadow run . -- tree file.idl                 # Lingua's lossless tree, drawn
 meadow run . -- rename --prelude p.idl f.idl  # the renamed tree (HIR)
 meadow run . -- types --prelude p.idl f.idl   # each declaration's type, and the errors
@@ -81,8 +82,8 @@ For the passes so far:
 - **tokens**: each token as its source text, and the layout's virtual ones as
   `«{»`, `«;»`, `«}»`.
 - **parse**: the syntax tree as S-expressions, nothing about where anything
-  was written. `Ast.mw` writes it in Meadow; `w` in `front.rs` writes the
-  Rust one the same way.
+  was written. `View.mw` writes it from its views of the tree; `w` in
+  `front.rs` writes the Rust parser's tree the same way.
 - **rename**: the renamed tree, every name `text@unique`. The two renamers
   number things differently, so the test renumbers both sides' uniques in
   the order they first appear. What is compared is which use refers to which
@@ -148,12 +149,16 @@ so the tokens stay in order, as a tree needs them to be.
 
 `Syntax.mw` is the grammar, written with Lingua's `syntax!`. Lingua turns it
 into a parser, a lossless tree (every byte of the source is in it) and a
-typed view of that tree.
+typed view of that tree, named by the grammar's labels: a `Lam` node is an
+`IdyllLam`, whose binders are `idyllLamBinders` and whose body is
+`idyllLamBody`; a `Term` is an `IdyllTerm`, one of `Lam`, `LetE`, `CaseE`,
+`IfE`, `HandleE` and `Op`. That typed tree is the syntax `front/` works on.
+There is no second syntax tree built from it.
 
 Lingua's parsers never backtrack: each choice is decided by looking at most
 four tokens ahead. The Rust parser (chumsky) does backtrack, so where it tries
 one form and then another, this grammar reads one form that covers both, and
-`Parse.mw` decides afterwards which it was:
+`View.mw` decides afterwards which it was:
 
 - **An item is a term, then perhaps `! row`, then perhaps `= e` or guards.**
   `f x = e` is an equation, `f : a` a signature, `l + r = e` an operator's
@@ -169,11 +174,28 @@ one form and then another, this grammar reads one form that covers both, and
 `record` is a keyword only before a capital letter (Lingua's `context`
 section); anywhere else it is a name, as it is to the Rust lexer.
 
-### Parse
+### View
 
-`Parse.mw` reads the tree as the Rust parser's abstract syntax (`Ast.mw` is a
-copy of `compiler/idyllic-ast`). It also does what the Rust parser does on
-the way:
+`View.mw` says what the typed tree means: what Idyll makes of each node,
+which is not always what the grammar read. It is a set of functions over
+the tree's nodes, not a pass that builds something. Nothing is built up
+front.
+
+- An `Expr` is a term or a pattern, held as the place in the tree it was
+  read from: a node (`IdyllTerm`, `IdyllAtom`, ...), or part of one (an
+  operator chain's operands, an annotation past its grades). An `Expr` can
+  also be a term made of other `Expr`s.
+- `term` says what an `Expr` is, one level down: an application, a lambda,
+  a `case`, and so on. Its parts are `Expr`s again, looked at when someone
+  asks for them.
+- `pat` does the same for an `Expr` read as a pattern. A pattern is
+  written as a term (`Cons x xs`, `x :: xs`, `(a, b)`) and read again
+  here.
+- At item level, a `Program` lists the declarations, data types, effects
+  and `use`s. Each holds `Expr`s.
+
+What the Rust parser does on the way is done here, as terms made of the
+tree's nodes:
 
 - curried telescopes, lambdas and dependent function types;
 - `if` as a `case` on `Bool`;
@@ -182,8 +204,29 @@ the way:
 - an effect alias as a definition;
 - attributes (`@pub`, `@seq`, `@native`, ...) moved onto what they are on.
 
-A program the Rust parser rejects is rejected here too. For now, what is
-wrong is collected rather than reported in full.
+Since each node is looked at one level at a time, these decisions and
+desugarings are made once, here. Their readers each take what they need:
+the renamer (`Rename.mw` matches on `term` and `pat`), and the writer of
+the parse test's dump.
+
+Something wrong is reported where it is found, as a Lingua `Diagnostic` at
+the node it is about. `parsed` reads every part of a program once (by
+writing it out as the dump does), so a program the Rust parser rejects is
+rejected here too, before anything is renamed. `Idyll errors file.idl`
+draws what it found, with Nettle:
+
+```
+Error: only :: joins patterns
+   ╭─[ bad.idl:4:5 ]
+   │
+ 4 │   y + 1 -> 3
+   │     ─┬─
+   │      ╰─── only :: joins patterns
+───╯
+```
+
+`Icit`, `Literal` and `Visibility`, which every pass after this one uses,
+are in `Hir.mw`.
 
 ### Rename
 

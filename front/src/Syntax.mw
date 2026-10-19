@@ -4,7 +4,7 @@
 -- The parser is an automaton worked out when this file is compiled: each
 -- choice a test of the next few tokens, nothing tried and taken back. The
 -- Rust parser (`idyllic-parser`) does take things back -- it is chumsky's --
--- and where it does, this grammar reads one form for several, and `Parse`
+-- and where it does, this grammar reads one form for several, and `View`
 -- works out afterwards which it was, as the Rust parser would have:
 --
 -- * A declaration, a signature and an expression begin alike: an item is a
@@ -19,7 +19,7 @@
 --   each other, annotated -- and its grades the start of the annotation.
 --   `(x : a) -> b` is a dependent function because what is before its arrow
 --   is binders and nothing else.
--- * Operators are read as chains, `a + b * c` flat; `Parse` groups them as
+-- * Operators are read as chains, `a + b * c` flat; `View` groups them as
 --   the Rust parser's levels do.
 -- * `{ … }` in a term is one form for an effect row, a record update and an
 --   implicit binder.

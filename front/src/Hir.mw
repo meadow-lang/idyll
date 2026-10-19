@@ -14,12 +14,22 @@
 -- order they first appear, so that what is compared is which use is of
 -- which binder, not how the two renamers count.
 
-use Idyll.Ast (Icit, Literal)
-use Idyll.Ast as A
 use Std.Collections.Vector as V
 use Std.String as S
 use Std.Maybe.Maybe.*
 use Std.Collections.HashMap (HashMap)
+
+-- Whether an argument is written, or left for the checker to work out.
+@derive(PartialEq)
+@pub data Icit = Explicit | Implicit
+
+@derive(PartialEq)
+@pub data Literal = Unit | Int Int | Bool Bool | Str String
+
+-- How far a declaration is seen: its module, the module above, its
+-- package, or anywhere.
+@derive(PartialEq)
+@pub data Visibility = Private | Super | Package | Public
 
 @pub data Ident = Ident [Int] String
 
@@ -148,6 +158,48 @@ use Std.Collections.HashMap (HashMap)
 
 -- --- writing -----------------------------------------------------------------
 
+-- A string as the Rust side writes it: in quotes, with `\`, `"` and the
+-- control characters escaped. Any other byte is itself.
+@pub fun quoted (s : String) : String =
+  let n = stringByteLength s in
+  let byte = \i -> toInt (stringByteAt s i) in
+  -- the bytes that are escaped, and the runs between them copied whole, so
+  -- that no character is cut
+  let cut = V.filter (\i -> escaped (byte i) != "") (V.range 0 n) in
+  let starts = V.append [0] (V.map (\i -> i + 1) cut) in
+  let ends = V.append cut [n] in
+  let runs =
+    V.map
+      (\k ->
+        let run = stringSlice s (V.getOr 0 starts k) (V.getOr n ends k) in
+        match V.get cut k with
+        | Just i -> run ++ escaped (byte i)
+        | None -> run)
+      (V.range 0 (V.len starts))
+  in
+  "\"" ++ S.join "" runs ++ "\""
+
+-- How byte `b` is escaped, or "" if it is not.
+fun escaped (b : Int) : String =
+  if b == 92 then "\\\\"
+  else if b == 34 then "\\\""
+  else if b == 10 then "\\n"
+  else if b == 9 then "\\t"
+  else if b == 13 then "\\r"
+  else if b < 32 or b == 127 then "\\u{" ++ hex b ++ "}"
+  else ""
+
+fun hex (n : Int) : String =
+  let digit = \d -> stringSlice "0123456789abcdef" d (d + 1) in
+  if n < 16 then digit n else hex (n / 16) ++ digit (n % 16)
+
+@pub fun literal (l : Literal) : String =
+  match l with
+  | Literal.Unit -> "(lit ())"
+  | Literal.Int n -> "(lit ${show n})"
+  | Literal.Bool b -> if b then "(lit True)" else "(lit False)"
+  | Literal.Str s -> "(lit ${quoted s})"
+
 fun sx (parts : [String]) : String = "(" ++ S.join " " parts ++ ")"
 
 fun opt (f : a -> String) (m : Maybe a) : String =
@@ -172,7 +224,7 @@ fun gradeText (g : Grade) : String =
   match t with
   | Term.Type -> "Type"
   | Term.Var x -> ident x
-  | Term.Lit l -> A.literal l
+  | Term.Lit l -> literal l
   | Term.Pi x icit g dom cod ->
       sx ["pi", opt ident x, (match icit with | Icit.Explicit -> "e" | Icit.Implicit -> "i"), opt gradeText g, term dom, term cod]
   | Term.Lam x g ty body -> sx ["lam", ident x, opt gradeText g, opt term ty, term body]
@@ -212,7 +264,7 @@ fun rhsText (r : Rhs) : String =
   match p with
   | Pattern.Var x -> ident x
   | Pattern.Wild -> "_"
-  | Pattern.Lit l -> A.literal l
+  | Pattern.Lit l -> literal l
   | Pattern.Con c ps -> sx (V.append ["con", ident c] (V.map pattern ps))
   | Pattern.As x q -> sx ["as", ident x, pattern q]
   | Pattern.Dot e -> sx ["dot", term e]

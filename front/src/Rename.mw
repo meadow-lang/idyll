@@ -1,4 +1,4 @@
--- Name resolution: the parser's tree (`Ast`) to the renamed one (`Hir`), as
+-- Name resolution: the program as `View` reads it to the renamed one (`Hir`), as
 -- `compiler/idyllic-rename` does it: a package of modules, after the prelude
 -- and the packages it depends on.
 --
@@ -27,7 +27,8 @@
 -- What is wrong is collected (`problems`), not said, for now: the rename test
 -- compares only whether there was anything.
 
-use Idyll.Ast (Icit, Grade, Literal, Term, Param, Pat, Rhs, Alt, Clause, Decl, Ctor, Data, OpSig, Effect, Use, Program, Visibility)
+use Idyll.View (Expr, Grade, Term, Param, Pat, Rhs, Alt, Clause, Decl, Ctor, Data, OpSig, Effect, Use, Program, termOf, patOf)
+use Idyll.Hir (Icit, Literal, Visibility)
 use Idyll.Hir (Ident, Pattern, Bind, Group, CtorShape, CtorDecl, DataDecl, OpDecl, EffectDecl, NativeDecl, HandleClause, Module)
 use Idyll.Hir as H
 use Std.Collections.Vector as V
@@ -513,7 +514,7 @@ fun inFieldOrder (r : Rn) (recordName : String) (fields : [String]) (given : [(S
   V.map (\f -> M.map snd (V.find (\g -> fst g == f) given)) fields
 
 -- `Point { x = 1, y = 2 }`: the constructor, given each field in order.
-fun recordLiteral (r : Rn) (name : String) (values : [(String, Term)]) : Maybe Term ! { Mut | e } =
+fun recordLiteral (r : Rn) (name : String) (values : [(String, Expr)]) : Maybe Expr ! { Mut | e } =
   match recordNamed r name True with
   | None -> None
   | Just fields ->
@@ -521,13 +522,14 @@ fun recordLiteral (r : Rn) (name : String) (values : [(String, Term)]) : Maybe T
       if V.any M.isNone ordered then
         let w = bad r "${name} is built with every one of its fields" in
         None
-      else Just (V.foldl (\f v -> match v with | Just e -> Term.App f e | None -> f) (Term.Var name) ordered)
+      else Just (V.foldl (\f v -> match v with | Just e -> Expr.Made (Term.App f e) | None -> f) (Expr.Made (Term.Var name)) ordered)
 
 -- `Point { x = p }`: the constructor's pattern, `_` for a field not named.
-fun recordPattern (r : Rn) (name : String) (given : [(String, Pat)]) (report : Bool) : Maybe Pat ! { Mut | e } =
+fun recordPattern (r : Rn) (name : String) (given : [(String, Expr)]) (report : Bool) : Maybe Expr ! { Mut | e } =
   match recordNamed r name report with
   | None -> None
-  | Just fields -> Just (Pat.Con name (V.map (\p -> M.unwrapOr Pat.Wild p) (inFieldOrder r name fields given report)))
+  | Just fields ->
+      Just (Expr.MadePat (Pat.Con name (V.map (\p -> M.unwrapOr (Expr.MadePat Pat.Wild) p) (inFieldOrder r name fields given report))))
 
 -- The records in scope with each of `wanted`'s fields, by name.
 fun recordsWith (r : Rn) (wanted : [String]) : [(String, [String])] ! { Mut | e } =
@@ -555,11 +557,13 @@ fun theRecordWith (r : Rn) (wanted : [String]) : Maybe (String, [String]) ! { Mu
     None
 
 -- `e.x`: the projection of the one record in scope with an `x`.
-fun projection (r : Rn) (e : Term) (field : String) : Maybe Term ! { Mut | e } =
-  M.map (\rf -> match rf with | (recName, _) -> Term.App (Term.Var "${recName}.${field}") e) (theRecordWith r [field])
+fun projection (r : Rn) (e : Expr) (field : String) : Maybe Expr ! { Mut | e } =
+  M.map
+    (\rf -> match rf with | (recName, _) -> Expr.Made (Term.App (Expr.Made (Term.Var "${recName}.${field}")) e))
+    (theRecordWith r [field])
 
 -- `{ e | x = v }`: `e` taken apart and built again, with `v` for `x`.
-fun recordUpdate (r : Rn) (e : Term) (values : [(String, Term)]) : Maybe Term ! { Mut | e } =
+fun recordUpdate (r : Rn) (e : Expr) (values : [(String, Expr)]) : Maybe Expr ! { Mut | e } =
   match theRecordWith r (V.map fst values) with
   | None -> None
   | Just (recName, fields) ->
@@ -569,19 +573,19 @@ fun recordUpdate (r : Rn) (e : Term) (values : [(String, Term)]) : Maybe Term ! 
         V.map
           (\i ->
             match V.get ordered i with
-            | Just (Just _) -> Pat.Wild
-            | _ -> Pat.Bind (Param.Param (kept (V.getOr "" fields i)) False None None))
+            | Just (Just _) -> Expr.MadePat Pat.Wild
+            | _ -> Expr.MadePat (Pat.Bind (Param.Param (kept (V.getOr "" fields i)) False None None)))
           (V.range 0 (V.len fields))
       in
       let rebuilt =
         V.foldl
           (\acc i ->
-            let value = match V.get ordered i with | Just (Just v) -> v | _ -> Term.Var (kept (V.getOr "" fields i)) in
-            Term.App acc value)
-          (Term.Var recName)
+            let value = match V.get ordered i with | Just (Just v) -> v | _ -> Expr.Made (Term.Var (kept (V.getOr "" fields i))) in
+            Expr.Made (Term.App acc value))
+          (Expr.Made (Term.Var recName))
           (V.range 0 (V.len fields))
       in
-      Just (Term.Case e [Alt.Alt (Pat.Con recName pats) (Rhs.Plain rebuilt)])
+      Just (Expr.Made (Term.Case e [Alt.Alt (Expr.MadePat (Pat.Con recName pats)) (Rhs.Plain rebuilt)]))
 
 -- --- terms -------------------------------------------------------------------
 
@@ -593,8 +597,8 @@ fun gradeOne () = H.Grade.Grade (H.Term.Lit (Literal.Int 1)) None
 
 fun unresolved () = H.Term.Var (Ident.Ident [] "_")
 
-fun renameTerm (r : Rn) (t : Term) =
-  match t with
+fun renameTerm (r : Rn) (t : Expr) =
+  match termOf t with
   | Term.Type -> H.Term.Type
   | Term.Hole -> H.Term.Hole
   | Term.Inf -> H.Term.Inf
@@ -678,7 +682,7 @@ fun renameTerm (r : Rn) (t : Term) =
 -- A signature: the lower-case names it mentions that nothing binds are bound
 -- in front of it, implicitly, in order of appearance, their types left to
 -- the checker.
-fun renameSig (r : Rn) (ty : Term) =
+fun renameSig (r : Rn) (ty : Expr) =
   let free = freeVars ty [] (\x -> known r x) [] in
   scoped r (\u ->
     let bound = V.map (\x -> bindName r x) free in
@@ -688,7 +692,7 @@ fun renameSig (r : Rn) (ty : Term) =
 -- One equation or alternative: its patterns bind names for the rest of it,
 -- all of them before any `.e` is renamed; then the right-hand side, under a
 -- result type if one was written.
-fun renameClause (r : Rn) (pats : [Pat]) (resultTy : Maybe Term) (rhs : Rhs) =
+fun renameClause (r : Rn) (pats : [Expr]) (resultTy : Maybe Expr) (rhs : Rhs) =
   scoped r (\u ->
     let names = newRef [] in
     let v = V.foldl (\acc p -> bindPattern r p names) () pats in
@@ -717,8 +721,8 @@ fun renameClause (r : Rn) (pats : [Pat]) (resultTy : Maybe Term) (rhs : Rhs) =
     H.Clause.Clause pats2 rhs2)
 
 -- Bind a pattern's names, in order, onto `names`.
-fun bindPattern (r : Rn) (p : Pat) (names : Ref [Ident]) =
-  match p with
+fun bindPattern (r : Rn) (p : Expr) (names : Ref [Ident]) =
+  match patOf p with
   | Pat.Bind (Param.Param x _ _ _) -> setRef names (V.pushBack (getRef names) (bindName r x))
   | Pat.As x q ->
       let w = setRef names (V.pushBack (getRef names) (bindName r x)) in
@@ -738,8 +742,8 @@ fun nextName (names : Ref [Ident]) =
   M.unwrapOr (Ident.Ident [] "_") (V.head ns)
 
 -- A pattern, taking the names `bindPattern` bound for it.
-fun renamePattern (r : Rn) (p : Pat) (names : Ref [Ident]) =
-  match p with
+fun renamePattern (r : Rn) (p : Expr) (names : Ref [Ident]) =
+  match patOf p with
   | Pat.Bind (Param.Param _ unbox g ty) ->
       let w = if unbox or M.isSome g or M.isSome ty then bad r "this pattern needs a single equation of variables" else () in
       Pattern.Var (nextName names)
@@ -786,7 +790,7 @@ fun bindDatas (r : Rn) (datas : [Data]) =
 
 -- A data type's or an effect's parameters: each kind may mention the
 -- parameters before it.
-fun typeParams (r : Rn) (ps : [(String, Maybe Term)]) =
+fun typeParams (r : Rn) (ps : [(String, Maybe Expr)]) =
   V.map
     (\p ->
       match p with
@@ -866,7 +870,7 @@ fun wrapParam (r : Rn) p body =
 record Def = {
   eqs : [Decl],
   name : Ident,
-  sig : Maybe Term
+  sig : Maybe Expr
 }
 
 fun renameDecls (r : Rn) (ds : [Decl]) = renameDefs r (bindDecls r ds)
@@ -916,8 +920,8 @@ fun bindDecls (r : Rn) (ds : [Decl]) : [Def] ! { Mut | e } =
 
 fun renameDefs (r : Rn) (defs : [Def]) = V.map (\d -> renameDef r d) defs
 
-fun simplePat (p : Pat) : Bool =
-  match p with
+fun simplePat (p : Expr) : Bool ! { Mut | e } =
+  match patOf p with
   | Pat.Bind _ -> True
   | Pat.Wild -> True
   | _ -> False
@@ -934,7 +938,7 @@ fun renameDef (r : Rn) (dfn : Def) =
       (match rhs with
        | Rhs.Plain body if V.len dfn.eqs == 1 and V.all simplePat params ->
            let ps =
-             V.map (\p -> match p with | Pat.Bind q -> q | _ -> Param.Param "_" False None None) params
+             V.map (\p -> match patOf p with | Pat.Bind q -> q | _ -> Param.Param "_" False None None) params
            in
            scoped r (\u ->
              let v = scopeQuantified r ty in
@@ -971,7 +975,7 @@ fun scopeQuantified (r : Rn) ty =
 
 -- The lower-case names `t` mentions that are neither bound in it nor
 -- `known`, in order of first appearance.
-fun freeVars (t : Term) (bound : [String]) known (out : [String]) : [String] ! { Mut | e } =
+fun freeVars (t : Expr) (bound : [String]) known (out : [String]) : [String] ! { Mut | e } =
   let go = \u o -> freeVars u bound known o in
   let under = \x u o -> match x with | Just n -> freeVars u (V.pushBack bound n) known o | None -> go u o in
   let grades =
@@ -980,7 +984,7 @@ fun freeVars (t : Term) (bound : [String]) known (out : [String]) : [String] ! {
       | Just (Grade.Grade s rr) -> (match rr with | Just x -> go x (go s o) | None -> go s o)
       | None -> o
   in
-  match t with
+  match termOf t with
   | Term.Var x ->
       let b = if stringByteLength x > 0 then toInt (stringByteAt x 0) else 0 in
       let lower = (b >= 97 and b <= 122) or b == 95 in
@@ -1018,7 +1022,7 @@ record Bound = {
   dataNames : [(Ident, [Ident])],
   effectNames : [(Ident, [Ident])],
   defs : [Def],
-  natives : [(Ident, Term)]
+  natives : [(Ident, Expr)]
 }
 
 -- The names a program declares, `decls` its declarations (or a `let`'s), all
@@ -1128,7 +1132,7 @@ fun renamePackageAt (r : Rn) (pkg : Int) (first : Int) (progs : [Program]) (root
       (\i ->
         match V.get progs i with
         | Just (p : Program) ->
-            (match (V.isEmpty p.decls, p.body) with
+            (match (V.isEmpty p.decls, M.map termOf p.body) with
              | (True, Just (Term.Let ds body)) -> if i == 0 and root then (ds, Just body) else (p.decls, None)
              | _ -> (p.decls, if i == 0 and root then p.body else None))
         | None -> ([], None))

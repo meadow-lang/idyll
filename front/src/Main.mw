@@ -7,8 +7,9 @@
 --   Layout   the offside rule: virtual braces and semicolons
 --            (`idyllic-layout`)
 --   Syntax   the grammar, and the lossless tree Lingua parses it into
---   Parse    that tree read as the Rust parser's abstract syntax (`Ast`,
---            `idyllic-parser`)
+--   View     what that tree means, read off its typed nodes as the Rust
+--            parser reads its abstract syntax (`idyllic-parser`); what is
+--            wrong with it, at the nodes it is about
 --   Rename   names resolved, equations and records desugared (`Hir`,
 --            `idyllic-rename`), against the prelude
 --   Scc      definitions in dependency order (`idyllic-scc`)
@@ -22,13 +23,13 @@
 --
 -- Run as `Idyll <pass> <file>...`, it writes each file's dump for the pass,
 -- each after a line `== <file>`: what the differential tests compare with
--- the Rust compiler's.
+-- the Rust compiler's. `Idyll errors <file>...` draws what is wrong with
+-- each file's syntax, where it is.
 
 use Idyll.Layout (dumped)
 use Idyll.Syntax (parseIdyll)
-use Idyll.Parse as Parse
+use Idyll.View as View
 use Idyll.Rename (renameModule, renamePackage)
-use Idyll.Ast as Ast
 use Idyll.Hir as Hir
 use Std.String as S
 use Std.Maybe as M
@@ -42,8 +43,9 @@ use Idyll.Emit as Em
 use Idyll.Cek as Cek
 use Idyll.World as W
 use Idyll.Core as C
-use Idyll.Ast (Literal)
+use Idyll.Hir (Literal)
 use Lingua.Green (dump)
+use Lingua.Diagnostic (renderAll)
 use Std.Collections.Vector as V
 use Std.Result.Result.*
 use Std.Maybe.Maybe.*
@@ -53,13 +55,14 @@ fun main () =
   match V.get args 0 with
   | Just "tokens" -> V.foldl (\u f -> each f dumpTokens) () (V.drop args 1)
   | Just "tree" -> V.foldl (\u f -> each f dumpTree) () (V.drop args 1)
-  | Just "parse" -> V.foldl (\u f -> each f Parse.dumped) () (V.drop args 1)
+  | Just "parse" -> V.foldl (\u f -> each f View.dumped) () (V.drop args 1)
+  | Just "errors" -> V.foldl (\u f -> each f (errorsIn f)) () (V.drop args 1)
   | Just "rename" ->
       (match (V.get args 1, V.get args 2) with
        | (Just "--prelude", Just path) ->
            (match readToString path with
             | Ok text ->
-                (match Parse.parsed text with
+                (match View.parsed text with
                  | Ok prelude -> V.foldl (\u f -> each f (renamed prelude)) () (V.drop args 3)
                  | Err _ -> writeError "the prelude does not parse\n")
             | Err e -> writeError "could not read the prelude: ${e}\n")
@@ -69,7 +72,7 @@ fun main () =
        | (Just "--prelude", Just path) ->
            (match readToString path with
             | Ok text ->
-                (match Parse.parsed text with
+                (match View.parsed text with
                  | Ok prelude -> V.foldl (\u f -> each f (cutOf prelude)) () (V.drop args 3)
                  | Err _ -> writeError "the prelude does not parse\n")
             | Err e -> writeError "could not read the prelude: ${e}\n")
@@ -79,7 +82,7 @@ fun main () =
        | (Just "--prelude", Just path) ->
            (match readToString path with
             | Ok text ->
-                (match Parse.parsed text with
+                (match View.parsed text with
                  | Ok prelude -> V.foldl (\u f -> each f (ran prelude)) () (V.drop args 3)
                  | Err _ -> writeError "the prelude does not parse\n")
             | Err e -> writeError "could not read the prelude: ${e}\n")
@@ -89,7 +92,7 @@ fun main () =
        | (Just "--prelude", Just path) ->
            (match readToString path with
             | Ok text ->
-                (match Parse.parsed text with
+                (match View.parsed text with
                  | Ok prelude ->
                      -- `--std <dir>`: the standard library's sources, which a
                      -- program that names `Std` depends on
@@ -107,7 +110,7 @@ fun main () =
        | (Just "--prelude", Just path, Just name, Just dir) ->
            (match readToString path with
             | Ok text ->
-                (match (Parse.parsed text, packageModules dir) with
+                (match (View.parsed text, packageModules dir) with
                  | (Ok prelude, Ok modules) ->
                      let u = writeOutput "== ${name}\n" in
                      writeOutput "${packageTypes prelude name modules}\n"
@@ -115,7 +118,7 @@ fun main () =
                  | (_, Err why) -> writeError "${name}: ${why}\n")
             | Err e -> writeError "could not read the prelude: ${e}\n")
        | _ -> writeError "usage: Idyll package --prelude <file> <name> <dir>\n")
-  | _ -> writeError "usage: Idyll (tokens | tree | parse | rename --prelude <file> | types --prelude <file>) <file>...\n"
+  | _ -> writeError "usage: Idyll (tokens | tree | parse | errors | rename --prelude <file> | types --prelude <file>) <file>...\n"
 
 -- `file`'s dump, under a line naming it.
 fun each (file : String) dumpOf =
@@ -132,10 +135,17 @@ fun dumpTree (text : String) : String =
   | (g, errs) ->
       V.foldl (\s e -> match e with | (at, msg) -> s ++ "error at ${show at}: ${msg}\n") "" errs ++ dump display g
 
+-- What is wrong with `file`'s syntax, `text`, drawn where it is; `ok` if
+-- nothing is.
+fun errorsIn (file : String) (text : String) : String ! { Mut | e } =
+  match View.parsed text with
+  | Ok _ -> "ok"
+  | Err ds -> renderAll file text ds
+
 -- A program renamed after the prelude, as `Hir` writes it; `(error)` if it
 -- does not parse, or anything in it is wrong.
 fun renamed prelude (text : String) : String ! { Mut | e } =
-  match Parse.parsed text with
+  match View.parsed text with
   | Err _ -> "(error)"
   | Ok prog ->
       (match renameModule prog prelude with
@@ -148,7 +158,7 @@ fun typed prelude (text : String) : String ! { Mut | e } = typedWith prelude Non
 -- The same, with the standard library's modules given: a program that
 -- names `Std` is the root of a package that depends on it.
 fun typedWith prelude std (text : String) : String ! { Mut | e } =
-  match Parse.parsed text with
+  match View.parsed text with
   | Err _ -> "(error)"
   | Ok prog ->
       let renamed =
@@ -160,7 +170,7 @@ fun typedWith prelude std (text : String) : String ! { Mut | e } =
        | (m, problems) -> if V.isEmpty problems then checkModule (sccModule m) else "(error)")
 
 -- A whole package checked, its modules each a path and a program.
-fun packageTypes prelude (name : String) (modules : [([String], Ast.Program)]) : String ! { Mut | e } =
+fun packageTypes prelude (name : String) (modules : [([String], View.Program)]) : String ! { Mut | e } =
   match renamePackage name modules prelude [] with
   | (m, problems) -> if V.isEmpty problems then checkModule (sccModule m) else "(error: ${S.join "; " problems})"
 
@@ -168,7 +178,7 @@ fun packageTypes prelude (name : String) (modules : [([String], Ast.Program)]) :
 -- under it, its path the file's (`Collections/List.idl` is
 -- `Collections.List`), `Lib.idl` the root; the root first, then the rest
 -- by path.
-fun packageModules (dir : String) : Result String [([String], Ast.Program)] ! { Fs, Mut | e } =
+fun packageModules (dir : String) : Result String [([String], View.Program)] ! { Fs, Mut | e } =
   let files = idlFiles dir [] in
   let modules =
     V.map
@@ -189,7 +199,7 @@ fun packageModules (dir : String) : Result String [([String], Ast.Program)] ! { 
           (match readToString (dir ++ "/" ++ snd m) with
            | Err e -> Err e
            | Ok text ->
-               (match Parse.parsed text with
+               (match View.parsed text with
                 | Ok prog -> Ok (V.pushBack done (fst m, prog))
                 | Err _ -> Err "${snd m} does not parse")))
     (Ok [])
@@ -220,7 +230,7 @@ def fuel = 5000000
 -- how many steps it took, or how it stopped; and what it printed. `(error)`
 -- if it does not check, `(no expression)` if it has nothing to run.
 fun ran prelude (text : String) : String ! { Mut | e } =
-  match Parse.parsed text with
+  match View.parsed text with
   | Err _ -> "(error)"
   | Ok prog ->
       (match renameModule prog prelude with
@@ -252,7 +262,7 @@ fun runCore tc core : String ! { Mut | e } =
 -- A program lowered to Cut, as its text: `(error)` if it does not check,
 -- `(not lowered: ..)` with why, if it cannot be.
 fun cutOf prelude (text : String) : String ! { Mut | e } =
-  match Parse.parsed text with
+  match View.parsed text with
   | Err _ -> "(error)"
   | Ok prog ->
       (match renameModule prog prelude with

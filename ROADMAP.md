@@ -894,12 +894,19 @@ do yet `(unsupported)`, and the tests count those apart.
 
 - [x] **Tokens and layout** (`Lex`, `Layout`): every program agrees, token
   for token.
-- [x] **Parsing** (`Syntax`, a `syntax!` grammar; `Parse`, its tree read as
-  `idyllic-ast`): every program agrees, the 165 that parse and the 626 that
-  do not. The grammar is LL, so where the Rust parser backtracks it reads
-  one form for several and works out afterwards which it was.
-- [ ] Error messages compared, not only whether there is one; Nettle for
-  them.
+- [x] **Parsing** (`Syntax`, a `syntax!` grammar; `View`, what its typed
+  tree means): every program agrees with `idyllic-parser`, the ones that
+  parse and the 626 that do not. The grammar is LL, so where the Rust parser
+  backtracks it reads one form for several and works out afterwards which it
+  was. As of 2026-10-18 there is no second syntax tree. The typed nodes
+  `syntax!` makes from the grammar's labels are the syntax. `View` reads
+  them one level at a time, with the desugarings, for the renamer and for
+  the parse test's dump alike.
+- [x] Syntax errors as Lingua `Diagnostic`s at the nodes they are about,
+  drawn with Nettle (`Idyll errors`).
+- [ ] Error messages compared with the Rust compiler's, not only whether
+  there is one; the renamer's and the checker's at nodes too (HIR and Core
+  would carry where they came from).
 - [x] **Renaming** (`Rename`, to `Hir`), for a module after the prelude:
   every program agrees with `idyllic-rename`, binder for binder (the test
   renumbers both sides' uniques by first appearance), the prelude included.
