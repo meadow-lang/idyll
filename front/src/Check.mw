@@ -86,10 +86,7 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
   let tc = T.new () in
   let wh = setRef tc.hir h in
   let out = newElaboratedBuilder () in
-  -- the pass is given a builder of its own, which it does not write to:
-  -- Silo corrupts the heap when one a closure in a `Ref` captured is then
-  -- written through (reported to Meadow, 2026-10-19)
-  let we = install tc (newElaboratedBuilder ()) in
+  let we = install tc out in
   let w0 = setRef tc.terminating m.terminating in
   let listOf = V.find (\d -> hirIdentText h (hirDataName h d) == "List" and uniqueOf h (hirDataName h d) < m.first) datas in
   let w0b = match listOf with | Just d -> setRef tc.list (uniqueOf h (hirDataName h d)) | None -> () in
