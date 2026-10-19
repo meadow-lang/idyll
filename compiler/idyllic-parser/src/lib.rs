@@ -795,6 +795,14 @@ where
             .map_with(|name, e| {
                 vec![Spanned::new(Param { name, unbox: true, grade: None, ty: None }, span_of(e.span()))]
             }),
+        // `()`: a binder of type `()`, which nothing refers to, as an
+        // equation's `()` pattern is
+        just(Token::LParen).then(just(Token::RParen)).map_with(|_, e| {
+            let span = span_of(e.span());
+            let unit = Spanned::new(Term::Lit(Lit::Unit), span);
+            let name = Spanned::new("_".to_string(), span);
+            vec![Spanned::new(Param { name, unbox: false, grade: None, ty: Some(unit) }, span)]
+        }),
         binder_name()
             .repeated()
             .at_least(1)
@@ -1000,11 +1008,15 @@ where
         guard.repeated().at_least(1).collect::<Vec<(LTerm, LTerm)>>().map(Rhs::Guarded),
     ));
     let name = lower().or(operator_name().delimited_by(just(Token::LParen), just(Token::RParen)));
+    // No right-hand side only where no `=` or `|` comes next: once one does,
+    // the equation is committed to, and a mistake in its right-hand side is
+    // reported there, not at the `=` that an alternative stopped at.
+    let no_rhs = none_of([Token::Eq, Token::Bar]).rewind().ignored().or(end()).to(None);
     let prefix = name
         .clone()
         .then(params.map(|groups| groups.into_iter().flatten().collect::<Vec<LPat>>()))
         .then(just(Token::Colon).ignore_then(comp(term.clone())).or_not())
-        .then(rhs.clone().or_not())
+        .then(rhs.clone().map(Some).or(no_rhs))
         .try_map(|(((f, pats), ty), rhs), span| match rhs {
             Some(rhs) => Ok(Decl::Def(f, pats, ty, rhs)),
             None => match impossible(pats) {
@@ -1315,14 +1327,16 @@ where
             });
 
         // `case e of C x y -> a; ..`.  `of` opens a layout block, closed by
-        // dedenting — so inside parentheses, or on one line with more after
-        // it, write the braces out.
+        // dedenting, or by the `)`, `]` or `,` of a group it is inside — so
+        // on one line with more after it, write the braces out.
         let guard = just(Token::Bar).ignore_then(guard_expr).then_ignore(just(Token::RArrow)).then(term.clone());
         let alt_rhs = choice((
             just(Token::RArrow).ignore_then(term.clone()).map(Rhs::Plain),
             guard.repeated().at_least(1).collect::<Vec<(LTerm, LTerm)>>().map(Rhs::Guarded),
         ));
-        let alt = pattern(apattern(term.clone())).then(alt_rhs.or_not()).try_map(|(pat, rhs), span| match rhs {
+        // as with an equation's `=`, an `->` or `|` commits to the alternative
+        let no_rhs = none_of([Token::RArrow, Token::Bar]).rewind().ignored().or(end()).to(None);
+        let alt = pattern(apattern(term.clone())).then(alt_rhs.map(Some).or(no_rhs)).try_map(|(pat, rhs), span| match rhs {
             Some(rhs) => Ok(Alt { pat, rhs }),
             // `Nil impossible`
             None => match pat.node {

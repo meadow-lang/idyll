@@ -757,6 +757,10 @@ fun binder out (a : IdyllAtom) =
   else if M.isSome unboxed then simple (M.unwrapOr "" unboxed) True
   else
     match a with
+    -- `()`: a binder of type `()`, which nothing refers to, as an equation's
+    -- `()` pattern is
+    | IdyllAtom.Paren q if V.isEmpty (idyllParenItems q) ->
+        [("_", \c -> newSurfaceParam out m (nameAt out m "_") False None (Just (lit out m Literal.Unit)))]
     | IdyllAtom.Paren q ->
         (match only (idyllParenItems q) with
          | Just (IdyllTerm.Op op) if not (hasArrow op) ->

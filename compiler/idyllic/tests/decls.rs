@@ -342,3 +342,22 @@ fn a_closing_parenthesis_closes_the_blocks_opened_inside_it() {
     );
     ok("h : Int\nh =\n  let y = (1 +\n 2) in\n  y\n\nh", &["h : Int"], Some("Int"));
 }
+
+#[test]
+fn a_lambda_may_take_unit() {
+    // `\()` as an equation's `()`: a binder of type `()`
+    ok("f : (g : () -> Int) -> Int\nf g = g ()\n\nf (\\() -> 1)", &["f : (g : () -> Int) -> Int"], Some("Int"));
+}
+
+#[test]
+fn a_parse_error_in_a_right_hand_side_is_reported_where_it_is() {
+    // not at the `=` (or `->`) that another reading of the line stopped at
+    rejects(
+        "main : () -> () ! Eff\nmain () =\n  let s = (\\y -> ) in ()\n",
+        &["parse error: found ')' expected '\\', 'let', 'case', 'if', 'handle', '(', '{', or atom"],
+    );
+    rejects(
+        "f : (m : Maybe Int) -> Int\nf m = case m of\n  Just n -> (n +)\n  Nothing -> 0\n\nf Nothing",
+        &["parse error: found ')' expected atom"],
+    );
+}
