@@ -440,12 +440,9 @@ pass! {
          | Just t -> Box { expr = lowerSurfaceTerm () out cx t }
          | None -> Box { expr = anyGrade out here })
     | SeqA {} ->
-        (match asIdyllSeqA node with
-         | Just s ->
-             (match seqShape out cx s with
-              | (terms, array) ->
-                  (let items = seqItems out cx terms in
-                   if array then Array { items } else Expr.Seq { items }))
+        (match M.map (\s -> seqShape out cx s) (asIdyllSeqA node) with
+         | Just (terms, True) -> Array { items = seqItems out cx terms }
+         | Just (terms, False) -> Expr.Seq { items = seqItems out cx terms }
          | None -> hole out here)
     | Braced {} ->
         (match asIdyllBraced node with
