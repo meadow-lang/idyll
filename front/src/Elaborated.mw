@@ -10,12 +10,23 @@
 -- lowering -- is this language.
 
 use Lingua (lang!)
+use Lingua.Lang (Meta, noMeta)
 use Idyll.Hir (Icit, Literal)
-use Idyll.Core (Builtin, Prim, Head)
+use Idyll.Core (Core, Builtin, Prim, Head, Note, CaseAlt, OpClause)
 use Idyll.Grade (Grade)
+use Std.Collections.Vector as V
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
 
 @pub lang! {
   pub Elaborated
+  -- a module checked: its expression under its top-level definitions, its
+  -- recursive definitions, and what each metavariable was solved with
+  Module + Module { body : Maybe Term, defs : [Def], metas : [Solution] }
+  -- a recursive definition: a constant, whose body is in the scope of the
+  -- `level` variables around it; `local` if it is under another's
+  Def + Def { unique : Int, name : String, level : Int, body : Term, local : Bool }
+  Solution + Solution { number : Int, term : Term }
   Term + Type { level : Int }
   Term + LitTy { builtin : Builtin }
   Term + Lit { lit : Literal }
@@ -58,3 +69,55 @@ use Idyll.Grade (Grade)
   Note + Binds { grade : Maybe Grade, ty : Maybe Term }
   Note + Forced {}
 }
+
+-- --- writing a checked module -------------------------------------------------------
+
+-- A Core term, written into `out`'s tables.
+@pub fun termRow out (c : Core) : ElaboratedTerm ! { St s | e } =
+  let m = noMeta in
+  let go = \x -> termRow out x in
+  match c with
+  | Core.Type n -> newElaboratedTermType out m n
+  | Core.LitTy b -> newElaboratedTermLitTy out m b
+  | Core.Lit l -> newElaboratedTermLit out m l
+  | Core.Prim p -> newElaboratedTermPrim out m p
+  | Core.Var i x -> newElaboratedTermVar out m i x
+  | Core.Opaque u x -> newElaboratedTermOpaque out m u x
+  | Core.Meta k -> newElaboratedTermMeta out m k
+  | Core.Pi x icit g r dom cod -> newElaboratedTermPi out m x icit (go g) (go r) (go dom) (go cod)
+  | Core.Lam x body -> newElaboratedTermLam out m x (go body)
+  | Core.App f a -> newElaboratedTermApp out m (go f) (go a)
+  | Core.BoxTy g a -> newElaboratedTermBoxTy out m (go g) (go a)
+  | Core.BoxIntro a -> newElaboratedTermBoxIntro out m (go a)
+  | Core.Unbox a -> newElaboratedTermUnbox out m (go a)
+  | Core.Let x v body -> newElaboratedTermLet out m x (go v) (go body)
+  | Core.GradeLit g -> newElaboratedTermGradeLit out m g
+  | Core.GradeAdd a b -> newElaboratedTermGradeAdd out m (go a) (go b)
+  | Core.GradeMul a b -> newElaboratedTermGradeMul out m (go a) (go b)
+  | Core.GradeRange a b -> newElaboratedTermGradeRange out m (go a) (go b)
+  | Core.Case sc alts ->
+      newElaboratedTermCase out m (go sc) (V.map (\a -> match a with | CaseAlt.CaseAlt h x vars body -> newElaboratedAlt out m h x vars (go body)) alts)
+  | Core.Runtime note a ->
+      let n =
+        match note with
+        | Note.Erased -> newElaboratedNoteErased out m
+        | Note.Binds g ty -> newElaboratedNoteBinds out m g (M.map go ty)
+        | Note.Forced -> newElaboratedNoteForced out m
+      in
+      newElaboratedTermRuntime out m n (go a)
+  | Core.Comp a r -> newElaboratedTermComp out m (go a) (go r)
+  | Core.Row ls ts -> newElaboratedTermRow out m (V.map go ls) (V.map go ts)
+  | Core.Handle body r ops ->
+      newElaboratedTermHandle out m (go body) (go r) (V.map (\o -> match o with | OpClause.OpClause u x n b -> newElaboratedOpClause out m u x n (go b)) ops)
+  | Core.Error -> newElaboratedTermError out m
+
+-- A module checked, written out: its expression; its recursive
+-- definitions, each its unique, name, level, body and whether it is local;
+-- and each solved metavariable's solution.
+@pub fun moduleRow out (body : Maybe Core) (defs : [(Int, String, Int, Core, Bool)]) (metas : [(Int, Core)]) : ElaboratedModule ! { St s | e } =
+  newElaboratedModule
+    out
+    noMeta
+    (M.map (\b -> termRow out b) body)
+    (V.map (\d -> match d with | (u, x, l, b, local) -> newElaboratedDef out noMeta u x l (termRow out b) local) defs)
+    (V.map (\sm -> match sm with | (k, t) -> newElaboratedSolution out noMeta k (termRow out t)) metas)

@@ -131,12 +131,28 @@ pub fn dumps(args: &[&str], extra: &[(&str, &str)], programs: &[(String, String)
     for batch in files.chunks(200) {
         let out = Command::new(&exe).args(args).args(batch).current_dir(&dir).output().map_err(|e| e.to_string())?;
         if !out.status.success() {
-            let _ = std::fs::remove_dir_all(&dir);
-            return Err(format!("front/ failed:\n{}", String::from_utf8_lossy(&out.stderr)));
+            // `IDYLL_FRONT_KEEP` keeps the files, to run front/ on them again
+            if std::env::var_os("IDYLL_FRONT_KEEP").is_none() {
+                let _ = std::fs::remove_dir_all(&dir);
+            } else {
+                eprintln!("kept {} (batch {})", dir.display(), batch.join(" ").len());
+            }
+            // the program it was on: the last one it named
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let last = stdout.lines().filter(|l| l.starts_with("== ")).last().unwrap_or("(none)").to_string();
+            return Err(format!(
+                "front/ failed ({}) on {last}:\n{}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr)
+            ));
         }
         text.push_str(&String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n"));
     }
-    let _ = std::fs::remove_dir_all(&dir);
+    if std::env::var_os("IDYLL_FRONT_KEEP").is_none() {
+        let _ = std::fs::remove_dir_all(&dir);
+    } else {
+        eprintln!("kept {}", dir.display());
+    }
     // A program's own text can have `== ` in it, so a dump starts only at the
     // line that names the next program's file.
     let mut parts: Vec<String> = Vec::new();

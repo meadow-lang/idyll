@@ -22,7 +22,8 @@ use Idyll.Usage (Usage)
 use Idyll.Ctx (Ctx)
 use Idyll.Ctx as X
 use Idyll.Elab (Pending, effectsOf, enterGroups, infer, retryPostponed, closeOpened, closeRows, reportHoles, reportUnsolved, keyOf, wrapLets, install)
-use Idyll.Elaborated (newElaboratedBuilder)
+use Idyll.Elaborated (ElaboratedProgram, newElaboratedBuilder, freezeElaborated, moduleRow)
+use Idyll.Tc (Meta)
 use Std.St (runSt)
 use Idyll.Decl (initial, declareNatives, declareEffects, declareDatas, declareOps)
 use Idyll.Hir (Ident)
@@ -52,6 +53,9 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
   tc : Tc,
   bodyType : Maybe Core,
   program : Maybe Core,
+  -- the same, written out, with its recursive definitions and what each
+  -- metavariable was solved with: what the CEK machine runs
+  elaborated : ElaboratedProgram,
   -- the unique of each top-level `let` of the program, outermost first
   toplevel : [Int],
   -- every name the module and the prelude declare, by unique: the package
@@ -81,6 +85,10 @@ fun checkedIn (m : Renamed) =
   let groups = hirModuleGroups h root in
   let tc = T.new () in
   let wh = setRef tc.hir h in
+  let out = newElaboratedBuilder () in
+  -- the pass is given a builder of its own, which it does not write to:
+  -- Silo corrupts the heap when one a closure in a `Ref` captured is then
+  -- written through (reported to Meadow, 2026-10-19)
   let we = install tc (newElaboratedBuilder ()) in
   let w0 = setRef tc.terminating m.terminating in
   let listOf = V.find (\d -> hirIdentText h (hirDataName h d) == "List" and uniqueOf h (hirDataName h d) < m.first) datas in
@@ -128,10 +136,22 @@ fun checkedIn (m : Renamed) =
       (\gw -> match gw with | (g, Just _) -> (match (h, g) with | HirGroupNonRec b -> [bindUnique h b] | _ -> []) | _ -> [])
       (V.zip groups lets)
   in
+  let program = M.map (\b -> wrapLets (fst b) lets) body in
+  let names = getRef tc.recNames in
+  let locals = getRef tc.localRecs in
+  let defs = V.map (\d -> match d with | (u, l, c) -> (u, Hm.getOr "" u names, l, c, V.elem u locals)) (getRef tc.recDefs) in
+  -- metavariables are closed, so their solutions mean the same anywhere
+  let metas =
+    V.concatMap
+      (\i -> match V.get (getRef tc.metas) i with | Just (Meta.Solved v _) -> [(i, quote tc 0 v)] | _ -> [])
+      (V.range 0 (V.len (getRef tc.metas)))
+  in
+  let root = moduleRow out program defs metas in
   Checked {
     tc,
     bodyType = M.map snd body,
-    program = M.map (\b -> wrapLets (fst b) lets) body,
+    program,
+    elaborated = ElaboratedProgram (freezeElaborated out) root,
     toplevel,
     symbols = symbolsOf m,
     linear = m.linearBody

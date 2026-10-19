@@ -1,6 +1,8 @@
 -- The reference interpreter: a CEK machine for elaborated Core, as
 -- `idyll-eval` has it. This says what an Idyll program computes; the Cut
--- that front/ emits is held to it.
+-- that front/ emits is held to it. It runs the checked program as it is
+-- written out, `Elaborated`'s tables: a term is a row, read with the
+-- language's patterns (`ElaboratedTermApp f a`).
 --
 -- A state is a Control (a term to evaluate in an environment, or a value
 -- being returned), an Environment, and a Kontinuation: a stack of frames
@@ -22,11 +24,12 @@
 -- world does it.
 
 use Idyll.Hir (Literal)
-use Idyll.Core (Core, Prim, Note, Head, CaseAlt, OpClause)
+use Idyll.Core (Prim, Head)
 use Idyll.Core as C
-use Idyll.Tc (Tc, Meta, CtorInfo, OpInfo)
+use Idyll.Tc (Tc, CtorInfo, OpInfo)
 use Idyll.Tc as T
-use Idyll.Eval (quote)
+use Idyll.Check (Checked)
+use Idyll.Elaborated
 use Idyll.World (World, Arg, Answer, Stop)
 use Idyll.World as W
 use Std.Collections.Vector as V
@@ -46,7 +49,7 @@ use Std.Result.Result.*
   -- a constructor applied to all its fields
   | Con String Int [Value]
   | Box Value
-  | Closure Env Core
+  | Closure Env ElaboratedTerm
   -- a primitive waiting for the rest of its arguments
   | Prim Prim [Value]
   -- a constructor, an operation, a native still waiting for arguments: how
@@ -64,42 +67,50 @@ use Std.Result.Result.*
 @pub data Env = Env (List Value) Int
 
 @pub data Frame
-  = Handle Core [OpClause] Env
-  | Arg Core Env
+  = Handle ElaboratedTerm [ElaboratedOpClause] Env
+  | Arg ElaboratedTerm Env
   | Call Value
-  | Case [CaseAlt] Env
-  | Let Core Env
+  | Case [ElaboratedAlt] Env
+  | Let ElaboratedTerm Env
   | BoxIntro
   | Unbox
 
-data Control = Eval Core Env | Return Value | Perform Int [Value] | Resume (List Frame) Value
+data Control = Eval ElaboratedTerm Env | Return Value | Perform Int [Value] | Resume (List Frame) Value
 
 -- Why the machine stopped without an answer.
 @pub data Halt = OutOfFuel | Stuck String | Stopped String | Exited Int | TestFailed String
 
 -- What the machine needs besides the term.
 @pub record Program = {
-  recDefs : HashMap Int (Int, Core),
+  a : ElaboratedArena,
+  -- the program's expression, if it has one
+  body : Maybe ElaboratedTerm,
+  recDefs : HashMap Int (Int, ElaboratedTerm),
   ctors : HashMap Int CtorInfo,
   ops : HashMap Int OpInfo,
   natives : HashMap Int (String, Int),
   types : HashMap Int Bool,
-  metas : [Maybe Core]
+  metas : HashMap Int ElaboratedTerm
 }
 
--- The program a checker's state describes.
-@pub fun programOf (tc : Tc) : Program ! { Mut | e } =
+-- The program a module checked is: its tables, and what the checker's
+-- state says of its constructors, operations, natives and types.
+@pub fun programOf (c : Checked) : Program ! { Mut | e } =
+  let tc = c.tc in
+  let a = elaboratedArena c.elaborated in
+  let root = elaboratedRoot c.elaborated in
   let natives = getRef tc.nativeInfo in
   let typeNatives = V.filter (\kv -> match snd kv with | (name, _) -> name == "Array" or name == "MArray") (Hm.toVec natives) in
   let types = V.foldl (\m u -> Hm.insert u True m) Hm.empty (V.append (Hm.keys (getRef tc.datas)) (V.map fst typeNatives)) in
   Program {
-    recDefs = V.foldl (\m d -> match d with | (u, l, c) -> Hm.insert u (l, c) m) Hm.empty (getRef tc.recDefs),
+    a,
+    body = elaboratedModuleBody a root,
+    recDefs = V.foldl (\m d -> Hm.insert (elaboratedDefUnique a d) (elaboratedDefLevel a d, elaboratedDefBody a d) m) Hm.empty (elaboratedModuleDefs a root),
     ctors = getRef tc.ctors,
     ops = getRef tc.ops,
     natives,
     types,
-    -- metavariables are closed, so their solutions mean the same anywhere
-    metas = V.map (\m -> match m with | Meta.Solved v _ -> Just (quote tc 0 v) | _ -> None) (getRef tc.metas)
+    metas = V.foldl (\m x -> Hm.insert (elaboratedSolutionNumber a x) (elaboratedSolutionTerm a x) m) Hm.empty (elaboratedModuleMetas a root)
   }
 
 -- --- environments ---------------------------------------------------------------------
@@ -140,7 +151,7 @@ fun listAppend (a : List a) (b : List a) : List a =
 -- --- the machine ------------------------------------------------------------------------
 
 -- Run a term for at most `fuel` steps: its value and how many steps it took.
-@pub fun run (p : Program) (w : World) (term : Core) (fuel : Int) : Result Halt (Value, Int) ! { Mut | e } =
+@pub fun run (p : Program) (w : World) (term : ElaboratedTerm) (fuel : Int) : Result Halt (Value, Int) ! { Mut | e } =
   loop p w (Control.Eval term (initialEnv ())) [;] 0 fuel
 
 fun loop (p : Program) (w : World) (control : Control) (kont : List Frame) (steps : Int) (fuel : Int) : Result Halt (Value, Int) ! { Mut | e } =
@@ -169,21 +180,22 @@ fun stuck (why : String) : Result Halt (Control, List Frame) = Err (Halt.Stuck w
 
 -- Take a term apart: return what it is already, or start on its first part
 -- and push a frame for the rest.
-fun eval (p : Program) (term : Core) (env : Env) (kont : List Frame) : Result Halt (Control, List Frame) =
-  match term with
+fun eval (p : Program) (term : ElaboratedTerm) (env : Env) (kont : List Frame) : Result Halt (Control, List Frame) =
+  let a = p.a in
+  match (a, term) with
   -- types and grades are not there at run time
-  | Core.Type _ -> value Value.Erased kont
-  | Core.LitTy _ -> value Value.Erased kont
-  | Core.Pi _ _ _ _ _ _ -> value Value.Erased kont
-  | Core.BoxTy _ _ -> value Value.Erased kont
-  | Core.GradeLit _ -> value Value.Erased kont
-  | Core.GradeAdd _ _ -> value Value.Erased kont
-  | Core.GradeMul _ _ -> value Value.Erased kont
-  | Core.GradeRange _ _ -> value Value.Erased kont
-  | Core.Comp _ _ -> value Value.Erased kont
-  | Core.Row _ _ -> value Value.Erased kont
-  | Core.Handle body r ops -> Ok (Control.Eval body env, Frame.Handle r ops env :: kont)
-  | Core.Lit l ->
+  | ElaboratedTermType _ -> value Value.Erased kont
+  | ElaboratedTermLitTy _ -> value Value.Erased kont
+  | ElaboratedTermPi _ _ _ _ _ _ -> value Value.Erased kont
+  | ElaboratedTermBoxTy _ _ -> value Value.Erased kont
+  | ElaboratedTermGradeLit _ -> value Value.Erased kont
+  | ElaboratedTermGradeAdd _ _ -> value Value.Erased kont
+  | ElaboratedTermGradeMul _ _ -> value Value.Erased kont
+  | ElaboratedTermGradeRange _ _ -> value Value.Erased kont
+  | ElaboratedTermComp _ _ -> value Value.Erased kont
+  | ElaboratedTermRow _ _ -> value Value.Erased kont
+  | ElaboratedTermHandle body r ops -> Ok (Control.Eval body env, Frame.Handle r ops env :: kont)
+  | ElaboratedTermLit l ->
       value
         (match l with
          | Literal.Int n -> Value.Int n
@@ -191,12 +203,12 @@ fun eval (p : Program) (term : Core) (env : Env) (kont : List Frame) : Result Ha
          | Literal.Bool b -> Value.Bool b
          | Literal.Unit -> Value.Unit)
         kont
-  | Core.Prim prim -> value (Value.Prim prim []) kont
-  | Core.Var i name ->
+  | ElaboratedTermPrim prim -> value (Value.Prim prim []) kont
+  | ElaboratedTermVar i name ->
       (match get env i with
        | Just v -> value v kont
        | None -> stuck (name ++ " is not in the environment"))
-  | Core.Opaque u name ->
+  | ElaboratedTermOpaque u name ->
       if Hm.member u p.types then value Value.Erased kont
       else
         (match Hm.lookup u p.ctors with
@@ -215,44 +227,51 @@ fun eval (p : Program) (term : Core) (env : Env) (kont : List Frame) : Result Ha
                              | Just outer -> Ok (Control.Eval core outer, kont)
                              | None -> stuck (name ++ " is used outside the context it was defined in"))
                         | None -> stuck ("no definition of " ++ name)))))
-  | Core.Meta m ->
-      (match M.andThen (\x -> x) (V.get p.metas m) with
+  | ElaboratedTermMeta m ->
+      (match Hm.lookup m p.metas with
        | Just solution -> Ok (Control.Eval solution env, kont)
        | None -> stuck "a metavariable was never solved")
-  -- never looked at, so never computed
-  | Core.Runtime Note.Erased _ -> value Value.Erased kont
-  -- a match its type decides: the one alternative, all erased
-  | Core.Runtime Note.Forced (Core.Case _ alts) ->
-      (match V.head alts with
-       | Just (CaseAlt.CaseAlt _ _ vars body) -> Ok (Control.Eval body (V.foldl (\e x -> push e Value.Erased) env vars), kont)
-       | None -> stuck "a case that cannot happen happened")
-  | Core.Runtime _ inner -> Ok (Control.Eval inner env, kont)
-  | Core.Lam _ body -> value (Value.Closure env body) kont
-  | Core.App f a -> Ok (Control.Eval f env, Frame.Arg a env :: kont)
-  | Core.Case s alts -> Ok (Control.Eval s env, Frame.Case alts env :: kont)
-  | Core.Let _ e body -> Ok (Control.Eval e env, Frame.Let body env :: kont)
-  | Core.BoxIntro e -> Ok (Control.Eval e env, Frame.BoxIntro :: kont)
-  | Core.Unbox e -> Ok (Control.Eval e env, Frame.Unbox :: kont)
-  | Core.Error -> stuck "the program contains an error"
+  | ElaboratedTermRuntime note inner ->
+      (match kindElaboratedNote a note with
+       -- never looked at, so never computed
+       | ElaboratedNoteKind.Erased -> value Value.Erased kont
+       -- a match its type decides: the one alternative, all erased
+       | ElaboratedNoteKind.Forced ->
+           (match (a, inner) with
+            | ElaboratedTermCase _ alts ->
+                (match V.head alts with
+                 | Just alt ->
+                     Ok (Control.Eval (elaboratedAltBody a alt) (V.foldl (\e x -> push e Value.Erased) env (elaboratedAltVars a alt)), kont)
+                 | None -> stuck "a case that cannot happen happened")
+            | _ -> Ok (Control.Eval inner env, kont))
+       | _ -> Ok (Control.Eval inner env, kont))
+  | ElaboratedTermLam _ body -> value (Value.Closure env body) kont
+  | ElaboratedTermApp f x -> Ok (Control.Eval f env, Frame.Arg x env :: kont)
+  | ElaboratedTermCase sc alts -> Ok (Control.Eval sc env, Frame.Case alts env :: kont)
+  | ElaboratedTermLet _ e body -> Ok (Control.Eval e env, Frame.Let body env :: kont)
+  | ElaboratedTermBoxIntro e -> Ok (Control.Eval e env, Frame.BoxIntro :: kont)
+  | ElaboratedTermUnbox e -> Ok (Control.Eval e env, Frame.Unbox :: kont)
+  | ElaboratedTermError -> stuck "the program contains an error"
 
 -- Whether a frame is a handler of `op`.
-fun handles (op : Int) (f : Frame) : Bool =
+fun handles (a : ElaboratedArena) (op : Int) (f : Frame) : Bool =
   match f with
-  | Frame.Handle _ ops _ -> V.any (\c -> match c with | OpClause.OpClause u _ _ _ -> u == op) ops
+  | Frame.Handle _ ops _ -> V.any (\c -> elaboratedOpClauseOp a c == op) ops
   | _ -> False
 
 -- The frames down to the nearest handler of `op`, that handler last, and
 -- the frames under it.
-fun splitAtHandler (op : Int) (kont : List Frame) (above : List Frame) : Maybe (List Frame, Frame, List Frame) =
+fun splitAtHandler (a : ElaboratedArena) (op : Int) (kont : List Frame) (above : List Frame) : Maybe (List Frame, Frame, List Frame) =
   match kont with
   | [;] -> None
-  | f :: rest -> if handles op f then Just (above, f, rest) else splitAtHandler op rest (listAppend above (f :: [;]))
+  | f :: rest -> if handles a op f then Just (above, f, rest) else splitAtHandler a op rest (listAppend above (f :: [;]))
 
 -- An operation performed: the frames down to its handler become the
 -- resumption, and the handler's clause runs where the handler's value goes.
 -- With no handler in the program, it is one of the world's.
 fun perform (p : Program) (w : World) (op : Int) (args : [Value]) (kont : List Frame) : Result Halt (Control, List Frame) ! { Mut | e } =
-  match splitAtHandler op kont [;] with
+  let a = p.a in
+  match splitAtHandler a op kont [;] with
   | None ->
       let name = match Hm.lookup op p.ops with | Just (OpInfo.OpInfo n _ _ _ _ _) -> n | None -> "" in
       let worldArgs =
@@ -266,12 +285,14 @@ fun perform (p : Program) (w : World) (op : Int) (args : [Value]) (kont : List F
   | Just (above, handler, rest) ->
       (match handler with
        | Frame.Handle _ ops env ->
-           (match V.find (\c -> match c with | OpClause.OpClause u _ _ _ -> u == op) ops with
-            | Just (OpClause.OpClause _ _ erased body0) ->
+           (match V.find (\c -> elaboratedOpClauseOp a c == op) ops with
+            | Just clause ->
+                let erased = elaboratedOpClauseErased a clause in
+                let body0 = elaboratedOpClauseBody a clause in
                 let frames = listAppend above (handler :: [;]) in
-                let withErased = V.foldl (\acc i -> M.andThen (\be -> M.map (\b -> (b, push (snd be) Value.Erased)) (underLambda (fst be))) acc) (Just (body0, env)) (V.range 0 erased) in
-                let withArgs = V.foldl (\acc a -> M.andThen (\be -> M.map (\b -> (b, push (snd be) a)) (underLambda (fst be))) acc) withErased args in
-                (match M.andThen (\be -> M.map (\b -> (b, push (snd be) (Value.Resumption frames))) (underLambda (fst be))) withArgs with
+                let withErased = V.foldl (\acc i -> M.andThen (\be -> M.map (\b -> (b, push (snd be) Value.Erased)) (underLambda a (fst be))) acc) (Just (body0, env)) (V.range 0 erased) in
+                let withArgs = V.foldl (\acc x -> M.andThen (\be -> M.map (\b -> (b, push (snd be) x)) (underLambda a (fst be))) acc) withErased args in
+                (match M.andThen (\be -> M.map (\b -> (b, push (snd be) (Value.Resumption frames))) (underLambda a (fst be))) withArgs with
                  | Just (body, env2) -> Ok (Control.Eval body env2, rest)
                  | None -> stuck "a handler clause that is not a function")
             | None -> stuck "no clause for the operation")
@@ -282,7 +303,7 @@ fun ret (p : Program) (v : Value) (frame : Frame) (kont : List Frame) : Result H
   match frame with
   -- the handled computation's value, to the `return` clause
   | Frame.Handle r _ env ->
-      (match underLambda r with
+      (match underLambda p.a r with
        | Just body -> Ok (Control.Eval body (push env v), kont)
        | None -> stuck "a handler clause that is not a function")
   | Frame.Arg arg env -> if evaluatesArgument v then Ok (Control.Eval arg env, Frame.Call v :: kont) else apply v Value.Erased kont
@@ -295,20 +316,23 @@ fun ret (p : Program) (v : Value) (frame : Frame) (kont : List Frame) : Result H
        | Value.Box inner -> value inner kont
        | _ -> stuck "unboxing something that is not a box")
 
-fun chooseAlt (p : Program) (v : Value) (alts : [CaseAlt]) (env : Env) (kont : List Frame) : Result Halt (Control, List Frame) =
+fun chooseAlt (p : Program) (v : Value) (alts : [ElaboratedAlt]) (env : Env) (kont : List Frame) : Result Halt (Control, List Frame) =
+  let a = p.a in
   let fieldsFor =
     \alt ->
-      match (alt, v) with
-      | (CaseAlt.CaseAlt (Head.BoolLit b) _ _ _, Value.Bool c) -> if b == c then Just [] else None
-      | (CaseAlt.CaseAlt (Head.Con u) _ _ _, Value.Con _ tag fields) ->
+      match (elaboratedAltHead a alt, v) with
+      | (Head.BoolLit b, Value.Bool c) -> if b == c then Just [] else None
+      | (Head.Con u, Value.Con _ tag fields) ->
           (match Hm.lookup u p.ctors with
            | Just (CtorInfo.CtorInfo _ _ t _ _) -> if t == tag then Just fields else None
            | None -> None)
       | _ -> None
   in
   match V.find (\alt -> M.isSome (fieldsFor alt)) alts with
-  | Just (CaseAlt.CaseAlt h n vars body) ->
-      let fields = M.unwrapOr [] (fieldsFor (CaseAlt.CaseAlt h n vars body)) in
+  | Just alt ->
+      let vars = elaboratedAltVars a alt in
+      let body = elaboratedAltBody a alt in
+      let fields = M.unwrapOr [] (fieldsFor alt) in
       -- the constructor's erased arguments first, then its fields, the last
       -- the innermost
       let erased = V.len vars - V.len fields in
@@ -390,10 +414,10 @@ fun onInts (p : Prim) (a : Int) (b : Int) : Maybe Value =
   | Prim.StrAppend -> None
 
 -- What is under a lambda, through the note on it.
-fun underLambda (c : Core) : Maybe Core =
-  match c with
-  | Core.Lam _ body -> Just body
-  | Core.Runtime _ inner -> underLambda inner
+fun underLambda (a : ElaboratedArena) (c : ElaboratedTerm) : Maybe ElaboratedTerm =
+  match (a, c) with
+  | ElaboratedTermLam _ body -> Just body
+  | ElaboratedTermRuntime _ inner -> underLambda a inner
   | _ -> None
 
 -- --- natives -----------------------------------------------------------------------------

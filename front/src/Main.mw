@@ -243,13 +243,14 @@ fun ran prelude (text : String) : String ! { Mut | e } =
               if not (V.isEmpty (getRef c.tc.unsupported)) then "(unsupported)"
               else if not (V.isEmpty (getRef c.tc.errors)) then "(error)"
               else
-                (match c.program with
+                (let p = Cek.programOf c in
+                 match p.body with
                  | None -> "(no expression)"
-                 | Just core -> runCore c.tc core)))
+                 | Just term -> runCore p term)))
 
-fun runCore tc core : String ! { Mut | e } =
+fun runCore p term : String ! { Mut | e } =
   let w = W.captured () in
-  let result = Cek.run (Cek.programOf tc) w core fuel in
+  let result = Cek.run p w term fuel in
   if not (V.isEmpty (getRef w.missing)) then "(unsupported: the world's ${S.join ", " (getRef w.missing)})"
   else
     let outcome =
