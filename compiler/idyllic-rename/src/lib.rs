@@ -623,7 +623,18 @@ impl Renamer {
         let mut at = if let Some(m) = alias {
             Target::Module(m)
         } else if let Some(u) = self.lookup(first) {
-            Target::Name(u)
+            // the name another module of that name gives, as `use Matrix
+            // (Matrix)` brought the type in (on the first of the two passes
+            // over the `use`s): the path is that module's still. (In the
+            // module itself, `use Matrix.*` is its own type's constructors.)
+            match self.under_root(0, &[first]) {
+                Some(Target::Module(m))
+                    if Some(m) != self.current && self.modules[m].exports.get(first).map(|e| e.0) == Some(u) =>
+                {
+                    Target::Module(m)
+                }
+                _ => Target::Name(u),
+            }
         } else if first == self.package && !self.modules.is_empty() {
             Target::Module(0)
         } else if let Some(t) = self.under_root(0, &[first]) {

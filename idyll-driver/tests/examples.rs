@@ -115,6 +115,9 @@ fn the_interpreter_runs_its_programs() {
         "  = 21, in 19 steps",
         "  = error: division by zero",
         "  = error: 3 is not a function",
+        "  (let x0 = (\\x0 -> (\\x1 -> (x0 (x0 x1)))) in ((x0 (\\x1 -> (x1 + 10))) 1))",
+        "  does not read: unexpected end",
+        "  does not read: y is bound nowhere",
     ] {
         assert!(out.contains(line), "no {line:?} in:\n{out}");
     }

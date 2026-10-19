@@ -364,6 +364,12 @@ fun visible (r : Rn) (owner : Int) (vis : Visibility) : Bool ! { Mut | e } =
 -- type's constructor or a record's field. The first segment is a module's
 -- alias, a name in scope, the package's own name, a module under its root,
 -- or a package it depends on.
+-- The unique a module gives a name as.
+fun exportOf (r : Rn) (m : Int) (name : String) : Maybe Int ! { Mut | e } =
+  match modAt r m with
+  | Just md -> M.map fst (Hm.lookup name md.exports)
+  | None -> None
+
 fun resolvePath (r : Rn) (segments : [String]) : Maybe Target ! { Mut | e } =
   let first = V.getOr "" segments 0 in
   let cur = getRef r.current in
@@ -374,7 +380,14 @@ fun resolvePath (r : Rn) (segments : [String]) : Maybe Target ! { Mut | e } =
     | Just m -> Just (Target.Module m)
     | None ->
         (match V.head (lookup r first) with
-         | Just u -> Just (Target.Name u)
+         | Just u ->
+             -- the name another module of that name gives, as `use Matrix
+             -- (Matrix)` brought the type in (on the first of the two passes
+             -- over the `use`s): the path is that module's still. (In the
+             -- module itself, `use Matrix.*` is its own type's constructors.)
+             (match (if pkg >= 0 then underRoot r pkg [first] else None) with
+              | Just (Target.Module m) if m != cur and exportOf r m first == Just u -> Just (Target.Module m)
+              | _ -> Just (Target.Name u))
          | None ->
              if pkg >= 0 and first == V.getOr "" (getRef r.packageNames) pkg then Just (Target.Module (M.unwrapOr 0 (moduleAt r pkg [])))
              else

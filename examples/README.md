@@ -11,7 +11,7 @@ run `idyll run`. Add `--release` for native code (this needs clang).
 | [`effects/`](effects) | Effects you declare yourself, and their handlers: a log kept, printed or thrown away, and backtracking search with an operation resumed many times (`@many`); also Std's `State`, `Exn` and `Yield` |
 | [`vectors/`](vectors) | Dependent types: matrices whose dimensions are in their types, an index checked once and then carried as a `Fin`, and a proof by induction |
 | [`linear/`](linear) | Grades: `[0]`, `[1]`, `[0..1]`, `[2]`, and `@linear` modules: an insertion sort in place on an `MArray`, and tickets that have to be redeemed exactly once |
-| [`interpreter/`](interpreter) | An interpreter for a small functional language, with closures and recursion. Errors are `Exn`, and steps are counted with `State` |
+| [`interpreter/`](interpreter) | An interpreter for a small functional language, read from its text (strings and characters taken apart, a recursive-descent parser), with closures and recursion. Errors are `Exn`, and steps are counted with `State` |
 
 `euler` sets `backend = "native"` for its debug profile. Its sieve runs for
 longer than the abstract machine's step limit, so even a plain `idyll run`

@@ -20,12 +20,14 @@ triangle n =
   let u = guard (a * a + b * b == c * c) in
   (a, b, c)
 
--- `k` resumed with each of `lo` to `hi`, and every answer they found.
-each : (lo : [] Int) -> (hi : [] Int) -> (k : [] (Int -> List a ! Div)) -> List a ! Div
+-- `k` resumed with each of `lo` to `hi`, and every answer they found:
+-- whatever else `k` does, `each` does too (`r`).
+each : (lo : [] Int) -> (hi : [] Int) -> (k : [] (Int -> List a ! {Div | r})) -> List a ! {Div | r}
 each lo hi k = if hi < lo then Nil else Std.Collections.List.append (k lo) (each (lo + 1) hi k)
 
--- Every answer the search can find.
-all : (body : () -> a ! {Search, Div}) -> List a ! Div
+-- Every answer the search can find; what else the search does is left to
+-- a handler outside this one.
+all : (body : () -> a ! {Search, Div | r}) -> List a ! {Div | r}
 all body = handle body () with
   return x -> x :: Nil
   choose lo hi k -> each lo hi k

@@ -9,14 +9,14 @@ use Std.Num.Nat.Nat.*
 use Std.Num.Fin (Fin, fromNat)
 use Std.Collections.Vec (Vec, index)
 use Std.Collections.Vec.Vec.*
-use Matrix (multiply, transpose, rows)
+use Matrix (Matrix, multiply, transpose, rows)
 
 -- A literal `#[..]` makes a vector when the type asks for one, and knows
 -- its length: these are two by three and three by two.
-a : Vec (S (S Z)) (Vec (S (S (S Z))) Int)
+a : Matrix (S (S Z)) (S (S (S Z)))
 a = #[#[1, 2, 3], #[4, 5, 6]]
 
-b : Vec (S (S (S Z))) (Vec (S (S Z)) Int)
+b : Matrix (S (S (S Z))) (S (S Z))
 b = #[#[7, 8], #[9, 10], #[11, 12]]
 
 -- `multiply (fromInt 2) a a` would be a type error: three columns can't

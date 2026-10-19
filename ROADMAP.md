@@ -556,8 +556,9 @@ and a `Map` built with one `Ord` is rejected when used with another.
 
 - [ ] **Port `lib/Std` in dependency order**: `Bool`, `Maybe`, `Either`,
   `Result`, `Tuple`, `Function`, `Ordering`, `Cmp` (done, without traits:
-  comparisons are passed along); then `String`, `Char`, `Bytes` and the
-  parsers; then collections (`List`, `Array`, `Vector` done; `Map`, `Set`,
+  comparisons are passed along); then `String` and `Char` (done, as
+  Meadow's, on the prelude's string natives and a builtin `Char`), `Bytes`
+  and the parsers; then collections (`List`, `Array`, `Vector` done; `Map`, `Set`,
   `HashMap` wait for traits); then the effect modules (`Exn`, `State`,
   `Yield`, `Fs`, `Process` done; `Stream`, `Random`, `Time`, `Test` left);
   then `Json`. (The prelude already declares `Maybe`, `Result`
@@ -1066,24 +1067,32 @@ Not in Meadow, but they will come up along the way:
   GHCi's behaviour, where a new definition shadows the old one and earlier
   definitions keep referring to the old, needs each entry to be a scope of
   its own.
-- **Rough edges the examples found** (2026-10-19). While writing
-  `examples/`, some programs that should check did not. Each example has a
-  workaround in it for now:
-  - A continuation passed to a row-polymorphic function (`choose lo hi k ->
-    each lo hi k`, with `each` polymorphic in `k`'s row) leaves the handled
-    row unsolved ("which Search?"). A fixed row works.
-  - A lambda inside a lambda, both handed to `map`, gives two effect
-    metavariables. The checker reports that one is not allowed by the other
-    instead of unifying them.
-  - `mapSnd f (k ())` in a handler clause counts `k` as resumed more than
-    once, where a function of the user's taking the pair at `[1]` does not.
-  - A `case` whose alternatives start on the next line can't be closed by
-    a `)`, so `let x = (case e of\n  p -> a) in ..` is a parse error. The
-    parse error is also reported at the enclosing definition's `=`, not
-    where the parse failed.
-  - A type-level definition can't be written. `Matrix r c = Vec r (Vec c
-    Int)` doesn't parse, and `matrix a = (a, a)` at `Type -> Type` is
-    "universe too large".
-  - A constructor named `Div` hides the effect `Div` once its type's
-    constructors are brought in, with an unhelpful error ("expected Effect,
-    but this has type .. -> Expr").
+- **Rough edges the examples found** (2026-10-19), fixed the same day,
+  each with a test and, where it is a program, a corpus entry front/ is
+  held to:
+  - a resumption handed to a row-polymorphic function ("which Search?"),
+    a lambda inside a lambda handed to one `map` ("effects not allowed"),
+    and `(\f -> f 1) (\n -> True)`: metavariables made inside a binder
+    could not meet ones made outside. The unifier now *prunes* a
+    metavariable of the variables a solution may not mention.
+  - a `case` in parentheses with its alternatives on lines of their own:
+    `(`, `[` and `,` close the layout blocks opened inside them.
+  - a parse error in an equation's right-hand side was reported at its
+    `=`: an `=`, `->` or `|` now commits to the right-hand side.
+  - a type-level definition: `pairOf a = (a, a)` is now the pair type,
+    and `Matrix r c = Vec r (Vec c Int)` may be written, upper case.
+  - a constructor named `Div` no longer hides the effect `Div` in a row.
+  - `\() -> e` is a lambda, as `f () = e` is an equation.
+  - `use Matrix (Matrix, ..)` of a module and its type of one name: the
+    second pass over the `use`s took the path for the type.
+  - a package's `@native` types were not given to its dependents.
+  - a string could not be looked inside: `Char`, the prelude's string
+    natives, and `Std.String` and `Std.Char` as Meadow has them.
+
+  One is left, and is a question of design rather than a bug: in a module
+  that says nothing about grades, a binder is unrestricted, so a Std
+  function that uses its argument once (`Std.Tuple.mapSnd`) still takes it
+  at `[]`, and `mapSnd f (k ())` in a handler counts the resumption `k` as
+  used without limit, which an operation resumed at most once forbids.
+  Inferring the tightest grade of each binder (*Grades suggested, not
+  demanded*, above) would answer it.

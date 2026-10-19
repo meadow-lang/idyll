@@ -1,36 +1,26 @@
--- An interpreter for a little functional language (`Syntax`), with
--- closures, recursion and errors (`Eval`). Each program is printed as it
--- would be written, then run: its value and how many steps it took, or
--- what went wrong.
+-- An interpreter for a little functional language: read from its text
+-- (`Parse`), into syntax with de Bruijn indices (`Syntax`), and run, with
+-- closures, recursion and errors (`Eval`). Each program is printed back as
+-- its syntax writes it, then run: its value and how many steps it took, or
+-- what went wrong, reading it or running it.
 
 use Std.Console (printLines)
 use Std.Exn (Exn, toResult)
 use Std.State (runState)
 use Syntax (Expr, show)
-use Syntax.Expr.*
 use Eval (Value, eval, showValue)
+use Parse (parse)
 
--- The factorial: `rec fact n -> if n == 0 then 1 else n * fact (n - 1)`.
-factorial : Expr
-factorial = Rec (IfZero (Var 0) (Num 1) (Mul (Var 0) (App (Var 1) (Sub (Var 0) (Num 1)))))
-
--- The Fibonacci numbers, the slow way.
-fibonacci : Expr
-fibonacci = Rec (IfZero (Var 0) (Num 0) (IfZero (Sub (Var 0) (Num 1)) (Num 1)
-  (Add (App (Var 1) (Sub (Var 0) (Num 1))) (App (Var 1) (Sub (Var 0) (Num 2))))))
-
--- A function that takes a function and applies it twice.
-twice : Expr
-twice = Lam (Lam (App (Var 1) (App (Var 1) (Var 0))))
-
-programs : List Expr
+programs : List String
 programs = #[
-  Add (Num 1) (Mul (Num 2) (Num 3)),
-  App factorial (Num 10),
-  App fibonacci (Num 10),
-  Let (Lam (Add (Var 0) (Num 10))) (App (App twice (Var 0)) (Num 1)),
-  Divide (Num 1) (Sub (Num 2) (Num 2)),
-  App (Num 3) (Num 4)
+  "1 + 2 * 3",
+  "(rec fact n -> ifz n then 1 else n * fact (n - 1)) 10",
+  "(rec fib n -> ifz n then 0 else ifz n - 1 then 1 else fib (n - 1) + fib (n - 2)) 10",
+  "let twice = \\f -> \\x -> f (f x) in twice (\\n -> n + 10) 1",
+  "1 / (2 - 2)",
+  "3 4",
+  "1 +",
+  "y + 1"
 ]
 
 -- What running a program came to.
@@ -40,11 +30,13 @@ outcome (Err message) = "error: " ++ message
 
 -- A program run with its steps counted from 0.
 counted : (e : [] Expr) -> (u : ()) -> (Value, Int) ! {Exn String, Div}
-counted e u = runState 0 (\(w : ()) -> eval Nil e)
+counted e u = runState 0 (\() -> eval Nil e)
 
--- A program, and what running it came to.
-run : (e : [] Expr) -> String ! Div
-run e = show 0 e ++ "\n  = " ++ outcome (toResult (counted e))
+-- A program's text, and what reading and running it came to.
+run : (text : [] String) -> String ! Div
+run text = text ++ "\n  " ++ (case toResult (\() -> parse text) of
+  Ok e -> show 0 e ++ "\n  = " ++ outcome (toResult (counted e))
+  Err message -> "does not read: " ++ message)
 
 main : () -> () ! Eff
 main () = printLines (Std.Collections.List.map run programs)

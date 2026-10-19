@@ -10,7 +10,7 @@ data Expr where
   Add : Expr -> Expr -> Expr
   Sub : Expr -> Expr -> Expr
   Mul : Expr -> Expr -> Expr
-  Divide : Expr -> Expr -> Expr
+  Div : Expr -> Expr -> Expr
   -- a function: its body sees the argument as `Var 0`
   Lam : Expr -> Expr
   App : Expr -> Expr -> Expr
@@ -37,9 +37,9 @@ show depth (Var i) = name (depth - 1 - i)
 show depth (Add a b) = "(" ++ show depth a ++ " + " ++ show depth b ++ ")"
 show depth (Sub a b) = "(" ++ show depth a ++ " - " ++ show depth b ++ ")"
 show depth (Mul a b) = "(" ++ show depth a ++ " * " ++ show depth b ++ ")"
-show depth (Divide a b) = "(" ++ show depth a ++ " / " ++ show depth b ++ ")"
+show depth (Div a b) = "(" ++ show depth a ++ " / " ++ show depth b ++ ")"
 show depth (Lam body) = "(\\" ++ name depth ++ " -> " ++ show (depth + 1) body ++ ")"
 show depth (App f x) = "(" ++ show depth f ++ " " ++ show depth x ++ ")"
-show depth (IfZero c t e) = "(if " ++ show depth c ++ " == 0 then " ++ show depth t ++ " else " ++ show depth e ++ ")"
+show depth (IfZero c t e) = "(ifz " ++ show depth c ++ " then " ++ show depth t ++ " else " ++ show depth e ++ ")"
 show depth (Rec body) = "(rec " ++ name depth ++ " " ++ name (depth + 1) ++ " -> " ++ show (depth + 2) body ++ ")"
 show depth (Let e body) = "(let " ++ name depth ++ " = " ++ show depth e ++ " in " ++ show (depth + 1) body ++ ")"

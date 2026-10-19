@@ -72,6 +72,20 @@ arrayGet (freeze (filled 3)) 0 + arrayLen (freeze (filled 3))
 }
 
 #[test]
+fn a_module_and_the_type_it_is_named_for_are_used_together() {
+    // `use Shape (Shape, ..)` brings the type from the module of its name;
+    // the second pass over the `use`s found the type it had brought, and
+    // took the path for it
+    let dir = scratch("module-type");
+    let app = common::fixture(&dir, "App");
+    common::write(&app.join("src/Shape.idl"), "data Shape = Circle Int | Square Int\nuse Shape.*\n\narea : Shape -> Int\narea (Circle r) = 3 * r * r\narea (Square s) = s * s\n");
+    common::write(&app.join("src/Main.idl"), "use Shape (Shape, area)\nuse Shape.Shape.*\n\nbig : Shape\nbig = Square 5\n\narea big + area (Circle 1)\n");
+    let out = pipeline::build(&app, Profile::Debug, &common::OPTS);
+    assert!(said(&out).is_empty(), "{:?}", said(&out));
+    assert_eq!(common::value(&out), "28");
+}
+
+#[test]
 fn private_names_do_not_cross_package_boundaries() {
     // `Util` exports `double`, `map`, `scale` and `sum` (all `@pub`) but not
     // `secret`.

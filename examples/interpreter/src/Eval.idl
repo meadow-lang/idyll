@@ -48,7 +48,7 @@ step env (Var i) = lookup env i
 step env (Add a b) = Number (number (eval env a) + number (eval env b))
 step env (Sub a b) = Number (number (eval env a) - number (eval env b))
 step env (Mul a b) = Number (number (eval env a) * number (eval env b))
-step env (Divide a b) =
+step env (Div a b) =
   let x = number (eval env a) in
   let y = number (eval env b) in
   if y == 0 then throw "division by zero" else Number (x / y)

@@ -42,14 +42,14 @@ keptReport (n, ms) = showInt n ++ " steps, " ++ showInt (Std.Collections.List.le
 main : () -> () ! Eff
 main () =
   let u1 = putStrLn "Collatz from 6, the log printed as it goes:" in
-  let steps = printed (\(u : ()) -> collatz 6) in
+  let steps = printed (\() -> collatz 6) in
   let u2 = putStrLn ("  " ++ showInt steps ++ " steps") in
-  let u3 = putStrLn ("From 3, the log kept: " ++ keptReport (kept (\(u : ()) -> collatz 3))) in
-  let u4 = putStrLn ("From 27, the log thrown away: " ++ showInt (quiet (\(u : ()) -> collatz 27)) ++ " steps") in
-  let u5 = printLines (fst (runState 1 (\(u : ()) -> numbered #["apples", "pears", "plums"]))) in
+  let u3 = putStrLn ("From 3, the log kept: " ++ keptReport (kept (\() -> collatz 3))) in
+  let u4 = putStrLn ("From 27, the log thrown away: " ++ showInt (quiet (\() -> collatz 27)) ++ " steps") in
+  let u5 = printLines (fst (runState 1 (\() -> numbered #["apples", "pears", "plums"]))) in
   let u6 = printLines #[
-    "mean of 1 2 3 4: " ++ showResult (toResult (\(u : ()) -> mean #[1, 2, 3, 4])),
-    "mean of nothing: " ++ showResult (toResult (\(u : ()) -> mean Nil))
+    "mean of 1 2 3 4: " ++ showResult (toResult (\() -> mean #[1, 2, 3, 4])),
+    "mean of nothing: " ++ showResult (toResult (\() -> mean Nil))
   ] in
-  let u7 = putStrLn ("Fibonacci below 100: " ++ Std.String.unwords (Std.Collections.List.map showInt (collect (\(u : ()) -> fibs 0 1 100)))) in
-  putStrLn ("Right triangles with sides up to 20: " ++ Std.String.unwords (Std.Collections.List.map showTriangle (all (\(u : ()) -> triangle 20))))
+  let u7 = putStrLn ("Fibonacci below 100: " ++ Std.String.unwords (Std.Collections.List.map showInt (collect (\() -> fibs 0 1 100)))) in
+  putStrLn ("Right triangles with sides up to 20: " ++ Std.String.unwords (Std.Collections.List.map showTriangle (all (\() -> triangle 20))))
