@@ -407,3 +407,24 @@ f : (g : () -> Int) -> Int
 f g = g ()
 
 f (\() -> 1)
+%%%
+pairOf : Type -> Type
+pairOf a = (a, a)
+
+x : pairOf Int
+x = (1, 2)
+
+x
+%%%
+use Std.Num.Nat (Nat)
+use Std.Num.Nat.Nat.*
+use Std.Collections.Vec (Vec)
+
+@pub
+Matrix : Nat -> Nat -> Type
+Matrix r c = Vec r (Vec c Int)
+
+m : Matrix (S Z) (S (S Z))
+m = #[#[1, 2]]
+
+m

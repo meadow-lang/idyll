@@ -145,14 +145,20 @@ fn attributed(attrs: Vec<(Attribute, Span)>, item: Item) -> Result<Attributed, (
     }
     // `@native f : a` is a signature with nothing to define it, on purpose
     let item = match (native, item) {
+        // an upper-case signature, which reads as an annotated expression
+        // (see `signature_of`), with an attribute on it
+        (None, Item::Expr(e)) if vis.is_some() || terminating.is_some() => match signature_of(e) {
+            Ok(sig) => Item::Decl(sig),
+            Err(e) => Item::Expr(e),
+        },
         (None, item) => item,
         (Some(_), Item::Decl(Spanned { node: Decl::Sig(name, ty), span })) => {
             Item::Decl(Spanned::new(Decl::Native(name, ty), span))
         }
         // a native type, `@native Array : Type -> Type`, which (its name
         // being upper case) reads as an annotated expression
-        (Some(at), Item::Expr(Spanned { node: Term::Ann(e, ty), span })) => match e.node {
-            Term::Var(name) if !name.node.contains('.') => Item::Decl(Spanned::new(Decl::Native(name, *ty), span)),
+        (Some(at), Item::Expr(e)) => match signature_of(e) {
+            Ok(Spanned { node: Decl::Sig(name, ty), span }) => Item::Decl(Spanned::new(Decl::Native(name, ty), span)),
             _ => return Err((at, "@native goes on a signature, f : a".into())),
         },
         (Some(at), _) => return Err((at, "@native goes on a signature, f : a".into())),
@@ -192,6 +198,21 @@ fn attributed(attrs: Vec<(Attribute, Span)>, item: Item) -> Result<Attributed, (
         return Err((Span::at(0), "@seq goes on a data type".into()));
     }
     Ok((item, vis, terminating.is_some(), linear))
+}
+
+/// `Name : a`, read as an annotated expression, as the signature it is when
+/// it is not the program's last item: an upper-case name's, which only an
+/// equation's left-hand side can tell from a constructor.
+fn signature_of(e: LTerm) -> Result<LDecl, LTerm> {
+    match e.node {
+        Term::Ann(x, ty) => match x.node {
+            Term::Var(name) if !name.node.contains('.') && name.node.starts_with(char::is_uppercase) => {
+                Ok(Spanned::new(Decl::Sig(name, *ty), e.span))
+            }
+            node => Err(Spanned::new(Term::Ann(Box::new(Spanned::new(node, x.span)), ty), e.span)),
+        },
+        node => Err(Spanned::new(node, e.span)),
+    }
 }
 
 /// Parse a program from a post-layout token stream.  `src_len` positions the
@@ -257,6 +278,11 @@ pub fn parse(src_len: usize, tokens: &[Spanned<Token>]) -> Result<Program, Vec<D
             }
             Item::Use(u) => program.uses.push(u),
             Item::Expr(e) if items.peek().is_none() => program.body = Some(e),
+            // `Matrix : Nat -> Nat -> Type`, with more after it: an
+            // upper-case name's signature
+            Item::Expr(e) if signature_of(e.clone()).is_ok() => {
+                program.decls.extend(signature_of(e).ok());
+            }
             Item::Expr(e) => {
                 return Err(vec![Diagnostic::error("parse error")
                     .label(e.span, "an expression can only come last in a program")
@@ -1008,12 +1034,17 @@ where
         guard.repeated().at_least(1).collect::<Vec<(LTerm, LTerm)>>().map(Rhs::Guarded),
     ));
     let name = lower().or(operator_name().delimited_by(just(Token::LParen), just(Token::RParen)));
+    // an equation may define an upper-case name, a type's, as `Matrix r c =
+    // Vec r (Vec c Int)` does (its signature, `Matrix : ..`, reads as an
+    // annotated expression, and the program makes it a signature: see
+    // `signature_of`)
+    let upper = select! { Token::UpperIdent(s) = e => Spanned::new(s, span_of(e.span())) };
+    let def_name = name.clone().or(upper);
     // No right-hand side only where no `=` or `|` comes next: once one does,
     // the equation is committed to, and a mistake in its right-hand side is
     // reported there, not at the `=` that an alternative stopped at.
     let no_rhs = none_of([Token::Eq, Token::Bar]).rewind().ignored().or(end()).to(None);
-    let prefix = name
-        .clone()
+    let prefix = def_name
         .then(params.map(|groups| groups.into_iter().flatten().collect::<Vec<LPat>>()))
         .then(just(Token::Colon).ignore_then(comp(term.clone())).or_not())
         .then(rhs.clone().map(Some).or(no_rhs))

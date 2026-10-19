@@ -361,3 +361,22 @@ fn a_parse_error_in_a_right_hand_side_is_reported_where_it_is() {
         &["parse error: found ')' expected atom"],
     );
 }
+
+#[test]
+fn a_definition_may_give_a_type() {
+    // its body is a type, so `(a, a)` is the pair type, not a pair of types
+    ok(
+        "pairOf : Type -> Type\npairOf a = (a, a)\n\nx : pairOf Int\nx = (1, 2)\n\nx",
+        &["pairOf : Type -> Type", "x : (Int, Int)"],
+        Some("(Int, Int)"),
+    );
+    // and its name may be upper case, as a type's is; its signature, which
+    // reads as an annotated expression, is one when more comes after it
+    ok(
+        "Matrix : Type -> Type\nMatrix a = (a, a)\n\nswap : (m : Matrix Int) -> Matrix Int\nswap (a, b) = (b, a)\n\nswap (1, 2)",
+        &["Matrix : Type -> Type", "swap : (m : (Int, Int)) -> (Int, Int)"],
+        Some("(Int, Int)"),
+    );
+    // but last, it is still the program's expression
+    ok("Nil : List Int", &[], Some("List Int"));
+}

@@ -1074,6 +1074,29 @@ fun declName (a : IdyllAtom) : Maybe Syn =
   | IdyllAtom.Name n -> if plainName TokenLowerIdent a then idyllNameName n else None
   | _ -> None
 
+-- ... and an equation's, which may also be upper case, a type's: `Matrix r c
+-- = Vec r (Vec c Int)`. (Its signature, `Matrix : ..`, reads as an annotated
+-- expression, which the program makes a signature: see `upperSig`.)
+fun defName (a : IdyllAtom) : Maybe Syn =
+  match a with
+  | IdyllAtom.Name n if plainName TokenUpperIdent a -> idyllNameName n
+  | _ -> declName a
+
+-- `Name : a`, read as an annotated expression, as the signature it is when it
+-- is not the program's last item: an upper-case name's, which only an
+-- equation's left-hand side tells from a constructor.
+fun upperSig out (m : Meta) (e : SurfaceExpr) =
+  if kindSurfaceExpr out e == SurfaceExprKind.Ann then
+    let x = surfaceExprAnnExpr out e in
+    if kindSurfaceExpr out x == SurfaceExprKind.Var then
+      let name = surfaceExprVarName out x in
+      let text = surfaceNameText out name in
+      (match S.charAt text 0 with
+       | Just c if C.isUpper c and not (S.contains "." text) -> Just (newSurfaceDeclSig out m name (surfaceExprAnnTy out e))
+       | _ -> None)
+    else None
+  else None
+
 fun rhsOf out (cx : Cx) (line : IdyllLine) =
   let m = metaOf (syntaxIdyllLine line) in
   match idyllLineRhs line with
@@ -1105,7 +1128,7 @@ fun lineItem out (cx : Cx) (line : IdyllLine) =
       let chain = idyllOpChain op in
       let links = match chain with | Just c -> linksOf c | None -> [] in
       let atoms = match chain with | Just c -> firstOf c | None -> [] in
-      (match M.andThen declName (V.head atoms) with
+      (match M.andThen defName (V.head atoms) with
        | Just f if V.isEmpty links and not (hasArrow op) ->
            (match (annotOf op, idyllLineRhs line) with
             | (Just an, Just _) ->
@@ -1115,7 +1138,7 @@ fun lineItem out (cx : Cx) (line : IdyllLine) =
                  | Just r -> Item.Decl (newSurfaceDeclDef out m (nameOf out f) ps (Just ty) r)
                  | None -> Item.Nothing)
             | (Just an, None) ->
-                if V.len atoms == 1 then sig (nameOf out f) (comp out cx m (idyllAnnotTy an) effects)
+                if V.len atoms == 1 and R.kindOf f != TokenUpperIdent then sig (nameOf out f) (comp out cx m (idyllAnnotTy an) effects)
                 else expr out cx line
             | (None, Just _) ->
                 let u = noEffects () in
@@ -1491,7 +1514,14 @@ fun itemOf out (it : IdyllItem) =
     | Just (IdyllItemBody.RecordDecl d) -> recordDecl out cx d
     | Just (IdyllItemBody.EffectDecl d) -> effectDecl out cx d
     | Just (IdyllItemBody.UseDecl d) -> Item.Use (useDecl out cx d)
-    | Just (IdyllItemBody.Line l) -> lineItem out cx l
+    | Just (IdyllItemBody.Line l) ->
+        (match lineItem out cx l with
+         -- an upper-case signature with an attribute on it
+         | Item.Expr e if (M.isSome a.vis or a.terminating) and not a.native ->
+             (match upperSig out (metaOf at) e with
+              | Just d -> Item.Decl d
+              | None -> Item.Expr e)
+         | i -> i)
     | None -> Item.Nothing
   in
   let u1 =
@@ -1577,8 +1607,12 @@ fun program out (root : Syn) =
                   | Item.Expr e ->
                       if i + 1 == n then { p | body = Just e }
                       else
-                        let u = bad at "an expression can only come last in a program" in
-                        p
+                        (match upperSig out im e with
+                         -- `Matrix : Nat -> Nat -> Type`, with more after it
+                         | Just d -> { p | decls = V.pushBack p.decls d }
+                         | None ->
+                             let u = bad at "an expression can only come last in a program" in
+                             p)
                   | Item.Nothing -> p)))
       (Parts { uses = [], datas = [], effects = [], decls = [], shown = [], terminating = [], linear = False, body = None })
       (V.range 0 n)

@@ -1050,6 +1050,22 @@ fun renameDef src out (r : Rn) (dfn : Def) =
       let sig = if inlineSig then inline else dfn.sig in
       let resultTy = if inlineSig then None else inline in
       let ty = M.map (\t -> renameSig src out r t) sig in
+      -- a definition whose type ends in a universe defines a type, so its
+      -- body is one: `pairOf a = (a, a)` is the pair type, not a pair
+      let typeBody = match sig with | Just t -> endsInUniverse src t | None -> False in
+      withType r (typeBody or getRef r.inType) (\z -> renameDefBody src out r m dfn ty params rhs resultTy)
+  | _ -> newHirBind out m (idNode out m dfn.name) None (newHirExprHole out m) False
+
+-- Whether a signature's type ends in a universe, `.. -> Type`: what it gives
+-- is a type.
+fun endsInUniverse (a : SurfaceArena) (t : SurfaceExpr) : Bool =
+  match kindSurfaceExpr a t with
+  | SurfaceExprKind.Pi -> endsInUniverse a (surfaceExprPiCod a t)
+  | SurfaceExprKind.Type -> True
+  | SurfaceExprKind.App -> kindSurfaceExpr a (surfaceExprAppFunc a t) == SurfaceExprKind.Type
+  | _ -> False
+
+fun renameDefBody src out (r : Rn) (m : Meta) (dfn : Def) ty params rhs resultTy =
       let isPlain = kindSurfaceRhs src rhs == SurfaceRhsKind.Plain in
       if isPlain and V.len dfn.eqs == 1 and V.all (simplePat src) params then
         scoped r (\u ->
@@ -1070,7 +1086,6 @@ fun renameDef src out (r : Rn) (dfn : Def) =
           in
           newHirBind out m (idNode out m dfn.name) ty built (getRef r.linear))
       else renameMatch src out r m dfn ty
-  | _ -> newHirBind out m (idNode out m dfn.name) None (newHirExprHole out m) False
 
 -- A definition by matching: each equation a clause.
 fun renameMatch src out (r : Rn) (m : Meta) (dfn : Def) ty =

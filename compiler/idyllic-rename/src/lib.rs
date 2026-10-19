@@ -1573,6 +1573,27 @@ impl Renamer {
             _ => (sig, inline.as_ref()),
         };
         let ty = sig.map(|t| self.rename_sig(t));
+        // A definition whose type ends in a universe defines a type, so its
+        // body is one: `pairOf a = (a, a)` is the pair type, not a pair.
+        if sig.is_some_and(ends_in_universe) && !self.in_type {
+            return self.as_type(|r| r.rename_def_body(d, eqs, id, span, name, ty, params, rhs, result_ty));
+        }
+        self.rename_def_body(d, eqs, id, span, name, ty, params, rhs, result_ty)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn rename_def_body(
+        &mut self,
+        d: &ast::LDecl,
+        eqs: &[&ast::LDecl],
+        id: NodeId,
+        span: Span,
+        name: Ident,
+        ty: Option<hir::Term>,
+        params: &[ast::LPat],
+        rhs: &ast::Rhs,
+        result_ty: Option<&LTerm>,
+    ) -> hir::Bind {
         // One equation of variables is a lambda; anything else is matched.
         let simple = |p: &ast::LPat| matches!(p.node, ast::Pat::Bind(_) | ast::Pat::Wild);
         let rhs = match rhs {
@@ -1645,6 +1666,17 @@ impl Renamer {
             }
             quantified = Some(cod);
         }
+    }
+}
+
+/// Whether a signature's type ends in a universe, `.. -> Type`: what it
+/// gives is a type.
+fn ends_in_universe(t: &LTerm) -> bool {
+    match &t.node {
+        ast::Term::Pi(_, _, _, _, cod) => ends_in_universe(cod),
+        ast::Term::Type => true,
+        ast::Term::App(f, _) => matches!(f.node, ast::Term::Type),
+        _ => false,
     }
 }
 
