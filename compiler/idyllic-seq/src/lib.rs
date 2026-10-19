@@ -121,6 +121,8 @@ pub enum Extern {
     /// `extern lit n { (v) ⇒ s }`
     LitInt(i64),
     LitStr(String),
+    /// a character, which native code holds as its code point
+    LitChar(char),
     /// `extern add(a, b) { (v) ⇒ s }`
     Add,
     Mul,
@@ -156,7 +158,7 @@ impl Extern {
             Extern::Lt => Prim::IntLt,
             Extern::Eq => Prim::IntEq,
             Extern::Append => Prim::StrAppend,
-            Extern::LitInt(_) | Extern::LitStr(_) | Extern::Halt | Extern::Native(_) => return None,
+            Extern::LitInt(_) | Extern::LitStr(_) | Extern::LitChar(_) | Extern::Halt | Extern::Native(_) => return None,
         })
     }
 }
@@ -312,6 +314,7 @@ impl fmt::Display for Extern {
         match self {
             Extern::LitInt(n) => write!(f, "lit {n}"),
             Extern::LitStr(s) => write!(f, "lit {s:?}"),
+            Extern::LitChar(c) => write!(f, "lit {}", idyllic_ast::show_char(*c)),
             Extern::Add => write!(f, "add"),
             Extern::Mul => write!(f, "mul"),
             Extern::Sub => write!(f, "sub"),

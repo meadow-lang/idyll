@@ -13,6 +13,8 @@ impl fmt::Display for Rep {
             Rep::Bool => f.write_str("bool"),
             Rep::Unit => f.write_str("unit"),
             Rep::Str => f.write_str("str"),
+            Rep::U8 => f.write_str("u8"),
+            Rep::Char => f.write_str("char"),
             Rep::Ptr => f.write_str("ptr"),
             Rep::Desc => f.write_str("desc"),
             Rep::Var(a) => write!(f, "'{a}"),
@@ -47,6 +49,12 @@ fn params(values: &[Binder], conts: &[String]) -> String {
     format!("({}; {})", commas(values), conts.join(", "))
 }
 
+/// A character as Cut's text reads it back, and as Meadow's Cut package
+/// writes one: its code point, `'\u{61}'`.
+fn character(c: char) -> String {
+    format!("'\\u{{{:x}}}'", c as u32)
+}
+
 fn string(s: &str) -> String {
     let mut out = String::from("\"");
     for c in s.chars() {
@@ -74,6 +82,7 @@ impl Printer {
             Producer::Val(s) => write!(self.out, "{s}").unwrap(),
             Producer::Int(n) => write!(self.out, "{n}").unwrap(),
             Producer::Str(s) => self.out.push_str(&string(s)),
+            Producer::Char(c) => self.out.push_str(&character(*c)),
             Producer::Bool(b) => write!(self.out, "{b}").unwrap(),
             Producer::Unit => self.out.push_str("unit"),
             Producer::Desc(r) => write!(self.out, "desc({r})").unwrap(),

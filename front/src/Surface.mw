@@ -345,6 +345,20 @@ fun strLit (s : Syn) =
   let inner = stringSlice text 1 (stringByteLength text - 1) in
   S.join "" (unescape s (S.chars inner) 0 [])
 
+-- A character literal's character, its escapes resolved as a string's are;
+-- one that is not one character is the Rust lexer's error.
+fun charLit (s : Syn) =
+  let text = textOf (M.andThen idyllCharLitCharToken (asIdyllCharLit s)) in
+  let inner = stringSlice text 1 (stringByteLength text - 1) in
+  let cs = stringToChars (S.join "" (unescape s (S.chars inner) 0 [])) in
+  if arrayLen cs == 1 then arrayGet cs 0
+  else if arrayLen cs == 0 then
+    let u = bad s "empty character literal" in
+    charFromCode 65533
+  else
+    let u = bad s "character literal contains more than one codepoint" in
+    arrayGet cs 0
+
 fun unescape (at : Syn) (cs : [Char]) (i : Int) (out : [String]) =
   match V.get cs i with
   | None -> out
@@ -421,7 +435,7 @@ pass! {
          else var out cx here x)
     | Number {} -> Expr.Lit { lit = Literal.Int (intLit node) }
     | StrLit {} -> Expr.Lit { lit = Literal.Str (strLit node) }
-    | CharLit {} -> (let u = bad node "not a term" in Hole {})
+    | CharLit {} -> Expr.Lit { lit = Literal.Char (charLit node) }
     | Hole {} -> Hole {}
     | TypeA {} -> Type {}
     | InfA {} -> Inf {}
@@ -933,7 +947,7 @@ pass! {
          else Con { name = nameOf out name, args = [] })
     | Number {} -> Pat.Lit { lit = Literal.Int (intLit node) }
     | StrLit {} -> Pat.Lit { lit = Literal.Str (strLit node) }
-    | CharLit {} -> (let u = bad node "not a pattern" in Wild {})
+    | CharLit {} -> Pat.Lit { lit = Literal.Char (charLit node) }
     | Hole {} -> Wild {}
     | TypeA {} -> (let u = bad node "not a pattern" in Wild {})
     | InfA {} -> (let u = bad node "not a pattern" in Wild {})

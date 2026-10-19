@@ -114,6 +114,28 @@ void idyll_print_int(int64_t n) { printf("%lld\n", (long long)n); }
 void idyll_print_bool(int64_t b) { puts(b ? "True" : "False"); }
 void idyll_print_unit(void) { puts("()"); }
 void idyll_print_string(const char *s) { printf("\"%s\"\n", s); }
+void idyll_print_char(int64_t c) {
+    char buf[5];
+    switch (c) {
+    case '\'': puts("'\\''"); return;
+    case '\\': puts("'\\\\'"); return;
+    case '\n': puts("'\\n'"); return;
+    case '\t': puts("'\\t'"); return;
+    case '\r': puts("'\\r'"); return;
+    case 0: puts("'\\0'"); return;
+    }
+    if (c < 0x20 || c == 0x7f) {
+        printf("'\\u{%llx}'\n", (long long)c);
+        return;
+    }
+    size_t n = 0;
+    if (c < 0x80) buf[n++] = (char)c;
+    else if (c < 0x800) { buf[n++] = (char)(0xc0 | (c >> 6)); buf[n++] = (char)(0x80 | (c & 0x3f)); }
+    else if (c < 0x10000) { buf[n++] = (char)(0xe0 | (c >> 12)); buf[n++] = (char)(0x80 | ((c >> 6) & 0x3f)); buf[n++] = (char)(0x80 | (c & 0x3f)); }
+    else { buf[n++] = (char)(0xf0 | (c >> 18)); buf[n++] = (char)(0x80 | ((c >> 12) & 0x3f)); buf[n++] = (char)(0x80 | ((c >> 6) & 0x3f)); buf[n++] = (char)(0x80 | (c & 0x3f)); }
+    buf[n] = '\0';
+    printf("'%s'\n", buf);
+}
 void idyll_print_opaque(void) { puts("<value>"); }
 
 /* The world: the operations of the effects in the prelude's `Eff`, which
@@ -454,6 +476,179 @@ void idyll_native_marraySet(block *a, int64_t aw, block *ib, int64_t i, block *x
 void idyll_native_marrayFreeze(block *a, int64_t aw, block **b, int64_t *w) { give(b, w, a, aw); }
 
 void idyll_native_marrayThaw(block *a, int64_t aw, block **b, int64_t *w) { give(b, w, a, aw); }
+
+/* --- Strings and characters ------------------------------------------------
+ *
+ * The prelude's string natives. A string is UTF-8, NUL-terminated, in the
+ * word; a character is its code point, in the word. What they do is what
+ * `idyllic_builtins::strings` says, as the AxCut machine does it. A string
+ * made here is never freed, as no string is yet. */
+
+static char *new_text(size_t n) {
+    char *s = malloc(n + 1);
+    if (!s) {
+        fputs("idyll: out of memory\n", stderr);
+        exit(1);
+    }
+    s[n] = '\0';
+    return s;
+}
+
+void idyll_native_stringByteLength(block *sb, int64_t s, block **b, int64_t *w) {
+    (void)sb;
+    give(b, w, NULL, (int64_t)strlen(text(s)));
+}
+
+void idyll_native_stringByteAt(block *sb, int64_t s, block *ib, int64_t i, block **b, int64_t *w) {
+    (void)sb, (void)ib;
+    const char *t = text(s);
+    int64_t n = (int64_t)strlen(t);
+    if (i < 0 || i >= n) {
+        fflush(stdout);
+        fprintf(stderr, "idyll: index %lld is out of bounds for a string of %lld bytes\n", (long long)i, (long long)n);
+        exit(1);
+    }
+    give(b, w, NULL, (int64_t)(unsigned char)t[i]);
+}
+
+/* How many bytes the UTF-8 character starting with `c` takes, or 0 for a
+ * byte that starts none (a continuation byte, or not UTF-8 at all). */
+static int utf8_width(unsigned char c) {
+    if (c < 0x80) return 1;
+    if ((c & 0xe0) == 0xc0) return 2;
+    if ((c & 0xf0) == 0xe0) return 3;
+    if ((c & 0xf8) == 0xf0) return 4;
+    return 0;
+}
+
+/* Bytes `[lo, hi)` of `t`, a character cut in two at either end being the
+ * replacement character, U+FFFD, as Rust's lossy decoding has it. */
+void idyll_native_stringSlice(block *sb, int64_t s, block *fb, int64_t from, block *tb, int64_t to, block **b, int64_t *w) {
+    (void)sb, (void)fb, (void)tb;
+    const unsigned char *t = (const unsigned char *)text(s);
+    int64_t n = (int64_t)strlen((const char *)t);
+    int64_t lo = from < 0 ? 0 : from > n ? n : from;
+    int64_t hi = to < lo ? lo : to > n ? n : to;
+    /* at most three bytes of replacement for each byte kept */
+    char *out = new_text((size_t)(hi - lo) * 3);
+    size_t k = 0;
+    int64_t i = lo;
+    while (i < hi) {
+        int width = utf8_width(t[i]);
+        int whole = width > 0 && i + width <= hi;
+        for (int j = 1; whole && j < width; j++) {
+            if ((t[i + j] & 0xc0) != 0x80) whole = 0;
+        }
+        if (whole) {
+            memcpy(out + k, t + i, (size_t)width);
+            k += (size_t)width;
+            i += width;
+        } else {
+            /* one replacement for the bytes that begin a character but
+             * do not finish it here, or for one stray byte */
+            int64_t j = i + 1;
+            if (width > 1) {
+                while (j < hi && j < i + width && (t[j] & 0xc0) == 0x80) j++;
+            }
+            memcpy(out + k, "\xef\xbf\xbd", 3);
+            k += 3;
+            i = j;
+        }
+    }
+    out[k] = '\0';
+    give(b, w, NULL, (int64_t)(intptr_t)out);
+}
+
+void idyll_native_stringCompare(block *ab, int64_t a, block *bb, int64_t c, block **b, int64_t *w) {
+    (void)ab, (void)bb;
+    int r = strcmp(text(a), text(c));
+    give(b, w, NULL, r < 0 ? -1 : r > 0 ? 1 : 0);
+}
+
+void idyll_native_stringIndexOf(block *hb, int64_t hay, block *nb, int64_t needle, block *fb, int64_t from, block **b, int64_t *w) {
+    (void)hb, (void)nb, (void)fb;
+    const char *h = text(hay), *x = text(needle);
+    int64_t n = (int64_t)strlen(h);
+    int64_t start = from < 0 ? 0 : from;
+    if (start > n) {
+        give(b, w, NULL, -1);
+        return;
+    }
+    const char *at = strstr(h + start, x);
+    give(b, w, NULL, at ? (int64_t)(at - h) : -1);
+}
+
+void idyll_native_stringToChars(block *sb, int64_t s, block **b, int64_t *w) {
+    (void)sb;
+    const unsigned char *t = (const unsigned char *)text(s);
+    int64_t count = 0;
+    for (const unsigned char *p = t; *p; p++) {
+        if ((*p & 0xc0) != 0x80) count++;
+    }
+    block *array = array_alloc(count);
+    int64_t i = 0;
+    const unsigned char *p = t;
+    while (*p) {
+        int width = utf8_width(*p);
+        int64_t code = width == 1 ? *p : width == 2 ? *p & 0x1f : width == 3 ? *p & 0x0f : *p & 0x07;
+        for (int j = 1; j < width; j++) code = (code << 6) | (p[j] & 0x3f);
+        array->fields[i].block = NULL;
+        array->fields[i].word = code;
+        i++;
+        p += width ? width : 1;
+    }
+    give(b, w, array, 0);
+}
+
+/* `code`, encoded, at `out`; how many bytes it took. */
+static size_t utf8_encode(int64_t code, char *out) {
+    if (code < 0x80) {
+        out[0] = (char)code;
+        return 1;
+    }
+    if (code < 0x800) {
+        out[0] = (char)(0xc0 | (code >> 6));
+        out[1] = (char)(0x80 | (code & 0x3f));
+        return 2;
+    }
+    if (code < 0x10000) {
+        out[0] = (char)(0xe0 | (code >> 12));
+        out[1] = (char)(0x80 | ((code >> 6) & 0x3f));
+        out[2] = (char)(0x80 | (code & 0x3f));
+        return 3;
+    }
+    out[0] = (char)(0xf0 | (code >> 18));
+    out[1] = (char)(0x80 | ((code >> 12) & 0x3f));
+    out[2] = (char)(0x80 | ((code >> 6) & 0x3f));
+    out[3] = (char)(0x80 | (code & 0x3f));
+    return 4;
+}
+
+void idyll_native_charsToString(block *a, int64_t aw, block **b, int64_t *w) {
+    (void)aw;
+    int64_t n = array_len(a);
+    char *out = new_text((size_t)n * 4);
+    size_t k = 0;
+    for (int64_t i = 0; i < n; i++) k += utf8_encode(a->fields[i].word, out + k);
+    out[k] = '\0';
+    idyll_erase(a);
+    give(b, w, NULL, (int64_t)(intptr_t)out);
+}
+
+void idyll_native_charCode(block *cb, int64_t c, block **b, int64_t *w) {
+    (void)cb;
+    give(b, w, NULL, c);
+}
+
+void idyll_native_charFromCode(block *cb, int64_t c, block **b, int64_t *w) {
+    (void)cb;
+    if (c < 0 || c > 0x10ffff || (c >= 0xd800 && c <= 0xdfff)) {
+        fflush(stdout);
+        fprintf(stderr, "idyll: %lld is not a Unicode scalar value\n", (long long)c);
+        exit(1);
+    }
+    give(b, w, NULL, c);
+}
 
 /* An array of strings, the first `n` of `items`. */
 static void give_array_of_strings(block **b, int64_t *w, char **items, size_t n) {

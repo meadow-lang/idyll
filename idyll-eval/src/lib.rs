@@ -66,7 +66,7 @@
 //! nothing to show.
 
 use idyllic_ast::Lit;
-use idyllic_builtins::{Builtin, IntResult, Native, Prim};
+use idyllic_builtins::{strings, Builtin, IntResult, Native, Prim};
 use idyllic_typecheck::core::{CaseAlt, Core, Head, Note, OpClause};
 use idyllic_typecheck::handlers::OpInfo;
 use idyllic_typecheck::natives::NativeInfo;
@@ -85,6 +85,8 @@ use std::rc::Rc;
 pub enum Value {
     Int(i64),
     Str(Rc<str>),
+    /// A character, a Unicode scalar value.
+    Char(char),
     Bool(bool),
     Unit,
     /// A constructor applied to all its fields.
@@ -220,7 +222,7 @@ impl Value {
             Value::Box(inner) => out.push(Garbage::Value(std::mem::replace(inner, hollow()))),
             Value::Closure { env, .. } => out.extend(env.0.take().map(Garbage::Cell)),
             // (a resumption's frames are few, and dropped the ordinary way)
-            Value::Int(_) | Value::Str(_) | Value::Bool(_) | Value::Unit | Value::Erased | Value::Resumption(_) => {}
+            Value::Int(_) | Value::Str(_) | Value::Char(_) | Value::Bool(_) | Value::Unit | Value::Erased | Value::Resumption(_) => {}
         }
     }
 }
@@ -423,6 +425,7 @@ impl Program<'_> {
             Core::Lit(lit) => value(match lit {
                 Lit::Int(n) => Value::Int(*n),
                 Lit::Str(s) => Value::Str(s.as_str().into()),
+                Lit::Char(c) => Value::Char(*c),
                 Lit::Bool(b) => Value::Bool(*b),
                 Lit::Unit => Value::Unit,
             }),
@@ -692,6 +695,10 @@ fn native(n: Native, args: &[Rc<Value>]) -> Result<Value, EvalError> {
             EvalError::Stopped(format!("index {i} is out of bounds for an array of length {}", items.len()))
         })
     };
+    let text = |v: &Rc<Value>| match &**v {
+        Value::Str(s) => Ok(s.clone()),
+        _ => stuck(format!("{} is given something that is not a string", n.name())),
+    };
     // `Pair [a] b`: how a native gives back two things, the first boxed
     let pair = |a: Rc<Value>, b: Rc<Value>| Value::Con { name: "Pair".into(), tag: 0, fields: vec![Rc::new(Value::Box(a)), b] };
     Ok(match n {
@@ -768,6 +775,38 @@ fn native(n: Native, args: &[Rc<Value>]) -> Result<Value, EvalError> {
             pair(items[at(&items, int(&args[1])?)?].clone(), args[0].clone())
         }
         Native::MArrayFreeze | Native::MArrayThaw => args[0].as_ref().clone(),
+        Native::StringByteLength => Value::Int(text(&args[0])?.len() as i64),
+        Native::StringByteAt => {
+            let (s, i) = (text(&args[0])?, int(&args[1])?);
+            Value::Int(strings::byte_at(&s, i).ok_or_else(|| {
+                EvalError::Stopped(format!("index {i} is out of bounds for a string of {} bytes", s.len()))
+            })?)
+        }
+        Native::StringSlice => Value::Str(strings::slice(&text(&args[0])?, int(&args[1])?, int(&args[2])?).into()),
+        Native::StringCompare => Value::Int(strings::compare(&text(&args[0])?, &text(&args[1])?)),
+        Native::StringIndexOf => Value::Int(strings::index_of(&text(&args[0])?, &text(&args[1])?, int(&args[2])?)),
+        Native::StringToChars => Value::Array(text(&args[0])?.chars().map(|c| Rc::new(Value::Char(c))).collect()),
+        Native::CharsToString => {
+            let chars = array(&args[0])?
+                .iter()
+                .map(|v| match **v {
+                    Value::Char(c) => Ok(c),
+                    _ => stuck("charsToString is given something that is not a character"),
+                })
+                .collect::<Result<String, _>>()?;
+            Value::Str(chars.into())
+        }
+        Native::CharCode => match *args[0] {
+            Value::Char(c) => Value::Int(i64::from(u32::from(c))),
+            _ => return stuck("charCode is given something that is not a character"),
+        },
+        Native::CharFromCode => {
+            let code = int(&args[0])?;
+            Value::Char(
+                strings::from_code(code)
+                    .ok_or_else(|| EvalError::Stopped(format!("{code} is not a Unicode scalar value")))?,
+            )
+        }
     })
 }
 
@@ -792,6 +831,7 @@ pub fn show(v: &Value) -> Option<String> {
     match v {
         Value::Int(n) => Some(n.to_string()),
         Value::Str(s) => Some(format!("{:?}", &**s)),
+        Value::Char(c) => Some(idyllic_ast::show_char(*c)),
         Value::Bool(true) => Some("True".into()),
         Value::Bool(false) => Some("False".into()),
         Value::Unit => Some("()".into()),

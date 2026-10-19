@@ -72,6 +72,8 @@ pub enum ResultKind {
     Bool,
     Unit,
     Str,
+    /// a character, held as its code point
+    Char,
     /// a function, a type, a structure: nothing is shown
     Other,
     /// the `()` a run of `main` ends with, which is not printed at all
@@ -264,6 +266,7 @@ pub fn emit(program: &Program, result: ResultKind) -> Result<String, String> {
          declare void @idyll_print_bool(i64)\n\
          declare void @idyll_print_unit()\n\
          declare void @idyll_print_string(ptr)\n\
+         declare void @idyll_print_char(i64)\n\
          declare void @idyll_print_opaque()\n\
          declare i64 @idyll_str_append(i64, i64)\n\
          declare void @exit(i32) noreturn\n",
@@ -787,6 +790,8 @@ impl<'p> Emitter<'p> {
                 };
                 let word = match op {
                     Extern::LitInt(n) => n.to_string(),
+                    // a character is its code point
+                    Extern::LitChar(c) => u32::from(*c).to_string(),
                     Extern::LitStr(s) => {
                         self.strings.push(s.clone());
                         format!("ptrtoint (ptr @str.{} to i64)", self.strings.len() - 1)
@@ -818,6 +823,7 @@ impl<'p> Emitter<'p> {
                                 writeln!(f, "  {s} = inttoptr i64 {answer} to ptr").unwrap();
                                 writeln!(f, "  call void @idyll_print_string(ptr {s})").unwrap();
                             }
+                            ResultKind::Char => writeln!(f, "  call void @idyll_print_char(i64 {answer})").unwrap(),
                             ResultKind::Other => f.push_str("  call void @idyll_print_opaque()\n"),
                             ResultKind::Main => {}
                         }

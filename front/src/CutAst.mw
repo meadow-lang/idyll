@@ -11,11 +11,13 @@ use Std.Maybe.Maybe.*
 
 -- How a value is represented at run time: the only types Cut has.
 @derive(PartialEq)
-@pub data Rep = I64 | Bool | Unit | Str | Ptr | Desc | Var String | Any
+@pub data Rep = I64 | U8 | Bool | Char | Unit | Str | Ptr | Desc | Var String | Any
 
 @pub fun repText (r : Rep) : String =
   match r with
   | Rep.I64 -> "i64"
+  | Rep.U8 -> "u8"
+  | Rep.Char -> "char"
   | Rep.Bool -> "bool"
   | Rep.Unit -> "unit"
   | Rep.Str -> "str"

@@ -86,17 +86,10 @@ fun isError (v : Value) : Bool = match v with | Value.Error -> True | _ -> False
 
 fun isFlex (v : Value) : Bool = match v with | Value.Flex _ _ -> True | _ -> False
 
--- The primitive a resolved name is, by the uniques the renamer reserves.
+-- The primitive a resolved name is, by the uniques the renamer reserves:
+-- those after the builtins', in this order.
 @pub fun primOf (u : Int) : Maybe Prim =
-  if u == 7 then Just Prim.IntAdd
-  else if u == 8 then Just Prim.IntMul
-  else if u == 9 then Just Prim.IntSub
-  else if u == 10 then Just Prim.IntLt
-  else if u == 11 then Just Prim.IntEq
-  else if u == 12 then Just Prim.IntDiv
-  else if u == 13 then Just Prim.IntMod
-  else if u == 14 then Just Prim.StrAppend
-  else None
+  V.get [Prim.IntAdd, Prim.IntMul, Prim.IntSub, Prim.IntLt, Prim.IntEq, Prim.IntDiv, Prim.IntMod, Prim.StrAppend] (u - V.len C.builtins)
 
 -- The renamed program's tables, which the checker reads.
 @pub fun hirOf (tc : Tc) : HirArena ! { Mut | e } = getRef tc.hir

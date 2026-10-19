@@ -90,6 +90,20 @@ fn arithmetic_and_literals() {
 }
 
 #[test]
+fn characters_and_taking_strings_apart() {
+    agree("char", "'a'");
+    agree("char-escaped", "'\\''");
+    agree("char-code", "charCode 'é' + charCode (charFromCode 955)");
+    agree("chars", "charsToString (stringToChars \"héllo, wörld\")");
+    agree("char-count", "arrayLen (stringToChars \"héllo\") + stringByteLength \"héllo\" * 10");
+    agree("byte", "stringByteAt \"abc\" 2");
+    agree("slice", "stringSlice \"hello\" 1 4");
+    agree("slice-cut", "stringSlice \"héllo\" 0 2");
+    agree("compare", "stringCompare \"apple\" \"apricot\" * 10 + stringIndexOf \"a,b,c\" \",\" 2");
+    agree("char-match", "kind : (c : Char) -> Int\nkind 'a' = 1\nkind '\\n' = 2\nkind c = 3\n\nkind 'a' * 100 + kind '\\n' * 10 + kind 'z'");
+}
+
+#[test]
 fn closures_and_boxes() {
     agree("closure", "(\\(x : [2] Int) -> (\\(y : Int) -> x + y + x)) 10 1");
     agree("hof", "(\\(f : Int -> Int) (x : Int) -> f x) (\\n -> n * 2) 21");

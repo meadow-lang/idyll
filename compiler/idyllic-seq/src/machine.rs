@@ -101,7 +101,7 @@
 //! runs on fuel: one unit per rule of Figure 5.
 
 use super::{Extern, Program, Stmt, Symbol, Var};
-use idyllic_builtins::{IntResult, Native};
+use idyllic_builtins::{strings, IntResult, Native};
 use idyllic_world::{Answer, Arg, Stop, World};
 use std::collections::HashMap;
 use std::fmt;
@@ -202,6 +202,10 @@ pub enum MachineError {
     OutOfBounds { index: i64, len: usize },
     /// `arrayPop` of an array with nothing to pop.
     EmptyArray,
+    /// A string's byte read where it has none.
+    ByteOutOfBounds { index: i64, len: usize },
+    /// A code point made a character that is none.
+    NotACharacter(i64),
     /// The program ended itself: `exit n`.
     Exited(i32),
     /// `fail message`: a test failed.
@@ -219,6 +223,10 @@ impl fmt::Display for MachineError {
                 write!(f, "index {index} is out of bounds for an array of length {len}")
             }
             MachineError::EmptyArray => write!(f, "popping an empty array"),
+            MachineError::ByteOutOfBounds { index, len } => {
+                write!(f, "index {index} is out of bounds for a string of {len} bytes")
+            }
+            MachineError::NotACharacter(code) => write!(f, "{code} is not a Unicode scalar value"),
             MachineError::Exited(code) => write!(f, "exited with {code}"),
             MachineError::TestFailed(why) => write!(f, "test failed: {why}"),
             MachineError::Malformed(why) => write!(f, "malformed program: {why}"),
@@ -439,7 +447,7 @@ impl<'p> Assembler<'p> {
             }
             Stmt::Extern(op, args, branches) => {
                 let arity = match op {
-                    Extern::LitInt(_) | Extern::LitStr(_) => 0,
+                    Extern::LitInt(_) | Extern::LitStr(_) | Extern::LitChar(_) => 0,
                     Extern::Add
                     | Extern::Mul
                     | Extern::Sub
@@ -489,6 +497,8 @@ enum Word {
     /// 64 bits, wrapping, as native code has it
     Int(i64),
     Str(Rc<str>),
+    /// a character: in native code, its code point
+    Char(char),
     /// An array, whose elements are its block's fields.
     Array,
 }
@@ -670,6 +680,7 @@ impl Heap {
             return match &v.word {
                 Word::Int(n) => Some(n.to_string()),
                 Word::Str(s) => Some(format!("{:?}", &**s)),
+                Word::Char(c) => Some(idyllic_ast::show_char(*c)),
                 // `#[1; 2]`, as one is written
                 Word::Array => {
                     let items = self.fields(v.block).iter().map(|x| self.show(x)).collect::<Option<Vec<String>>>()?;
@@ -929,6 +940,11 @@ fn native(heap: &mut Heap, n: Native, xs: Vec<Value>) -> Result<Value, MachineEr
         _ => malformed(format!("{} is given something that is not an integer", n.name())),
     };
     let int_value = |i: i64| Value { block: None, word: Word::Int(i) };
+    let text = |v: &Value| match &v.word {
+        Word::Str(s) => Ok(s.clone()),
+        _ => malformed(format!("{} is given something that is not a string", n.name())),
+    };
+    let str_value = |s: String| Value { block: None, word: Word::Str(s.into()) };
     let mut xs = xs.into_iter();
     let mut next = || xs.next().ok_or_else(|| MachineError::Malformed(format!("{} is given too little", n.name())));
     Ok(match n {
@@ -1046,6 +1062,50 @@ fn native(heap: &mut Heap, n: Native, xs: Vec<Value>) -> Result<Value, MachineEr
         }
         // the same block, under the other type
         Native::MArrayFreeze | Native::MArrayThaw => next()?,
+        // a string has no block, so nothing of it is shared or dropped
+        Native::StringByteLength => int_value(text(&next()?)?.len() as i64),
+        Native::StringByteAt => {
+            let (s, i) = (text(&next()?)?, int(&next()?)?);
+            int_value(strings::byte_at(&s, i).ok_or(MachineError::ByteOutOfBounds { index: i, len: s.len() })?)
+        }
+        Native::StringSlice => {
+            let (s, from, to) = (text(&next()?)?, int(&next()?)?, int(&next()?)?);
+            str_value(strings::slice(&s, from, to))
+        }
+        Native::StringCompare => {
+            let (a, b) = (text(&next()?)?, text(&next()?)?);
+            int_value(strings::compare(&a, &b))
+        }
+        Native::StringIndexOf => {
+            let (hay, needle, from) = (text(&next()?)?, text(&next()?)?, int(&next()?)?);
+            int_value(strings::index_of(&hay, &needle, from))
+        }
+        Native::StringToChars => {
+            let s = text(&next()?)?;
+            let chars = s.chars().map(|c| Value { block: None, word: Word::Char(c) }).collect();
+            heap.array(chars)
+        }
+        Native::CharsToString => {
+            let a = next()?;
+            let chars = heap
+                .elements(&a, n)?
+                .iter()
+                .map(|v| match v.word {
+                    Word::Char(c) => Ok(c),
+                    _ => malformed("charsToString is given something that is not a character"),
+                })
+                .collect::<Result<String, _>>()?;
+            heap.erase(&a);
+            str_value(chars)
+        }
+        Native::CharCode => match next()?.word {
+            Word::Char(c) => int_value(i64::from(u32::from(c))),
+            _ => return malformed("charCode is given something that is not a character"),
+        },
+        Native::CharFromCode => {
+            let code = int(&next()?)?;
+            Value { block: None, word: Word::Char(strings::from_code(code).ok_or(MachineError::NotACharacter(code))?) }
+        }
     })
 }
 
@@ -1162,6 +1222,7 @@ pub fn execute(code: &Code, mut fuel: u64, world: &mut World) -> Result<Outcome,
                 let result = match (op, args.as_slice()) {
                     (Extern::LitInt(n), []) => Value { block: None, word: Word::Int(*n) },
                     (Extern::LitStr(s), []) => Value { block: None, word: Word::Str(s.as_str().into()) },
+                    (Extern::LitChar(c), []) => Value { block: None, word: Word::Char(*c) },
                     (Extern::Append, &[a, b]) => match (&regs[a].word, &regs[b].word) {
                         (Word::Str(x), Word::Str(y)) => Value { block: None, word: Word::Str(format!("{x}{y}").into()) },
                         _ => return malformed("append is given something that is not a string"),

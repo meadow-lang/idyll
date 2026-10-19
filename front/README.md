@@ -130,6 +130,11 @@ Where nothing matches, Scythe's `lexRaw` stops. The Rust lexer goes on, so
 `lexed` here does too: what the machine read before it gave up (at least one
 character) is an error token, and lexing goes on after it.
 
+A Scythe regex matches bytes, where a `logos` one matches characters. Where
+that matters, a character literal, `'é'`, which is one character but two
+bytes, the regex spells a character out in UTF-8's byte classes, as
+MeadowBoot's own lexer does.
+
 ### Layout
 
 `Layout.mw` is the offside rule, ported from `compiler/idyllic-layout`:
@@ -139,8 +144,14 @@ character) is an error token, and lexing goes on after it.
 - A line starting at the block's column is a new item (a virtual `;`).
   Further right, it continues the line before. Further left, it closes
   blocks.
-- Explicit braces turn layout off inside them, and so does a sequence
-  literal, `#[ … ]`.
+- Explicit braces turn layout off inside them, and so do a sequence
+  literal, `#[ … ]`, brackets and parentheses: what is inside may run over
+  lines at any indentation. A block opened inside them is laid out as any
+  is, and their `]` or `)` closes it, as does a `,` between their items,
+  which is Haskell's parse-error rule for the cases that come up: `(case m
+  of` with its alternatives on the lines after, then `)`, is one
+  expression. Each open block is of one `Kind`: `Layout`, `Brace`, `Seq`,
+  `Bracket` or `Paren`.
 
 Virtual tokens take no bytes. Each stands where the next real token starts,
 so the tokens stay in order, as a tree needs them to be.
@@ -563,16 +574,21 @@ The runtimes print only strings, so the lowering also writes code that
 turns the program's answer into text as the REPL shows it: a `def` per
 data type in the answer's type, `#show ..` and `#atom ..` for when it is a
 field, one per array type, the prelude's `showInt` for integers, and
-`#escape` for strings. A native the runtime has no primitive for
-(`arrayToList`, the mutable arrays) becomes a `def` of the program's own,
-built of the array primitives it does have.
+`#escape` for strings, and for a character the same escape between single
+quotes. A native the runtime has no primitive for (`arrayToList`, the
+mutable arrays) becomes a `def` of the program's own, built of the array
+primitives it does have. The string natives are the runtime's own
+primitives, of the same names (`stringSlice`, `stringToChars`,
+`charCode`, ...), but for `stringByteAt`, whose byte the runtime gives as
+a `u8`: its `def` makes it an `Int` with `toInt`. A character is Cut's
+`char`, written `'\u{61}'`.
 
-**Emitting** (`Emit.mw`). The lowering makes Cut as plain data
-(`CutAst.mw`, as `idyllic-cut`'s lib.rs has it), which is easy to build
-inside out and share between branches; `Emit.mw` then builds it with
+**Writing it.** The lowering builds Cut's own tables with
 [meadow-lang/Cut](https://github.com/meadow-lang/Cut), the package
-MeadowBoot uses too, and writes its text. Nothing else in front/ builds
-Cut's nodes or writes Cut's text.
+MeadowBoot uses too, which writes its text. `CutAst.mw` keeps what Cut's
+package has no type of its own for: the representations (`Rep`: `i64`,
+`u8`, `bool`, `char`, `unit`, `str`, `ptr`, ...), symbols, and the
+declarations made before they are written.
 
 A method (a closure's `apply`, a handler clause) binds no representation
 variable of its own, as `docs/CUT.md` has it, so a closure taking a type

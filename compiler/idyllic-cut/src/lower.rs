@@ -395,6 +395,7 @@ impl Lower<'_> {
             typer::Rep::Bool => Rep::Bool,
             typer::Rep::Unit | typer::Rep::Erased => Rep::Unit,
             typer::Rep::Str => Rep::Str,
+            typer::Rep::Char => Rep::Char,
             typer::Rep::Ptr => Rep::Ptr,
             typer::Rep::Any => Rep::Any,
             typer::Rep::Var(lvl) => match env.slots.get(lvl) {
@@ -726,6 +727,7 @@ impl Lower<'_> {
             },
             Core::Lit(Lit::Int(n)) => Producer::Int(*n),
             Core::Lit(Lit::Str(s)) => Producer::Str(s.clone()),
+            Core::Lit(Lit::Char(c)) => Producer::Char(*c),
             Core::Lit(Lit::Bool(b)) => Producer::Bool(*b),
             Core::Lit(Lit::Unit) => Producer::Unit,
             Core::Runtime(Note::Erased, _) => Producer::Unit,
@@ -984,10 +986,8 @@ impl Lower<'_> {
         }
         // one the runtime has no primitive for: a `def` of the program's
         // own (see [`natives`]), generic in the element as its type is
-        if info.params == 1 {
-            if let Some((symbol, params)) = self.native_helper(n) {
-                return self.call(env, whole, symbol, &params, args, k);
-            }
+        if let Some((symbol, params)) = self.native_helper(n) {
+            return self.call(env, whole, symbol, &params, args, k);
         }
         let reps: &[Rep] = match n {
             Native::ArrayLen | Native::ArrayPop => &[Rep::Ptr],
@@ -997,6 +997,14 @@ impl Lower<'_> {
             Native::ArrayPush => &[Rep::Ptr, Rep::Any],
             Native::ArraySlice => &[Rep::Ptr, Rep::I64, Rep::I64],
             Native::ArrayConcat => &[Rep::Ptr, Rep::Ptr],
+            Native::StringByteLength => &[Rep::Str],
+            Native::StringSlice => &[Rep::Str, Rep::I64, Rep::I64],
+            Native::StringCompare => &[Rep::Str, Rep::Str],
+            Native::StringIndexOf => &[Rep::Str, Rep::Str, Rep::I64],
+            Native::StringToChars => &[Rep::Str],
+            Native::CharsToString => &[Rep::Ptr],
+            Native::CharCode => &[Rep::Char],
+            Native::CharFromCode => &[Rep::I64],
             _ => {
                 self.errors.push(format!("{} is not lowered yet", n.name()));
                 return Statement::Error(n.name().to_string());
@@ -1246,6 +1254,7 @@ impl Lower<'_> {
                         typer::Rep::Bool => Rep::Bool,
                         typer::Rep::Unit | typer::Rep::Erased => Rep::Unit,
                         typer::Rep::Str => Rep::Str,
+            typer::Rep::Char => Rep::Char,
                         typer::Rep::Ptr => Rep::Ptr,
                         _ => Rep::Any,
                     })
@@ -1280,6 +1289,7 @@ impl Lower<'_> {
                     typer::Rep::Bool => Rep::Bool,
                     typer::Rep::Unit | typer::Rep::Erased => Rep::Unit,
                     typer::Rep::Str => Rep::Str,
+            typer::Rep::Char => Rep::Char,
                     typer::Rep::Ptr => Rep::Ptr,
                     _ => Rep::Any,
                 };

@@ -18,7 +18,13 @@ use std::fmt;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Rep {
     I64,
+    /// a byte: what `stringByteAt` gives, which `toInt` makes an `i64`
+    U8,
     Bool,
+    /// a Unicode scalar value: what `stringToChars` gives and
+    /// `charsToString` takes, which `charCode` and `charFromCode` go between
+    /// it and an `i64`
+    Char,
     Unit,
     Str,
     Ptr,
@@ -118,6 +124,8 @@ pub enum Producer {
     Val(Symbol),
     Int(i64),
     Str(String),
+    /// a character, `'a'`
+    Char(char),
     Bool(bool),
     Unit,
     /// a descriptor for a representation known when compiled

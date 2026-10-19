@@ -355,6 +355,55 @@ decimal, which is how a number becomes something to print:
 "n = 42" : String
 ```
 
+### Characters
+
+A character, `'a'`, has type `Char`: one Unicode scalar value, not one
+byte. It takes the same escapes a string does, and `'\''` is a single
+quote.
+
+```
+> 'a'
+'a' : Char
+> charCode 'A'
+65 : Int
+> charFromCode 955
+'λ' : Char
+```
+
+A string is UTF-8, and the prelude takes it apart two ways, as Meadow's
+does. By its *bytes*, in constant time: `stringByteLength`,
+`stringByteAt` (a byte, as an `Int`), `stringSlice` (the bytes from one
+index up to another), `stringIndexOf` (where one string is found in
+another, from a byte on, or `-1`) and `stringCompare` (`-1`, `0` or `1`).
+And by its *characters*: `stringToChars` gives them as an array, and
+`charsToString` makes a string of some.
+
+```
+> stringByteLength "héllo"
+6 : Int
+> stringToChars "héllo"
+#['h'; 'é'; 'l'; 'l'; 'o'] : Array Char
+> stringSlice "hello" 1 3
+"el" : String
+```
+
+A byte or a code point that is out of range stops the program, as an
+array's index does. `Std.String` and `Std.Char` have the rest (see [The
+standard library](#the-standard-library)): splitting, trimming, reading a
+number, classifying characters.
+
+A character pattern is matched as a number is:
+
+```
+> kind : Char -> String
+kind 'a' = "the first letter"
+kind c = "another"
+
+kind : Char -> String
+> kind 'a'
+"the first letter" : String
+```
+
 ### Booleans and unit
 
 ```
@@ -2503,7 +2552,8 @@ is nothing to install.
 | `Std.Collections.MArray` | `MArray a`, an array used linearly: `new`, `read`, `write`, `modify`, `swap`, `generate`, `freeze`, `thaw` |
 | `Std.Collections.Vector` | `Vector a`, Meadow's persistent RRB vector: `get`, `set`, `pushBack`, `pushFront`, `popBack`, `popFront`, `append`, `splitAt`, `map`, `filter`, folds, ... |
 | `Std.Sort` | a stable merge sort: `sortBy`, `sort`, `sortOn`, `sortArrayBy`, `sortVectorBy`, `isSortedBy` |
-| `Std.String` | `concat`, `join`, `unlines`, `unwords`, `replicate`, `fromList` |
+| `Std.String` | as Meadow's, by bytes: `byteLength`, `slice`, `take`, `drop`, `byteAt`, `indexOf`, `contains`, `startsWith`, `split`, `lines`, `words`, `trim`, `toUpper`, `toInt`, `equal`, `compare`; by characters: `chars`, `fromChars`, `charAt`, `charLength`; and `join`, `concatAll`, `unlines`, `unwords`, `repeat`, `fromList` |
+| `Std.Char` | `code`, `fromCode`, `fromCodeSafe`, `isDigit`, `isAlpha`, `isSpace`, `isUpper`, `toUpper`, `toLower`, `digitToInt`, `hexDigitToInt`, `equal`, `compare` (the classes ASCII only, as Meadow's are) |
 | `Std.Console` | `printLines`, `printList`, `printBool`, `readLines` |
 | `Std.Fs`, `Std.Process` | `readToStringOr`, `tryReadDir`, `writeLines`, `existsAll`; `argCount`, `arg`, `envOr`, `exitFailure`, ... |
 | `Std.Exn` | an effect: `throw`, and `toResult`, `catch`, `withDefault`, `toMaybe`, `ofResult`, `ensure` |

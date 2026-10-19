@@ -264,6 +264,37 @@ fn either_sorting_and_comparing() {
 }
 
 #[test]
+fn characters_are_their_own_type() {
+    assert_eq!(value("'a'"), "'a'");
+    assert_eq!(value("#['\\'', '\"', '\\n', 'é']"), "'\\'' :: '\"' :: '\\n' :: 'é' :: Nil");
+    assert_eq!(value("(charCode 'A', charFromCode 955)"), "(65, 'λ')");
+    // matched as literals are, by their code points
+    let kind = "kind : (c : Char) -> String\nkind 'a' = \"a\"\nkind '\\n' = \"newline\"\nkind c = \"other\"\n\n";
+    assert_eq!(value(&format!("{kind}(kind 'a', kind '\\n', kind 'z')")), "(\"a\", \"newline\", \"other\")");
+    // and a code point that is no character stops the program
+    let out = pipeline::run("charFromCode 55296", &OPTS);
+    assert_eq!(out.evaluation, Some(Evaluation::Stopped("55296 is not a Unicode scalar value".into())));
+}
+
+#[test]
+fn strings_are_taken_apart_by_bytes_and_characters() {
+    let s = "use Std.String (byteLength, slice, byteAt, indexOf, split, words, lines, trim, toInt, toUpper, startsWith, endsWith, contains, chars, fromChars, charLength, charAt, equal, compare, join, repeat)\n\n";
+    assert_eq!(value(&format!("{s}(byteLength \"héllo\", charLength \"héllo\")")), "(6, 5)");
+    assert_eq!(value(&format!("{s}(slice \"hello\" 1 3, slice \"héllo\" 0 2, byteAt \"é\" 1, byteAt \"a\" 3)")), "(\"el\", \"h\u{fffd}\", Just 169, Nothing)");
+    assert_eq!(value(&format!("{s}(indexOf \"l\" \"hello\", indexOf \"z\" \"hello\", contains \"ell\" \"hello\")")), "(Just 2, Nothing, True)");
+    assert_eq!(value(&format!("{s}(startsWith \"he\" \"hello\", endsWith \"lo\" \"hello\", startsWith \"hello!\" \"hello\")")), "(True, True, False)");
+    assert_eq!(value(&format!("{s}split \",\" \"a,b,,c\"")), "\"a\" :: \"b\" :: \"\" :: \"c\" :: Nil");
+    assert_eq!(value(&format!("{s}words \"  hello   world\\tagain \"")), "\"hello\" :: \"world\" :: \"again\" :: Nil");
+    assert_eq!(value(&format!("{s}lines \"one\\ntwo\\n\"")), "\"one\" :: \"two\" :: Nil");
+    assert_eq!(value(&format!("{s}(trim \"  x  \", toUpper \"Hello, é!\")")), "(\"x\", \"HELLO, é!\")");
+    assert_eq!(value(&format!("{s}(toInt \"-42\", toInt \"4x\", toInt \"-\")")), "(Just -42, Nothing, Nothing)");
+    assert_eq!(value(&format!("{s}(charAt \"héllo\" 1, fromChars (chars \"round trip é\"))")), "(Just 'é', \"round trip é\")");
+    assert_eq!(value(&format!("{s}(equal \"a\" \"a\", compare \"apple\" \"apricot\", join \"-\" #[\"a\", \"b\"], repeat \"ab\" 3)")), "(True, Less, \"a-b\", \"ababab\")");
+    let c = "use Std.Char (isDigit, isSpace, isAlpha, toUpper, digitToInt, hexDigitToInt, fromCodeSafe)\n\n";
+    assert_eq!(value(&format!("{c}(isDigit '7', isSpace '\\t', isAlpha 'é', toUpper 'q', digitToInt '9', hexDigitToInt 'F', fromCodeSafe 55296)")), "(True, True, False, 'Q', Just 9, Just 15, Nothing)");
+}
+
+#[test]
 fn files_and_the_process() {
     assert_eq!(printed("main : () -> () ! {Fs, Console}\nmain () = putStrLn (Std.Fs.readToStringOr \"none\" \"/no/such/file\")"), "none\n");
     assert_eq!(printed("main : () -> () ! {Process, Console}\nmain () = printInt (Std.Process.argCount ())"), "0\n");

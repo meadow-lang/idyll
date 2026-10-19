@@ -12,6 +12,7 @@
 -- `impl Display for Core` exactly, precedence by precedence.
 
 use Idyll.Hir (Icit, Literal)
+use Idyll.Hir as H
 use Idyll.Grade (Grade)
 use Idyll.Grade as G
 use Std.Collections.Vector as V
@@ -22,7 +23,11 @@ use Std.Maybe.Maybe.*
 
 -- The primitive types, as `idyllic-builtins` reserves them.
 @derive(PartialEq)
-@pub data Builtin = Unit | Int | Bool | Str | Grade | Effect | Div
+@pub data Builtin = Unit | Int | Bool | Str | Grade | Effect | Div | Char
+
+-- Every builtin, at the unique `idyllic-builtins` reserves for it: its
+-- place here. The primitive operations take the uniques after these.
+@pub def builtins : [Builtin] = [Builtin.Unit, Builtin.Int, Builtin.Bool, Builtin.Str, Builtin.Grade, Builtin.Effect, Builtin.Div, Builtin.Char]
 
 @pub fun builtinName (b : Builtin) : String =
   match b with
@@ -33,6 +38,7 @@ use Std.Maybe.Maybe.*
   | Builtin.Grade -> "Grade"
   | Builtin.Effect -> "Effect"
   | Builtin.Div -> "Div"
+  | Builtin.Char -> "Char"
 
 -- The primitive operations.
 @derive(PartialEq)
@@ -70,6 +76,7 @@ use Std.Maybe.Maybe.*
   | Literal.Int _ -> Builtin.Int
   | Literal.Bool _ -> Builtin.Bool
   | Literal.Str _ -> Builtin.Str
+  | Literal.Char _ -> Builtin.Char
 
 -- --- Core --------------------------------------------------------------------
 
@@ -143,37 +150,8 @@ fun isGrade (c : Core) (g : Grade) : Bool =
   | Literal.Unit -> "()"
   | Literal.Int n -> show n
   | Literal.Bool b -> if b then "True" else "False"
-  | Literal.Str s -> debugString s
-
--- Rust's `Debug` for a string: in quotes, `\`, `"` and control characters
--- escaped, anything else as it is.
-fun debugString (s : String) : String =
-  let n = stringByteLength s in
-  let byte = \i -> toInt (stringByteAt s i) in
-  let escape =
-    \b ->
-      if b == 92 then "\\\\"
-      else if b == 34 then "\\\""
-      else if b == 10 then "\\n"
-      else if b == 9 then "\\t"
-      else if b == 13 then "\\r"
-      else if b == 0 then "\\0"
-      else if b < 32 or b == 127 then "\\u{" ++ hex b ++ "}"
-      else ""
-  in
-  let cut = V.filter (\i -> escape (byte i) != "") (V.range 0 n) in
-  let starts = V.append [0] (V.map (\i -> i + 1) cut) in
-  let ends = V.append cut [n] in
-  let runs =
-    V.map
-      (\k ->
-        let run = stringSlice s (V.getOr 0 starts k) (V.getOr n ends k) in
-        match V.get cut k with
-        | Just i -> run ++ escape (byte i)
-        | None -> run)
-      (V.range 0 (V.len starts))
-  in
-  "\"" ++ S.join "" runs ++ "\""
+  | Literal.Str s -> H.debugString s
+  | Literal.Char c -> H.showChar c
 
 fun hex (n : Int) : String =
   let digit = \d -> stringSlice "0123456789abcdef" d (d + 1) in

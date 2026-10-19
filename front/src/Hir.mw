@@ -19,7 +19,7 @@ use Std.Maybe.Maybe.*
 @pub data Icit = Explicit | Implicit
 
 @derive(PartialEq)
-@pub data Literal = Unit | Int Int | Bool Bool | Str String
+@pub data Literal = Unit | Int Int | Bool Bool | Str String | Char Char
 
 -- How far a declaration is seen: its module, the module above, its
 -- package, or anywhere.
@@ -42,6 +42,51 @@ use Std.Maybe.Maybe.*
 
 -- A string as the Rust side writes it: in quotes, with `\`, `"` and the
 -- control characters escaped. Any other byte is itself.
+-- A character as `idyllic_ast::show_char` writes one: in single quotes,
+-- escaped as a one-character string is, but for `'`, `'\''`, and `"`, which
+-- needs no escape here.
+@pub fun showChar (c : Char) : String =
+  let n = charCode c in
+  if n == 39 then "'\\''"
+  else if n == 34 then "'\"'"
+  else
+    let d = debugString (charsToString #[c]) in
+    "'" ++ stringSlice d 1 (stringByteLength d - 1) ++ "'"
+
+-- Rust's `Debug` for a string: in quotes, `\`, `"` and control characters
+-- escaped, anything else as it is.
+@pub fun debugString (s : String) : String =
+  let n = stringByteLength s in
+  let byte = \i -> toInt (stringByteAt s i) in
+  let escape =
+    \b ->
+      if b == 92 then "\\\\"
+      else if b == 34 then "\\\""
+      else if b == 10 then "\\n"
+      else if b == 9 then "\\t"
+      else if b == 13 then "\\r"
+      else if b == 0 then "\\0"
+      else if b < 32 or b == 127 then "\\u{" ++ hexDigits b ++ "}"
+      else ""
+  in
+  let cut = V.filter (\i -> escape (byte i) != "") (V.range 0 n) in
+  let starts = V.append [0] (V.map (\i -> i + 1) cut) in
+  let ends = V.append cut [n] in
+  let runs =
+    V.map
+      (\k ->
+        let run = stringSlice s (V.getOr 0 starts k) (V.getOr n ends k) in
+        match V.get cut k with
+        | Just i -> run ++ escape (byte i)
+        | None -> run)
+      (V.range 0 (V.len starts))
+  in
+  "\"" ++ S.join "" runs ++ "\""
+
+fun hexDigits (n : Int) : String =
+  let digit = \d -> stringSlice "0123456789abcdef" d (d + 1) in
+  if n < 16 then digit n else hexDigits (n / 16) ++ digit (n % 16)
+
 @pub fun quoted (s : String) : String =
   let n = stringByteLength s in
   let byte = \i -> toInt (stringByteAt s i) in
@@ -81,6 +126,7 @@ fun hex (n : Int) : String =
   | Literal.Int n -> "(lit ${show n})"
   | Literal.Bool b -> if b then "(lit True)" else "(lit False)"
   | Literal.Str s -> "(lit ${quoted s})"
+  | Literal.Char c -> "(lit ${showChar c})"
 
 fun sx (parts : [String]) : String = "(" ++ S.join " " parts ++ ")"
 

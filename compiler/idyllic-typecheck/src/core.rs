@@ -232,6 +232,7 @@ pub fn lit_builtin(l: &Lit) -> Builtin {
         Lit::Int(_) => Builtin::Int,
         Lit::Bool(_) => Builtin::Bool,
         Lit::Str(_) => Builtin::Str,
+        Lit::Char(_) => Builtin::Char,
     }
 }
 

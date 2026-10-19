@@ -1,0 +1,145 @@
+-- Characters: single Unicode scalar values, `'a'`, `'é'`, `'\n'`, not one
+-- byte each. `Std.String` counts bytes, so the two are bridged explicitly:
+-- `Std.String.chars` decodes the UTF-8 into `Char`s, `Std.String.fromChars`
+-- encodes them back.
+--
+-- As Meadow's `Std.Char` is, the classification is ASCII-only, on purpose:
+-- doing it properly means shipping the Unicode character database. Every
+-- predicate here answers `False` for a character outside ASCII rather than
+-- guess, and `toUpper` and `toLower` leave it alone.
+--
+-- With no traits, `==` is the integers'; characters are compared with
+-- `equal`, or by `code`.
+
+use Std.Bool (not)
+use Std.Ordering (Ordering)
+use Std.Ordering.Ordering.*
+
+-- ---------------------------------------------------------------------------
+-- Codes
+-- ---------------------------------------------------------------------------
+
+-- The Unicode scalar value: `code 'A'` is 65.
+@pub
+code : Char -> Int
+code c = charCode c
+
+-- The character of a code point. One that is no Unicode scalar value (a
+-- surrogate, or past U+10FFFF) is an error at run time; `fromCodeSafe`
+-- checks first.
+@pub
+fromCode : Int -> Char
+fromCode n = charFromCode n
+
+-- Whether `lo <= n <= hi`.
+between : Int -> Int -> Int -> Bool
+between lo hi n = if lo < n + 1 then n < hi + 1 else False
+
+@pub
+isScalar : Int -> Bool
+isScalar n = if between 0 1114111 n then not (between 55296 57343 n) else False
+
+-- The character of a code point, if it is one.
+@pub
+fromCodeSafe : Int -> Maybe Char
+fromCodeSafe n = if isScalar n then Just (charFromCode n) else Nothing
+
+-- A string of just `c`.
+@pub
+toString : Char -> String
+toString c = charsToString #[c;]
+
+-- ---------------------------------------------------------------------------
+-- Classification (ASCII)
+-- ---------------------------------------------------------------------------
+
+@pub
+isAscii : Char -> Bool
+isAscii c = code c < 128
+
+@pub
+isDigit : Char -> Bool
+isDigit c = between 48 57 (code c)
+
+@pub
+isHexDigit : Char -> Bool
+isHexDigit c = if isDigit c then True else if between 97 102 (code c) then True else between 65 70 (code c)
+
+@pub
+isLower : Char -> Bool
+isLower c = between 97 122 (code c)
+
+@pub
+isUpper : Char -> Bool
+isUpper c = between 65 90 (code c)
+
+@pub
+isAlpha : Char -> Bool
+isAlpha c = if isLower c then True else isUpper c
+
+@pub
+isAlphaNum : Char -> Bool
+isAlphaNum c = if isAlpha c then True else isDigit c
+
+-- Space, tab, newline, carriage return, form feed, vertical tab.
+@pub
+isSpace : Char -> Bool
+isSpace c = let n = code c in if n == 32 then True else between 9 13 n
+
+-- ---------------------------------------------------------------------------
+-- Case
+-- ---------------------------------------------------------------------------
+
+@pub
+toUpper : Char -> Char
+toUpper c = if isLower c then charFromCode (code c - 32) else c
+
+@pub
+toLower : Char -> Char
+toLower c = if isUpper c then charFromCode (code c + 32) else c
+
+-- ---------------------------------------------------------------------------
+-- Digits
+-- ---------------------------------------------------------------------------
+
+-- `'7'` to `7`; `Nothing` for anything that is not a decimal digit.
+@pub
+digitToInt : Char -> Maybe Int
+digitToInt c = if isDigit c then Just (code c - 48) else Nothing
+
+-- `0` to `15` as `'0'` to `'f'`; `Nothing` outside that.
+@pub
+fromHexDigit : Int -> Maybe Char
+fromHexDigit n = if between 0 9 n then Just (charFromCode (48 + n)) else if between 10 15 n then Just (charFromCode (87 + n)) else Nothing
+
+@pub
+hexDigitToInt : Char -> Maybe Int
+hexDigitToInt c =
+  let n = code c in
+  if isDigit c then Just (n - 48)
+  else if between 97 102 n then Just (n - 87)
+  else if between 65 70 n then Just (n - 55)
+  else Nothing
+
+-- ---------------------------------------------------------------------------
+-- Comparing
+-- ---------------------------------------------------------------------------
+
+-- Whether `a` and `b` are the same character.
+@pub
+equal : Char -> Char -> Bool
+equal a b = code a == code b
+
+-- By code point.
+@pub
+compare : Char -> Char -> Ordering
+compare a b = if code a < code b then Less else if code a == code b then Equal else Greater
+
+@pub
+isBetween : (lo : Char) -> (hi : Char) -> Char -> Bool
+isBetween lo hi c = between (code lo) (code hi) (code c)
+
+-- In single quotes: `show 'a'` is `"'a'"`. (Only `'` is escaped.)
+@pub
+show : Char -> String
+show c = if code c == 39 then "'\\''" else "'" ++ toString c ++ "'"

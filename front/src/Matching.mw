@@ -606,7 +606,14 @@ fun split (tc : Tc) (m : Matcher) (ctx : Ctx) (problems : [Problem]) (goal : Val
   let used = splitUse tc ctx k in
   match how with
   | How.ByLit lit ->
-      let test = Core.App (Core.App (Core.Prim Prim.IntEq) scrutinee) (Core.Lit lit) in
+      -- a character is compared by its code point
+      let codeNative = V.find (\kv -> match kv with | (_, (n, _)) -> n == "charCode") (Hm.toVec (getRef tc.nativeInfo)) in
+      let tested =
+        match (lit, codeNative) with
+        | (Literal.Char c, Just (u, _)) -> (Core.App (Core.Opaque u "charCode") scrutinee, Literal.Int (charCode c))
+        | _ -> (scrutinee, lit)
+      in
+      let test = match tested with | (s, against) -> Core.App (Core.App (Core.Prim Prim.IntEq) s) (Core.Lit against) in
       let (yes, yesU) =
         match unifyIndices tc ctx [(X.value ctx k, Value.Lit lit)] with
         | Unified.Refined ctx2 sigma -> tree tc m ctx2 (resubstProblems tc ctx.lvl sigma problems) (refineGoal tc ctx.lvl sigma goal)

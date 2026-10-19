@@ -456,3 +456,36 @@ table : (xs : List Int) -> (ys : List Int) -> List (List Int)
 table xs ys = map (\(x : Int) -> map (\(y : Int) -> x * y) ys) xs
 
 table #[1, 2] #[3, 4]
+%%%
+kind : (c : Char) -> String
+kind 'a' = "a"
+kind '\n' = "newline"
+kind '\'' = "quote"
+kind c = "other"
+
+main : () -> () ! Eff
+main () =
+  let u1 = putStrLn (kind 'a' ++ " " ++ kind '\n' ++ " " ++ kind '\'' ++ " " ++ kind 'z') in
+  let u2 = printInt (charCode 'é') in
+  let u3 = putStrLn (charsToString (stringToChars "héllo, wörld")) in
+  let u4 = printInt (arrayLen (stringToChars "héllo")) in
+  let u5 = printInt (stringByteLength "héllo") in
+  let u6 = printInt (stringByteAt "abc" 2) in
+  let u7 = putStrLn (stringSlice "hello" 1 4) in
+  let u8 = putStrLn (stringSlice "héllo" 0 2) in
+  let u9 = printInt (stringCompare "apple" "apricot") in
+  let u10 = printInt (stringIndexOf "a,b,c" "," 2) in
+  putStrLn (charsToString #[charFromCode 955; 'x'])
+%%%
+use Std.String (split, words, lines, trim, toInt, toUpper, startsWith, endsWith, contains, indexOf, chars, fromChars, charLength, charAt, equal, compare, join, repeat, byteAt)
+use Std.Char (isDigit, isSpace, digitToInt, code, fromCode)
+
+(split "," "a,b,,c", words "  hello   world\tagain ", lines "one\ntwo\n", trim "  x  ", toInt "-42", toInt "4x", toUpper "Hello, é!", startsWith "he" "hello", endsWith "lo" "hello", contains "ll" "hello", indexOf "l" "hello", charLength "héllo", charAt "héllo" 1, equal "a" "a", join "-" (split " " "a b c"), repeat "ab" 3, byteAt "é" 1, isDigit '7', digitToInt '9', fromChars (chars "round trip é"))
+%%%
+kind : (c : Char) -> String
+kind 'a' = "a"
+kind '\n' = "newline"
+kind '\'' = "quote"
+kind c = "other"
+
+(kind 'a' ++ " " ++ kind '\n' ++ " " ++ kind '\'' ++ " " ++ kind 'z', charCode 'é', charsToString (stringToChars "héllo, wörld"), arrayLen (stringToChars "héllo"), stringByteLength "héllo", stringByteAt "abc" 2, stringSlice "hello" 1 4, stringSlice "héllo" 0 2, stringCompare "apple" "apricot", stringIndexOf "a,b,c" "," 2, charsToString #[charFromCode 955; 'x'], 'q', '\'', '"', '\n')

@@ -482,6 +482,7 @@ mod w {
             Lit::Int(n) => format!("(lit {n})"),
             Lit::Bool(b) => format!("(lit {})", if *b { "True" } else { "False" }),
             Lit::Str(s) => format!("(lit {})", quoted(s)),
+            Lit::Char(c) => format!("(lit {})", idyllic_ast::show_char(*c)),
         }
     }
 

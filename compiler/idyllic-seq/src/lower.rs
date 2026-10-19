@@ -630,6 +630,7 @@ impl Lowering {
             Core::Lit(lit) => {
                 let (v, literal) = match lit {
                     Lit::Int(n) => (self.fresh("n"), Ok(Extern::LitInt(*n))),
+                    Lit::Char(c) => (self.fresh("c"), Ok(Extern::LitChar(*c))),
                     Lit::Str(s) => (self.fresh("s"), Ok(Extern::LitStr(s.clone()))),
                     Lit::Bool(true) => (self.fresh("b"), Err(Symbol::True)),
                     Lit::Bool(false) => (self.fresh("b"), Err(Symbol::False)),

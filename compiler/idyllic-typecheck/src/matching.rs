@@ -694,9 +694,20 @@ impl Checker {
         };
         match how {
             Split::Lit(lit) => {
+                // a character is compared by its code point
+                let (scrutinee, against) = match &lit {
+                    Lit::Char(c) => match self.native_unique(idyllic_builtins::Native::CharCode) {
+                        Some(u) => (
+                            Rc::new(Core::App(Rc::new(Core::Opaque(u, "charCode".into())), scrutinee)),
+                            Lit::Int(i64::from(u32::from(*c))),
+                        ),
+                        None => (scrutinee, lit.clone()),
+                    },
+                    _ => (scrutinee, lit.clone()),
+                };
                 let test = Rc::new(Core::App(
                     Rc::new(Core::App(Rc::new(Core::Prim(Prim::IntEq)), scrutinee)),
-                    Rc::new(Core::Lit(lit.clone())),
+                    Rc::new(Core::Lit(against)),
                 ));
                 let is = Rc::new(Value::Lit(lit.clone()));
                 let (yes, yes_usage) = match self.unify_indices(ctx, vec![(ctx.value(k), is)]) {

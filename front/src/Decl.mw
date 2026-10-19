@@ -408,7 +408,9 @@ fun native (name : String) : Maybe (Bool, Int) =
       ("arraySet", False, 3), ("arrayPush", False, 2), ("arrayPop", False, 1), ("arraySlice", False, 3),
       ("arrayConcat", False, 2), ("arrayFromList", False, 1), ("arrayToList", False, 1), ("MArray", True, 0),
       ("marrayNew", False, 2), ("marrayLen", False, 1), ("marrayGet", False, 2), ("marraySet", False, 3),
-      ("marrayFreeze", False, 1), ("marrayThaw", False, 1)
+      ("marrayFreeze", False, 1), ("marrayThaw", False, 1), ("stringByteLength", False, 1), ("stringByteAt", False, 2),
+      ("stringSlice", False, 3), ("stringCompare", False, 2), ("stringIndexOf", False, 3), ("stringToChars", False, 1),
+      ("charsToString", False, 1), ("charCode", False, 1), ("charFromCode", False, 1)
     ]
   in
   M.map (\t -> match t with | (_, ty, n) -> (ty, n)) (V.find (\t -> match t with | (x, _, _) -> x == name) table)
@@ -469,7 +471,7 @@ fun endsInEffects (c : Core) : Bool =
 -- effect) and the primitive operations (each at its function type), at the
 -- uniques the renamer reserves for them.
 @pub fun initial (tc : Tc) : Ctx ! { Mut | e } =
-  let builtins = [Builtin.Unit, Builtin.Int, Builtin.Bool, Builtin.Str, Builtin.Grade, Builtin.Effect, Builtin.Div] in
+  let builtins = C.builtins in
   let withTypes =
     V.foldl
       (\c i ->
@@ -477,7 +479,7 @@ fun endsInEffects (c : Core) : Bool =
         let ty = if b == Builtin.Div then Value.LitTy Builtin.Effect else Value.Type 0 in
         X.extend c (Just i) (C.builtinName b) ty Info.Defined (Value.LitTy b))
       (X.empty ())
-      (V.range 0 7)
+      (V.range 0 (V.len builtins))
   in
   let prims = [Prim.IntAdd, Prim.IntMul, Prim.IntSub, Prim.IntLt, Prim.IntEq, Prim.IntDiv, Prim.IntMod, Prim.StrAppend] in
   V.foldl
@@ -492,6 +494,6 @@ fun endsInEffects (c : Core) : Bool =
       in
       -- a primitive consumes each argument once
       let ty = pi "_" G.one Icit.Explicit (Core.LitTy arg) (pi "_" G.one Icit.Explicit (Core.LitTy arg) (Core.LitTy ret)) in
-      X.extend c (Just (7 + i)) (C.primName p) (eval tc (Va.emptyEnv ()) ty) Info.Defined (Value.Prim p []))
+      X.extend c (Just (V.len builtins + i)) (C.primName p) (eval tc (Va.emptyEnv ()) ty) Info.Defined (Value.Prim p []))
     withTypes
     (V.range 0 8)

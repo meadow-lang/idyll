@@ -28,6 +28,7 @@ use Idyll.Hir (Literal)
 use Idyll.Core (Core, Builtin, Prim, Head)
 use Idyll.Elaborated
 use Idyll.Core as C
+use Idyll.Core as IC
 use Idyll.Value (Value)
 use Idyll.Grade (Grade)
 use Idyll.Grade as G
@@ -330,6 +331,7 @@ fun rep (env : LEnv) (r : TRep) : Rep =
   | TRep.Unit -> Rep.Unit
   | TRep.Erased -> Rep.Unit
   | TRep.Str -> Rep.Str
+  | TRep.Char -> Rep.Char
   | TRep.Ptr -> Rep.Ptr
   | TRep.Any -> Rep.Any
   | TRep.Var lvl ->
@@ -444,8 +446,8 @@ fun opInfo (l : L s) (u : Int) : Maybe OpInfo ! { Mut, St s | e } = Hm.lookup u 
       -- the context every program starts in: the builtins, then the
       -- primitives
       let prims = [Prim.IntAdd, Prim.IntMul, Prim.IntSub, Prim.IntLt, Prim.IntEq, Prim.IntDiv, Prim.IntMod, Prim.StrAppend] in
-      let env0 = LEnv.LEnv (V.append (V.replicate 7 Slot.SErased) (V.map (\p -> Slot.SPrim p) prims)) (Ty.scope tc) in
-      let base = 15 in
+      let env0 = LEnv.LEnv (V.append (V.replicate (V.len IC.builtins) Slot.SErased) (V.map (\p -> Slot.SPrim p) prims)) (Ty.scope tc) in
+      let base = V.len IC.builtins + V.len prims in
       let w1 = setRef l.local (localFreeLevels l recs (owners l program (V.len checked.toplevel) base recs)) in
       let w2 = setRef l.levels [env0] in
       -- the top-level definitions, and the scope at each level they reach
@@ -879,6 +881,7 @@ fun value (l : L s) (env : LEnv) (c : Tm) : Maybe CutProd ! { Mut, St s | e } =
   | ElaboratedTermVar i _ -> slotValue l env (lenOf env - (i + 1))
   | ElaboratedTermLit (Literal.Int n) -> Just (pInt l n)
   | ElaboratedTermLit (Literal.Str t) -> Just (pStr l t)
+  | ElaboratedTermLit (Literal.Char c) -> Just (C.char l.out C.nowhere (charCode c))
   | ElaboratedTermLit (Literal.Bool b) -> Just (pBool l b)
   | ElaboratedTermLit Literal.Unit -> Just (pUnit l)
   | ElaboratedTermRuntime n _ ->
@@ -1102,7 +1105,8 @@ fun primApp (l : L s) (env : LEnv) (whole : Tm) (p : Prim) (args : [Tm]) (k : Cu
 fun nativeArity (n : String) : Int =
   if n == "Array" or n == "MArray" then 0
   else if V.elem n ["arrayLen", "arrayPop", "arrayFromList", "arrayToList", "marrayLen", "marrayFreeze", "marrayThaw"] then 1
-  else if V.elem n ["arrayGet", "arrayPush", "arrayConcat", "marrayNew", "marrayGet"] then 2
+  else if V.elem n ["stringByteLength", "stringToChars", "charsToString", "charCode", "charFromCode"] then 1
+  else if V.elem n ["arrayGet", "arrayPush", "arrayConcat", "marrayNew", "marrayGet", "stringByteAt", "stringCompare"] then 2
   else 3
 
 -- A native: an array's operation is the runtime's primitive of the same
@@ -1117,7 +1121,7 @@ fun nativeApp (l : L s) (env : LEnv) (whole : Tm) (ni : (String, Int)) (args : [
   | Just items -> atoms l env items (\ps -> sCut l (pArray l ps) k)
   | None ->
       -- one the runtime has no primitive for: a `def` of the program's own
-      let helper = if nparams == 1 then nativeHelper l n else None in
+      let helper = nativeHelper l n in
       (match helper with
        | Just (s, ps) -> call l env whole s ps (V.map (\x -> Arg.Of x) args) k
        | None ->
@@ -1129,6 +1133,14 @@ fun nativeApp (l : L s) (env : LEnv) (whole : Tm) (ni : (String, Int)) (args : [
              else if n == "arrayPush" then Just [Rep.Ptr, Rep.Any]
              else if n == "arraySlice" then Just [Rep.Ptr, Rep.I64, Rep.I64]
              else if n == "arrayConcat" then Just [Rep.Ptr, Rep.Ptr]
+             else if n == "stringByteLength" then Just [Rep.Str]
+             else if n == "stringSlice" then Just [Rep.Str, Rep.I64, Rep.I64]
+             else if n == "stringCompare" then Just [Rep.Str, Rep.Str]
+             else if n == "stringIndexOf" then Just [Rep.Str, Rep.Str, Rep.I64]
+             else if n == "stringToChars" then Just [Rep.Str]
+             else if n == "charsToString" then Just [Rep.Ptr]
+             else if n == "charCode" then Just [Rep.Char]
+             else if n == "charFromCode" then Just [Rep.I64]
              else None
            in
            (match reps with
@@ -1355,6 +1367,7 @@ fun conv (r : TRep) : Rep =
   | TRep.Unit -> Rep.Unit
   | TRep.Erased -> Rep.Unit
   | TRep.Str -> Rep.Str
+  | TRep.Char -> Rep.Char
   | TRep.Ptr -> Rep.Ptr
   | _ -> Rep.Any
 
@@ -1630,6 +1643,18 @@ fun showValue (l : L s) (s : Ctx) (ty : Value) (x : CutProd) (k : CutCons) (isAt
       let t = name l "u" in
       Just (sPrim l "if" [x] [unitBinder l f (sCut l (pStr l "False") k), unitBinder l t (sCut l (pStr l "True") k)])
   | Shown.Unit -> Just (sCut l (pStr l "()") k)
+  -- in single quotes, escaped as a one-character string is, but for `'`,
+  -- and `"`, which needs no escape here (`show_char`)
+  | Shown.Char ->
+      let escape = escapeDef l in
+      let code = name l "code" in
+      let one = name l "s" in
+      let e = name l "e" in
+      let quoted = concatTo l [pStr l "'", pVar l e, pStr l "'"] k in
+      let general = primThen l "charsToString" [pArray l [x]] one Rep.Str (sInvoke l escape [pVar l one] [strBinder l e quoted]) in
+      let notQuote = testEq l (pVar l code) (pInt l 34) general (sCut l (pStr l "'\"'") k) in
+      let body = testEq l (pVar l code) (pInt l 39) notQuote (sCut l (pStr l "'\\''") k) in
+      Just (primThen l "charCode" [x] code Rep.I64 body)
   | Shown.Str ->
       let escape = escapeDef l in
       let e = name l "e" in
@@ -1962,12 +1987,15 @@ fun nativeHelper (l : L s) (n : String) : Maybe (Sym, [Param]) ! { Mut, St s | e
     if V.elem n ["arrayToList", "arrayFromList", "marrayLen", "marrayFreeze", "marrayThaw"] then Just [Rep.Ptr]
     else if n == "marrayNew" then Just [Rep.I64, Rep.Any]
     else if n == "marrayGet" then Just [Rep.Ptr, Rep.I64]
+    else if n == "stringByteAt" then Just [Rep.Str, Rep.I64]
     else None
   in
+  -- `stringByteAt` takes no type, and so no descriptor
+  let generic = n != "stringByteAt" in
   match values with
   | None -> None
   | Just vs ->
-      let params = V.append [Param.PDesc] (V.map (\r -> Param.PValue r) vs) in
+      let params = V.append (if generic then [Param.PDesc] else []) (V.map (\r -> Param.PValue r) vs) in
       let sym = A.idyll l.package ("#" ++ n) in
       let made =
         if V.elem n (getRef l.nativesMade) then Just ()
@@ -1987,6 +2015,18 @@ fun preludeCtor (l : L s) (cn : String) : Maybe Sym ! { Mut, St s | e } =
   | None -> None
 
 fun makeNative (l : L s) (n : String) (sym : Sym) : Maybe () ! { Mut, St s | e } =
+  if n == "stringByteAt" then Just (makeByteAt l sym) else makeGeneric l n sym
+
+-- `stringByteAt`: the runtime's byte is a `u8`, made an `Int`.
+fun makeByteAt (l : L s) (sym : Sym) =
+  let k = name l "k" in
+  let st = name l "s" in
+  let i = name l "i" in
+  let b = name l "b" in
+  let body = sPrim l "stringByteAt" [pVar l st, pVar l i] [kMuT l (Binder.Binder b Rep.U8) (sPrim l "toInt" [pVar l b] [kVar l k])] in
+  setRef l.defs (V.pushBack (getRef l.defs) (CDef.CDef sym [] [] [Binder.Binder st Rep.Str, Binder.Binder i Rep.I64] [k] body))
+
+fun makeGeneric (l : L s) (n : String) (sym : Sym) : Maybe () ! { Mut, St s | e } =
   let d = name l "d" in
   let a = name l "a" in
   let elem = Rep.Var a in

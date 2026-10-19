@@ -8,6 +8,9 @@
 //! A mutable array is the runtime's array, used linearly: Cut's arrays are
 //! persistent, so a write copies where Idyll's own back ends write in
 //! place, which changes how fast it is and nothing else.
+//!
+//! And `stringByteAt`, whose byte the runtime gives as a `u8`: made an
+//! `Int`.
 
 use super::*;
 
@@ -16,15 +19,17 @@ impl Lower<'_> {
     /// (its type parameter's descriptor, then what it takes); `None` for a
     /// native that has a primitive, or a type.
     pub(super) fn native_helper(&mut self, n: Native) -> Option<(Symbol, Rc<Vec<Param>>)> {
-        let values: &[Rep] = match n {
+        let (values, generic): (&[Rep], bool) = match n {
             Native::ArrayToList | Native::ArrayFromList | Native::MArrayLen | Native::MArrayFreeze | Native::MArrayThaw => {
-                &[Rep::Ptr]
+                (&[Rep::Ptr], true)
             }
-            Native::MArrayNew => &[Rep::I64, Rep::Any],
-            Native::MArrayGet => &[Rep::Ptr, Rep::I64],
+            Native::MArrayNew => (&[Rep::I64, Rep::Any], true),
+            Native::MArrayGet => (&[Rep::Ptr, Rep::I64], true),
+            Native::StringByteAt => (&[Rep::Str, Rep::I64], false),
             _ => return None,
         };
-        let params: Vec<Param> = std::iter::once(Param::Desc).chain(values.iter().cloned().map(Param::Value)).collect();
+        let desc = generic.then_some(Param::Desc);
+        let params: Vec<Param> = desc.into_iter().chain(values.iter().cloned().map(Param::Value)).collect();
         let symbol = Symbol::idyll(&self.package, &format!("#{}", n.name()));
         if self.natives_made.insert(n) {
             self.make_native(n, &symbol)?;
@@ -173,8 +178,28 @@ impl Lower<'_> {
                 let body = Statement::Cut(var(&m), kv());
                 self.defs.push(def(symbol, vec![Binder { name: m, rep: Rep::Ptr }], &k, body));
             }
+            Native::StringByteAt => self.make_byte_at(symbol),
             _ => return None,
         }
         Some(())
+    }
+
+    /// `stringByteAt`, which takes no type, and so no descriptor: the
+    /// runtime's byte is a `u8`, made an `Int`.
+    fn make_byte_at(&mut self, symbol: &Symbol) {
+        let (k, s, i, b) = (self.name("k"), self.name("s"), self.name("i"), self.name("b"));
+        let then = Consumer::MuTilde(
+            Binder { name: b.clone(), rep: Rep::U8 },
+            Box::new(Statement::Prim("toInt".into(), vec![Producer::Var(b)], vec![Consumer::Var(k.clone())])),
+        );
+        let body = Statement::Prim("stringByteAt".into(), vec![Producer::Var(s.clone()), Producer::Var(i.clone())], vec![then]);
+        self.defs.push(Def {
+            symbol: symbol.clone(),
+            rep_vars: Vec::new(),
+            effect_vars: Vec::new(),
+            params: vec![Binder { name: s, rep: Rep::Str }, Binder { name: i, rep: Rep::I64 }],
+            conts: vec![k],
+            body,
+        });
     }
 }

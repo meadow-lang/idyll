@@ -107,7 +107,7 @@ def package = "Main"
 -- The builtins and the primitive operations, as `idyllic-builtins` reserves
 -- them: the uniques below the program's.
 def builtins : [String] =
-  ["Unit", "Int", "Bool", "String", "Grade", "Effect", "Div", "+", "*", "-", "<", "==", "/", "%", "++"]
+  ["Unit", "Int", "Bool", "String", "Grade", "Effect", "Div", "Char", "+", "*", "-", "<", "==", "/", "%", "++"]
 
 fun new () =
   let global = V.foldl (\m i -> Hm.insert (V.getOr "" builtins i) [i] m) Hm.empty (V.range 0 (V.len builtins)) in

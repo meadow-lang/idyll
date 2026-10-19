@@ -36,7 +36,7 @@ use Std.Maybe.Maybe.*
 -- How a value is represented at run time, as the checker sees it: what a
 -- type variable bound at a level stands for, and nothing at all for a type.
 @derive(PartialEq)
-@pub data TRep = I64 | Bool | Unit | Str | Ptr | Var Int | Any | Erased
+@pub data TRep = I64 | Bool | Unit | Str | Char | Ptr | Var Int | Any | Erased
 
 -- What a value of a type looks like written out, as the REPL shows one.
 @pub data Shown
@@ -44,6 +44,7 @@ use Std.Maybe.Maybe.*
   | Bool
   | Unit
   | Str
+  | Char
   | Box Value
   | Array Value
   -- data: the type written out, and each constructor that can make a
@@ -85,6 +86,7 @@ fun isUniverse (tc : Tc) (v : Value) : Bool ! { Mut | e } = match force tc v wit
   | Value.LitTy Builtin.Bool -> TRep.Bool
   | Value.LitTy Builtin.Unit -> TRep.Unit
   | Value.LitTy Builtin.Str -> TRep.Str
+  | Value.LitTy Builtin.Char -> TRep.Char
   | Value.LitTy _ -> TRep.Erased
   | Value.Type _ -> TRep.Erased
   | Value.Row _ -> TRep.Erased
@@ -221,6 +223,7 @@ fun opFrom (tc : Tc) (erased : Int) (arity : Int) (s : Ctx) (i : Int) (ty : Valu
   | Value.LitTy Builtin.Bool -> Shown.Bool
   | Value.LitTy Builtin.Unit -> Shown.Unit
   | Value.LitTy Builtin.Str -> Shown.Str
+  | Value.LitTy Builtin.Char -> Shown.Char
   | Value.BoxTy _ a -> Shown.Box a
   | Value.Opaque u _ sp ->
       (match Hm.lookup u (getRef tc.nativeInfo) with

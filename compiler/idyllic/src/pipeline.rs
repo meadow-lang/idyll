@@ -291,6 +291,33 @@ arrayFromList : {a : Type} -> List a -> Array a
 @native
 arrayToList : {a : Type} -> Array a -> List a
 
+@native
+stringByteLength : (s : [0..1] String) -> Int
+
+@native
+stringByteAt : (s : [0..1] String) -> Int -> Int
+
+@native
+stringSlice : (s : [0..1] String) -> Int -> Int -> String
+
+@native
+stringCompare : (a : [0..1] String) -> (b : [0..1] String) -> Int
+
+@native
+stringIndexOf : (s : [0..1] String) -> (needle : [0..1] String) -> Int -> Int
+
+@native
+stringToChars : (s : [0..1] String) -> Array Char
+
+@native
+charsToString : (cs : [0..1] Array Char) -> String
+
+@native
+charCode : Char -> Int
+
+@native
+charFromCode : Int -> Char
+
 effect Console where
   putStr : String -> ()
   putErr : String -> ()
@@ -469,7 +496,9 @@ fn evaluate(checked: &typecheck::TypeCheckResult, world: Option<World>) -> Optio
             e @ (MachineError::DivisionByZero
             | MachineError::TestFailed(_)
             | MachineError::OutOfBounds { .. }
-            | MachineError::EmptyArray),
+            | MachineError::EmptyArray
+            | MachineError::ByteOutOfBounds { .. }
+            | MachineError::NotACharacter(_)),
         ) => (Evaluation::Stopped(e.to_string()), None),
         Err(e) => (Evaluation::Failed(e.to_string()), None),
     };
@@ -950,6 +979,7 @@ pub(crate) fn finish(
         Some(Core::LitTy(Builtin::Bool)) => llvm::ResultKind::Bool,
         Some(Core::LitTy(Builtin::Unit)) => llvm::ResultKind::Unit,
         Some(Core::LitTy(Builtin::Str)) => llvm::ResultKind::Str,
+        Some(Core::LitTy(Builtin::Char)) => llvm::ResultKind::Char,
         _ => llvm::ResultKind::Other,
     };
 

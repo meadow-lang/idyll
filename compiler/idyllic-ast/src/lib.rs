@@ -254,6 +254,22 @@ pub enum Lit {
     Int(i64),
     Bool(bool),
     Str(String),
+    /// A Unicode scalar value, `'a'`.
+    Char(char),
+}
+
+/// A character as Idyll writes one: in single quotes, escaped as a string
+/// would be (`'\n'`), but for `'` itself, `'\''`, and `"`, which needs no
+/// escape here. Every back end shows a `Char` answer so.
+pub fn show_char(c: char) -> String {
+    match c {
+        '\'' => "'\\''".to_string(),
+        '"' => "'\"'".to_string(),
+        c => {
+            let s = format!("{:?}", c.to_string());
+            format!("'{}'", &s[1..s.len() - 1])
+        }
+    }
 }
 
 impl std::fmt::Display for Lit {
@@ -264,6 +280,7 @@ impl std::fmt::Display for Lit {
             Lit::Bool(true) => write!(f, "True"),
             Lit::Bool(false) => write!(f, "False"),
             Lit::Str(s) => write!(f, "{s:?}"),
+            Lit::Char(c) => f.write_str(&show_char(*c)),
         }
     }
 }

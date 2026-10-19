@@ -66,7 +66,9 @@ use Std.Maybe.Maybe.*
   | @regex("0x[0-9A-Fa-f]+") Hexadecimal String
   | @regex("[1-9][0-9]*|0") Decimal String
   | @regex("\"([^\"\\\\\n\r]|\\\\[^\n\r])*\"") Str String
-  | @regex("'([^'\\\\\n\r]|\\\\[^\n\r])'") Char String
+  -- one character, as Rust's `'([^'\\\n\r\x0c]|\\[^\n\r\x0c])'` has it: a
+  -- Meadow regex matches bytes, so a character is spelled out in UTF-8's bytes
+  | @regex("'([\\x00-\\x09\\x0B\\x0E-\\x26\\x28-\\x5B\\x5D-\\x7F]|[\\xC2-\\xDF][\\x80-\\xBF]|[\\xE0-\\xEF][\\x80-\\xBF][\\x80-\\xBF]|[\\xF0-\\xF4][\\x80-\\xBF][\\x80-\\xBF][\\x80-\\xBF]|\\\\([\\x00-\\x09\\x0B\\x0E-\\x7F]|[\\xC2-\\xDF][\\x80-\\xBF]|[\\xE0-\\xEF][\\x80-\\xBF][\\x80-\\xBF]|[\\xF0-\\xF4][\\x80-\\xBF][\\x80-\\xBF][\\x80-\\xBF]))'") Char String
   | @regex("[A-Z][A-Za-z0-9_']*(\\.[A-Z][A-Za-z0-9_']*)+") QualUpper String
   | @regex("[A-Z][A-Za-z0-9_']*(\\.[A-Z][A-Za-z0-9_']*)*\\.[_a-z][A-Za-z0-9_']*") QualLower String
   | @regex("[A-Z][A-Za-z0-9_']*") UpperIdent String

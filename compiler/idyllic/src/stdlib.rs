@@ -26,6 +26,7 @@ pub const NAME: &str = "Std";
 pub const MODULES: &[(&str, &str)] = &[
     ("", include_str!("../../../lib/Std/src/Lib.idl")),
     ("Bool", include_str!("../../../lib/Std/src/Bool.idl")),
+    ("Char", include_str!("../../../lib/Std/src/Char.idl")),
     ("Cmp", include_str!("../../../lib/Std/src/Cmp.idl")),
     ("Collections.Array", include_str!("../../../lib/Std/src/Collections/Array.idl")),
     ("Collections.List", include_str!("../../../lib/Std/src/Collections/List.idl")),

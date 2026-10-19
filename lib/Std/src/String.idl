@@ -1,14 +1,50 @@
--- Building strings. A `String` can be joined (`++`) and printed, but not
--- yet taken apart: there are no characters to look at.
+-- Strings: UTF-8 text. As Meadow's `Std.String` has it, offsets and lengths
+-- are counted in *bytes*, not characters: exact for ASCII, byte-oriented
+-- above U+007F. The prelude's natives underneath, `stringByteLength`,
+-- `stringByteAt`, `stringSlice`, `stringIndexOf` and `stringCompare`, read a
+-- string where it is, so a length or a byte costs nothing and a slice what
+-- it takes. A slice through the middle of a character comes out with U+FFFD
+-- in its place, so `slice` and the rest want offsets from `indexOf`, or from
+-- a parser, not ones guessed.
+--
+-- The characters, `Char`s (see `Std.Char`), are the bridge: `chars` decodes
+-- the UTF-8, `fromChars` encodes it, `charAt` reads one.
+--
+-- With no traits, `==` is the integers'; strings are compared with `equal`
+-- and `compare`.
 
 use Std.Num.Nat (Nat)
 use Std.Num.Nat.Nat.*
+use Std.Ordering (Ordering)
+use Std.Ordering.Ordering.*
 
--- The strings, one after another.
+-- ---------------------------------------------------------------------------
+-- Measuring
+-- ---------------------------------------------------------------------------
+
+-- How many *bytes* `s` takes.
 @pub
-concat : List String -> String
-concat Nil = ""
-concat (s :: rest) = s ++ concat rest
+byteLength : String -> Int
+byteLength s = stringByteLength s
+
+@pub
+isEmpty : String -> Bool
+isEmpty s = byteLength s == 0
+
+-- ---------------------------------------------------------------------------
+-- Building
+-- ---------------------------------------------------------------------------
+
+-- `a` followed by `b`: `a ++ b`.
+@pub
+concat : String -> String -> String
+concat a b = a ++ b
+
+-- Every string of `xs`, run together.
+@pub
+concatAll : List String -> String
+concatAll Nil = ""
+concatAll (s :: rest) = s ++ concatAll rest
 
 -- The strings, with `sep` between each two: `join ", " #["a", "b"]` is
 -- `"a, b"`.
@@ -22,6 +58,11 @@ joined : (sep : String) -> List String -> String
 joined sep Nil = ""
 joined sep (s :: rest) = sep ++ s ++ joined sep rest
 
+-- The same, by the name a list's has.
+@pub
+intercalate : (sep : String) -> List String -> String
+intercalate sep xs = join sep xs
+
 -- Each followed by a newline.
 @pub
 unlines : List String -> String
@@ -33,7 +74,13 @@ unlines (s :: rest) = s ++ "\n" ++ unlines rest
 unwords : List String -> String
 unwords ss = join " " ss
 
--- `n` copies of `s`, one after another.
+-- `s` repeated `n` times (none, for `n` below one).
+@pub
+@terminating
+repeat : String -> Int -> String
+repeat s n = if n < 1 then "" else s ++ repeat s (n - 1)
+
+-- `n` copies of `s`, for a count that is a `Nat`.
 @pub
 replicate : Nat -> (s : String) -> String
 replicate Z s = ""
@@ -48,6 +95,239 @@ quote s = "\"" ++ s ++ "\""
 parens : String -> String
 parens s = "(" ++ s ++ ")"
 
+-- ---------------------------------------------------------------------------
+-- Taking it apart
+-- ---------------------------------------------------------------------------
+
+-- The bytes of `s` from `from` up to (not including) `to`, clamped to its
+-- ends.
+@pub
+slice : String -> Int -> Int -> String
+slice s from to = stringSlice s from to
+
+-- The first `n` bytes.
+@pub
+take : String -> Int -> String
+take s n = slice s 0 n
+
+-- Everything after the first `n` bytes.
+@pub
+drop : String -> Int -> String
+drop s n = slice s n (byteLength s)
+
+-- The byte at `i`, if there is one.
+@pub
+byteAt : String -> Int -> Maybe Int
+byteAt s i = if i < 0 then Nothing else if i < byteLength s then Just (stringByteAt s i) else Nothing
+
+-- ---------------------------------------------------------------------------
+-- Searching
+-- ---------------------------------------------------------------------------
+
+-- The byte offset of the first `needle` in `s` at or after byte `from`, if
+-- it is there.
+@pub
+indexOfFrom : (needle : String) -> String -> Int -> Maybe Int
+indexOfFrom needle s from = let i = stringIndexOf s needle from in if i < 0 then Nothing else Just i
+
+-- The byte offset of the first `needle` in `s`, if it is there. An empty
+-- needle is found at 0.
+@pub
+indexOf : (needle : String) -> String -> Maybe Int
+indexOf needle s = indexOfFrom needle s 0
+
+@pub
+contains : (needle : String) -> String -> Bool
+contains needle s = 0 - 1 < stringIndexOf s needle 0
+
+@pub
+startsWith : (prefix : String) -> String -> Bool
+startsWith prefix s = let n = byteLength prefix in if byteLength s < n then False else equal (slice s 0 n) prefix
+
+@pub
+endsWith : (suffix : String) -> String -> Bool
+endsWith suffix s =
+  let n = byteLength suffix in
+  let m = byteLength s in
+  if m < n then False else equal (slice s (m - n) m) suffix
+
+-- The pieces of `s` from byte `i` on, cut at each `sep`.
+@terminating
+cutFrom : String -> (sep : String) -> Int -> List String
+cutFrom s sep i =
+  let k = stringIndexOf s sep i in
+  if k < 0 then slice s i (byteLength s) :: Nil else slice s i k :: cutFrom s sep (k + byteLength sep)
+
+-- `s` cut at every `sep`. An empty `sep` gives `s` whole, since splitting on
+-- nothing has no useful answer.
+@pub
+split : (sep : String) -> String -> List String
+split sep s = if isEmpty sep then s :: Nil else cutFrom s sep 0
+
+-- ---------------------------------------------------------------------------
+-- Comparing
+-- ---------------------------------------------------------------------------
+
+-- Whether `a` and `b` are the same string.
+@pub
+equal : String -> String -> Bool
+equal a b = stringCompare a b == 0
+
+-- How `a` sorts against `b`: byte by byte, which for UTF-8 is the order of
+-- the characters' code points, and a prefix before what it prefixes.
+@pub
+compare : String -> String -> Ordering
+compare a b = let n = stringCompare a b in if n < 0 then Less else if n == 0 then Equal else Greater
+
+@pub
+lessThan : String -> String -> Bool
+lessThan a b = stringCompare a b < 0
+
+@pub
+lessOrEqual : String -> String -> Bool
+lessOrEqual a b = stringCompare a b < 1
+
+@pub
+greaterThan : String -> String -> Bool
+greaterThan a b = 0 < stringCompare a b
+
+@pub
+greaterOrEqual : String -> String -> Bool
+greaterOrEqual a b = 0 - 1 < stringCompare a b
+
+-- The one that sorts first, and the one that sorts last.
+@pub
+minOf : String -> String -> String
+minOf a b = if stringCompare b a < 0 then b else a
+
+@pub
+maxOf : String -> String -> String
+maxOf a b = if 0 < stringCompare b a then b else a
+
+-- ---------------------------------------------------------------------------
+-- Whitespace
+-- ---------------------------------------------------------------------------
+
+-- Space, tab, newline, carriage return.
+@pub
+isSpaceByte : Int -> Bool
+isSpaceByte c = if c == 32 then True else if c == 9 then True else if c == 10 then True else c == 13
+
+@terminating
+startOfText : String -> Int -> Int
+startOfText s i = if byteLength s < i + 1 then i else if isSpaceByte (stringByteAt s i) then startOfText s (i + 1) else i
+
+@terminating
+endOfText : String -> Int -> Int
+endOfText s i = if i < 1 then 0 else if isSpaceByte (stringByteAt s (i - 1)) then endOfText s (i - 1) else i
+
+@pub
+trimStart : String -> String
+trimStart s = slice s (startOfText s 0) (byteLength s)
+
+@pub
+trimEnd : String -> String
+trimEnd s = slice s 0 (endOfText s (byteLength s))
+
+@pub
+trim : String -> String
+trim s = trimEnd (trimStart s)
+
+-- `s` cut into lines. A newline at the end makes no last, empty line.
+@pub
+lines : String -> List String
+lines s = if isEmpty s then Nil else split "\n" (if endsWith "\n" s then take s (byteLength s - 1) else s)
+
+-- `s` cut at its runs of whitespace, none of which is a word.
+@pub
+words : String -> List String
+words s = nonEmpty (split " " (trim (spaced s)))
+
+-- Every whitespace byte made a space.
+spaced : String -> String
+spaced s = fromChars (Std.Collections.List.map (\(c : Char) -> if isSpaceByte (charCode c) then ' ' else c) (chars s))
+
+nonEmpty : List String -> List String
+nonEmpty Nil = Nil
+nonEmpty (w :: rest) = if isEmpty w then nonEmpty rest else w :: nonEmpty rest
+
+-- ---------------------------------------------------------------------------
+-- ASCII case
+-- ---------------------------------------------------------------------------
+
+-- ASCII letters only; anything else is left alone.
+@pub
+toUpper : String -> String
+toUpper s = fromChars (Std.Collections.List.map Std.Char.toUpper (chars s))
+
+@pub
+toLower : String -> String
+toLower s = fromChars (Std.Collections.List.map Std.Char.toLower (chars s))
+
+-- ---------------------------------------------------------------------------
+-- Numbers
+-- ---------------------------------------------------------------------------
+
+-- `n` in base ten.
+@pub
+fromInt : (n : Int) -> String
+fromInt n = showInt n
+
+@pub
+fromBool : Bool -> String
+fromBool b = if b then "True" else "False"
+
+-- The digits of `s` from byte `i` on, read onto `acc`; `Nothing` at a byte
+-- that is no digit.
+@terminating
+digitsFrom : String -> Int -> Int -> Maybe Int
+digitsFrom s i acc =
+  if byteLength s < i + 1 then Just acc
+  else
+    let c = stringByteAt s i in
+    if (if 47 < c then c < 58 else False) then digitsFrom s (i + 1) (acc * 10 + (c - 48)) else Nothing
+
+-- `s` read as a base-ten integer, with an optional leading `-`. `Nothing`
+-- unless the whole string is digits.
+@pub
+toInt : String -> Maybe Int
+toInt s =
+  if isEmpty s then Nothing
+  else if stringByteAt s 0 == 45 then (if byteLength s == 1 then Nothing else negated (digitsFrom s 1 0))
+  else digitsFrom s 0 0
+
+negated : Maybe Int -> Maybe Int
+negated Nothing = Nothing
+negated (Just n) = Just (0 - n)
+
+-- ---------------------------------------------------------------------------
+-- Characters
+-- ---------------------------------------------------------------------------
+
+-- Its characters, decoded from the UTF-8.
+@pub
+chars : String -> List Char
+chars s = arrayToList (stringToChars s)
+
+-- These characters, encoded.
+@pub
+fromChars : List Char -> String
+fromChars cs = charsToString (arrayFromList cs)
+
+-- How many *characters* `s` has, which is `byteLength` only for ASCII.
+@pub
+charLength : String -> Int
+charLength s = arrayLen (stringToChars s)
+
+-- The character at `i`, counting characters, if there is one.
+@pub
+charAt : String -> Int -> Maybe Char
+charAt s i = let cs = stringToChars s in if i < 0 then Nothing else if i < arrayLen cs then Just (arrayGet cs i) else Nothing
+
+-- ---------------------------------------------------------------------------
+-- Showing a list
+-- ---------------------------------------------------------------------------
+
 -- A list, written the way Idyll writes one, `#[1, 2, 3]`, each element as
 -- `show` writes it.
 @pub
@@ -57,11 +337,3 @@ fromList show xs = "#[" ++ join ", " (shown show xs) ++ "]"
 shown : {a : Type} -> (show : ((x : a) -> String ! e)) -> (xs : List a) -> List String ! e
 shown show Nil = Nil
 shown show (x :: rest) = show x :: shown show rest
-
-@pub
-fromInt : (n : Int) -> String
-fromInt n = showInt n
-
-@pub
-fromBool : Bool -> String
-fromBool b = if b then "True" else "False"

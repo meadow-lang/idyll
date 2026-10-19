@@ -141,6 +141,17 @@ pub const STEPS: &[Step] = &[
         examples: &[ok("\"forty\" ++ \"-\" ++ \"two\""), ok("\"n = \" ++ showInt (40 + 2)")],
     },
     Step {
+        title: "Characters",
+        section: Section::Basics,
+        text: &[
+            "A `Char`, `'a'`, is one Unicode character. A string is UTF-8:",
+            "`stringByteLength` and `stringSlice` count its bytes, and",
+            "`stringToChars` gives its characters. `Std.String` and",
+            "`Std.Char` have the rest: splitting, trimming, `toInt`, `isDigit`.",
+        ],
+        examples: &[ok("charCode 'A'"), ok("stringToChars \"héllo\""), ok("stringSlice \"hello\" 1 3")],
+    },
+    Step {
         title: "Functions",
         section: Section::Basics,
         text: &[

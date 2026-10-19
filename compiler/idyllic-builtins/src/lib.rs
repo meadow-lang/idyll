@@ -6,6 +6,8 @@
 //! same uniques, which is what lets the two passes agree without threading a
 //! table between them.
 
+pub mod strings;
+
 /// The primitive constants: closed types of sort `Type`, and `Div`, the one
 /// effect that is built in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
@@ -23,11 +25,21 @@ pub enum Builtin {
     /// The effect of a computation that may not terminate.  Not an ordinary
     /// type: it has type `Effect`.
     Div,
+    /// A character: a Unicode scalar value, `'a'`.
+    Char,
 }
 
 impl Builtin {
-    pub const ALL: [Builtin; 7] =
-        [Builtin::Unit, Builtin::Int, Builtin::Bool, Builtin::Str, Builtin::Grade, Builtin::Effect, Builtin::Div];
+    pub const ALL: [Builtin; 8] = [
+        Builtin::Unit,
+        Builtin::Int,
+        Builtin::Bool,
+        Builtin::Str,
+        Builtin::Grade,
+        Builtin::Effect,
+        Builtin::Div,
+        Builtin::Char,
+    ];
 
     /// How many there are; primitives take the uniques after these.
     pub const COUNT: usize = Builtin::ALL.len();
@@ -41,6 +53,7 @@ impl Builtin {
             Builtin::Grade => "Grade",
             Builtin::Effect => "Effect",
             Builtin::Div => "Div",
+            Builtin::Char => "Char",
         }
     }
 
@@ -217,10 +230,33 @@ pub enum Native {
     MArrayFreeze,
     /// `{a : Type} -> (xs : [] Array a) -> MArray a`
     MArrayThaw,
+    /// `String -> Int`: how many bytes of UTF-8 it is
+    StringByteLength,
+    /// `String -> Int -> Int`: the byte at an index, `0` to `255` (outside
+    /// the string is an error at run time)
+    StringByteAt,
+    /// `String -> Int -> Int -> String`: the bytes `[from, to)`, clamped; a
+    /// character cut in two is the replacement character
+    StringSlice,
+    /// `String -> String -> Int`: `-1`, `0` or `1` as the first sorts before,
+    /// with or after the second, byte by byte (which is by code point)
+    StringCompare,
+    /// `String -> String -> Int -> Int`: where the second is first found in
+    /// the first, at or after a byte index; `-1` if nowhere
+    StringIndexOf,
+    /// `String -> Array Char`: its characters
+    StringToChars,
+    /// `Array Char -> String`: these characters
+    CharsToString,
+    /// `Char -> Int`: a character's code point
+    CharCode,
+    /// `Int -> Char`: the character of a code point (one that is no
+    /// character, no Unicode scalar value, is an error at run time)
+    CharFromCode,
 }
 
 impl Native {
-    pub const ALL: [Native; 18] = [
+    pub const ALL: [Native; 27] = [
         Native::Array,
         Native::ArrayLen,
         Native::ArrayGet,
@@ -239,6 +275,15 @@ impl Native {
         Native::MArraySet,
         Native::MArrayFreeze,
         Native::MArrayThaw,
+        Native::StringByteLength,
+        Native::StringByteAt,
+        Native::StringSlice,
+        Native::StringCompare,
+        Native::StringIndexOf,
+        Native::StringToChars,
+        Native::CharsToString,
+        Native::CharCode,
+        Native::CharFromCode,
     ];
 
     /// The name it is declared by.
@@ -262,6 +307,15 @@ impl Native {
             Native::MArraySet => "marraySet",
             Native::MArrayFreeze => "marrayFreeze",
             Native::MArrayThaw => "marrayThaw",
+            Native::StringByteLength => "stringByteLength",
+            Native::StringByteAt => "stringByteAt",
+            Native::StringSlice => "stringSlice",
+            Native::StringCompare => "stringCompare",
+            Native::StringIndexOf => "stringIndexOf",
+            Native::StringToChars => "stringToChars",
+            Native::CharsToString => "charsToString",
+            Native::CharCode => "charCode",
+            Native::CharFromCode => "charFromCode",
         }
     }
 
@@ -284,9 +338,25 @@ impl Native {
             | Native::ArrayToList
             | Native::MArrayLen
             | Native::MArrayFreeze
-            | Native::MArrayThaw => 1,
-            Native::ArrayGet | Native::ArrayPush | Native::ArrayConcat | Native::MArrayNew | Native::MArrayGet => 2,
-            Native::ArrayGetOr | Native::ArraySet | Native::ArraySlice | Native::MArraySet => 3,
+            | Native::MArrayThaw
+            | Native::StringByteLength
+            | Native::StringToChars
+            | Native::CharsToString
+            | Native::CharCode
+            | Native::CharFromCode => 1,
+            Native::ArrayGet
+            | Native::ArrayPush
+            | Native::ArrayConcat
+            | Native::MArrayNew
+            | Native::MArrayGet
+            | Native::StringByteAt
+            | Native::StringCompare => 2,
+            Native::ArrayGetOr
+            | Native::ArraySet
+            | Native::ArraySlice
+            | Native::MArraySet
+            | Native::StringSlice
+            | Native::StringIndexOf => 3,
         }
     }
 }

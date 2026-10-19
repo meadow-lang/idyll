@@ -353,6 +353,7 @@ where
         int,
         select! {
             Token::Str(s) => Lit::Str(s),
+            Token::Char(c) => Lit::Char(c),
             Token::UpperIdent(s) if s == "True" => Lit::Bool(true),
             Token::UpperIdent(s) if s == "False" => Lit::Bool(false),
         },

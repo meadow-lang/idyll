@@ -18,6 +18,7 @@
 use Lingua (pass!)
 use Idyll.Elaborated
 use Idyll.Elaborated (Elaborated!)
+use Idyll.Core as C
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
 use Std.Collections.HashMap (HashMap)
@@ -102,7 +103,8 @@ fun spine (a : ElaboratedArena) (t : ElaboratedTerm) (args : [ElaboratedTerm]) :
 -- Which of the first `toplevel` `let`s around the program's expression are
 -- live, and which recursive definitions are.
 fun live (a : ElaboratedArena) (program : ElaboratedTerm) (toplevel : [Int]) (recDefs : [(Int, Int, ElaboratedTerm)]) (ctors : HashMap Int c) (roots : [Int]) : ([Bool], [Int]) =
-  let base = 15 in
+  -- the builtins and the primitive operations come first
+  let base = V.len C.builtins + 8 in
   let (lets, body) = peel a program (V.len toplevel) [] in
   let recs = V.foldl (\m d -> match d with | (u, l, c) -> Hm.insert u (l, c) m) Hm.empty recDefs in
   let pureOnes = V.map (\rhs -> isPureValue a ctors rhs) lets in
