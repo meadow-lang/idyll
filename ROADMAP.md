@@ -847,11 +847,12 @@ Work split: each session changes only its own repository.
     never uses (`idyllic-typecheck/src/prune.rs`), so the prelude costs
     nothing when it isn't called.
 - [~] **Step 4**: a shared corpus, on which the reference interpreter, the
-  AxCut machine, Glade and Silo agree in CI. `cut-corpus/` is it, and the
-  reference interpreter agrees with all of it (220 programs, with records,
-  and holes lowered as their solutions, 2026-10-03); next is Meadow's lowering of
-  Cut to AxCut (its step 3.3), pure programs first, then effects, then
-  `@many`, each checked against the same corpus.
+  AxCut machine, Glade and Silo agree in CI. `cut-corpus/` is it (221
+  programs: 198 pure, 5 with the world's effects, 18 with handlers). The
+  reference interpreter agrees with all of it, and since 2026-10-18 so do
+  Glade and Silo, all 221 on each, on meadow from its `idyll-dev` branch
+  (Meadow's Cut lowering, its handler fix PR 11, and Idyll's own fixes to
+  representation variables and array elements). Left: running it in CI.
 - [ ] **Step 5**: Idyll's build tool on Glade (debug) and Silo (release);
   `idyllic-llvm` and `rts/idyll_rt.c` retired once Idyll's corpus, tutorial
   and benchmarks pass on both.
