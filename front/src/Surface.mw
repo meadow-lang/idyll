@@ -1,0 +1,1745 @@
+-- The program as Idyll means it, as a Lingua language (`lang!`), written from
+-- the lossless tree by passes (`pass!`).
+--
+-- `Surface` is what `idyllic-parser` makes of a program: names are still
+-- their text, but everything the Rust parser makes as it goes is made --
+-- telescopes and lambdas curried, `if` a `case`, a tuple pairs, a record its
+-- data type and projections, an effect's alias a definition, attributes on
+-- what they go on. Every node knows where it was written (its `meta`), and
+-- a desugared one where what it was made of was.
+--
+-- `lowerSurface` reads the tree's terms and items, `lowerPat` its patterns:
+-- a pattern is written as a term (`Cons x xs`, `x :: xs`, `(a, b)`) and read
+-- again as the pattern it is. Where the grammar reads one form for several
+-- (it is LL, and the Rust parser, chumsky's, takes things back), what the
+-- Rust parser would have made of it is worked out here, in the order it
+-- tries them:
+--
+-- * an item is a declaration -- an equation, `f p = e` or `l + r = e`; a
+--   signature, `f : a`; or `f p impossible` -- before it is an expression;
+-- * in parentheses, `(x y : [2] a)` is binders where binders may be;
+-- * before an arrow, binders and nothing else make a dependent function;
+-- * operator chains are grouped by the Rust parser's levels: `*` `/` `%`,
+--   then `+` `-` (both to the left), `::` `++` (to the right), then `<` `==`
+--   and `..`, which do not chain.
+--
+-- So most cases look at a node as the tree has it (`raw`), with the typed
+-- views `syntax!` made (`IdyllOp`, `idyllOpTail`), before they say what it
+-- is. What is wrong is reported where it is found (`Lingua.Diagnostic`'s
+-- `Report`), at the node it is about.
+--
+-- `dumped` writes a program out as the parse test compares it with the Rust
+-- parser's: an S-expression a line for each part of it
+-- (`compiler/idyllic/tests/front.rs` writes the Rust side).
+
+use Lingua (lang!, pass!)
+use Lingua.Lang (Meta, spanMeta, noMeta)
+use Lingua.Diagnostic (Diagnostic, Report, errorAt, say, collect, parseErrors)
+use Idyll.Syntax
+use Idyll.Syntax.Idyll.*
+use Idyll.Hir (Icit, Literal, Visibility, literal)
+use Idyll.Layout (layout)
+use Lingua.Red as R
+use Lingua.Red (Syntax)
+use Std.St (runSt)
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Char as C
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+use Std.Result.Result.*
+
+@pub lang! {
+  pub Surface
+  File
+    + File {
+      uses : [Use],
+      datas : [Data],
+      effects : [Effect],
+      decls : [Decl],
+      shown : [Shown],
+      terminating : [Name],
+      linear : Bool,
+      body : Maybe Expr
+    }
+  Name + Name { text : String }
+  -- how visible a declaration is said to be
+  Shown + Shown { name : Name, vis : Visibility }
+  -- `use M.N as A (x, y)`: whether it is `@pub`, the path, whether it is
+  -- `M.*`, the alias, and the names in parentheses, if there are any
+  Use + Use { public : Bool, path : [Name], glob : Bool, alias : Maybe Name, listed : Bool, names : [Name] }
+  -- a data type; a record's is the record's fields too
+  Data
+    + Data {
+      name : Name,
+      params : [TypeParam],
+      kindSig : Maybe Expr,
+      ctors : [Ctor],
+      seq : Maybe SeqAttr,
+      vis : Visibility,
+      isRecord : Bool,
+      fields : [Name]
+    }
+  SeqAttr + SeqAttr { nil : Name, cons : Name }
+  TypeParam + TypeParam { name : Name, kindSig : Maybe Expr }
+  Ctor + Fields { name : Name, fields : [Expr] }
+  Ctor + Sig { name : Name, ty : Expr }
+  Effect + Effect { name : Name, params : [TypeParam], ops : [OpSig], vis : Visibility }
+  OpSig + OpSig { name : Name, ty : Expr, many : Bool }
+  Decl + Sig { name : Name, ty : Expr }
+  -- an equation: its name, its patterns, a type written inline, and what it is
+  Decl + Def { name : Name, params : [Pat], ty : Maybe Expr, rhs : Rhs }
+  Decl + Native { name : Name, ty : Expr }
+  Rhs + Plain { body : Expr }
+  Rhs + Guarded { guards : [Guard] }
+  Rhs + Impossible {}
+  Guard + Guard { cond : Expr, body : Expr }
+  Alt + Alt { pat : Pat, rhs : Rhs }
+  -- `op x k -> e`: the operation, the names it binds, and the body
+  Clause + Clause { op : Name, params : [Name], body : Expr }
+  -- the grades on a binder, `[s]` or `(s, r)`: how often the function uses
+  -- it, and how often the rest of its type mentions it
+  Grade + Grade { uses : Expr, inType : Maybe Expr }
+  -- a binder: its name, whether it unboxes (`[x]`), its grades and its type
+  Param + Param { name : Name, unbox : Bool, grade : Maybe Grade, ty : Maybe Expr }
+  Field + Field { name : Name, value : Expr }
+  PatField + PatField { name : Name, pat : Pat }
+  Expr + Type {}
+  Expr + Var { name : Name }
+  Expr + Lit { lit : Literal }
+  Expr + Pi { name : Maybe Name, icit : Icit, grade : Maybe Grade, dom : Expr, cod : Expr }
+  Expr + Lam { param : Param, body : Expr }
+  Expr + App { func : Expr, arg : Expr }
+  Expr + Ann { expr : Expr, ty : Expr }
+  Expr + Hole {}
+  Expr + Box { expr : Expr }
+  Expr + Inf {}
+  Expr + Range { lo : Expr, hi : Expr }
+  Expr + LetBox { name : Name, value : Expr, body : Expr }
+  Expr + Let { decls : [Decl], body : Expr }
+  Expr + Case { scrutinee : Expr, alts : [Alt] }
+  Expr + Eff { ty : Expr, row : Expr }
+  Expr + Row { labels : [Expr], tail : Maybe Expr }
+  Expr + Handle { body : Expr, clauses : [Clause] }
+  Expr + Seq { items : [Expr] }
+  Expr + Array { items : [Expr] }
+  Expr + Record { name : Name, fields : [Field] }
+  Expr + Proj { expr : Expr, field : Name }
+  Expr + Update { expr : Expr, fields : [Field] }
+  Pat + Bind { param : Param }
+  Pat + Wild {}
+  Pat + Lit { lit : Literal }
+  Pat + Con { name : Name, args : [Pat] }
+  Pat + As { name : Name, pat : Pat }
+  Pat + Dot { expr : Expr }
+  Pat + Seq { items : [Pat] }
+  Pat + Record { name : Name, fields : [PatField] }
+}
+
+-- --- reading a program --------------------------------------------------------
+
+-- `input`'s program, or what is wrong with it.
+@pub fun parsed (input : String) : Result [Diagnostic] SurfaceProgram =
+  let laid = layout input in
+  if not (V.isEmpty laid.problems) then
+    Err (V.map (\pr -> match pr with | (at, m) -> errorAt (spanMeta at at) m) laid.problems)
+  else
+    match parseIdyll input with
+    | (g, errs) ->
+        if not (V.isEmpty errs) then Err (parseErrors g errs)
+        else
+          match runSt (\() -> collect (\() -> written (R.root g))) with
+          | (prog, said) ->
+              -- a node read twice says what is wrong with it twice
+              let wrong = V.foldl (\acc d -> if V.elem d acc then acc else V.pushBack acc d) [] said in
+              if V.isEmpty wrong then Ok prog else Err wrong
+
+fun written (root : Syn) =
+  let out = newSurfaceBuilder () in
+  let r = lowerSurfaceFile () out top root in
+  SurfaceProgram (freezeSurface out) r
+
+-- What the parse test compares: the program, or `(error)`.
+@pub fun dumped (input : String) : String =
+  match parsed input with
+  | Ok prog -> programText prog
+  | Err _ -> "(error)"
+
+-- --- what a pass carries down -----------------------------------------------------
+
+record Attrs = {
+  seq : Maybe (Syn, String, String),
+  vis : Maybe Visibility,
+  native : Bool,
+  terminating : Bool,
+  linear : Bool
+}
+
+def noAttrs = Attrs { seq = None, vis = None, native = False, terminating = False, linear = False }
+
+-- What the passes carry down the tree: a record's earlier fields, which a
+-- later one's type reads off `self` -- each field's name, and the record's
+-- (`idyllic_ast::substitute`) -- and the attributes on the item being read.
+record Cx = {
+  subst : [(String, String)],
+  attrs : Attrs
+}
+
+def top = Cx { subst = [], attrs = noAttrs }
+
+-- Where nothing is replaced: inside a `let`, a `case`, a handler, a record
+-- update, a grade.
+fun plain (cx : Cx) : Cx = { cx | subst = [] }
+
+-- Under a binder of `x`, which hides the field of that name.
+fun hiding (cx : Cx) (x : String) : Cx = { cx | subst = V.filter (\f -> fst f != x) cx.subst }
+
+-- --- the tree -------------------------------------------------------------------
+
+type Syn = Syntax Idyll
+
+fun metaOf (s : Syn) : Meta = match R.textRange s with | (from, to) -> spanMeta from to
+
+fun bad (at : Syn) (why : String) = say (errorAt (metaOf at) why)
+
+fun isKind (k : Idyll) (t : Maybe Syn) : Bool =
+  match t with
+  | Just s -> R.kindOf s == k
+  | None -> False
+
+fun textOf (t : Maybe Syn) : String =
+  match t with
+  | Just s -> R.text s
+  | None -> ""
+
+-- `xs`'s one element, if it has just one.
+fun only (xs : [a]) : Maybe a = if V.len xs == 1 then V.head xs else None
+
+fun nameKind (n : IdyllName) : Idyll =
+  match idyllNameName n with
+  | Just t -> R.kindOf t
+  | None -> Unknown
+
+fun nameText (n : IdyllName) : String = textOf (idyllNameName n)
+
+-- A `Name` with nothing after it, of kind `k`.
+fun plainName (k : Idyll) (a : IdyllAtom) : Bool =
+  match a with
+  | IdyllAtom.Name n -> nameKind n == k and M.isNone (idyllNameAsTail n)
+  | _ -> False
+
+fun atomText (a : IdyllAtom) : String =
+  match a with
+  | IdyllAtom.Name n -> nameText n
+  | _ -> ""
+
+fun isHole (a : IdyllAtom) : Bool =
+  match a with
+  | IdyllAtom.Hole _ -> True
+  | _ -> False
+
+fun firstOf (c : IdyllChain) : [IdyllAtom] =
+  match idyllChainFirst c with
+  | Just app -> idyllAppAtoms app
+  | None -> []
+
+fun linksOf (c : IdyllChain) : [IdyllLink] = idyllChainLinks c
+
+fun opText (l : IdyllLink) : String = textOf (idyllLinkOp l)
+
+fun annotOf (op : IdyllOp) : Maybe IdyllAnnot =
+  match idyllOpTail op with
+  | Just (IdyllOpTail.Annot a) -> Just a
+  | _ -> None
+
+fun hasTail (op : IdyllOp) : Bool = M.isSome (idyllOpTail op)
+
+fun hasArrow (op : IdyllOp) : Bool =
+  match idyllOpTail op with
+  | Just (IdyllOpTail.Arrow _) -> True
+  | _ -> False
+
+-- `xs`'s items, `None` the separators between them, as the Rust parser takes
+-- them: separators first if `leading`, then items a separator apart, and
+-- perhaps one after.
+fun separated (at : Syn) (entries : [Maybe a]) (leading : Bool) (atLeastOne : Bool) =
+  let seps = \s -> M.isNone s in
+  let rest = if leading then V.dropWhile seps entries else entries in
+  let starts = match V.head rest with | Just s -> seps s | None -> False in
+  let pairs = V.zip rest (V.drop rest 1) in
+  let adjacent = V.any (\pr -> match pr with | (a, b) -> seps a == seps b) pairs in
+  let items = V.concatMap (\s -> match s with | Just x -> [x] | None -> []) entries in
+  let u1 = if starts or adjacent then bad at "items are a separator apart" else () in
+  let u2 = if atLeastOne and V.isEmpty items then bad at "expected an item" else () in
+  items
+
+-- Whether a block's braces are both written or both laid out.
+fun braced (at : Syn) (open : Maybe Syn) (close : Maybe Syn) =
+  if isKind TokenLBrace open != isKind TokenRBrace close then bad at "a block's braces do not match" else ()
+
+-- --- writing ----------------------------------------------------------------------
+
+fun nameAt out (m : Meta) (x : String) = newSurfaceName out m x
+
+fun nameOf out (s : Syn) = newSurfaceName out (metaOf s) (R.text s)
+
+fun hole out (m : Meta) = newSurfaceExprHole out m
+
+fun lit out (m : Meta) (l : Literal) = newSurfaceExprLit out m l
+
+fun app out (m : Meta) f a = newSurfaceExprApp out m f a
+
+-- A name used as a term: a record's earlier field is read off `self`.
+fun var out (cx : Cx) (m : Meta) (x : String) =
+  match V.find (\f -> fst f == x) cx.subst with
+  | Just (_, rec) ->
+      app out m (newSurfaceExprVar out m (nameAt out m "${rec}.${x}")) (newSurfaceExprVar out m (nameAt out m "self"))
+  | None -> newSurfaceExprVar out m (nameAt out m x)
+
+fun binary out (m : Meta) (op : String) l r = app out m (app out m (newSurfaceExprVar out m (nameAt out m op)) l) r
+
+-- `[]`, any number of uses: `[0..∞]`.
+fun anyGrade out (m : Meta) = newSurfaceExprRange out m (lit out m (Literal.Int 0)) (newSurfaceExprInf out m)
+
+-- A term the grammar says is there.
+fun termOr out (cx : Cx) (m : Meta) (t : Maybe IdyllTerm) =
+  match t with
+  | Just x -> lowerSurfaceTerm () out cx (syntaxIdyllTerm x)
+  | None -> hole out m
+
+-- --- literals ------------------------------------------------------------------
+
+def maxInt = 9223372036854775807
+
+fun digitValue (b : Int) : Int =
+  if b >= 48 and b <= 57 then b - 48 else if b >= 97 then b - 87 else b - 55
+
+-- A number, which an `Int` must hold: 64 bits.
+fun intLit (s : Syn) =
+  let tok = M.andThen idyllNumberValue (asIdyllNumber s) in
+  let k = match tok with | Just t -> R.kindOf t | None -> Unknown in
+  let text = textOf tok in
+  let radix = if k == TokenHexadecimal then 16 else if k == TokenOctal then 8 else if k == TokenBinary then 2 else 10 in
+  let from = if radix == 10 then 0 else 2 in
+  let n =
+    V.foldl
+      (\acc i ->
+        match acc with
+        | None -> None
+        | Just m ->
+            let d = digitValue (toInt (stringByteAt text i)) in
+            if m > (maxInt - d) / radix then None else Just (m * radix + d))
+      (Just 0)
+      (V.range from (stringByteLength text))
+  in
+  match n with
+  | Just m -> m
+  | None ->
+      let u = bad s "${text} does not fit in an Int, which is 64 bits" in
+      0
+
+-- A string literal's text, its escapes resolved as the Rust lexer resolves
+-- them.
+fun strLit (s : Syn) =
+  let text = textOf (M.andThen idyllStrLitStrToken (asIdyllStrLit s)) in
+  let inner = stringSlice text 1 (stringByteLength text - 1) in
+  S.join "" (unescape s (S.chars inner) 0 [])
+
+fun unescape (at : Syn) (cs : [Char]) (i : Int) (out : [String]) =
+  match V.get cs i with
+  | None -> out
+  | Just c ->
+      if C.code c != 92 then unescape at cs (i + 1) (V.pushBack out (C.toString c))
+      else
+        match V.get cs (i + 1) with
+        | None ->
+            let u = bad at "trailing backslash in literal" in
+            out
+        | Just e ->
+            let k = C.code e in
+            let simple = escapeOf k in
+            if simple >= 0 then unescape at cs (i + 2) (V.pushBack out (C.toString (C.fromCode simple)))
+            else if k == 120 or k == 117 or k == 85 then
+              let most = if k == 120 then 2 else if k == 117 then 4 else 8 in
+              hexEscape at cs (i + 2) most 0 0 out
+            else
+              let u = bad at "unknown escape sequence" in
+              unescape at cs (i + 2) (V.pushBack out (C.toString e))
+
+fun escapeOf (k : Int) : Int =
+  if k == 110 then 10
+  else if k == 116 then 9
+  else if k == 114 then 13
+  else if k == 92 then 92
+  else if k == 39 then 39
+  else if k == 34 then 34
+  else if k == 48 then 0
+  else if k == 97 then 7
+  else if k == 98 then 8
+  else if k == 102 then 12
+  else if k == 118 then 11
+  else 0 - 1
+
+-- `\x`, `\u`, `\U`: up to `most` hexadecimal digits from `i`.
+fun hexEscape (at : Syn) (cs : [Char]) (i : Int) (most : Int) (n : Int) (value : Int) (out : [String]) =
+  let digit = match V.get cs i with | Just d -> C.hexDigitToInt d | None -> None in
+  match digit with
+  | Just d if n < most -> hexEscape at cs (i + 1) most (n + 1) (value * 16 + d) out
+  | _ ->
+      if n == 0 then
+        let u = bad at "an escape needs at least one hexadecimal digit" in
+        unescape at cs i out
+      else
+        match C.fromCodeSafe value with
+        | Just ch -> unescape at cs i (V.pushBack out (C.toString ch))
+        | None ->
+            let u = bad at "invalid Unicode scalar value" in
+            unescape at cs i (V.pushBack out "\u{FFFD}")
+
+-- --- terms -------------------------------------------------------------------------
+
+pass! {
+  lowerSurface : Idyll -> Surface with cx from File, Term, Atom
+    | File { raw entries } -> program out node
+    | Op {} -> (match asIdyllOp node with | Just op -> opFrom out cx op 0 | None -> hole out here)
+    | Lam { raw binders, raw body } -> lam out cx here binders body
+    | LetE {} -> (match asIdyllLetE node with | Just l -> letE out cx l | None -> hole out here)
+    | CaseE {} -> (match asIdyllCaseE node with | Just c -> caseE out cx c | None -> hole out here)
+    -- `if c then a else b` is `case c of True -> a; False -> b`
+    | IfE { raw cond, raw yes, raw no } ->
+        (let inner = plain cx in
+         let alt =
+           \b branch ->
+             newSurfaceAlt out here (newSurfacePatLit out here (Literal.Bool b)) (newSurfaceRhsPlain out here (lowerSurfaceTerm () out inner branch))
+         in Case { scrutinee = lowerSurfaceTerm () out inner cond, alts = [alt True yes, alt False no] })
+    | HandleE {} -> (match asIdyllHandleE node with | Just h -> handleE out cx h | None -> hole out here)
+    | Name { raw name, raw asTail } ->
+        (let x = R.text name in
+         let u = if M.isSome asTail then bad node "x@p is a pattern" else () in
+         if R.kindOf name == TokenUpperIdent and x == "True" then Expr.Lit { lit = Literal.Bool True }
+         else if R.kindOf name == TokenUpperIdent and x == "False" then Expr.Lit { lit = Literal.Bool False }
+         else var out cx here x)
+    | Number {} -> Expr.Lit { lit = Literal.Int (intLit node) }
+    | StrLit {} -> Expr.Lit { lit = Literal.Str (strLit node) }
+    | CharLit {} -> (let u = bad node "not a term" in Hole {})
+    | Hole {} -> Hole {}
+    | TypeA {} -> Type {}
+    | InfA {} -> Inf {}
+    | OpName { raw op } ->
+        (let u = if R.kindOf op == TokenConOpIdent then bad node "a constructor operator is not a term on its own" else () in
+         var out cx here (R.text op))
+    -- `(a, b, c)` is `(,) a ((,) b c)`, and `(a)` is `a`
+    | Paren { raw items } ->
+        (if V.isEmpty items then Expr.Lit { lit = Literal.Unit }
+         else
+           (let ts = V.map (\t -> lowerSurfaceTerm () out cx t) items in
+            let n = V.len ts in
+            V.foldr (\x acc -> binary out here "(,)" x acc) (V.getOr (hole out here) ts (n - 1)) (V.take ts (n - 1))))
+    | BoxA { raw inner } ->
+        (match inner with
+         | Just t -> Box { expr = lowerSurfaceTerm () out cx t }
+         | None -> Box { expr = anyGrade out here })
+    | SeqA {} ->
+        (match asIdyllSeqA node with
+         | Just s ->
+             (match seqShape out cx s with
+              | (terms, array) ->
+                  (let items = seqItems out cx terms in
+                   if array then Array { items } else Expr.Seq { items }))
+         | None -> hole out here)
+    | Braced {} ->
+        (match asIdyllBraced node with
+         | Just b ->
+             (match (only (idyllBracedItems b), M.andThen idyllBraceRestFields (idyllBracedRest b)) with
+              | (Just e, Just fs) -> Update { expr = lowerSurfaceTerm () out (plain cx) (syntaxIdyllTerm e), fields = fieldVals out (plain cx) fs }
+              | _ -> (let u = bad node "braces in a term are a record update, { r | x = e }" in Hole {}))
+         | None -> hole out here)
+    | RecordLit {} ->
+        (match asIdyllRecordLit node with
+         | Just r ->
+             Expr.Record {
+               name = nameAt out here (textOf (idyllRecordLitName r)),
+               fields = (match idyllRecordLitFields r with | Just fs -> fieldVals out cx fs | None -> [])
+             }
+         | None -> hole out here)
+    | DotA {} -> (let u = bad node "not a term" in Hole {})
+}
+
+fun fieldVals out (cx : Cx) (fs : IdyllFieldVals) =
+  V.map
+    (\f -> newSurfaceField out (metaOf (syntaxIdyllFieldVal f)) (nameOf out (M.unwrapOr (syntaxIdyllFieldVal f) (idyllFieldValName f))) (termOr out cx (metaOf (syntaxIdyllFieldVal f)) (idyllFieldValValue f)))
+    (idyllFieldValsFields fs)
+
+-- A chain and what follows it: an annotation, or an arrow -- a dependent one
+-- when what is before it is binders. `skip` atoms at its start are grades,
+-- read already.
+fun opFrom out (cx : Cx) (op : IdyllOp) (skip : Int) =
+  let m = metaOf (syntaxIdyllOp op) in
+  match idyllOpTail op with
+  | Just (IdyllOpTail.Annot a) -> newSurfaceExprAnn out m (chainOf out cx op skip) (termOr out cx m (idyllAnnotTy a))
+  | Just (IdyllOpTail.Arrow ar) ->
+      let result = \c -> comp out c m (idyllArrowResult ar) (idyllArrowEff ar) in
+      (match M.andThen (\c -> telescope c skip) (idyllOpChain op) with
+       | Just doms ->
+           let binders = V.concatMap (\d -> match d with | (names, icit, annot) -> V.map (\x -> (x, icit, annot)) names) doms in
+           pis out cx m binders result
+       | None -> newSurfaceExprPi out m None Icit.Explicit None (chainOf out cx op skip) (result cx))
+  | None -> chainOf out cx op skip
+
+-- `(x y : a) -> b`, a `Pi` for each name, each seeing the ones before it.
+fun pis out (cx : Cx) (m : Meta) (binders : [(Syn, Icit, IdyllAnnot)]) result =
+  match V.head binders with
+  | None -> result cx
+  | Just (x, icit, annot) ->
+      (match annotation out cx annot with
+       | (g, ty) ->
+           let inner = hiding cx (R.text x) in
+           newSurfaceExprPi out m (Just (nameOf out x)) icit g ty (pis out inner m (V.drop binders 1) result))
+
+fun chainOf out (cx : Cx) (op : IdyllOp) (skip : Int) =
+  match idyllOpChain op with
+  | Just c -> chainTerm out cx c skip
+  | None -> hole out (metaOf (syntaxIdyllOp op))
+
+-- `t ! row`, or `t`.
+fun comp out (cx : Cx) (m : Meta) (t : Maybe IdyllTerm) (effects : Maybe IdyllEffects) =
+  match effects with
+  | Just e -> newSurfaceExprEff out m (termOr out cx m t) (rowOfEffects out cx e)
+  | None -> termOr out cx m t
+
+fun rowOfEffects out (cx : Cx) (e : IdyllEffects) =
+  match idyllEffectsRow e with
+  | Just r -> rowOf out cx r
+  | None -> newSurfaceExprRow out (metaOf (syntaxIdyllEffects e)) [] None
+
+-- Binders and nothing else, before an arrow: `(x y : a) {b : Type}`, each
+-- its names, whether it is implicit, and its annotation.
+fun telescope (chain : IdyllChain) (skip : Int) : Maybe [([Syn], Icit, IdyllAnnot)] =
+  if not (V.isEmpty (linksOf chain)) then None
+  else
+    let atoms = V.drop (firstOf chain) skip in
+    let doms = V.map domain atoms in
+    if not (V.isEmpty atoms) and V.all M.isSome doms then
+      Just (V.concatMap (\d -> match d with | Just x -> [x] | None -> []) doms)
+    else None
+
+fun domain (a : IdyllAtom) : Maybe ([Syn], Icit, IdyllAnnot) =
+  match a with
+  | IdyllAtom.Paren q ->
+      M.map
+        (\na -> match na with | (ns, an) -> (ns, Icit.Explicit, an))
+        (M.andThen (\t -> annotatedNames t False) (only (idyllParenItems q)))
+  | IdyllAtom.Braced b if M.isNone (idyllBracedRest b) ->
+      M.map
+        (\na -> match na with | (ns, an) -> (ns, Icit.Implicit, an))
+        (M.andThen (\t -> annotatedNames t False) (only (idyllBracedItems b)))
+  | _ -> None
+
+-- `x y : a` in parentheses: the names, and the annotation.
+fun annotatedNames (t : IdyllTerm) (wild : Bool) : Maybe ([Syn], IdyllAnnot) =
+  match t with
+  | IdyllTerm.Op op ->
+      (match (annotOf op, M.andThen (\c -> names c wild) (idyllOpChain op)) with
+       | (Just an, Just ns) -> Just (ns, an)
+       | _ -> None)
+  | _ -> None
+
+-- A chain of names alone, `x y z` (and `_`, if `wild`): each one's token,
+-- or its `_`.
+fun names (chain : IdyllChain) (wild : Bool) : Maybe [Syn] =
+  if not (V.isEmpty (linksOf chain)) then None
+  else
+    let atoms = firstOf chain in
+    if V.all (\a -> plainName TokenLowerIdent a or (wild and isHole a)) atoms then
+      Just
+        (V.map
+           (\a ->
+             match a with
+             | IdyllAtom.Name n -> M.unwrapOr (syntaxIdyllAtom a) (idyllNameName n)
+             | _ -> syntaxIdyllAtom a)
+           atoms)
+    else None
+
+-- A binder's name: `_`'s is `_`.
+fun binderName out (s : Syn) = if R.kindOf s == NodeHole then nameAt out (metaOf s) "_" else nameOf out s
+
+-- What follows a binder's `:`: grades, if it starts with them and goes on,
+-- and its type.
+fun annotation out (cx : Cx) (annot : IdyllAnnot) =
+  let m = metaOf (syntaxIdyllAnnot annot) in
+  match idyllAnnotTy annot with
+  | Just (IdyllTerm.Op ty) ->
+      let atoms = match idyllOpChain ty with | Just c -> firstOf c | None -> [] in
+      (match V.get atoms 0 with
+       | Just g if V.len atoms >= 2 and isGrade g -> (Just (gradeOf out (plain cx) g), opFrom out cx ty 1)
+       | _ -> (None, opFrom out cx ty 0))
+  | t -> (None, termOr out cx m t)
+
+-- `[s]`, or `(s, r)`.
+fun isGrade (a : IdyllAtom) : Bool =
+  match a with
+  | IdyllAtom.BoxA _ -> True
+  | IdyllAtom.Paren q -> V.len (idyllParenItems q) == 2
+  | _ -> False
+
+fun gradeOf out (cx : Cx) (g : IdyllAtom) =
+  let m = metaOf (syntaxIdyllAtom g) in
+  match g with
+  | IdyllAtom.BoxA b ->
+      (match idyllBoxAInner b with
+       | Just t -> newSurfaceGrade out m (lowerSurfaceTerm () out cx (syntaxIdyllTerm t)) None
+       | None -> newSurfaceGrade out m (anyGrade out m) None)
+  | IdyllAtom.Paren q ->
+      let items = idyllParenItems q in
+      newSurfaceGrade out m (termOr out cx m (V.get items 0)) (Just (termOr out cx m (V.get items 1)))
+  | _ -> newSurfaceGrade out m (anyGrade out m) None
+
+-- An operator chain, grouped by levels.
+fun chainTerm out (cx : Cx) (chain : IdyllChain) (skip : Int) =
+  let m = metaOf (syntaxIdyllChain chain) in
+  let links = linksOf chain in
+  let u =
+    V.foldl
+      (\acc l -> if levelOf (opText l) == 0 then bad (syntaxIdyllLink l) "not an operator here: ${opText l}" else acc)
+      ()
+      links
+  in
+  let operands =
+    V.append
+      [match idyllChainFirst chain with | Just a -> appTerm out cx a skip | None -> hole out m]
+      (V.map (\l -> match idyllLinkOperand l with | Just a -> appTerm out cx a 0 | None -> hole out m) links)
+  in
+  grouped out (syntaxIdyllChain chain) operands (V.map opText links) 0 (V.len operands - 1) 5
+
+fun levelOf (op : String) : Int =
+  if op == "*" or op == "/" or op == "%" then 1
+  else if op == "+" or op == "-" then 2
+  else if op == "::" or op == "++" then 3
+  else if op == "<" or op == "==" then 4
+  else if op == ".." then 5
+  else 0
+
+-- Operands `lo` to `hi` and the operators between (operator `i` is after
+-- operand `i`), grouped at `level` and tighter.
+fun grouped out (at : Syn) xs (ops : [String]) (lo : Int) (hi : Int) (level : Int) =
+  let m = metaOf at in
+  if level == 0 then V.getOr (hole out m) xs lo
+  else
+    let here = V.filter (\i -> levelOf (V.getOr "" ops i) == level) (V.range lo hi) in
+    if V.isEmpty here then grouped out at xs ops lo hi (level - 1)
+    else
+      let starts = V.append [lo] (V.map (\i -> i + 1) here) in
+      let ends = V.append here [hi] in
+      let parts = V.map (\b -> match b with | (s, e) -> grouped out at xs ops s e (level - 1)) (V.zip starts ends) in
+      let opNames = V.map (\i -> V.getOr "" ops i) here in
+      let n = V.len here in
+      let part = \i -> V.getOr (hole out m) parts i in
+      if level >= 4 then
+        let u = if n > 1 then bad at "comparisons and intervals do not chain" else () in
+        if level == 5 then newSurfaceExprRange out m (part 0) (part 1) else binary out m (V.getOr "" opNames 0) (part 0) (part 1)
+      else if level == 3 then
+        V.foldr (\i acc -> binary out m (V.getOr "" opNames i) (part i) acc) (part n) (V.range 0 n)
+      else
+        V.foldl (\acc i -> binary out m (V.getOr "" opNames i) acc (part (i + 1))) (part 0) (V.range 0 n)
+
+-- Atoms applied to each other, each with the fields read off it: `f x.y` is
+-- `f (x.y)`.
+fun appTerm out (cx : Cx) (a : IdyllApp) (skip : Int) =
+  let m = metaOf (syntaxIdyllApp a) in
+  let terms =
+    V.foldl
+      (\acc atom ->
+        match atom with
+        | IdyllAtom.DotA d ->
+            (match V.last acc with
+             | Just e -> V.pushBack (V.popBack acc) (newSurfaceExprProj out (metaOf (syntaxIdyllDotA d)) e (fieldName out d))
+             | None ->
+                 let u = bad (syntaxIdyllDotA d) "a field of nothing" in
+                 acc)
+        | _ -> V.pushBack acc (lowerSurfaceAtom () out cx (syntaxIdyllAtom atom)))
+      []
+      (V.drop (idyllAppAtoms a) skip)
+  in
+  match V.head terms with
+  | Just f -> V.foldl (\acc x -> app out m acc x) f (V.drop terms 1)
+  | None -> hole out m
+
+fun fieldName out (dot : IdyllDotA) =
+  let m = metaOf (syntaxIdyllDotA dot) in
+  match idyllDotATarget dot with
+  | Just n if plainName TokenLowerIdent n -> nameAt out (metaOf (syntaxIdyllAtom n)) (atomText n)
+  | _ ->
+      let u = bad (syntaxIdyllDotA dot) "a field is a lower-case name" in
+      nameAt out m "_"
+
+-- `#[a, b]` or `#[a; b]`: its items, and whether it is an array, as the Rust
+-- parser checks them: an array's last `;` may end it, and `#[;]` is empty.
+fun seqShape out (cx : Cx) (s : IdyllSeqA) =
+  let first = idyllSeqAFirst s in
+  let rest = V.map (\r -> (isKind TokenSemi (idyllSeqRestSep r), idyllSeqRestItem r)) (idyllSeqARest s) in
+  let array = V.any (\r -> match r with | (semi, _) -> semi) rest in
+  let n = V.len rest in
+  let at = syntaxIdyllSeqA s in
+  let u =
+    if array then
+      let empty = M.isNone first and n == 1 and (match V.get rest 0 with | Just (_, None) -> True | _ -> False) in
+      let filled =
+        M.isSome first
+          and V.all (\i -> match V.get rest i with | Just (_, Just _) -> True | _ -> i + 1 == n) (V.range 0 n)
+      in
+      if V.any (\r -> match r with | (semi, _) -> not semi) rest then bad at "an array's elements are separated by ;"
+      else if not empty and not filled then bad at "an array's elements are separated by single semicolons"
+      else ()
+    else if (M.isNone first and n > 0) or V.any (\r -> match r with | (_, item) -> M.isNone item) rest then
+      bad at "a sequence's elements are separated by single commas"
+    else ()
+  in
+  let terms =
+    V.append
+      (match first with | Just f -> [f] | None -> [])
+      (V.concatMap (\r -> match r with | (_, Just t) -> [t] | _ -> []) rest)
+  in
+  (terms, array)
+
+fun seqItems out (cx : Cx) (terms : [IdyllTerm]) = V.map (\t -> lowerSurfaceTerm () out cx (syntaxIdyllTerm t)) terms
+
+-- A row of effects: `{Log, Div | e}`, `{}`, or one effect, `State Int`.
+fun rowOf out (cx : Cx) (r : IdyllRow) =
+  let m = metaOf (syntaxIdyllRow r) in
+  match r with
+  | IdyllRow.EmptyRow _ -> newSurfaceExprRow out m [] None
+  | IdyllRow.App a ->
+      let atoms = idyllAppAtoms a in
+      (match only atoms with
+       | Just (IdyllAtom.Braced b) ->
+           let labels = V.map (\t -> lowerSurfaceTerm () out cx (syntaxIdyllTerm t)) (idyllBracedItems b) in
+           (match idyllBracedRest b with
+            | None -> newSurfaceExprRow out m labels None
+            | Just rest ->
+                if M.isSome (idyllBraceRestFields rest) then
+                  let u = bad (syntaxIdyllBraceRest rest) "a row's tail is an effect" in
+                  newSurfaceExprRow out m labels None
+                else newSurfaceExprRow out m labels (Just (termOr out cx m (idyllBraceRestTail rest))))
+       | _ ->
+           let one =
+             V.map
+               (\atom ->
+                 let am = metaOf (syntaxIdyllAtom atom) in
+                 match atom with
+                 | IdyllAtom.Name n if M.isNone (idyllNameAsTail n) -> var out cx am (nameText n)
+                 | IdyllAtom.Paren q if V.len (idyllParenItems q) == 1 -> termOr out cx am (V.head (idyllParenItems q))
+                 | _ ->
+                     let u = bad (syntaxIdyllAtom atom) "an effect is a name applied to names" in
+                     hole out am)
+               atoms
+           in
+           (match V.head one with
+            | Just f -> V.foldl (\acc x -> app out m acc x) f (V.drop one 1)
+            | None -> hole out m))
+
+-- `\x y -> e`, a `Lam` for each binder, each seeing the ones before it.
+fun lam out (cx : Cx) (m : Meta) (binders : [Syn]) (body : Syn) =
+  let ps = V.concatMap (\b -> match asIdyllAtom b with | Just a -> binder out a | None -> []) binders in
+  lams out cx m ps body
+
+fun lams out (cx : Cx) (m : Meta) ps (body : Syn) =
+  match V.head ps with
+  | None -> lowerSurfaceTerm () out cx body
+  | Just (x, p) ->
+      let written = p cx in
+      newSurfaceExprLam out m written (lams out (hiding cx x) m (V.drop ps 1) body)
+
+-- A lambda's binder: `x`, `_`, `[x]`, `(x y)` or `(x y : [2] a)` -- each name
+-- with how to write its parameter, under the binders before it.
+fun binder out (a : IdyllAtom) =
+  let m = metaOf (syntaxIdyllAtom a) in
+  let simple = \x unbox -> [(x, \c -> newSurfaceParam out m (nameAt out m x) unbox None None)] in
+  let unboxed = match a with | IdyllAtom.BoxA b -> unboxName b | _ -> None in
+  if plainName TokenLowerIdent a then simple (atomText a) False
+  else if isHole a then simple "_" False
+  else if M.isSome unboxed then simple (M.unwrapOr "" unboxed) True
+  else
+    match a with
+    | IdyllAtom.Paren q ->
+        (match only (idyllParenItems q) with
+         | Just (IdyllTerm.Op op) if not (hasArrow op) ->
+             (match (M.andThen (\c -> names c True) (idyllOpChain op), annotOf op) with
+              | (Just ns, Just an) ->
+                  V.map
+                    (\x ->
+                      (binderText x, \c ->
+                        match annotation out c an with
+                        | (g, ty) -> newSurfaceParam out m (binderName out x) False g (Just ty)))
+                    ns
+              | (Just ns, None) -> V.map (\x -> (binderText x, \c -> newSurfaceParam out m (binderName out x) False None None)) ns
+              | _ -> badBinder a)
+         | _ -> badBinder a)
+    | _ -> badBinder a
+
+fun binderText (s : Syn) : String = if R.kindOf s == NodeHole then "_" else R.text s
+
+fun badBinder (a : IdyllAtom) =
+  let u = bad (syntaxIdyllAtom a) "not a binder" in
+  []
+
+-- `[x]`'s name.
+fun unboxName (b : IdyllBoxA) : Maybe String =
+  match idyllBoxAInner b with
+  | Just (IdyllTerm.Op op) if not (hasTail op) ->
+      (match M.andThen (\c -> names c False) (idyllOpChain op) with
+       | Just ns if V.len ns == 1 -> M.map R.text (V.head ns)
+       | _ -> None)
+  | _ -> None
+
+fun letE out (cx : Cx) (l : IdyllLetE) =
+  let at = syntaxIdyllLetE l in
+  let m = metaOf at in
+  let inner = plain cx in
+  let u = braced at (idyllLetEOpen l) (idyllLetEClose l) in
+  let entries = V.map (\x -> match x with | IdyllLetEntry.Line y -> Just y | IdyllLetEntry.Sep _ -> None) (idyllLetEEntries l) in
+  let lines = separated at entries False True in
+  match M.andThen unboxLine (only lines) with
+  | Just (x, e) ->
+      newSurfaceExprLetBox out m (nameAt out m x) (lowerSurfaceTerm () out inner (syntaxIdyllTerm e)) (termOr out inner m (idyllLetEBody l))
+  | None ->
+      let decls =
+        V.concatMap
+          (\ln ->
+            match lineItem out inner ln with
+            | Item.Decl d -> [d]
+            | _ ->
+                let v = bad (syntaxIdyllLine ln) "expected a declaration" in
+                [])
+          lines
+      in
+      newSurfaceExprLet out m decls (termOr out inner m (idyllLetEBody l))
+
+-- `[x] = e`, a `let`'s unboxing.
+fun unboxLine (l : IdyllLine) : Maybe (String, IdyllTerm) =
+  match (idyllLineLhs l, idyllLineRhs l) with
+  | (Just (IdyllTerm.Op op), Just (IdyllRhs.Plain p)) if not (hasTail op) and M.isNone (idyllLineEff l) ->
+      (match idyllOpChain op with
+       | Just chain if V.isEmpty (linksOf chain) ->
+           (match only (firstOf chain) with
+            | Just (IdyllAtom.BoxA b) ->
+                (match (unboxName b, idyllPlainBody p) with
+                 | (Just x, Just e) -> Just (x, e)
+                 | _ -> None)
+            | _ -> None)
+       | _ -> None)
+  | _ -> None
+
+fun caseE out (cx : Cx) (c : IdyllCaseE) =
+  let at = syntaxIdyllCaseE c in
+  let m = metaOf at in
+  let inner = plain cx in
+  let u = braced at (idyllCaseEOpen c) (idyllCaseEClose c) in
+  let entries = V.map (\x -> match x with | IdyllAltEntry.Alt y -> Just y | IdyllAltEntry.Sep _ -> None) (idyllCaseEEntries c) in
+  let alts = separated at entries False True in
+  newSurfaceExprCase out m (termOr out inner m (idyllCaseEScrutinee c)) (V.map (alt out inner) alts)
+
+fun alt out (cx : Cx) (a : IdyllAlt) =
+  let at = syntaxIdyllAlt a in
+  let m = metaOf at in
+  match idyllAltRhs a with
+  | Just (IdyllAltRhs.AltPlain p) ->
+      newSurfaceAlt out m (patChainOr out cx m (idyllAltPat a)) (newSurfaceRhsPlain out m (termOr out cx m (idyllAltPlainBody p)))
+  | Just (IdyllAltRhs.AltGuards gs) ->
+      let pat = patChainOr out cx m (idyllAltPat a) in
+      newSurfaceAlt
+        out
+        m
+        pat
+        (newSurfaceRhsGuarded
+           out
+           m
+           (V.map
+              (\g ->
+                let gm = metaOf (syntaxIdyllAltGuard g) in
+                newSurfaceGuard
+                  out
+                  gm
+                  (match idyllAltGuardCond g with | Just c -> chainTerm out cx c 0 | None -> hole out gm)
+                  (termOr out cx gm (idyllAltGuardBody g)))
+              (idyllAltGuardsGuards gs)))
+  | None ->
+      -- `C x impossible`: the pattern `C x`, with nothing to say
+      (match M.andThen impossibleCon (idyllAltPat a) with
+       | Just (c, args) ->
+           newSurfaceAlt out m (newSurfacePatCon out m (nameOf out c) (V.map (\x -> lowerPatAtom () out cx (syntaxIdyllAtom x)) args)) (newSurfaceRhsImpossible out m)
+       | None ->
+           let pat = patChainOr out cx m (idyllAltPat a) in
+           let u = bad at "expected -> or a guard" in
+           newSurfaceAlt out m pat (newSurfaceRhsImpossible out m))
+
+-- `C x impossible`'s constructor and its patterns: one operand, a constructor
+-- applied to atoms, the last a plain `impossible`.
+fun impossibleCon (chain : IdyllChain) : Maybe (Syn, [IdyllAtom]) =
+  if not (V.isEmpty (linksOf chain)) then None
+  else
+    let atoms = firstOf chain in
+    match (V.get atoms 0, V.last atoms) with
+    | (Just (IdyllAtom.Name c), Just last)
+        if V.len atoms >= 2
+          and (plainName TokenUpperIdent (IdyllAtom.Name c) or plainName TokenQualUpper (IdyllAtom.Name c))
+          and plainName TokenLowerIdent last
+          and atomText last == "impossible" ->
+        M.map (\t -> (t, V.slice atoms 1 (V.len atoms - 1))) (idyllNameName c)
+    | _ -> None
+
+fun handleE out (cx : Cx) (h : IdyllHandleE) =
+  let at = syntaxIdyllHandleE h in
+  let m = metaOf at in
+  let inner = plain cx in
+  let u = braced at (idyllHandleEOpen h) (idyllHandleEClose h) in
+  let entries = V.map (\x -> match x with | IdyllClauseEntry.Clause y -> Just y | IdyllClauseEntry.Sep _ -> None) (idyllHandleEEntries h) in
+  let clauses = separated at entries False True in
+  newSurfaceExprHandle
+    out
+    m
+    (termOr out inner m (idyllHandleEBody h))
+    (V.map
+       (\c ->
+         let cm = metaOf (syntaxIdyllClause c) in
+         newSurfaceClause
+           out
+           cm
+           (nameAt out cm (textOf (idyllClauseOp c)))
+           (V.map
+              (\x ->
+                let xm = metaOf (syntaxIdyllClauseParam x) in
+                nameAt out xm (if isKind TokenUnderscore (idyllClauseParamName x) then "_" else textOf (idyllClauseParamName x)))
+              (idyllClauseParams c))
+           (termOr out inner cm (idyllClauseBody c)))
+       clauses)
+
+-- --- patterns ----------------------------------------------------------------------
+
+pass! {
+  lowerPat : Idyll -> Surface with cx from Atom
+    | Name { raw name, raw asTail } ->
+        (let x = R.text name in
+         let k = R.kindOf name in
+         if k == TokenLowerIdent then
+           (match M.andThen (\t -> M.andThen idyllAsTailPat (asIdyllAsTail t)) asTail with
+            | Just q -> As { name = nameOf out name, pat = lowerPatAtom () out cx (syntaxIdyllAtom q) }
+            | None ->
+                (if M.isSome asTail then As { name = nameOf out name, pat = newSurfacePatWild out here }
+                 else Bind { param = newSurfaceParam out here (nameOf out name) False None None }))
+         else if M.isSome asTail or k == TokenQualLower then (let u = bad node "not a pattern" in Wild {})
+         else if k == TokenUpperIdent and x == "True" then Pat.Lit { lit = Literal.Bool True }
+         else if k == TokenUpperIdent and x == "False" then Pat.Lit { lit = Literal.Bool False }
+         else Con { name = nameOf out name, args = [] })
+    | Number {} -> Pat.Lit { lit = Literal.Int (intLit node) }
+    | StrLit {} -> Pat.Lit { lit = Literal.Str (strLit node) }
+    | CharLit {} -> (let u = bad node "not a pattern" in Wild {})
+    | Hole {} -> Wild {}
+    | TypeA {} -> (let u = bad node "not a pattern" in Wild {})
+    | InfA {} -> (let u = bad node "not a pattern" in Wild {})
+    | OpName {} -> (let u = bad node "not a pattern" in Wild {})
+    | Braced {} -> (let u = bad node "not a pattern" in Wild {})
+    | Paren { raw items } ->
+        (if V.isEmpty items then Pat.Lit { lit = Literal.Unit }
+         else
+           (let ps = V.map (\t -> patOfTerm out cx t) items in
+            let n = V.len ps in
+            V.foldr
+              (\x acc -> newSurfacePatCon out here (nameAt out here "(,)") [x, acc])
+              (V.getOr (newSurfacePatWild out here) ps (n - 1))
+              (V.take ps (n - 1))))
+    | RecordLit {} ->
+        (match asIdyllRecordLit node with
+         | Just r ->
+             Pat.Record {
+               name = nameAt out here (textOf (idyllRecordLitName r)),
+               fields =
+                 (match idyllRecordLitFields r with
+                  | Just fs ->
+                      V.map
+                        (\f ->
+                          let fm = metaOf (syntaxIdyllFieldVal f) in
+                          newSurfacePatField
+                            out
+                            fm
+                            (nameAt out fm (textOf (idyllFieldValName f)))
+                            (match idyllFieldValValue f with | Just v -> patOfTerm out cx (syntaxIdyllTerm v) | None -> newSurfacePatWild out fm))
+                        (idyllFieldValsFields fs)
+                  | None -> [])
+             }
+         | None -> Wild {})
+    | DotA { raw target } ->
+        (match asIdyllAtom target with
+         | Just (IdyllAtom.Name n) if M.isNone (idyllNameAsTail n) and nameKind n != TokenQualLower ->
+             Dot { expr = newSurfaceExprVar out here (nameAt out (metaOf target) (nameText n)) }
+         | Just (IdyllAtom.Paren q) if V.len (idyllParenItems q) == 1 ->
+             Dot { expr = termOr out (plain cx) here (V.head (idyllParenItems q)) }
+         | _ -> (let u = bad node "a dot pattern is .x or .(e)" in Wild {}))
+    | BoxA {} ->
+        (match M.andThen unboxName (asIdyllBoxA node) with
+         | Just x -> Bind { param = newSurfaceParam out here (nameAt out here x) True None None }
+         | None -> (let u = bad node "an unboxing pattern is [x]" in Wild {}))
+    | SeqA {} ->
+        (match asIdyllSeqA node with
+         | Just s ->
+             (match seqShape out cx s with
+              | (terms, array) ->
+                  (let u = if array then bad node "array patterns are not supported yet" else () in
+                   Pat.Seq { items = V.map (\t -> patOfTerm out cx (syntaxIdyllTerm t)) terms }))
+         | None -> Wild {})
+}
+
+-- Patterns joined by `::`, to the right.
+fun patChain out (cx : Cx) (chain : IdyllChain) =
+  let m = metaOf (syntaxIdyllChain chain) in
+  let links = linksOf chain in
+  let u = V.foldl (\acc l -> if opText l != "::" then bad (syntaxIdyllLink l) "only :: joins patterns" else acc) () links in
+  let operands =
+    V.append
+      [match idyllChainFirst chain with | Just a -> patOperand out cx a | None -> newSurfacePatWild out m]
+      (V.map (\l -> match idyllLinkOperand l with | Just a -> patOperand out cx a | None -> newSurfacePatWild out m) links)
+  in
+  let n = V.len operands in
+  V.foldr
+    (\l acc -> newSurfacePatCon out m (nameAt out m "::") [l, acc])
+    (V.getOr (newSurfacePatWild out m) operands (n - 1))
+    (V.take operands (n - 1))
+
+fun patChainOr out (cx : Cx) (m : Meta) (c : Maybe IdyllChain) =
+  match c with
+  | Just x -> patChain out cx x
+  | None -> newSurfacePatWild out m
+
+-- A constructor applied to patterns, or one pattern.
+fun patOperand out (cx : Cx) (a : IdyllApp) =
+  let m = metaOf (syntaxIdyllApp a) in
+  let atoms = idyllAppAtoms a in
+  match V.get atoms 0 with
+  | Just c if V.len atoms >= 2 ->
+      if plainName TokenUpperIdent c or plainName TokenQualUpper c then
+        newSurfacePatCon out m (nameAt out (metaOf (syntaxIdyllAtom c)) (atomText c)) (V.map (\x -> lowerPatAtom () out cx (syntaxIdyllAtom x)) (V.drop atoms 1))
+      else
+        let u = bad (syntaxIdyllApp a) "only a constructor is applied in a pattern" in
+        newSurfacePatWild out m
+  | Just x -> lowerPatAtom () out cx (syntaxIdyllAtom x)
+  | None -> newSurfacePatWild out m
+
+-- A term read again as the pattern it is.
+fun patOfTerm out (cx : Cx) (t : Syn) =
+  match asIdyllTerm t with
+  | Just (IdyllTerm.Op op) if not (hasTail op) ->
+      (match idyllOpChain op with
+       | Just c -> patChain out cx c
+       | None -> newSurfacePatWild out (metaOf t))
+  | _ ->
+      let u = bad t "not a pattern" in
+      newSurfacePatWild out (metaOf t)
+
+-- An equation's parameters: `(x y : [2] a)` gives each name the annotation;
+-- anything else is a pattern.
+fun params out (cx : Cx) (atoms : [IdyllAtom]) =
+  V.concatMap
+    (\a ->
+      let m = metaOf (syntaxIdyllAtom a) in
+      let group =
+        match a with
+        | IdyllAtom.Paren q -> M.andThen (\t -> annotatedNames t True) (only (idyllParenItems q))
+        | _ -> None
+      in
+      match group with
+      | Just (ns, an) ->
+          V.map
+            (\x ->
+              match annotation out cx an with
+              | (g, ty) -> newSurfacePatBind out m (newSurfaceParam out m (binderName out x) False g (Just ty)))
+            ns
+      | None -> [lowerPatAtom () out cx (syntaxIdyllAtom a)])
+    atoms
+
+-- --- declarations --------------------------------------------------------------------
+
+data Item
+  = Data SurfaceData
+  | Record SurfaceData [SurfaceDecl]
+  | Effect SurfaceEffect
+  | Decl SurfaceDecl
+  | Use SurfaceUse
+  | Expr SurfaceExpr
+  | Nothing
+
+-- A name an equation or a signature can be for: `f` or `(+)` -- its token.
+fun declName (a : IdyllAtom) : Maybe Syn =
+  match a with
+  | IdyllAtom.OpName o if isKind TokenOpIdent (idyllOpNameOp o) -> idyllOpNameOp o
+  | IdyllAtom.Name n -> if plainName TokenLowerIdent a then idyllNameName n else None
+  | _ -> None
+
+fun rhsOf out (cx : Cx) (line : IdyllLine) =
+  let m = metaOf (syntaxIdyllLine line) in
+  match idyllLineRhs line with
+  | Just (IdyllRhs.Plain p) -> Just (newSurfaceRhsPlain out (metaOf (syntaxIdyllPlain p)) (termOr out cx m (idyllPlainBody p)))
+  | Just (IdyllRhs.Guards gs) ->
+      Just
+        (newSurfaceRhsGuarded
+           out
+           (metaOf (syntaxIdyllGuards gs))
+           (V.map
+              (\g ->
+                let gm = metaOf (syntaxIdyllGuard g) in
+                newSurfaceGuard out gm (termOr out cx gm (idyllGuardCond g)) (termOr out cx gm (idyllGuardBody g)))
+              (idyllGuardsGuards gs)))
+  | None -> None
+
+-- An item's line: an equation, a signature, an operator's equation, an
+-- equation with nothing to say -- or else the program's expression. With
+-- `@native`, a signature is a native's.
+fun lineItem out (cx : Cx) (line : IdyllLine) =
+  let at = syntaxIdyllLine line in
+  let m = metaOf at in
+  let effects = idyllLineEff line in
+  let noEffects = \u -> if M.isSome effects then bad at "effects go on a type" else () in
+  let notEquation = \u -> let v = bad at "an equation is f x = e or l + r = e" in Item.Nothing in
+  let sig = \f ty -> if cx.attrs.native then Item.Decl (newSurfaceDeclNative out m f ty) else Item.Decl (newSurfaceDeclSig out m f ty) in
+  match idyllLineLhs line with
+  | Just (IdyllTerm.Op op) ->
+      let chain = idyllOpChain op in
+      let links = match chain with | Just c -> linksOf c | None -> [] in
+      let atoms = match chain with | Just c -> firstOf c | None -> [] in
+      (match M.andThen declName (V.head atoms) with
+       | Just f if V.isEmpty links and not (hasArrow op) ->
+           (match (annotOf op, idyllLineRhs line) with
+            | (Just an, Just _) ->
+                let ps = params out cx (V.drop atoms 1) in
+                let ty = comp out cx m (idyllAnnotTy an) effects in
+                (match rhsOf out cx line with
+                 | Just r -> Item.Decl (newSurfaceDeclDef out m (nameOf out f) ps (Just ty) r)
+                 | None -> Item.Nothing)
+            | (Just an, None) ->
+                if V.len atoms == 1 then sig (nameOf out f) (comp out cx m (idyllAnnotTy an) effects)
+                else expr out cx line
+            | (None, Just _) ->
+                let u = noEffects () in
+                let ps = params out cx (V.drop atoms 1) in
+                (match rhsOf out cx line with
+                 | Just r -> Item.Decl (newSurfaceDeclDef out m (nameOf out f) ps None r)
+                 | None -> Item.Nothing)
+            | (None, None) ->
+                (match impossible out cx atoms with
+                 | Just ps if M.isNone effects -> Item.Decl (newSurfaceDeclDef out m (nameOf out f) ps None (newSurfaceRhsImpossible out m))
+                 | _ -> expr out cx line))
+       | _ ->
+           (match (only links, idyllLineRhs line) with
+            | (Just l, Just _) if isKind TokenOpIdent (idyllLinkOp l) and not (hasTail op) ->
+                let u = noEffects () in
+                let lhs = match M.andThen idyllChainFirst chain with | Just a -> patOperand out cx a | None -> newSurfacePatWild out m in
+                let rhs = match idyllLinkOperand l with | Just a -> patOperand out cx a | None -> newSurfacePatWild out m in
+                (match (rhsOf out cx line, idyllLinkOp l) with
+                 | (Just r, Just o) -> Item.Decl (newSurfaceDeclDef out m (nameOf out o) [lhs, rhs] None r)
+                 | _ -> Item.Nothing)
+            | (_, Just _) -> notEquation ()
+            | _ -> expr out cx line))
+  | lhs ->
+      (match idyllLineRhs line with
+       | Just _ -> notEquation ()
+       | None -> expr out cx line)
+
+-- The program's expression -- or, `@native`, `f : a` written as one.
+fun expr out (cx : Cx) (line : IdyllLine) =
+  let at = syntaxIdyllLine line in
+  let m = metaOf at in
+  let u = if M.isSome (idyllLineEff line) then bad at "effects go on a type" else () in
+  let e = termOr out cx m (idyllLineLhs line) in
+  if not cx.attrs.native then Item.Expr e
+  else
+    match kindSurfaceExpr out e with
+    | SurfaceExprKind.Ann ->
+        let x = surfaceExprAnnExpr out e in
+        if kindSurfaceExpr out x == SurfaceExprKind.Var and not (S.contains "." (surfaceNameText out (surfaceExprVarName out x))) then
+          Item.Decl (newSurfaceDeclNative out m (surfaceExprVarName out x) (surfaceExprAnnTy out e))
+        else
+          let v = bad at "@native goes on a signature, f : a" in
+          Item.Expr e
+    | _ ->
+        let v = bad at "@native goes on a signature, f : a" in
+        Item.Expr e
+
+-- `f p q impossible`'s patterns, `p q`, if they are patterns.
+fun impossible out (cx : Cx) (atoms : [IdyllAtom]) =
+  match V.last atoms with
+  | Just last if V.len atoms >= 3 and plainName TokenLowerIdent last and atomText last == "impossible" ->
+      (match collect (\() -> params out cx (V.slice atoms 1 (V.len atoms - 1))) with
+       | (ps, said) -> if V.isEmpty said then Just ps else None)
+  | _ -> None
+
+-- A data type's or an effect's parameter: `a`, or `(a : k)`.
+fun typeParam out (cx : Cx) (a : IdyllAtom) =
+  let m = metaOf (syntaxIdyllAtom a) in
+  if plainName TokenLowerIdent a then newSurfaceTypeParam out m (nameAt out m (atomText a)) None
+  else
+    match a with
+    | IdyllAtom.Paren q ->
+        (match only (idyllParenItems q) with
+         | Just (IdyllTerm.Op op) ->
+             (match (annotOf op, M.andThen (\c -> names c False) (idyllOpChain op)) with
+              | (Just an, Just ns) if V.len ns == 1 ->
+                  newSurfaceTypeParam out m (binderName out (V.getOr (syntaxIdyllAtom a) ns 0)) (Just (termOr out cx m (idyllAnnotTy an)))
+              | _ -> badParam out a)
+         | _ -> badParam out a)
+    | _ -> badParam out a
+
+fun badParam out (a : IdyllAtom) =
+  let m = metaOf (syntaxIdyllAtom a) in
+  let u = bad (syntaxIdyllAtom a) "a parameter is a or (a : k)" in
+  newSurfaceTypeParam out m (nameAt out m "_") None
+
+fun ctorToken (c : Maybe IdyllCtorName) : Maybe Syn =
+  match c with
+  | Just (IdyllCtorName.PlainCtor x) -> idyllPlainCtorName x
+  | Just (IdyllCtorName.ParenCtor x) -> idyllParenCtorName x
+  | None -> None
+
+fun ctorName (c : Maybe IdyllCtorName) : String = textOf (ctorToken c)
+
+fun ctorNameAt out (m : Meta) (c : Maybe IdyllCtorName) =
+  match ctorToken c with
+  | Just t -> nameOf out t
+  | None -> nameAt out m ""
+
+-- A constructor's field: a name, `Type`, or a term in parentheses.
+fun fieldTerm out (cx : Cx) (a : IdyllAtom) =
+  let m = metaOf (syntaxIdyllAtom a) in
+  match a with
+  | IdyllAtom.TypeA _ -> newSurfaceExprType out m
+  | IdyllAtom.Paren q if V.len (idyllParenItems q) == 1 -> termOr out cx m (V.head (idyllParenItems q))
+  | _ ->
+      if plainName TokenUpperIdent a or plainName TokenLowerIdent a then var out cx m (atomText a)
+      else
+        let u = bad (syntaxIdyllAtom a) "a field is a name, Type or a term in parentheses" in
+        hole out m
+
+fun seqOf out (cx : Cx) =
+  M.map (\s -> match s with | (at, nil, cons) -> newSurfaceSeqAttr out (metaOf at) (nameAt out (metaOf at) nil) (nameAt out (metaOf at) cons)) cx.attrs.seq
+
+fun visOf (cx : Cx) : Visibility = M.unwrapOr Visibility.Private cx.attrs.vis
+
+fun dataDecl out (cx : Cx) (d : IdyllDataDecl) =
+  let at = syntaxIdyllDataDecl d in
+  let m = metaOf at in
+  let ctors =
+    match idyllDataDeclBody d with
+    | Just (IdyllDataBody.Ctors cs) ->
+        V.map
+          (\c ->
+            let cm = metaOf (syntaxIdyllCtor c) in
+            newSurfaceCtorFields out cm (ctorNameAt out cm (idyllCtorName c)) (V.map (fieldTerm out cx) (idyllCtorFields c)))
+          (idyllCtorsCtors cs)
+    | Just (IdyllDataBody.CtorSigs sigs) ->
+        let sat = syntaxIdyllCtorSigs sigs in
+        let u = braced sat (idyllCtorSigsOpen sigs) (idyllCtorSigsClose sigs) in
+        let entries =
+          V.map (\x -> match x with | IdyllSigEntry.CtorSig y -> Just y | IdyllSigEntry.Sep _ -> None) (idyllCtorSigsEntries sigs)
+        in
+        V.map
+          (\c ->
+            let cm = metaOf (syntaxIdyllCtorSig c) in
+            newSurfaceCtorSig out cm (ctorNameAt out cm (idyllCtorSigName c)) (termOr out cx cm (idyllCtorSigTy c)))
+          (separated sat entries True False)
+    | None -> []
+  in
+  newSurfaceData
+    out
+    m
+    (nameOf out (M.unwrapOr at (idyllDataDeclName d)))
+    (V.map (typeParam out cx) (idyllDataDeclParams d))
+    (M.map (\k -> termOr out cx (metaOf (syntaxIdyllKind k)) (idyllKindTy k)) (idyllDataDeclKind d))
+    ctors
+    (seqOf out cx)
+    (visOf cx)
+    False
+    []
+
+-- `record Point = { x : Int, y : Int }`: a data type with one constructor,
+-- named for the type, and its fields' projections, `Point.x`, each a field's
+-- type with the fields before it read off `self`.
+fun recordDecl out (cx : Cx) (d : IdyllRecordDecl) =
+  let at = syntaxIdyllRecordDecl d in
+  let m = metaOf at in
+  let name = textOf (idyllRecordDeclName d) in
+  let ps = idyllRecordDeclParams d in
+  let fields = idyllRecordDeclFields d in
+  let fieldText = \(f : IdyllFieldDecl) -> textOf (idyllFieldDeclName f) in
+  let fieldTy = \(c : Cx) (f : IdyllFieldDecl) -> termOr out c (metaOf (syntaxIdyllFieldDecl f)) (idyllFieldDeclTy f) in
+  let paramNames =
+    V.map (\a -> if plainName TokenLowerIdent a then atomText a else recordParamName a) ps
+  in
+  let whole = \u -> V.foldl (\acc x -> app out m acc (newSurfaceExprVar out m (nameAt out m x))) (newSurfaceExprVar out m (nameAt out m name)) paramNames in
+  let ctorTy =
+    V.foldr
+      (\f acc -> newSurfaceExprPi out m (Just (nameAt out m (fieldText f))) Icit.Explicit None (fieldTy top f) acc)
+      (whole ())
+      fields
+  in
+  let decl =
+    newSurfaceData
+      out
+      m
+      (nameAt out m name)
+      (V.map (typeParam out cx) ps)
+      None
+      [newSurfaceCtorSig out m (nameAt out m name) ctorTy]
+      None
+      (visOf cx)
+      True
+      (V.map (\f -> nameAt out (metaOf (syntaxIdyllFieldDecl f)) (fieldText f)) fields)
+  in
+  let droppable = \u -> newSurfaceGrade out m (newSurfaceExprRange out m (lit out m (Literal.Int 0)) (lit out m (Literal.Int 1))) None in
+  let projections =
+    V.concatMap
+      (\i ->
+        match V.get fields i with
+        | Just f ->
+            let x = fieldText f in
+            let projection = "${name}.${x}" in
+            let before = { top | subst = V.map (\g -> (fieldText g, name)) (V.take fields i) } in
+            let sig = newSurfaceExprPi out m (Just (nameAt out m "self")) Icit.Explicit (Just (droppable ())) (whole ()) (fieldTy before f) in
+            let pats =
+              V.map
+                (\j -> if j == i then newSurfacePatBind out m (newSurfaceParam out m (nameAt out m x) False None None) else newSurfacePatWild out m)
+                (V.range 0 (V.len fields))
+            in
+            [
+              newSurfaceDeclSig out m (nameAt out m projection) sig,
+              newSurfaceDeclDef out m (nameAt out m projection) [newSurfacePatCon out m (nameAt out m name) pats] None (newSurfaceRhsPlain out m (newSurfaceExprVar out m (nameAt out m x)))
+            ]
+        | None -> [])
+      (V.range 0 (V.len fields))
+  in
+  Item.Record decl projections
+
+-- A parameter `(a : k)`'s name.
+fun recordParamName (a : IdyllAtom) : String =
+  match a with
+  | IdyllAtom.Paren q ->
+      (match only (idyllParenItems q) with
+       | Just (IdyllTerm.Op op) ->
+           (match M.andThen (\c -> names c False) (idyllOpChain op) with
+            | Just ns if V.len ns == 1 -> M.unwrapOr "_" (M.map R.text (V.head ns))
+            | _ -> "_")
+       | _ -> "_")
+  | _ -> "_"
+
+-- `effect State (s : Type) where get : () -> s`, or `effect App = {Log, Ask}`,
+-- a name for a row: a definition, `App = {Log, Ask}`, its parameters
+-- lambdas, each used as often as the row mentions it.
+fun effectDecl out (cx : Cx) (d : IdyllEffectDecl) =
+  let at = syntaxIdyllEffectDecl d in
+  let m = metaOf at in
+  let name = nameOf out (M.unwrapOr at (idyllEffectDeclName d)) in
+  match idyllEffectDeclBody d with
+  | Just (IdyllEffectBody.OpBlock block) ->
+      let bat = syntaxIdyllOpBlock block in
+      let u = braced bat (idyllOpBlockOpen block) (idyllOpBlockClose block) in
+      let entries = V.map (\x -> match x with | IdyllOpEntry.OpSig y -> Just y | IdyllOpEntry.Sep _ -> None) (idyllOpBlockEntries block) in
+      let ops =
+        V.map
+          (\o ->
+            let om = metaOf (syntaxIdyllOpSig o) in
+            let v =
+              match idyllOpSigAttr o with
+              | Just a -> if textOf (idyllOpAttrName a) != "many" then bad (syntaxIdyllOpAttr a) "an operation may be @many" else ()
+              | None -> ()
+            in
+            newSurfaceOpSig out om (nameAt out om (textOf (idyllOpSigName o))) (termOr out cx om (idyllOpSigTy o)) (M.isSome (idyllOpSigAttr o)))
+          (separated bat entries True False)
+      in
+      Item.Effect (newSurfaceEffect out m name (V.map (typeParam out cx) (idyllEffectDeclParams d)) ops (visOf cx))
+  | Just (IdyllEffectBody.EffectAlias alias) ->
+      let ps = V.map (\a -> (a, typeParamParts a)) (idyllEffectDeclParams d) in
+      let row = match idyllEffectAliasRow alias with | Just r -> rowOf out cx r | None -> newSurfaceExprRow out m [] None in
+      let body =
+        V.foldr
+          (\q acc ->
+            match q with
+            | (a, (x, kind)) ->
+                let am = metaOf (syntaxIdyllAtom a) in
+                let k = match kind with | Just t -> termOr out cx am (Just t) | None -> newSurfaceExprType out am in
+                newSurfaceExprLam out m (newSurfaceParam out am (nameAt out am x) False (Just (newSurfaceGrade out am (anyGrade out am) None)) (Just k)) acc)
+          row
+          ps
+      in
+      let w = V.foldl (\acc a -> if M.isNone (typeParamOk a) then (let z = bad (syntaxIdyllAtom a) "a parameter is a or (a : k)" in acc) else acc) () (idyllEffectDeclParams d) in
+      Item.Decl (newSurfaceDeclDef out m name [] None (newSurfaceRhsPlain out m body))
+  | None -> Item.Nothing
+
+-- A parameter's name and kind, as `typeParam` reads it.
+fun typeParamParts (a : IdyllAtom) : (String, Maybe IdyllTerm) =
+  match typeParamOk a with
+  | Just p -> p
+  | None -> ("_", None)
+
+fun typeParamOk (a : IdyllAtom) : Maybe (String, Maybe IdyllTerm) =
+  if plainName TokenLowerIdent a then Just (atomText a, None)
+  else
+    match a with
+    | IdyllAtom.Paren q ->
+        (match only (idyllParenItems q) with
+         | Just (IdyllTerm.Op op) ->
+             (match (annotOf op, M.andThen (\c -> names c False) (idyllOpChain op)) with
+              | (Just an, Just ns) if V.len ns == 1 -> Just (M.unwrapOr "_" (M.map R.text (V.head ns)), idyllAnnotTy an)
+              | _ -> None)
+         | _ -> None)
+    | _ -> None
+
+fun useDecl out (cx : Cx) (d : IdyllUseDecl) =
+  let at = syntaxIdyllUseDecl d in
+  let m = metaOf at in
+  let pathTok = idyllUseDeclPath d in
+  let path =
+    match pathTok with
+    | Just t -> if R.kindOf t == TokenQualUpper then V.map (\x -> nameAt out (metaOf t) x) (S.split "." (R.text t)) else [nameOf out t]
+    | None -> []
+  in
+  let glob = M.isSome (idyllUseDeclGlob d) in
+  let u1 = if glob and textOf (idyllUseDeclGlob d) != ".*" then bad at "use M.* brings in everything" else () in
+  let alias =
+    M.map
+      (\a ->
+        let v = if textOf (idyllUseAliasLowerIdentToken a) != "as" then bad (syntaxIdyllUseAlias a) "expected as" else () in
+        match idyllUseAliasName a with
+        | Just t -> nameOf out t
+        | None -> nameAt out m "")
+      (idyllUseDeclAlias d)
+  in
+  let listed =
+    M.map
+      (\ns ->
+        let items = idyllUseNamesNames ns in
+        let v = if V.isEmpty items then bad (syntaxIdyllUseNames ns) "a use names something in its parentheses" else () in
+        V.map
+          (\n ->
+            match idyllUseNameName n with
+            | Just t -> nameOf out t
+            | None -> (match idyllUseNameOp n with | Just t -> nameOf out t | None -> nameAt out m ""))
+          items)
+      (idyllUseDeclNames d)
+  in
+  let u2 = if glob and (M.isSome alias or M.isSome listed) then bad at "use M.* takes no names and no alias" else () in
+  let vis =
+    match cx.attrs.vis with
+    | Just Visibility.Public -> True
+    | Just _ ->
+        let v = bad at "a use is given on with @pub, or not at all" in
+        True
+    | None -> False
+  in
+  newSurfaceUse out m vis path glob alias (M.isSome listed) (M.unwrapOr [] listed)
+
+-- --- attributes ------------------------------------------------------------------------
+
+data Attribute = Seq String String | Vis Visibility | Native | Terminating | Linear
+
+fun attribute (line : IdyllAttrLine) =
+  let name = textOf (idyllAttrLineName line) in
+  let args =
+    M.map
+      (\a ->
+        V.map
+          (\x -> (textOf (idyllAttrArgKey x), M.map (\v -> ctorName (idyllAttrValueName v)) (idyllAttrArgValue x)))
+          (idyllAttrArgsArgs a))
+      (idyllAttrLineArgs line)
+  in
+  let arg = \i -> match args with | Just xs -> V.get xs i | None -> None in
+  let count = match args with | Just xs -> V.len xs + 1 | None -> 0 in
+  match (name, count, arg 0, arg 1) with
+  | ("seq", 3, Just ("nil", Just nil), Just ("cons", Just cons)) -> Just (Attribute.Seq nil cons)
+  | ("pub", 0, _, _) -> Just (Attribute.Vis Visibility.Public)
+  | ("pub", 2, Just ("pkg", None), _) -> Just (Attribute.Vis Visibility.Package)
+  | ("pub", 2, Just ("super", None), _) -> Just (Attribute.Vis Visibility.Super)
+  | ("native", 0, _, _) -> Just Attribute.Native
+  | ("terminating", 0, _, _) -> Just Attribute.Terminating
+  | ("linear", 0, _, _) -> Just Attribute.Linear
+  | _ ->
+      let u = bad (syntaxIdyllAttrLine line) "not an attribute: @${name}" in
+      None
+
+-- An item's attributes, as `idyllic-parser`'s `attributed` reads them.
+fun attrsOf (at : Syn) (lines : [IdyllAttrLine]) : Attrs ! { Report | e } =
+  let twice = \u -> bad at "this attribute is given twice" in
+  V.foldl
+    (\(acc : Attrs) line ->
+      match attribute line with
+      | Just (Attribute.Seq nil cons) ->
+          if M.isSome acc.seq then let u = twice () in acc else { acc | seq = Just (syntaxIdyllAttrLine line, nil, cons) }
+      | Just (Attribute.Vis v) -> if M.isSome acc.vis then let u = twice () in acc else { acc | vis = Just v }
+      | Just Attribute.Native -> if acc.native then let u = twice () in acc else { acc | native = True }
+      | Just Attribute.Terminating ->
+          if acc.terminating then let u = twice () in acc else { acc | terminating = True }
+      | Just Attribute.Linear -> { acc | linear = True }
+      | None -> acc)
+    noAttrs
+    lines
+
+-- An item, under its attributes: what it is, and what is wrong with where
+-- they are.
+fun itemOf out (it : IdyllItem) =
+  let at = syntaxIdyllItem it in
+  let a = attrsOf at (idyllItemAttrs it) in
+  let cx = { top | attrs = a } in
+  let item =
+    match idyllItemBody it with
+    | Just (IdyllItemBody.DataDecl d) -> Item.Data (dataDecl out cx d)
+    | Just (IdyllItemBody.RecordDecl d) -> recordDecl out cx d
+    | Just (IdyllItemBody.EffectDecl d) -> effectDecl out cx d
+    | Just (IdyllItemBody.UseDecl d) -> Item.Use (useDecl out cx d)
+    | Just (IdyllItemBody.Line l) -> lineItem out cx l
+    | None -> Item.Nothing
+  in
+  let u1 =
+    if a.native then
+      match item with
+      | Item.Decl d -> if kindSurfaceDecl out d == SurfaceDeclKind.Native then () else bad at "@native goes on a signature, f : a"
+      | Item.Expr _ -> ()
+      | _ -> bad at "@native goes on a signature, f : a"
+    else ()
+  in
+  let u2 =
+    if a.terminating then
+      match item with
+      | Item.Decl d -> if kindSurfaceDecl out d == SurfaceDeclKind.Sig then () else bad at "@terminating goes on a definition's signature, f : a"
+      | _ -> bad at "@terminating goes on a definition's signature, f : a"
+    else ()
+  in
+  let u3 =
+    match item with
+    | Item.Expr _ -> if M.isSome a.vis or M.isSome a.seq then bad at "an expression has no attributes" else ()
+    | Item.Data _ -> ()
+    | _ -> if M.isSome a.seq then bad at "@seq goes on a data type" else ()
+  in
+  (item, a)
+
+-- The name a declaration is for.
+fun declared out (d : SurfaceDecl) =
+  match kindSurfaceDecl out d with
+  | SurfaceDeclKind.Sig -> surfaceDeclSigName out d
+  | SurfaceDeclKind.Def -> surfaceDeclDefName out d
+  | SurfaceDeclKind.Native -> surfaceDeclNativeName out d
+
+record Parts = {
+  uses : [SurfaceUse],
+  datas : [SurfaceData],
+  effects : [SurfaceEffect],
+  decls : [SurfaceDecl],
+  shown : [SurfaceShown],
+  terminating : [SurfaceName],
+  linear : Bool,
+  body : Maybe SurfaceExpr
+}
+
+fun program out (root : Syn) =
+  let m = metaOf root in
+  let file = asIdyllFile root in
+  let entries =
+    match file with
+    | Just f -> V.map (\x -> match x with | IdyllEntry.Item y -> Just y | IdyllEntry.Sep _ -> None) (idyllFileEntries f)
+    | None -> []
+  in
+  let items = separated root entries True False in
+  let n = V.len items in
+  let parts =
+    V.foldl
+      (\(p : Parts) i ->
+        match V.get items i with
+        | None -> p
+        | Just it ->
+            let at = syntaxIdyllItem it in
+            let im = metaOf at in
+            (match itemOf out it with
+             | (item, (a : Attrs)) ->
+                 let p = { p | linear = p.linear or a.linear } in
+                 (match item with
+                  | Item.Data d -> { p | datas = V.pushBack p.datas d }
+                  | Item.Record d ps ->
+                      let shown =
+                        match a.vis with
+                        | Just v -> V.concatMap (\q -> if kindSurfaceDecl out q == SurfaceDeclKind.Sig then [newSurfaceShown out im (declared out q) v] else []) ps
+                        | None -> []
+                      in
+                      { p | decls = V.append p.decls ps, shown = V.append p.shown shown, datas = V.pushBack p.datas d }
+                  | Item.Effect e -> { p | effects = V.pushBack p.effects e }
+                  | Item.Decl d ->
+                      {
+                        p |
+                        shown = (match a.vis with | Just v -> V.pushBack p.shown (newSurfaceShown out im (declared out d) v) | None -> p.shown),
+                        terminating = if a.terminating then V.pushBack p.terminating (declared out d) else p.terminating,
+                        decls = V.pushBack p.decls d
+                      }
+                  | Item.Use u -> { p | uses = V.pushBack p.uses u }
+                  | Item.Expr e ->
+                      if i + 1 == n then { p | body = Just e }
+                      else
+                        let u = bad at "an expression can only come last in a program" in
+                        p
+                  | Item.Nothing -> p)))
+      (Parts { uses = [], datas = [], effects = [], decls = [], shown = [], terminating = [], linear = False, body = None })
+      (V.range 0 n)
+  in
+  newSurfaceFile out m parts.uses parts.datas parts.effects parts.decls parts.shown parts.terminating parts.linear parts.body
+
+-- --- writing a program out ---------------------------------------------------------
+
+-- `(a b c)`
+fun sx (parts : [String]) : String = "(" ++ S.join " " parts ++ ")"
+
+fun opt (f : a -> String) (m : Maybe a) : String =
+  match m with
+  | Just x -> f x
+  | None -> "-"
+
+fun flag (yes : String) (b : Bool) : String = if b then yes else "-"
+
+fun visibilityText (v : Visibility) : String =
+  match v with
+  | Visibility.Private -> "private"
+  | Visibility.Super -> "super"
+  | Visibility.Package -> "package"
+  | Visibility.Public -> "public"
+
+fun nameIn (a : SurfaceArena) (n : SurfaceName) : String = surfaceNameText a n
+
+fun gradeText (a : SurfaceArena) (g : SurfaceGrade) : String =
+  sx ["grade", exprText a (surfaceGradeUses a g), opt (exprText a) (surfaceGradeInType a g)]
+
+fun paramIn (a : SurfaceArena) (p : SurfaceParam) : String =
+  sx [
+    "param",
+    nameIn a (surfaceParamName a p),
+    flag "unbox" (surfaceParamUnbox a p),
+    opt (gradeText a) (surfaceParamGrade a p),
+    opt (exprText a) (surfaceParamTy a p)
+  ]
+
+fun fieldText (a : SurfaceArena) (f : SurfaceField) : String =
+  sx [nameIn a (surfaceFieldName a f), exprText a (surfaceFieldValue a f)]
+
+fun exprText (a : SurfaceArena) (e : SurfaceExpr) : String =
+  let go = exprText a in
+  match (a, e) with
+  | SurfaceExprType -> "Type"
+  | SurfaceExprVar x -> nameIn a x
+  | SurfaceExprLit l -> literal l
+  | SurfaceExprPi x icit g dom cod ->
+      sx ["pi", opt (nameIn a) x, (match icit with | Icit.Explicit -> "e" | Icit.Implicit -> "i"), opt (gradeText a) g, go dom, go cod]
+  | SurfaceExprLam p body -> sx ["lam", paramIn a p, go body]
+  | SurfaceExprApp f x -> sx ["app", go f, go x]
+  | SurfaceExprAnn x ty -> sx ["ann", go x, go ty]
+  | SurfaceExprHole -> "_"
+  | SurfaceExprBox x -> sx ["box", go x]
+  | SurfaceExprInf -> "inf"
+  | SurfaceExprRange l h -> sx ["range", go l, go h]
+  | SurfaceExprLetBox x v body -> sx ["letbox", nameIn a x, go v, go body]
+  | SurfaceExprLet ds body -> sx ["let", sx (V.map (declText a) ds), go body]
+  | SurfaceExprCase x alts -> sx (V.append ["case", go x] (V.map (altText a) alts))
+  | SurfaceExprEff b r -> sx ["eff", go b, go r]
+  | SurfaceExprRow ls tail -> sx ["row", sx (V.map go ls), opt go tail]
+  | SurfaceExprHandle x cs -> sx (V.append ["handle", go x] (V.map (clauseText a) cs))
+  | SurfaceExprSeq es -> sx (V.append ["seq"] (V.map go es))
+  | SurfaceExprArray es -> sx (V.append ["array"] (V.map go es))
+  | SurfaceExprRecord r fs -> sx (V.append ["record", nameIn a r] (V.map (fieldText a) fs))
+  | SurfaceExprProj x f -> sx ["proj", go x, nameIn a f]
+  | SurfaceExprUpdate x fs -> sx (V.append ["update", go x] (V.map (fieldText a) fs))
+
+fun patText (a : SurfaceArena) (p : SurfacePat) : String =
+  let go = patText a in
+  match (a, p) with
+  | SurfacePatBind x -> paramIn a x
+  | SurfacePatWild -> "_"
+  | SurfacePatLit l -> literal l
+  | SurfacePatCon c ps -> sx (V.append ["con", nameIn a c] (V.map go ps))
+  | SurfacePatAs x q -> sx ["as", nameIn a x, go q]
+  | SurfacePatDot x -> sx ["dot", exprText a x]
+  | SurfacePatSeq ps -> sx (V.append ["pseq"] (V.map go ps))
+  | SurfacePatRecord r fs ->
+      sx (V.append ["precord", nameIn a r] (V.map (\f -> sx [nameIn a (surfacePatFieldName a f), go (surfacePatFieldPat a f)]) fs))
+
+fun rhsText (a : SurfaceArena) (r : SurfaceRhs) : String =
+  match (a, r) with
+  | SurfaceRhsPlain e -> sx ["=", exprText a e]
+  | SurfaceRhsGuarded gs ->
+      sx (V.append ["guards"] (V.map (\g -> sx [exprText a (surfaceGuardCond a g), exprText a (surfaceGuardBody a g)]) gs))
+  | SurfaceRhsImpossible -> "impossible"
+
+fun altText (a : SurfaceArena) (x : SurfaceAlt) : String =
+  sx ["alt", patText a (surfaceAltPat a x), rhsText a (surfaceAltRhs a x)]
+
+fun clauseText (a : SurfaceArena) (c : SurfaceClause) : String =
+  sx [
+    "clause",
+    nameIn a (surfaceClauseOp a c),
+    sx (V.map (nameIn a) (surfaceClauseParams a c)),
+    exprText a (surfaceClauseBody a c)
+  ]
+
+fun declText (a : SurfaceArena) (d : SurfaceDecl) : String =
+  match (a, d) with
+  | SurfaceDeclSig f ty -> sx ["sig", nameIn a f, exprText a ty]
+  | SurfaceDeclDef f ps ty r -> sx ["def", nameIn a f, sx (V.map (patText a) ps), opt (exprText a) ty, rhsText a r]
+  | SurfaceDeclNative f ty -> sx ["native", nameIn a f, exprText a ty]
+
+fun typeParamText (a : SurfaceArena) (q : SurfaceTypeParam) : String =
+  sx [nameIn a (surfaceTypeParamName a q), opt (exprText a) (surfaceTypeParamKindSig a q)]
+
+fun ctorText (a : SurfaceArena) (c : SurfaceCtor) : String =
+  match (a, c) with
+  | SurfaceCtorFields n ts -> sx [nameIn a n, sx (V.append ["fields"] (V.map (exprText a) ts))]
+  | SurfaceCtorSig n ty -> sx [nameIn a n, sx ["sig", exprText a ty]]
+
+fun dataText (a : SurfaceArena) (d : SurfaceData) : String =
+  sx [
+    "data",
+    nameIn a (surfaceDataName a d),
+    sx (V.map (typeParamText a) (surfaceDataParams a d)),
+    opt (exprText a) (surfaceDataKindSig a d),
+    sx (V.map (ctorText a) (surfaceDataCtors a d)),
+    opt (\s -> sx ["seq", nameIn a (surfaceSeqAttrNil a s), nameIn a (surfaceSeqAttrCons a s)]) (surfaceDataSeq a d),
+    visibilityText (surfaceDataVis a d),
+    (if surfaceDataIsRecord a d then sx (V.map (nameIn a) (surfaceDataFields a d)) else "-")
+  ]
+
+fun opSigText (a : SurfaceArena) (o : SurfaceOpSig) : String =
+  sx ["op", nameIn a (surfaceOpSigName a o), flag "many" (surfaceOpSigMany a o), exprText a (surfaceOpSigTy a o)]
+
+fun effectText (a : SurfaceArena) (e : SurfaceEffect) : String =
+  sx [
+    "effect",
+    nameIn a (surfaceEffectName a e),
+    sx (V.map (typeParamText a) (surfaceEffectParams a e)),
+    sx (V.map (opSigText a) (surfaceEffectOps a e)),
+    visibilityText (surfaceEffectVis a e)
+  ]
+
+fun useText (a : SurfaceArena) (u : SurfaceUse) : String =
+  sx [
+    "use",
+    flag "pub" (surfaceUsePublic a u),
+    sx (V.map (nameIn a) (surfaceUsePath a u)),
+    flag "glob" (surfaceUseGlob a u),
+    opt (nameIn a) (surfaceUseAlias a u),
+    (if surfaceUseListed a u then sx (V.map (nameIn a) (surfaceUseNames a u)) else "-")
+  ]
+
+-- A program, a line for each part: whether it is linear, then its uses, data
+-- types, effects, declarations, visibilities, `@terminating`s and body.
+@pub fun programText (p : SurfaceProgram) : String =
+  let a = surfaceArena p in
+  let f = surfaceRoot p in
+  S.join
+    "\n"
+    (V.concat [
+       [sx ["linear", if surfaceFileLinear a f then "true" else "false"]],
+       V.map (useText a) (surfaceFileUses a f),
+       V.map (dataText a) (surfaceFileDatas a f),
+       V.map (effectText a) (surfaceFileEffects a f),
+       V.map (declText a) (surfaceFileDecls a f),
+       V.map (\v -> sx ["vis", nameIn a (surfaceShownName a v), visibilityText (surfaceShownVis a v)]) (surfaceFileShown a f),
+       V.map (\x -> sx ["terminating", nameIn a x]) (surfaceFileTerminating a f),
+       (match surfaceFileBody a f with | Just e -> [sx ["body", exprText a e]] | None -> [])
+     ])

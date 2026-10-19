@@ -295,7 +295,7 @@ fun nameText (n : IdyllName) : String = textOf (idyllNameName n)
 -- A `Name` with nothing after it, of kind `k`.
 fun plainName (k : Idyll) (a : IdyllAtom) : Bool =
   match a with
-  | IdyllAtom.Name n -> nameKind n == k and M.isNone (idyllNameAs n)
+  | IdyllAtom.Name n -> nameKind n == k and M.isNone (idyllNameAsTail n)
   | _ -> False
 
 fun atomText (a : IdyllAtom) : String =
@@ -652,7 +652,7 @@ fun atomTerm (p : Said) (a : IdyllAtom) : Term ! { Mut | e } =
   match a with
   | IdyllAtom.Name n ->
       let x = nameText n in
-      let u = if M.isSome (idyllNameAs n) then bad p (syntaxIdyllName n) "x@p is a pattern" else () in
+      let u = if M.isSome (idyllNameAsTail n) then bad p (syntaxIdyllName n) "x@p is a pattern" else () in
       if nameKind n == TokenUpperIdent and x == "True" then Term.Lit (Literal.Bool True)
       else if nameKind n == TokenUpperIdent and x == "False" then Term.Lit (Literal.Bool False)
       else Term.Var x
@@ -750,7 +750,7 @@ fun rowOf (p : Said) (r : IdyllRow) : Term ! { Mut | e } =
              V.map
                (\a ->
                  match a with
-                 | IdyllAtom.Name n if M.isNone (idyllNameAs n) -> var (nameText n)
+                 | IdyllAtom.Name n if M.isNone (idyllNameAsTail n) -> var (nameText n)
                  | IdyllAtom.Paren q if V.len (idyllParenItems q) == 1 -> termOr (V.head (idyllParenItems q))
                  | _ ->
                      let u = bad p (syntaxIdyllAtom a) "an effect is a name applied to names" in
@@ -989,13 +989,13 @@ fun apat (p : Said) (a : IdyllAtom) : Pat ! { Mut | e } =
       let x = nameText n in
       let nk = nameKind n in
       if nk == TokenLowerIdent then
-        match idyllNameAs n with
+        match idyllNameAsTail n with
         | Just tail ->
             (match idyllAsTailPat tail with
              | Just q -> Pat.As x (Expr.Atom q)
              | None -> Pat.As x (Expr.MadePat Pat.Wild))
         | None -> Pat.Bind (Param.Param x False None None)
-      else if M.isSome (idyllNameAs n) or nk == TokenQualLower then
+      else if M.isSome (idyllNameAsTail n) or nk == TokenQualLower then
         let u = bad p at "not a pattern" in
         Pat.Wild
       else if nk == TokenUpperIdent and x == "True" then Pat.Lit (Literal.Bool True)
@@ -1015,7 +1015,7 @@ fun apat (p : Said) (a : IdyllAtom) : Pat ! { Mut | e } =
          | None -> [])
   | IdyllAtom.DotA d ->
       (match idyllDotATarget d with
-       | Just (IdyllAtom.Name n) if M.isNone (idyllNameAs n) and nameKind n != TokenQualLower -> Pat.Dot (var (nameText n))
+       | Just (IdyllAtom.Name n) if M.isNone (idyllNameAsTail n) and nameKind n != TokenQualLower -> Pat.Dot (var (nameText n))
        | Just (IdyllAtom.Paren q) if V.len (idyllParenItems q) == 1 -> Pat.Dot (termOr (V.head (idyllParenItems q)))
        | _ ->
            let u = bad p at "a dot pattern is .x or .(e)" in

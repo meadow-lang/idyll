@@ -29,6 +29,7 @@
 use Idyll.Layout (dumped)
 use Idyll.Syntax (parseIdyll)
 use Idyll.View as View
+use Idyll.Surface as Surface
 use Idyll.Rename (renameModule, renamePackage)
 use Idyll.Hir as Hir
 use Std.String as S
@@ -55,7 +56,7 @@ fun main () =
   match V.get args 0 with
   | Just "tokens" -> V.foldl (\u f -> each f dumpTokens) () (V.drop args 1)
   | Just "tree" -> V.foldl (\u f -> each f dumpTree) () (V.drop args 1)
-  | Just "parse" -> V.foldl (\u f -> each f View.dumped) () (V.drop args 1)
+  | Just "parse" -> V.foldl (\u f -> each f Surface.dumped) () (V.drop args 1)
   | Just "errors" -> V.foldl (\u f -> each f (errorsIn f)) () (V.drop args 1)
   | Just "rename" ->
       (match (V.get args 1, V.get args 2) with
@@ -137,8 +138,8 @@ fun dumpTree (text : String) : String =
 
 -- What is wrong with `file`'s syntax, `text`, drawn where it is; `ok` if
 -- nothing is.
-fun errorsIn (file : String) (text : String) : String ! { Mut | e } =
-  match View.parsed text with
+fun errorsIn (file : String) (text : String) : String =
+  match Surface.parsed text with
   | Ok _ -> "ok"
   | Err ds -> renderAll file text ds
 
