@@ -621,3 +621,13 @@ fn a_handler_of_ones_own_can_take_one_of_the_worlds_effects() {
                  nextSeed _ k -> k 0\n";
     assert_eq!(accepts(src).evaluation, Some(Evaluation::Value("8".into())));
 }
+
+#[test]
+fn a_constructor_does_not_hide_an_effect_of_its_name() {
+    // `Div` the constructor is in scope, but in a row a name is an effect's
+    let op = "data Op = Add | Div\nuse Op.*\n\n";
+    assert_eq!(ty(&format!("{op}count : (n : Int) -> Int ! Div\ncount n = if n == 0 then 0 else count (n - 1)\n\ncount 3")), "Int");
+    assert_eq!(ty(&format!("{op}count : (n : Int) -> Int ! {{Div, Console}}\ncount n = if n == 0 then 0 else count (n - 1)\n\ncount 3")), "Int");
+    // and outside one, the constructor is what it is
+    assert_eq!(ty(&format!("{op}Div")), "Op");
+}

@@ -256,6 +256,36 @@ fun useName (r : Rn) (name : String) =
     in
     Ident.Ident (distinct (V.map (asWritten r) found)) name
 
+-- An entry of a row, `Div` or `State Int`: its head names an effect, so a
+-- constructor of that name is passed over for what is further out, as a
+-- constructor `Div` brought in with `use Op.*` would otherwise hide the
+-- effect.
+fun rowEntry src out (r : Rn) (e : SurfaceExpr) =
+  let m = metaSurfaceExpr src e in
+  match (src, e) with
+  | SurfaceExprVar n ->
+      let name = surfaceNameText src n in
+      let found = if S.contains "." name or name == "(,)" then [] else lookupEffect r name in
+      if V.isEmpty found then resolveExpr src out r e
+      else newHirExprVar out m (idNode out m (Ident.Ident (distinct (V.map (asWritten r) found)) name))
+  | SurfaceExprApp f x -> newHirExprApp out m (rowEntry src out r f) (resolveExpr src out r x)
+  | _ -> resolveExpr src out r e
+
+-- What `name` may stand for in a row: the innermost scope that has it as
+-- something other than a constructor.
+fun lookupEffect (r : Rn) (name : String) : [Int] ! { Mut | e } =
+  let scopes = getRef r.scopes in
+  let own = getRef r.ownAt in
+  let ctors = V.concatMap (\cs -> V.map snd cs) (V.map snd (Hm.toVec (getRef r.ctors))) in
+  let at = \i ->
+    let found = Hm.getOr [] name (V.getOr Hm.empty scopes i) in
+    let both = if i == own and own > 0 then distinct (V.append found (Hm.getOr [] name (V.getOr Hm.empty scopes (own - 1)))) else found in
+    V.filter (\u -> not (V.elem u ctors)) both
+  in
+  match V.find (\i -> not (V.isEmpty (at i))) (V.reverse (V.range 0 (V.len scopes))) with
+  | Just i -> at i
+  | None -> []
+
 -- The prelude's `Pair`, which a tuple is made of.
 fun tuple (r : Rn) =
   let found = V.find (\s -> Hm.member "Pair" s) (V.reverse (getRef r.base)) in
@@ -708,6 +738,10 @@ pass! {
         (if name == "otherwise" and not (known r name) then Lit { lit = Literal.Bool True }
          else Var { ident = idNode out here (useName r name) })
     | Ann { expr, later ty } -> Ann { expr, ty = asType r (\u -> ty r) }
+    -- a row's entries name effects (see `rowEntry`)
+    | Eff { ty, raw row } ->
+        Eff { ty, row = if kindSurfaceExpr src row == SurfaceExprKind.Row then resolveExpr src out r row else rowEntry src out r row }
+    | Row { raw labels, tail } -> Row { labels = V.map (\l -> rowEntry src out r l) labels, tail }
     -- neither the domain nor the grades see the name bound
     | Pi { name, icit, later grade, later dom, later cod } ->
         (let g =

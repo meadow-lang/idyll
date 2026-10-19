@@ -760,6 +760,37 @@ impl Renamer {
         Ident { unique: found.map(|u| self.as_written(u)), text: name.node.clone() }
     }
 
+    /// An entry of a row, `Div` or `State Int`: its head names an effect, so
+    /// a constructor of that name is passed over for what is further out,
+    /// as a constructor `Div` brought in with `use Op.*` would otherwise
+    /// hide the effect.
+    fn rename_row_entry(&mut self, t: &LTerm) -> hir::Term {
+        let sp = t.span;
+        match &t.node {
+            ast::Term::Var(x) if !x.node.contains('.') && x.node != ast::TUPLE => {
+                let found = self.scopes.iter().rev().filter_map(|s| s.get(&x.node)).map(|&(u, _)| u).find(|u| !self.is_constructor(*u));
+                match found {
+                    Some(u) => {
+                        let i = Ident { unique: Some(self.as_written(u)), text: x.node.clone() };
+                        self.node(sp, hir::TermKind::Var(i))
+                    }
+                    None => self.rename_term(t),
+                }
+            }
+            ast::Term::App(f, a) => {
+                let f = self.rename_row_entry(f);
+                let a = self.rename_term(a);
+                self.node(sp, hir::TermKind::App(Box::new(f), Box::new(a)))
+            }
+            _ => self.rename_term(t),
+        }
+    }
+
+    /// Whether `u` is a data type's constructor.
+    fn is_constructor(&self, u: usize) -> bool {
+        self.ctors.values().any(|cs| cs.iter().any(|&(_, c)| c == u))
+    }
+
     /// The prelude's `Pair`, which a tuple is made of: the type in a type,
     /// the constructor elsewhere.
     fn tuple(&mut self, span: Span) -> Ident {
@@ -1132,11 +1163,14 @@ impl Renamer {
             }
             A::Eff(t, row) => {
                 let t = self.rename_term(t);
-                let row = self.rename_term(row);
+                let row = match &row.node {
+                    A::Row(..) => self.rename_term(row),
+                    _ => self.rename_row_entry(row),
+                };
                 self.node(sp, H::Eff(Box::new(t), Box::new(row)))
             }
             A::Row(labels, tail) => {
-                let labels = labels.iter().map(|l| self.rename_term(l)).collect();
+                let labels = labels.iter().map(|l| self.rename_row_entry(l)).collect();
                 let tail = tail.as_ref().map(|t| Box::new(self.rename_term(t)));
                 self.node(sp, H::Row(labels, tail))
             }
