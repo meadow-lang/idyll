@@ -1,9 +1,10 @@
--- Cut as data: what the lowering (`Lower.mw`) makes, as
--- `compiler/idyllic-cut/src/lib.rs` has it, before `Emit.mw` builds it with
--- the Cut package. Lowering builds a program inside out, sharing a consumer
--- between branches as it goes, which plain data makes easy; the package's
--- nodes are made once, at the end.
+-- What the lowering (`Lower.mw`) keeps of a program while it writes it:
+-- names and representations, and the declarations, each with its body
+-- already written in the Cut package's tables (`CutStmt`). Nothing else is
+-- Cut as data: every statement, producer and consumer the lowering makes
+-- is a row of `Cut`, the package's language.
 
+use Cut (CutStmt)
 use Std.Collections.Vector as V
 use Std.String as S
 use Std.Maybe.Maybe.*
@@ -68,47 +69,6 @@ fun isIdent (s : String) : Bool =
 -- A binder: a name, and how its value is represented.
 @pub data Binder = Binder String Rep
 
-@pub data Prod
-  = Var String
-  | Val Sym
-  | Int Int
-  | Str String
-  | Bool Bool
-  | Unit
-  | Desc Rep
-  | Con Sym [Prod]
-  | Tuple [Prod]
-  | Mu String Stmt
-  | Cocase [Method]
-  | Array [Prod]
-
--- A method: its name, its parameters, its continuations, its body.
-@pub data Method = Method String [Binder] [String] Stmt
-
-@pub data Cons
-  = KVar String
-  | Halt
-  | MuT Binder Stmt
-  | Case [Arm]
-  -- a method of the object received, called
-  | Call String [Prod] [Cons]
-
--- An arm of a `case`: a constructor (none for the IR's tuple), its fields.
-@pub data Arm = Arm (Maybe Sym) [Binder] Stmt
-
-@pub data Stmt
-  = Cut Prod Cons
-  | Invoke Sym [Prod] [Cons]
-  | Prim String [Prod] [Cons]
-  -- clauses; `return(x: rep; k) => s`; the body's continuation and body;
-  -- where the handled value goes
-  | Handle [Clause] Binder String Stmt String Stmt Cons
-  | Perform Sym [Prod] Cons
-  | Error String
-
--- `E.op(x: rep, ..; r, k) => s`
-@pub data Clause = Clause Sym [Binder] String String Stmt
-
 -- `data S <'a> { K(rep, ..); .. }`
 @pub data CData = CData Sym [String] [(String, [Rep])]
 
@@ -118,12 +78,7 @@ fun isIdent (s : String) : Bool =
 @pub data CEffect = CEffect Sym [COp]
 
 -- `def S <'a = d; e: Effect> (params; conts) = body`
-@pub data CDef = CDef Sym [(String, String)] [(String, String)] [Binder] [String] Stmt
+@pub data CDef = CDef Sym [(String, String)] [(String, String)] [Binder] [String] CutStmt
 
 -- `val S : rep = s`
-@pub data CVal = CVal Sym Rep Stmt
-
--- A whole program: its entry, whether its answer is a string, its data
--- types, roles, the world's operations it leaves to the runtime, effects,
--- values in the order they are computed, and definitions.
-@pub data CProgram = CProgram (Maybe Sym) Bool [CData] [(String, Sym)] [(Sym, String)] [CEffect] [CVal] [CDef]
+@pub data CVal = CVal Sym Rep CutStmt

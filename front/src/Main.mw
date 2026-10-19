@@ -38,10 +38,7 @@ use Std.Maybe as M
 use Idyll.Scc (sccModule)
 use Idyll.Check (checkModule, checked, Checked)
 use Idyll.Typer as Ty
-use Idyll.Prune as Pr
-use Idyll.CutAst as Ca
 use Idyll.Lower as Lo
-use Idyll.Emit as Em
 use Idyll.Cek as Cek
 use Idyll.World as W
 use Idyll.Core as C
@@ -269,13 +266,4 @@ fun cutOf prelude (text : String) : String ! { Mut | e } =
   | Err _ -> "(error)"
   | Ok prog ->
       (match renameModule prog prelude with
-       | (m, problems) ->
-           if not (V.isEmpty problems) then "(error)"
-           else
-             (let c = checked (sccModule m) in
-              if not (V.isEmpty (getRef c.tc.unsupported)) then "(unsupported)"
-              else if not (V.isEmpty (getRef c.tc.errors)) then "(error)"
-              else
-                (match Lo.lower c "Main" with
-                 | Ok p -> Em.programText p
-                 | Err whys -> "(not lowered: " ++ S.join "; " whys ++ ")")))
+       | (m, problems) -> if not (V.isEmpty problems) then "(error)" else Lo.cutText (sccModule m) "Main")

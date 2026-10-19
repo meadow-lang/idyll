@@ -76,7 +76,7 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
 -- All of it in one `runSt`, whose state the pass's tables are (`Elaborated`).
 @pub fun checked (m : Renamed) : Checked ! { Mut | e } = runSt (\() -> checkedIn m)
 
-fun checkedIn (m : Renamed) =
+@pub fun checkedIn (m : Renamed) =
   let h = hirArena m.hir in
   let root = hirRoot m.hir in
   let datas = hirModuleDatas h root in

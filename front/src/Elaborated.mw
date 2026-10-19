@@ -121,3 +121,45 @@ use Std.Maybe.Maybe.*
     (M.map (\b -> termRow out b) body)
     (V.map (\d -> match d with | (u, x, l, b, local) -> newElaboratedDef out noMeta u x l (termRow out b) local) defs)
     (V.map (\sm -> match sm with | (k, t) -> newElaboratedSolution out noMeta k (termRow out t)) metas)
+
+-- --- reading one back ---------------------------------------------------------------
+
+-- A term of the tables as the checker's data: for what asks the checker's
+-- evaluator about it (`Typer`, what a value's representation is).
+@pub fun coreOf (a : ElaboratedArena) (t : ElaboratedTerm) : Core =
+  let go = \x -> coreOf a x in
+  match (a, t) with
+  | ElaboratedTermType n -> Core.Type n
+  | ElaboratedTermLitTy b -> Core.LitTy b
+  | ElaboratedTermLit l -> Core.Lit l
+  | ElaboratedTermPrim p -> Core.Prim p
+  | ElaboratedTermVar i x -> Core.Var i x
+  | ElaboratedTermOpaque u x -> Core.Opaque u x
+  | ElaboratedTermMeta k -> Core.Meta k
+  | ElaboratedTermPi x icit g r dom cod -> Core.Pi x icit (go g) (go r) (go dom) (go cod)
+  | ElaboratedTermLam x body -> Core.Lam x (go body)
+  | ElaboratedTermApp f x -> Core.App (go f) (go x)
+  | ElaboratedTermBoxTy g x -> Core.BoxTy (go g) (go x)
+  | ElaboratedTermBoxIntro x -> Core.BoxIntro (go x)
+  | ElaboratedTermUnbox x -> Core.Unbox (go x)
+  | ElaboratedTermLet x v body -> Core.Let x (go v) (go body)
+  | ElaboratedTermGradeLit g -> Core.GradeLit g
+  | ElaboratedTermGradeAdd x y -> Core.GradeAdd (go x) (go y)
+  | ElaboratedTermGradeMul x y -> Core.GradeMul (go x) (go y)
+  | ElaboratedTermGradeRange x y -> Core.GradeRange (go x) (go y)
+  | ElaboratedTermCase sc alts -> Core.Case (go sc) (V.map (\alt -> altOf a alt) alts)
+  | ElaboratedTermRuntime n x -> Core.Runtime (noteOf a n) (go x)
+  | ElaboratedTermComp x r -> Core.Comp (go x) (go r)
+  | ElaboratedTermRow ls ts -> Core.Row (V.map go ls) (V.map go ts)
+  | ElaboratedTermHandle body r ops ->
+      Core.Handle (go body) (go r) (V.map (\o -> OpClause.OpClause (elaboratedOpClauseOp a o) (elaboratedOpClauseName a o) (elaboratedOpClauseErased a o) (go (elaboratedOpClauseBody a o))) ops)
+  | ElaboratedTermError -> Core.Error
+
+@pub fun altOf (a : ElaboratedArena) (alt : ElaboratedAlt) : CaseAlt =
+  CaseAlt.CaseAlt (elaboratedAltHead a alt) (elaboratedAltName a alt) (elaboratedAltVars a alt) (coreOf a (elaboratedAltBody a alt))
+
+@pub fun noteOf (a : ElaboratedArena) (n : ElaboratedNote) : Note =
+  match (a, n) with
+  | ElaboratedNoteErased -> Note.Erased
+  | ElaboratedNoteBinds g ty -> Note.Binds g (M.map (\t -> coreOf a t) ty)
+  | ElaboratedNoteForced -> Note.Forced
