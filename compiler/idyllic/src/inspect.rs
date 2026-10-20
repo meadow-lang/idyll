@@ -4,7 +4,7 @@
 //! session's declarations in scope, and each stage's form of it is rendered
 //! as text: the tokens as layout leaves them, the syntax tree, the HIR, the
 //! checker's Core, Cut, the IR Meadow's runtimes run, and what Meadow makes
-//! of it: AxCut, and Silo's LLVM IR.  The early stages show the block alone;
+//! of it: the Cut inlined, its AxCut, and Silo's LLVM IR.  The early stages show the block alone;
 //! Core shows the block's definitions and expression; the IRs from Cut on
 //! show the whole program the block makes, which is what is lowered: the
 //! block, and whatever of the session and the prelude it uses.
@@ -30,13 +30,10 @@ pub const STAGES: &[(&str, &str)] = &[
     ("hir", "names resolved to uniques, definitions grouped by what they use"),
     ("core", "the checker's elaborated Core: implicit arguments, boxes and grades explicit"),
     ("cut", "Cut, the IR Meadow's runtimes, Glade and Silo, run (docs/CUT.md in Meadow)"),
-    ("axcut", "AxCut, the sequent-calculus IR Meadow lowers Cut to, which Glade and Silo compile"),
-    ("inlined", "the same, inlined: what Silo is given"),
+    ("inlined", "the same, inlined by Meadow: what it lowers to AxCut"),
+    ("axcut", "AxCut, the sequent-calculus IR Meadow lowers the inlined Cut to, which Glade and Silo compile"),
     ("llvm", "LLVM IR, Silo's, from the AxCut"),
 ];
-
-/// Why there is no `inlined` stage yet.
-const NOT_INLINED: &str = "Meadow does not inline Cut programs yet: Silo is given the AxCut as it is (see the axcut stage)";
 
 /// What [`inspect`] makes of a block.
 pub struct Inspection {
@@ -151,7 +148,7 @@ pub fn inspect(earlier: &str, entry: &str, opts: &Options, wanted: &[&str]) -> I
         put("axcut", after(crate::meadow::axcut));
     }
     if wants("inlined") {
-        put("inlined", Err(NOT_INLINED.to_string()));
+        put("inlined", after(crate::meadow::inlined));
     }
     if wants("llvm") {
         put("llvm", after(crate::meadow::llvm));

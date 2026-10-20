@@ -266,8 +266,16 @@ fn emitted(cut: &str, what: &str) -> Result<String, String> {
     }
 }
 
-/// The AxCut Meadow lowers a program of Cut to: what Glade's bytecode and
-/// Silo's native code are made from, each definition under its name.
+/// A program of Cut after Meadow's inliner, which runs before it is lowered:
+/// small definitions inlined at known calls, a constructor matched where it
+/// is made never built, a cocase called where it is made never made.
+pub fn inlined(cut: &str) -> Result<String, String> {
+    emitted(cut, "inlined")
+}
+
+/// The AxCut Meadow lowers a program of Cut to, inlined: what Glade's
+/// bytecode and Silo's native code are made from, each definition under its
+/// name.
 pub fn axcut(cut: &str) -> Result<String, String> {
     emitted(cut, "axcut")
 }

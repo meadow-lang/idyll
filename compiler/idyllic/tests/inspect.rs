@@ -18,14 +18,18 @@ fn every_stage_is_shown_in_order() {
     let inspection = inspect("", "double : Int -> Int\ndouble n = n * 2\n", &OPTS, &[]);
     let names: Vec<&str> = inspection.stages.iter().map(|(n, _)| *n).collect();
     assert_eq!(names, STAGES.iter().map(|(n, _)| *n).collect::<Vec<_>>());
-    // (Meadow does not inline a Cut program's AxCut yet, and the stage says so)
-    assert!(inspection.stages.iter().all(|(n, t)| t.is_ok() || *n == "inlined"), "{:?}", inspection.stages);
+    assert!(inspection.stages.iter().all(|(_, t)| t.is_ok()), "{:?}", inspection.stages);
 }
 
 #[test]
 fn the_stages_after_cut_are_meadows() {
-    // what Meadow lowers the Cut to, and what Silo compiles that to
+    // the Cut inlined, what Meadow lowers that to, and what Silo compiles
+    // that to
     let block = "double : Int -> Int\ndouble n = n * 2\n\ndouble 21";
+    // `double` is small, and its call known: inlined, the entry multiplies
+    let inlined = stage("", block, "inlined");
+    let entry = &inlined[inlined.find("def idyll:Main/\"#entry\"").expect("the entry")..];
+    assert!(entry.contains("prim mul(") && !entry.contains("idyll:Main/double("), "{inlined}");
     let axcut = stage("", block, "axcut");
     assert!(axcut.contains("-- idyll:Main/double") && axcut.contains("extern Mul("), "{axcut}");
     let llvm = stage("", block, "llvm");

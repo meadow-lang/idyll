@@ -167,8 +167,8 @@ scroll, and **Esc** closes it. The stages are:
 | `hir`     | names resolved (`n#91`), definitions grouped by what they use  |
 | `core`    | the checker's elaborated Core: implicit arguments, boxes and grades explicit |
 | `cut`     | Cut, what Meadow's runtimes run (see [How programs run](#how-programs-run)) |
-| `axcut`   | AxCut, the sequent-calculus IR Meadow lowers Cut to, which Glade and Silo compile |
-| `inlined` | the same, inlined: what Silo is given (Meadow does not inline Cut programs yet, and the tab says so) |
+| `inlined` | the same, inlined by Meadow: small definitions at known calls, and a value matched or called where it is made never made |
+| `axcut`   | AxCut, the sequent-calculus IR Meadow lowers the inlined Cut to, which Glade and Silo compile |
 | `llvm`    | LLVM IR, Silo's, from the AxCut                                |
 
 `:ir <code>` shows every stage, `:ir core,cut <code>` just those, and `:ir`
