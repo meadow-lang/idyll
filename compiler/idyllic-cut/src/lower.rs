@@ -257,7 +257,11 @@ fn lower_with(tc: &mut TypeCheckResult, package: &str, mark: Option<&str>) -> Re
         c = body.clone();
         i += 1;
     }
-    for (u, d) in l.recs.clone() {
+    // in the order they were named, so that the same program is always the
+    // same Cut (a build is known by what it is made of)
+    let mut recs: Vec<(usize, RecDef)> = l.recs.clone().into_iter().collect();
+    recs.sort_by_key(|(u, _)| *u);
+    for (u, d) in recs {
         // one inside another is lifted where it is used, if it is
         if d.local {
             continue;

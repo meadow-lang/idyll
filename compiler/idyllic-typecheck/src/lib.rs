@@ -108,6 +108,7 @@ mod eval;
 pub mod handlers;
 mod matching;
 pub mod natives;
+mod overloads;
 pub mod packages;
 pub mod prune;
 mod positivity;
@@ -304,6 +305,12 @@ pub enum TypeErrorKind {
     UnknownVariable(String),
     /// a metavariable that unification never pinned down
     UnsolvedMeta(String),
+    /// no meaning of an overloaded name fits where it is used: its
+    /// spelling, the type wanted there if one was, and each meaning
+    NoMeaning { name: String, wanted: Option<Rc<Core>>, candidates: Vec<String> },
+    /// more than one meaning of an overloaded name still fits once its
+    /// definition is checked
+    AmbiguousName { name: String, wanted: Option<Rc<Core>>, fitting: usize, candidates: Vec<String>, example: String },
     /// an explicit `_` that unification filled in
     HoleSolved { ty: Rc<Core>, solution: Rc<Core> },
     /// an explicit `_` that nothing determined
@@ -476,6 +483,27 @@ impl TypeError {
             }
             TypeErrorKind::UnknownVariable(name) => {
                 Diagnostic::error(format!("not in scope: {name}")).label(here, "unbound here")
+            }
+            TypeErrorKind::NoMeaning { name, wanted, candidates } => {
+                let needed = match wanted {
+                    Some(w) => format!("no `{name}` in scope has the type needed here, `{w}`"),
+                    None => format!("no `{name}` in scope fits here"),
+                };
+                Diagnostic::error(needed)
+                    .label(here, "used here")
+                    .help(format!("candidates in scope:\n  {}", candidates.join("\n  ")))
+            }
+            TypeErrorKind::AmbiguousName { name, wanted, fitting, candidates, example } => {
+                let fit = match wanted {
+                    Some(w) => format!("fit `{w}`"),
+                    None => "fit here".to_string(),
+                };
+                Diagnostic::error(format!("ambiguous `{name}`: {fitting} of the candidates in scope {fit}"))
+                    .label(here, "which one is meant?")
+                    .help(format!(
+                        "candidates in scope:\n  {}\nsay which with a type annotation, or write it in full, as `{example}`",
+                        candidates.join("\n  ")
+                    ))
             }
             TypeErrorKind::UnsolvedMeta(desc) => Diagnostic::error("unsolved metavariable")
                 .label(here, format!("could not infer {desc}"))
@@ -925,7 +953,9 @@ impl Ctx {
 
 /// All of the checker's mutable state.  The metacontext is the important
 /// one: solving a meta must be visible immediately to every value that
-/// already mentions it, which `&mut self` gives us for free.
+/// already mentions it, which `&mut self` gives us for free.  It is cloned
+/// to try what an overloaded name means (see [`overloads`]).
+#[derive(Clone)]
 pub struct Checker {
     metas: Vec<MetaEntry>,
     /// node id to that node's type, quoted in the node's context
@@ -996,6 +1026,25 @@ pub struct Checker {
     /// on its signature's spine (or its lambdas, with none): those that say
     /// no grade have theirs worked out.
     infer_spine: usize,
+    /// The names with more than one meaning where they are written, by
+    /// node (see [`hir::Module::overloads`]), and the meaning chosen for
+    /// each so far.
+    overloads: HashMap<NodeId, Vec<usize>>,
+    forced: HashMap<NodeId, usize>,
+    /// The constructor chosen for each overloaded pattern.
+    pattern_choice: HashMap<NodeId, usize>,
+    /// The terms put off until their definition has been checked (see
+    /// [`overloads`]), and each placeholder's meaning once chosen, with the
+    /// level it was elaborated at.
+    deferred: Vec<overloads::Deferred>,
+    chosen: HashMap<MetaVar, (Rc<Core>, Lvl)>,
+    /// the placeholders, whose solutions are no closed terms
+    placeholders: HashSet<MetaVar>,
+    /// For messages about an overloaded name: how it is written, by node;
+    /// and each meaning, how it is written in full and where it is from.
+    overload_names: HashMap<NodeId, String>,
+    written_as: HashMap<usize, String>,
+    origin: HashMap<usize, String>,
 }
 
 /// A parameter's grade being worked out: how many variables its meta is
@@ -1056,6 +1105,7 @@ pub struct RecDef {
 
 /// A term's type, and the type it was to have, that could not be unified
 /// yet: at `lvl`, for the term at `node`.
+#[derive(Clone)]
 struct Postponed {
     lvl: Lvl,
     actual: Rc<Value>,
@@ -1188,7 +1238,19 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         inferred: HashMap::new(),
         joins: Vec::new(),
         infer_spine: 0,
+        overloads: m.overloads.clone(),
+        forced: HashMap::new(),
+        pattern_choice: HashMap::new(),
+        deferred: Vec::new(),
+        chosen: HashMap::new(),
+        placeholders: HashSet::new(),
+        overload_names: HashMap::new(),
+        written_as: HashMap::new(),
+        origin: HashMap::new(),
     };
+    if !m.overloads.is_empty() {
+        tc.name_meanings(m, deps);
+    }
     let ctx = Ctx::initial(&tc);
     let ctx = tc.import(&ctx, deps);
     // native types first, which the data types and effects may mention; and
@@ -1217,7 +1279,11 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         (Some(body), _) => {
             // in the root module's mode
             tc.linear = m.linear_body;
+            let mark = tc.rec_defs.len();
             let (core, ty, usage) = tc.infer(&ctx, body);
+            tc.settle_deferred();
+            let core = tc.resolve(&core, ctx.lvl);
+            tc.resolve_rec_defs(mark);
             // (a `main` that is wrong has said so already)
             if main_fits != Some(false) {
                 tc.unhandled(&ctx, body.id, &usage, &world);
@@ -1329,8 +1395,12 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
     let meta_solutions: Vec<Option<Rc<Core>>> = tc
         .metas
         .iter()
-        .map(|e| match e {
-            // metas are closed, so their solutions make sense in any context
+        .enumerate()
+        .map(|(i, e)| match e {
+            // metas are closed, so their solutions make sense in any context;
+            // but for an overloaded name's placeholders, which were written
+            // over (see [`overloads`])
+            MetaEntry::Solved(_, _) if tc.placeholders.contains(&i) => None,
             MetaEntry::Solved(v, _) => Some(tc.quote(0, v.clone())),
             MetaEntry::Unsolved(_) => None,
         })

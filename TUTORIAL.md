@@ -2403,6 +2403,48 @@ A constructor lives under its type in every module, including the one
 that declares it (see [Data types](#data-types)), which is why a
 single-file program says `use T.*` after declaring `T`.
 
+### One name, several meanings
+
+A module's own names and the names its `use`s bring are one layer. Two
+things of one name there are not a clash: the name is *overloaded*, and
+which one it means is chosen by type, wherever it is used.
+
+```
+use Maybe.*
+use Box.*
+use Std.Collections.List (length)
+use Std.Collections.Array (length)
+
+data Box = Just Int | Empty
+
+unbox : Box -> Int
+unbox (Just n) = n
+unbox Empty = 0
+
+main : () -> () ! Eff
+main () =
+  let u = printInt (unbox (Just 3)) in              -- Box.Just
+  let v = printInt (length (1 :: 2 :: Nil)) in      -- a list's length
+  printInt (length #[4; 5; 6])                      -- an array's
+```
+
+A name is chosen by the type wanted where it is used, a constructor in a
+pattern by the type of what it is matched against, and names whose choices
+hang on each other, as in `length (Just 5)`, are chosen together. When the
+use alone cannot say, the rest of the definition can: in `let b = Just 7 in
+unbox b`, it is `unbox` that says which `Just` `b` is. A top-level
+definition settles its own names, though: `v = Just 7` is ambiguous,
+whatever uses `v` later, until its signature says which.
+
+If no meaning fits, or more than one still does once the definition is
+checked, the error lists them all, with their types and where each is
+from. Say which with a type annotation, or write the name in full, as
+`Box.Just` or `Std.Collections.Array.length`.
+
+A local name shadows rather than overloads, and so does a name of your own
+the prelude also has: defining your own `map` doesn't make every `map` a
+question. Defining one name twice in one module is still an error.
+
 ### Visibility
 
 Nothing is visible outside its module until it says so:

@@ -458,10 +458,15 @@ impl Checker {
                 PatKind::Con(..) | PatKind::SeqNil | PatKind::SeqCons(_) => {
                     let (cu, args): (usize, &'a [hir::Pattern]) = match &pat.kind {
                         // the renamer reported an unknown name already
-                        PatKind::Con(c, args) => match c.unique {
-                            Some(cu) => (cu, args),
-                            None => return Step::Failed,
-                        },
+                        PatKind::Con(c, args) => {
+                            // a name with several meanings: the one of the
+                            // type matched against
+                            let ty = self.target_type(ctx, &target);
+                            match self.pattern_ctor(ctx, pat, c, &ty) {
+                                Some(cu) => (cu, args),
+                                None => return Step::Failed,
+                            }
+                        }
                         // `#[p, q]`: taken apart with the constructors of
                         // what it is matched against
                         _ => {
@@ -523,8 +528,9 @@ impl Checker {
     /// not merely an unreachable clause.
     fn plausible(&mut self, ctx: &Ctx, m: &Matcher, clause: &hir::Clause) -> bool {
         for (pat, ty) in clause.pats.iter().zip(&m.arg_types) {
-            let PatKind::Con(c, _) = &peel(pat).kind else { continue };
-            let Some(u) = c.unique else { return false };
+            let pat = peel(pat);
+            let PatKind::Con(c, _) = &pat.kind else { continue };
+            let Some(u) = self.pattern_ctor(ctx, pat, c, ty) else { return false };
             let Some(info) = self.ctors.get(&u) else {
                 self.error(pat.id, TypeErrorKind::NotAConstructor(c.text.clone()));
                 return false;
@@ -915,8 +921,9 @@ impl Checker {
             if !self.targets_slot(ctx, target, k) {
                 return None;
             }
-            let PatKind::Con(c2, args) = &peel(pat).kind else { return None };
-            if c2.unique != Some(c) || i < params {
+            let pat = peel(pat);
+            let PatKind::Con(c2, args) = &pat.kind else { return None };
+            if self.pattern_unique(pat, c2) != Some(c) || i < params {
                 return None;
             }
             match &peel(args.get(i - params)?).kind {
@@ -1140,7 +1147,7 @@ impl Checker {
 
     /// A result type left unsolved by a match that failed: an error, so
     /// that it is not reported again as unsolved.
-    fn abandon(&mut self, ty: &VTy) {
+    pub(super) fn abandon(&mut self, ty: &VTy) {
         if let Value::Flex(m, _) = &*self.force(ty.clone()) {
             if let super::MetaEntry::Unsolved(info) = &self.metas[*m] {
                 self.metas[*m] = super::MetaEntry::Solved(Rc::new(Value::Error), info.clone());

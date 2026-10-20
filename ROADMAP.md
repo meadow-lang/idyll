@@ -375,9 +375,21 @@ examples need strings to take apart first (`Std.Yield` is the generators).
   `module M where` inside a file, and saying which package a type is from
   when two of one name meet. (`compiler/idyllic/tests/modules.rs`,
   `packages.rs`)
-- [ ] **One name from several `use`s, chosen by type**, as Meadow does
-  it, after Idris (Chris, 2026-10-16). Today a later `use` of a name
-  silently replaces an earlier one. Instead, a module's own top-level
+- [x] **One name from several `use`s, chosen by type**, as Meadow does
+  it, after Idris (Chris, 2026-10-16). Done 2026-10-20, in the Rust
+  compiler (`idyllic-typecheck/src/overloads.rs`,
+  `compiler/idyllic/tests/overloading.rs`, Meadow's cases): the renamer
+  keeps every meaning of a name in a side table by node
+  (`hir::Module::overloads`); a term headed by an overloaded name is
+  elaborated once per meaning, as a trial on a copy of the checker, and
+  the meanings whose trial made no error fit; one is elaborated for real,
+  several put the term off behind a placeholder until the definition has
+  been checked, when it is tried again against what its type has become
+  and the placeholder is written over. A constructor in a pattern is
+  chosen by its scrutinee's type. In front/, the renamer keeps the
+  candidates and the checker says it cannot choose yet (see *The compiler
+  in Meadow*). It used to be that a later `use` of a name silently
+  replaced an earlier one. Instead, a module's own top-level
   names and what its `use`s bring in are one layer, where a clash is an
   *overload*: the renamer keeps every candidate, and the elaborator takes
   the one whose type fits where the name is used. Meadow's rules
@@ -411,13 +423,12 @@ examples need strings to take apart first (`Std.Yield` is the generators).
   compiled cleanly is kept (serde + postcard) under
   `target/<profile>/incremental`, on a slot of uniques of its own so that
   one package growing changes no other. Profiles choose the back end: debug
-  runs on the AxCut machine, release compiles with LLVM into
-  `target/release/native/` (falling back to the machine for what native code
-  can't do yet, unless it was asked for), and an executable is relinked only
-  when its package's fingerprint changes. Left: Meadow's `test`, `fmt`, LSP
-  and debugger, and, with the back ends shared, `aot.rs`,
-  `linker.rs`, `pgo.rs` and `runtime.rs` -- choosing and linking Glade or
-  Silo. (`idyll-driver/tests/`)
+  runs on Glade, release builds an executable with Silo into
+  `target/release/native/` (falling back to Glade where there is no
+  executable to be had, unless Silo was asked for), and an executable is
+  rebuilt only when its package's fingerprint changes. Choosing and linking
+  a runtime is Meadow's: Idyll hands `meadow cut` the program's Cut. Left:
+  Meadow's `test`, `fmt`, LSP and debugger. (`idyll-driver/tests/`)
 
 - [x] **The standard library**, `lib/Std/`, laid out as Meadow's `lib/Std` is: a
   package embedded in the compiler (`compiler/idyllic/src/stdlib.rs`),
@@ -449,14 +460,13 @@ examples need strings to take apart first (`Std.Yield` is the generators).
   entry that submits itself once it is whole, with continuation lines
   indented; the `Ctrl-F` finder (ratatui, as Meadow's), searching by name
   with nucleo and by type as Hoogle does (`find.rs`, from `meadow-find`);
-  `:t`, `:module`, `:time`, `:find`, and a choice of machine (`:machine`,
-  `:eval` for the reference interpreter, `:native` for LLVM). Idyll's own:
+  `:t`, `:module`, `:time` and `:find`; entries run on Glade. Idyll's own:
   proof search (`:prove T`, and `?` in the finder), which proposes terms
   from the goal's shape and shows only what the checker accepts
   (`prove.rs`); and `:ir`, a pop-up with every stage of the compiler for a
-  block of code: tokens, AST, HIR, Core, AxCut, inlined AxCut, LLVM IR and
-  Cut (`compiler/idyllic/src/inspect.rs`). Meadow's AxCut and Glade's
-  bytecode join `:ir` once the back end reads Cut.
+  block of code: tokens, AST, HIR, Core, Cut, and what Meadow makes of the
+  Cut, through `meadow cut --emit`: the Cut inlined, its AxCut, and Silo's
+  LLVM IR (`compiler/idyllic/src/inspect.rs`).
 
 *Done when:* a workspace with a git dependency builds, a second build reuses
 what it can, and the lockfile pins the dependency. **Met:** a second build
@@ -963,7 +973,13 @@ do yet `(unsupported)`, and the tests count those apart.
   checker, all 475 declarations, and so do the 39 corpus programs that use
   Std (types 431 programs in all).
 - [ ] Std's users through the CEK machine and Cut too (the Rust side needs
-  its linking there); choosing by type among names several `use`s bring in.
+  its linking there).
+- [ ] Choosing an overloaded name by type, as the Rust checker does it
+  (`overloads.rs`): its renamer keeps the candidates already, and its
+  checker says it cannot choose yet, which keeps such programs out of the
+  comparisons. Trials need the checker's state saved and restored, every
+  `Ref` of `Tc`, and the Core the trial wrote through the builder left
+  unused.
 - [ ] front/'s own REPL and driver, once Cut moves its Lingua pin (Lingua
   833e1a5, for LineEditor 0.2.2).
 - [ ] CI, with MeadowBoot's prerelease for the `meadow` it needs.

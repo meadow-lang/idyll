@@ -281,6 +281,18 @@ fn a_package_with_a_version_is_named_with_it() {
 }
 
 #[test]
+fn the_same_program_is_always_the_same_cut() {
+    // recursive definitions came out in a hash map's order, which changes
+    // from one run to the next; a build is known by what it is made of
+    let src = "use Std.Collections.List (append, reverse, length, sum, map)\n\n\
+               sum (map (\\(x : Int) -> x + 1) (reverse (append (1 :: 2 :: Nil) (3 :: Nil)))) + length (4 :: Nil)\n";
+    let first = cut(src).expect("lowered");
+    for _ in 0..8 {
+        assert_eq!(cut(src).expect("lowered"), first);
+    }
+}
+
+#[test]
 fn a_native_with_no_primitive_is_a_def_of_the_programs_own() {
     // generic in the element, as a Cut function is: a descriptor for it
     let text = lowered("arrayToList #[1; 2]\n");

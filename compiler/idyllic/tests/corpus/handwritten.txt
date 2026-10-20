@@ -489,3 +489,20 @@ kind '\'' = "quote"
 kind c = "other"
 
 (kind 'a' ++ " " ++ kind '\n' ++ " " ++ kind '\'' ++ " " ++ kind 'z', charCode 'é', charsToString (stringToChars "héllo, wörld"), arrayLen (stringToChars "héllo"), stringByteLength "héllo", stringByteAt "abc" 2, stringSlice "hello" 1 4, stringSlice "héllo" 0 2, stringCompare "apple" "apricot", stringIndexOf "a,b,c" "," 2, charsToString #[charFromCode 955; 'x'], 'q', '\'', '"', '\n')
+
+%%%
+-- one name, two meanings: the prelude's `Just`, brought in, and the module's own, chosen by type
+use Maybe.*
+use Box.*
+
+data Box = Just Int | Empty
+
+unbox : Box -> Int
+unbox (Just n) = n
+unbox Empty = 0
+
+orZero : Maybe Int -> Int
+orZero (Just n) = n
+orZero Nothing = 0
+
+(unbox (Just 3), orZero (Just 4), let b = Just 7 in unbox b)

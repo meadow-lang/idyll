@@ -2,14 +2,7 @@ cut 0
 entry idyll:Main/"#entry"
 answer str
 
-data idyll:Prelude/List <'a0> { Nil; "::"('a0, ptr) }
-
 data idyll:Prelude/DigitFuel { Spent; More(ptr) }
-
-roles {
-  nil = idyll:Prelude/List.Nil
-  cons = idyll:Prelude/List."::"
-}
 
 val idyll:Prelude/digitFuel : ptr =
   <idyll:Prelude/DigitFuel.Spent | μ̃ v_20: ptr.
@@ -72,44 +65,43 @@ def idyll:Prelude/showInt (n_52: i64; k_53: ptr) =
       idyll:Prelude/negativeDigits(idyll:Prelude/digitFuel, n_52; μ̃ v_58: str.
         prim concatStrings(["-", v_58]; k_53))))
 
-def idyll:Main/foldr <'a_62 = d_a_61, 'b_64 = d_b_63> (d_a_61: desc, d_b_63: desc, f_65: ptr, z_66: 'b_64, xs_67: ptr; k_68: ptr) =
-  <xs_67 | case {
-    idyll:Prelude/List.Nil =>
-      <z_66 | k_68>;
-    idyll:Prelude/List."::"(x_69: 'a_62, xs_70: ptr) =>
-      <f_65 | apply(x_69; μ̃ g_71: ptr.
-        idyll:Main/foldr(d_a_61, d_b_63, f_65, z_66, xs_70; μ̃ v_72: 'b_64.
-          <g_71 | apply(v_72; k_68)>))>
-  }>
-
-def idyll:Prelude/negativeDigits (fuel_80: ptr, n_81: i64; k_82: ptr) =
-  <fuel_80 | case {
+def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) =
+  <fuel_61 | case {
     idyll:Prelude/DigitFuel.Spent =>
-      <"" | k_82>;
-    idyll:Prelude/DigitFuel.More(fuel_83: ptr) =>
-      prim sub(0, 10; μ̃ v_93: i64.
-        prim lt(v_93, n_81; μ̃ v__84: bool.
-          prim if(v__84; μ̃ u_91: unit.
-            prim div(n_81, 10; μ̃ v_89: i64.
-              idyll:Prelude/negativeDigits(fuel_83, v_89; μ̃ v_85: str.
-                prim mod(n_81, 10; μ̃ v_88: i64.
-                  prim sub(0, v_88; μ̃ v_87: i64.
-                    idyll:Prelude/digitString(v_87; μ̃ v_86: str.
-                      prim concatStrings([v_85, v_86]; k_82)))))), μ̃ u_92: unit.
-            prim sub(0, n_81; μ̃ v_90: i64.
-              idyll:Prelude/digitString(v_90; k_82)))))
+      <"" | k_63>;
+    idyll:Prelude/DigitFuel.More(fuel_64: ptr) =>
+      prim sub(0, 10; μ̃ v_74: i64.
+        prim lt(v_74, n_62; μ̃ v__65: bool.
+          prim if(v__65; μ̃ u_72: unit.
+            prim div(n_62, 10; μ̃ v_70: i64.
+              idyll:Prelude/negativeDigits(fuel_64, v_70; μ̃ v_66: str.
+                prim mod(n_62, 10; μ̃ v_69: i64.
+                  prim sub(0, v_69; μ̃ v_68: i64.
+                    idyll:Prelude/digitString(v_68; μ̃ v_67: str.
+                      prim concatStrings([v_66, v_67]; k_63)))))), μ̃ u_73: unit.
+            prim sub(0, n_62; μ̃ v_71: i64.
+              idyll:Prelude/digitString(v_71; k_63)))))
   }>
 
-def idyll:Main/"#entry" (; k_94: ptr) =
-  <idyll:Prelude/List.Nil | μ̃ v_103: ptr.
-    <idyll:Prelude/List."::"(3, v_103) | μ̃ v_102: ptr.
-      <idyll:Prelude/List."::"(2, v_102) | μ̃ v_101: ptr.
-        <idyll:Prelude/List."::"(1, v_101) | μ̃ v_100: ptr.
-          idyll:Main/foldr(desc(i64), desc(i64), cocase {
-            apply(x_96: i64; k_97: ptr) =>
-              <cocase {
-                apply(acc_98: i64; k_99: ptr) =>
-                  prim add(x_96, acc_98; k_99)
-              } | k_97>
-          }, 0, v_100; μ̃ answer_95: i64.
-            idyll:Prelude/showInt(answer_95; k_94))>>>>
+def idyll:Main/"#items Array Int" (xs_77: ptr, i_78: i64, n_79: i64; k_80: ptr) =
+  prim arrayGet(xs_77, i_78; μ̃ e_81: i64.
+    idyll:Prelude/showInt(e_81; μ̃ s_82: str.
+      prim add(i_78, 1; μ̃ j_83: i64.
+        prim eq(j_83, n_79; μ̃ u_85: unit.
+          idyll:Main/"#items Array Int"(xs_77, j_83, n_79; μ̃ s_84: str.
+            prim concatStrings([s_82, "; ", s_84]; k_80)), μ̃ u_86: unit.
+          <s_82 | k_80>))))
+
+def idyll:Main/"#show Array Int" (xs_87: ptr; k_89: ptr) =
+  prim arrayLen(xs_87; μ̃ n_88: i64.
+    prim eq(n_88, 0; μ̃ u_93: unit.
+      idyll:Main/"#items Array Int"(xs_87, 0, n_88; μ̃ s_90: str.
+        prim eq(n_88, 1; μ̃ u_91: unit.
+          prim concatStrings(["#[", s_90, "]"]; k_89), μ̃ u_92: unit.
+          prim concatStrings(["#[", s_90, ";]"]; k_89))), μ̃ u_94: unit.
+      <"#[;]" | k_89>))
+
+def idyll:Main/"#entry" (; k_75: ptr) =
+  <[10, 20, 30] | μ̃ v_95: ptr.
+    prim arraySet(v_95, 1, 99; μ̃ answer_76: ptr.
+      idyll:Main/"#show Array Int"(answer_76; k_75))>

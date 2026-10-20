@@ -292,6 +292,11 @@ pub struct Module {
     /// the definitions `@terminating` vouches for: they need not say
     /// `! Div`, though the checker cannot see that they end
     pub terminating: std::collections::HashSet<usize>,
+    /// Every name with more than one meaning in scope where it is written,
+    /// by the node it was written at (a [`TermKind::Var`]'s term, or a
+    /// [`PatKind::Con`]'s pattern): what it may mean, the first of which
+    /// the node holds. The checker chooses by type.
+    pub overloads: std::collections::HashMap<NodeId, Vec<usize>>,
 }
 
 /// What a package gives the packages that depend on it, as their renamers

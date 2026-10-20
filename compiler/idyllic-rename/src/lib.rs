@@ -155,6 +155,9 @@ struct ModuleState {
     /// what other modules may take from it: its declarations, each with how
     /// visible it is, and what it gives on with `@pub use`
     exports: HashMap<String, (usize, Visibility)>,
+    /// every meaning its `use`s bring each name, in order: `imports` keeps
+    /// the last, and two or more make the name an overload
+    brought: HashMap<String, Vec<usize>>,
 }
 
 struct Renamer {
@@ -207,6 +210,12 @@ struct Renamer {
     /// the module each top-level name of a module other than the root is in,
     /// as written before it from outside (`Math` for `Math.double`)
     qualifiers: HashMap<usize, String>,
+    /// the names with more than one meaning where they are written (see
+    /// [`hir::Module::overloads`])
+    overloads: HashMap<NodeId, Vec<usize>>,
+    /// what the last name [`Renamer::use_name`] looked up may mean, when it
+    /// is more than one thing: for its caller to give the node it makes
+    meanings: Option<Vec<usize>>,
 }
 
 /// What binding a module's names leaves to do once every module's are bound.
@@ -391,6 +400,7 @@ pub fn rename_package(
         names: names_given,
         uniques: (first, r.next_unique),
         terminating: r.terminating,
+        overloads: r.overloads,
         version: None,
         linear_body: linear || modules.first().is_some_and(|m| m.program.linear),
     };
@@ -445,6 +455,8 @@ impl Renamer {
             base: Vec::new(),
             visibility_mentioned: false,
             qualifiers: HashMap::new(),
+            overloads: HashMap::new(),
+            meanings: None,
         }
     }
 
@@ -749,7 +761,48 @@ impl Renamer {
         self.scopes.iter().rev().find_map(|s| s.get(name)).map(|&(u, _)| u)
     }
 
+    /// What a name may mean where it is written, if more than one thing: a
+    /// module's own top-level names and what its `use`s bring are one
+    /// layer, where a clash is an overload, chosen by type. A local name
+    /// shadows them, and they shadow the prelude's.
+    fn meanings(&self, name: &str) -> Option<Vec<usize>> {
+        let c = self.current?;
+        // the module's two scopes, just above the prelude's
+        let (imports, own) = (self.base.len(), self.base.len() + 1);
+        let innermost = self.scopes.iter().rposition(|s| s.contains_key(name))?;
+        if innermost != imports && innermost != own {
+            return None;
+        }
+        let mut all: Vec<usize> = Vec::new();
+        let mut add = |u: usize| {
+            let u = self.as_written(u);
+            if !all.contains(&u) {
+                all.push(u);
+            }
+        };
+        if let Some(&(u, _)) = self.scopes.get(own).and_then(|s| s.get(name)) {
+            add(u);
+        }
+        match self.modules[c].brought.get(name) {
+            Some(us) => us.iter().for_each(|&u| add(u)),
+            None => {
+                if let Some(&(u, _)) = self.scopes.get(imports).and_then(|s| s.get(name)) {
+                    add(u);
+                }
+            }
+        }
+        (all.len() > 1).then_some(all)
+    }
+
+    /// The meanings [`Renamer::use_name`] left, for the node at `id`.
+    fn overloaded_at(&mut self, id: NodeId) {
+        if let Some(us) = self.meanings.take() {
+            self.overloads.insert(id, us);
+        }
+    }
+
     fn use_name(&mut self, name: &ast::Ident) -> Ident {
+        self.meanings = None;
         if name.node == ast::TUPLE {
             return self.tuple(name.span);
         }
@@ -768,7 +821,10 @@ impl Renamer {
             };
             self.errors.push(error);
         }
-        Ident { unique: found.map(|u| self.as_written(u)), text: name.node.clone() }
+        self.meanings = self.meanings(&name.node);
+        // the node holds the first meaning, the module's own if it has one
+        let first = self.meanings.as_ref().and_then(|us| us.first().copied());
+        Ident { unique: first.or(found.map(|u| self.as_written(u))), text: name.node.clone() }
     }
 
     /// An entry of a row, `Div` or `State Int`: its head names an effect, so
@@ -890,9 +946,13 @@ impl Renamer {
         let ops = self.effect_ops.get(&unique).cloned().unwrap_or_default();
         let imports = self.scopes.len() - 2;
         for (x, u) in std::iter::once((name, unique)).chain(ops) {
-            if public {
-                if let Some(c) = self.current {
+            if let Some(c) = self.current {
+                if public {
                     self.modules[c].exports.insert(x.clone(), (u, Visibility::Public));
+                }
+                let brought = self.modules[c].brought.entry(x.clone()).or_default();
+                if !brought.contains(&u) {
+                    brought.push(u);
                 }
             }
             self.scopes[imports].insert(x, (u, span));
@@ -1155,7 +1215,9 @@ impl Renamer {
             }
             A::Var(x) => {
                 let i = self.use_name(x);
-                self.node(sp, H::Var(i))
+                let node = self.node(sp, H::Var(i));
+                self.overloaded_at(node.id);
+                node
             }
             A::App(f, a) => {
                 let f = self.rename_term(f);
@@ -1372,7 +1434,13 @@ impl Renamer {
             }
             ast::Pat::Con(c, ps) => {
                 let c = self.as_term(|r| r.use_name(c));
-                hir::PatKind::Con(c, ps.iter().map(|q| self.rename_pattern(q, names)).collect())
+                let meanings = self.meanings.take();
+                let ps = ps.iter().map(|q| self.rename_pattern(q, names)).collect();
+                let id = self.fresh_node(p.span);
+                if let Some(us) = meanings {
+                    self.overloads.insert(id, us);
+                }
+                return hir::Pattern { id, kind: hir::PatKind::Con(c, ps) };
             }
             ast::Pat::Record(r, fs) => match self.record_pattern(r, fs, p.span, true) {
                 Some(desugared) => return self.rename_pattern(&desugared, names),

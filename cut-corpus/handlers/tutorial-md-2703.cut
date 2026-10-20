@@ -108,41 +108,41 @@ def idyll:Main/safeDiv (a_95: i64, b_96: i64; k_97: ptr) =
       prim div(a_95, b_96; k_97), μ̃ u_100: unit.
       perform idyll:Std/Exn.Exn.throw("divide by zero"; k_97)))
 
-def idyll:Std/Num.Nat.double (x_101: ptr; k_102: ptr) =
-  <x_101 | case {
-    idyll:Std/Num.Nat.Nat.Z =>
-      <idyll:Std/Num.Nat.Nat.Z | k_102>;
-    idyll:Std/Num.Nat.Nat.S(n_103: ptr) =>
-      idyll:Std/Num.Nat.double(n_103; μ̃ v_105: ptr.
-        <idyll:Std/Num.Nat.Nat.S(v_105) | μ̃ v_104: ptr.
-          <idyll:Std/Num.Nat.Nat.S(v_104) | k_102>>)
-  }>
-
-def idyll:Std/Num.Nat.plus (x_106: ptr, m_107: ptr; k_108: ptr) =
-  <x_106 | case {
-    idyll:Std/Num.Nat.Nat.Z =>
-      <m_107 | k_108>;
-    idyll:Std/Num.Nat.Nat.S(n_109: ptr) =>
-      idyll:Std/Num.Nat.plus(n_109, m_107; μ̃ v_110: ptr.
-        <idyll:Std/Num.Nat.Nat.S(v_110) | k_108>)
-  }>
-
-def idyll:Prelude/negativeDigits (fuel_113: ptr, n_114: i64; k_115: ptr) =
-  <fuel_113 | case {
+def idyll:Prelude/negativeDigits (fuel_101: ptr, n_102: i64; k_103: ptr) =
+  <fuel_101 | case {
     idyll:Prelude/DigitFuel.Spent =>
-      <"" | k_115>;
-    idyll:Prelude/DigitFuel.More(fuel_116: ptr) =>
-      prim sub(0, 10; μ̃ v_126: i64.
-        prim lt(v_126, n_114; μ̃ v__117: bool.
-          prim if(v__117; μ̃ u_124: unit.
-            prim div(n_114, 10; μ̃ v_122: i64.
-              idyll:Prelude/negativeDigits(fuel_116, v_122; μ̃ v_118: str.
-                prim mod(n_114, 10; μ̃ v_121: i64.
-                  prim sub(0, v_121; μ̃ v_120: i64.
-                    idyll:Prelude/digitString(v_120; μ̃ v_119: str.
-                      prim concatStrings([v_118, v_119]; k_115)))))), μ̃ u_125: unit.
-            prim sub(0, n_114; μ̃ v_123: i64.
-              idyll:Prelude/digitString(v_123; k_115)))))
+      <"" | k_103>;
+    idyll:Prelude/DigitFuel.More(fuel_104: ptr) =>
+      prim sub(0, 10; μ̃ v_114: i64.
+        prim lt(v_114, n_102; μ̃ v__105: bool.
+          prim if(v__105; μ̃ u_112: unit.
+            prim div(n_102, 10; μ̃ v_110: i64.
+              idyll:Prelude/negativeDigits(fuel_104, v_110; μ̃ v_106: str.
+                prim mod(n_102, 10; μ̃ v_109: i64.
+                  prim sub(0, v_109; μ̃ v_108: i64.
+                    idyll:Prelude/digitString(v_108; μ̃ v_107: str.
+                      prim concatStrings([v_106, v_107]; k_103)))))), μ̃ u_113: unit.
+            prim sub(0, n_102; μ̃ v_111: i64.
+              idyll:Prelude/digitString(v_111; k_103)))))
+  }>
+
+def idyll:Std/Num.Nat.plus (x_115: ptr, m_116: ptr; k_117: ptr) =
+  <x_115 | case {
+    idyll:Std/Num.Nat.Nat.Z =>
+      <m_116 | k_117>;
+    idyll:Std/Num.Nat.Nat.S(n_118: ptr) =>
+      idyll:Std/Num.Nat.plus(n_118, m_116; μ̃ v_119: ptr.
+        <idyll:Std/Num.Nat.Nat.S(v_119) | k_117>)
+  }>
+
+def idyll:Std/Num.Nat.double (x_122: ptr; k_123: ptr) =
+  <x_122 | case {
+    idyll:Std/Num.Nat.Nat.Z =>
+      <idyll:Std/Num.Nat.Nat.Z | k_123>;
+    idyll:Std/Num.Nat.Nat.S(n_124: ptr) =>
+      idyll:Std/Num.Nat.double(n_124; μ̃ v_126: ptr.
+        <idyll:Std/Num.Nat.Nat.S(v_126) | μ̃ v_125: ptr.
+          <idyll:Std/Num.Nat.Nat.S(v_125) | k_123>>)
   }>
 
 def idyll:Std/Num.Nat.bits (fuel_127: ptr, n_128: i64; k_129: ptr) =

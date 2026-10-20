@@ -276,6 +276,20 @@ fn renamed(prelude: &idyllic_ast::Program, src: &str) -> String {
 mod h {
     use idyllic_hir::*;
 
+    std::thread_local! {
+        /// the module's overloaded names, by node, while it is written out:
+        /// each as front/'s HIR has it, `(overload x@u x@v)`
+        static OVERLOADS: std::cell::RefCell<std::collections::HashMap<NodeId, Vec<usize>>> = Default::default();
+    }
+
+    /// The name at `node`, with every meaning it has there.
+    fn ident_at(node: NodeId, x: &Ident) -> String {
+        match OVERLOADS.with(|o| o.borrow().get(&node).cloned()) {
+            Some(us) => sx(std::iter::once("overload".to_string()).chain(us.iter().map(|u| format!("{}@{u}", x.text)))),
+            None => ident(x),
+        }
+    }
+
     fn sx<S: AsRef<str>>(parts: impl IntoIterator<Item = S>) -> String {
         let parts: Vec<String> = parts.into_iter().map(|s| s.as_ref().to_string()).collect();
         format!("({})", parts.join(" "))
@@ -307,7 +321,7 @@ mod h {
     fn term(t: &Term) -> String {
         match &t.kind {
             TermKind::Type => "Type".into(),
-            TermKind::Var(x) => ident(x),
+            TermKind::Var(x) => ident_at(t.id, x),
             TermKind::Lit(l) => super::w::literal(l),
             TermKind::Pi(x, icit, g, dom, cod) => sx([
                 "pi".into(),
@@ -359,7 +373,7 @@ mod h {
             PatKind::Var(x) => ident(x),
             PatKind::Wild => "_".into(),
             PatKind::Lit(l) => super::w::literal(l),
-            PatKind::Con(c, ps) => with(["con".to_string(), ident(c)], ps.iter().map(pattern).collect()),
+            PatKind::Con(c, ps) => with(["con".to_string(), ident_at(p.id, c)], ps.iter().map(pattern).collect()),
             PatKind::As(x, q) => sx(["as".into(), ident(x), pattern(q)]),
             PatKind::Dot(e) => sx(["dot".into(), term(e)]),
             PatKind::SeqNil => "pnil".into(),
@@ -408,6 +422,7 @@ mod h {
     /// The program's own part of a module, a line each: data types, effects,
     /// natives, bindings, then the body, `main` and whether it is linear.
     pub fn module(m: &Module) -> String {
+        OVERLOADS.with(|o| *o.borrow_mut() = m.overloads.clone());
         let own = |x: &Ident| x.unique.is_some_and(|u| u >= m.uniques.0);
         let mut lines: Vec<String> = Vec::new();
         lines.extend(m.datas.iter().filter(|d| own(&d.name)).map(data));

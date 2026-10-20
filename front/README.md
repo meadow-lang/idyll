@@ -286,6 +286,12 @@ its things with, ...). `dumped` writes the HIR out for the rename test.
 - Every module's names are bound first, so any may mention any other; then
   their `use`s are taken, twice, since a `@pub use` may give on what
   another's brings it; then what each says is renamed.
+- A module's own names and what its `use`s bring are one layer: a name with
+  more than one meaning there keeps them all, its own module's first,
+  `(overload x@u x@v)` in the dump, as the Rust renamer keeps them in
+  `hir::Module::overloads`. A local name shadows them, and they shadow the
+  prelude's. The Rust checker chooses among them by type; this one says it
+  cannot yet, which keeps such a program out of the comparisons.
 - A dependency (Std) is renamed in the same run, before the package, with
   uniques before the package's own. Its declarations go into the module
   beside the prelude's, so the checker checks them alongside, much as the

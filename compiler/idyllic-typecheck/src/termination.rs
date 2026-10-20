@@ -33,6 +33,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 /// A recursive definition that may unfold.
+#[derive(Clone)]
 pub(super) struct Unfold {
     /// the environment it was defined in
     env: Env,

@@ -334,180 +334,180 @@ def idyll:Std/String.charAt (s_349: str, i_350: i64; k_351: ptr) =
                 <idyll:Prelude/Maybe.Just(v_355) | k_351>)))), μ̃ u_360: unit.
         <idyll:Prelude/Maybe.Nothing | k_351>)))
 
-def idyll:Std/Num.Nat.plus (x_361: ptr, m_362: ptr; k_363: ptr) =
-  <x_361 | case {
-    idyll:Std/Num.Nat.Nat.Z =>
-      <m_362 | k_363>;
-    idyll:Std/Num.Nat.Nat.S(n_364: ptr) =>
-      idyll:Std/Num.Nat.plus(n_364, m_362; μ̃ v_365: ptr.
-        <idyll:Std/Num.Nat.Nat.S(v_365) | k_363>)
+def idyll:Prelude/negativeDigits (fuel_361: ptr, n_362: i64; k_363: ptr) =
+  <fuel_361 | case {
+    idyll:Prelude/DigitFuel.Spent =>
+      <"" | k_363>;
+    idyll:Prelude/DigitFuel.More(fuel_364: ptr) =>
+      prim sub(0, 10; μ̃ v_374: i64.
+        prim lt(v_374, n_362; μ̃ v__365: bool.
+          prim if(v__365; μ̃ u_372: unit.
+            prim div(n_362, 10; μ̃ v_370: i64.
+              idyll:Prelude/negativeDigits(fuel_364, v_370; μ̃ v_366: str.
+                prim mod(n_362, 10; μ̃ v_369: i64.
+                  prim sub(0, v_369; μ̃ v_368: i64.
+                    idyll:Prelude/digitString(v_368; μ̃ v_367: str.
+                      prim concatStrings([v_366, v_367]; k_363)))))), μ̃ u_373: unit.
+            prim sub(0, n_362; μ̃ v_371: i64.
+              idyll:Prelude/digitString(v_371; k_363)))))
   }>
 
-def idyll:Std/Collections.List.map <'a_370 = d_a_369, 'b_372 = d_b_371; e_368: Effect> (d_a_369: desc, d_b_371: desc, f_373: ptr, xs_374: ptr; k_375: ptr) =
-  <xs_374 | case {
+def idyll:Std/Collections.List.map <'a_377 = d_a_376, 'b_379 = d_b_378; e_375: Effect> (d_a_376: desc, d_b_378: desc, f_380: ptr, xs_381: ptr; k_382: ptr) =
+  <xs_381 | case {
     idyll:Prelude/List.Nil =>
-      <idyll:Prelude/List.Nil | k_375>;
-    idyll:Prelude/List."::"(x_376: 'a_370, xs_377: ptr) =>
-      <f_373 | apply(x_376; μ̃ v_378: 'b_372.
-        idyll:Std/Collections.List.map(d_a_369, d_b_371, f_373, xs_377; μ̃ v_379: ptr.
-          <idyll:Prelude/List."::"(v_378, v_379) | k_375>))>
+      <idyll:Prelude/List.Nil | k_382>;
+    idyll:Prelude/List."::"(x_383: 'a_377, xs_384: ptr) =>
+      <f_380 | apply(x_383; μ̃ v_385: 'b_379.
+        idyll:Std/Collections.List.map(d_a_376, d_b_378, f_380, xs_384; μ̃ v_386: ptr.
+          <idyll:Prelude/List."::"(v_385, v_386) | k_382>))>
   }>
 
-def idyll:Std/String.nonEmpty (x_380: ptr; k_381: ptr) =
-  <x_380 | case {
-    idyll:Prelude/List.Nil =>
-      <idyll:Prelude/List.Nil | k_381>;
-    idyll:Prelude/List."::"(w_382: str, rest_383: ptr) =>
-      idyll:Std/String.isEmpty(w_382; μ̃ v__384: bool.
-        prim if(v__384; μ̃ u_386: unit.
-          idyll:Std/String.nonEmpty(rest_383; μ̃ v_385: ptr.
-            <idyll:Prelude/List."::"(w_382, v_385) | k_381>), μ̃ u_387: unit.
-          idyll:Std/String.nonEmpty(rest_383; k_381)))
-  }>
-
-def idyll:Std/Num.Nat.bits (fuel_388: ptr, n_389: i64; k_390: ptr) =
-  <fuel_388 | case {
+def idyll:Std/Num.Nat.plus (x_387: ptr, m_388: ptr; k_389: ptr) =
+  <x_387 | case {
     idyll:Std/Num.Nat.Nat.Z =>
-      <idyll:Std/Num.Nat.Nat.Z | k_390>;
-    idyll:Std/Num.Nat.Nat.S(fuel_391: ptr) =>
-      prim lt(n_389, 1; μ̃ v__392: bool.
-        prim if(v__392; μ̃ u_403: unit.
-          prim mod(n_389, 2; μ̃ v_402: i64.
-            prim eq(v_402, 1; μ̃ v__397: bool.
-              <μ j_398.
-                prim if(v__397; μ̃ u_400: unit.
-                  <idyll:Std/Num.Nat.Nat.Z | j_398>, μ̃ u_401: unit.
-                  <idyll:Std/Num.Nat.Nat.Z | μ̃ v_399: ptr.
-                    <idyll:Std/Num.Nat.Nat.S(v_399) | j_398>>) | μ̃ v_393: ptr.
-                prim div(n_389, 2; μ̃ v_396: i64.
-                  idyll:Std/Num.Nat.bits(fuel_391, v_396; μ̃ v_395: ptr.
-                    idyll:Std/Num.Nat.double(v_395; μ̃ v_394: ptr.
-                      idyll:Std/Num.Nat.plus(v_393, v_394; k_390))))>)), μ̃ u_404: unit.
-          <idyll:Std/Num.Nat.Nat.Z | k_390>))
+      <m_388 | k_389>;
+    idyll:Std/Num.Nat.Nat.S(n_390: ptr) =>
+      idyll:Std/Num.Nat.plus(n_390, m_388; μ̃ v_391: ptr.
+        <idyll:Std/Num.Nat.Nat.S(v_391) | k_389>)
   }>
 
-def idyll:Std/String.cutFrom (s_405: str, sep_406: str, i_407: i64; k_408: ptr) =
-  prim stringIndexOf(s_405, sep_406, i_407; μ̃ k_409: i64.
-    prim lt(k_409, 0; μ̃ v__410: bool.
-      prim if(v__410; μ̃ u_418: unit.
-        idyll:Std/String.slice(s_405, i_407, k_409; μ̃ v_411: str.
-          idyll:Std/String.byteLength(sep_406; μ̃ v_414: i64.
-            prim add(k_409, v_414; μ̃ v_413: i64.
-              idyll:Std/String.cutFrom(s_405, sep_406, v_413; μ̃ v_412: ptr.
-                <idyll:Prelude/List."::"(v_411, v_412) | k_408>)))), μ̃ u_419: unit.
-        idyll:Std/String.byteLength(s_405; μ̃ v_417: i64.
-          idyll:Std/String.slice(s_405, i_407, v_417; μ̃ v_415: str.
-            <idyll:Prelude/List.Nil | μ̃ v_416: ptr.
-              <idyll:Prelude/List."::"(v_415, v_416) | k_408>>)))))
-
-def idyll:Std/String.negated (x_420: ptr; k_421: ptr) =
-  <x_420 | case {
-    idyll:Prelude/Maybe.Nothing =>
-      <idyll:Prelude/Maybe.Nothing | k_421>;
-    idyll:Prelude/Maybe.Just(n_422: i64) =>
-      prim sub(0, n_422; μ̃ v_423: i64.
-        <idyll:Prelude/Maybe.Just(v_423) | k_421>)
+def idyll:Std/Num.Nat.double (x_394: ptr; k_395: ptr) =
+  <x_394 | case {
+    idyll:Std/Num.Nat.Nat.Z =>
+      <idyll:Std/Num.Nat.Nat.Z | k_395>;
+    idyll:Std/Num.Nat.Nat.S(n_396: ptr) =>
+      idyll:Std/Num.Nat.double(n_396; μ̃ v_398: ptr.
+        <idyll:Std/Num.Nat.Nat.S(v_398) | μ̃ v_397: ptr.
+          <idyll:Std/Num.Nat.Nat.S(v_397) | k_395>>)
   }>
 
-def idyll:Std/String.join (sep_424: str, x_425: ptr; k_426: ptr) =
+def idyll:Std/Num.Nat.bits (fuel_399: ptr, n_400: i64; k_401: ptr) =
+  <fuel_399 | case {
+    idyll:Std/Num.Nat.Nat.Z =>
+      <idyll:Std/Num.Nat.Nat.Z | k_401>;
+    idyll:Std/Num.Nat.Nat.S(fuel_402: ptr) =>
+      prim lt(n_400, 1; μ̃ v__403: bool.
+        prim if(v__403; μ̃ u_414: unit.
+          prim mod(n_400, 2; μ̃ v_413: i64.
+            prim eq(v_413, 1; μ̃ v__408: bool.
+              <μ j_409.
+                prim if(v__408; μ̃ u_411: unit.
+                  <idyll:Std/Num.Nat.Nat.Z | j_409>, μ̃ u_412: unit.
+                  <idyll:Std/Num.Nat.Nat.Z | μ̃ v_410: ptr.
+                    <idyll:Std/Num.Nat.Nat.S(v_410) | j_409>>) | μ̃ v_404: ptr.
+                prim div(n_400, 2; μ̃ v_407: i64.
+                  idyll:Std/Num.Nat.bits(fuel_402, v_407; μ̃ v_406: ptr.
+                    idyll:Std/Num.Nat.double(v_406; μ̃ v_405: ptr.
+                      idyll:Std/Num.Nat.plus(v_404, v_405; k_401))))>)), μ̃ u_415: unit.
+          <idyll:Std/Num.Nat.Nat.Z | k_401>))
+  }>
+
+def idyll:Std/String.join (sep_416: str, x_417: ptr; k_418: ptr) =
+  <x_417 | case {
+    idyll:Prelude/List.Nil =>
+      <"" | k_418>;
+    idyll:Prelude/List."::"(s_419: str, rest_420: ptr) =>
+      idyll:Std/String.joined(sep_416, rest_420; μ̃ v_421: str.
+        prim concatStrings([s_419, v_421]; k_418))
+  }>
+
+def idyll:Std/String.joined (sep_424: str, x_425: ptr; k_426: ptr) =
   <x_425 | case {
     idyll:Prelude/List.Nil =>
       <"" | k_426>;
     idyll:Prelude/List."::"(s_427: str, rest_428: ptr) =>
-      idyll:Std/String.joined(sep_424, rest_428; μ̃ v_429: str.
-        prim concatStrings([s_427, v_429]; k_426))
+      idyll:Std/String.joined(sep_424, rest_428; μ̃ v_430: str.
+        prim concatStrings([s_427, v_430]; μ̃ v_429: str.
+          prim concatStrings([sep_424, v_429]; k_426)))
   }>
 
-def idyll:Std/String.startOfText (s_432: str, i_433: i64; k_434: ptr) =
-  idyll:Std/String.byteLength(s_432; μ̃ v_443: i64.
-    prim add(i_433, 1; μ̃ v_444: i64.
-      prim lt(v_443, v_444; μ̃ v__435: bool.
-        prim if(v__435; μ̃ u_441: unit.
-          idyll:Main/"#stringByteAt"(s_432, i_433; μ̃ v_440: i64.
-            idyll:Std/String.isSpaceByte(v_440; μ̃ v__436: bool.
-              prim if(v__436; μ̃ u_438: unit.
-                <i_433 | k_434>, μ̃ u_439: unit.
-                prim add(i_433, 1; μ̃ v_437: i64.
-                  idyll:Std/String.startOfText(s_432, v_437; k_434))))), μ̃ u_442: unit.
-          <i_433 | k_434>))))
+def idyll:Std/String.repeat (s_431: str, n_432: i64; k_433: ptr) =
+  prim lt(n_432, 1; μ̃ v__434: bool.
+    prim if(v__434; μ̃ u_439: unit.
+      prim sub(n_432, 1; μ̃ v_438: i64.
+        idyll:Std/String.repeat(s_431, v_438; μ̃ v_435: str.
+          prim concatStrings([s_431, v_435]; k_433))), μ̃ u_440: unit.
+      <"" | k_433>))
 
-def idyll:Prelude/negativeDigits (fuel_445: ptr, n_446: i64; k_447: ptr) =
-  <fuel_445 | case {
-    idyll:Prelude/DigitFuel.Spent =>
-      <"" | k_447>;
-    idyll:Prelude/DigitFuel.More(fuel_448: ptr) =>
-      prim sub(0, 10; μ̃ v_458: i64.
-        prim lt(v_458, n_446; μ̃ v__449: bool.
-          prim if(v__449; μ̃ u_456: unit.
-            prim div(n_446, 10; μ̃ v_454: i64.
-              idyll:Prelude/negativeDigits(fuel_448, v_454; μ̃ v_450: str.
-                prim mod(n_446, 10; μ̃ v_453: i64.
-                  prim sub(0, v_453; μ̃ v_452: i64.
-                    idyll:Prelude/digitString(v_452; μ̃ v_451: str.
-                      prim concatStrings([v_450, v_451]; k_447)))))), μ̃ u_457: unit.
-            prim sub(0, n_446; μ̃ v_455: i64.
-              idyll:Prelude/digitString(v_455; k_447)))))
-  }>
+def idyll:Std/String.cutFrom (s_441: str, sep_442: str, i_443: i64; k_444: ptr) =
+  prim stringIndexOf(s_441, sep_442, i_443; μ̃ k_445: i64.
+    prim lt(k_445, 0; μ̃ v__446: bool.
+      prim if(v__446; μ̃ u_454: unit.
+        idyll:Std/String.slice(s_441, i_443, k_445; μ̃ v_447: str.
+          idyll:Std/String.byteLength(sep_442; μ̃ v_450: i64.
+            prim add(k_445, v_450; μ̃ v_449: i64.
+              idyll:Std/String.cutFrom(s_441, sep_442, v_449; μ̃ v_448: ptr.
+                <idyll:Prelude/List."::"(v_447, v_448) | k_444>)))), μ̃ u_455: unit.
+        idyll:Std/String.byteLength(s_441; μ̃ v_453: i64.
+          idyll:Std/String.slice(s_441, i_443, v_453; μ̃ v_451: str.
+            <idyll:Prelude/List.Nil | μ̃ v_452: ptr.
+              <idyll:Prelude/List."::"(v_451, v_452) | k_444>>)))))
 
-def idyll:Std/String.repeat (s_459: str, n_460: i64; k_461: ptr) =
-  prim lt(n_460, 1; μ̃ v__462: bool.
-    prim if(v__462; μ̃ u_467: unit.
-      prim sub(n_460, 1; μ̃ v_466: i64.
-        idyll:Std/String.repeat(s_459, v_466; μ̃ v_463: str.
-          prim concatStrings([s_459, v_463]; k_461))), μ̃ u_468: unit.
-      <"" | k_461>))
+def idyll:Std/String.startOfText (s_456: str, i_457: i64; k_458: ptr) =
+  idyll:Std/String.byteLength(s_456; μ̃ v_467: i64.
+    prim add(i_457, 1; μ̃ v_468: i64.
+      prim lt(v_467, v_468; μ̃ v__459: bool.
+        prim if(v__459; μ̃ u_465: unit.
+          idyll:Main/"#stringByteAt"(s_456, i_457; μ̃ v_464: i64.
+            idyll:Std/String.isSpaceByte(v_464; μ̃ v__460: bool.
+              prim if(v__460; μ̃ u_462: unit.
+                <i_457 | k_458>, μ̃ u_463: unit.
+                prim add(i_457, 1; μ̃ v_461: i64.
+                  idyll:Std/String.startOfText(s_456, v_461; k_458))))), μ̃ u_466: unit.
+          <i_457 | k_458>))))
 
-def idyll:Std/String.digitsFrom (s_469: str, i_470: i64, acc_471: i64; k_472: ptr) =
-  idyll:Std/String.byteLength(s_469; μ̃ v_488: i64.
-    prim add(i_470, 1; μ̃ v_489: i64.
-      prim lt(v_488, v_489; μ̃ v__473: bool.
-        prim if(v__473; μ̃ u_486: unit.
-          idyll:Main/"#stringByteAt"(s_469, i_470; μ̃ c_474: i64.
-            prim lt(47, c_474; μ̃ v__482: bool.
-              <μ j_483.
-                prim if(v__482; μ̃ u_484: unit.
-                  <false | j_483>, μ̃ u_485: unit.
-                  prim lt(c_474, 58; j_483)) | μ̃ v__475: bool.
-                prim if(v__475; μ̃ u_480: unit.
-                  <idyll:Prelude/Maybe.Nothing | k_472>, μ̃ u_481: unit.
-                  prim add(i_470, 1; μ̃ v_476: i64.
-                    prim mul(acc_471, 10; μ̃ v_478: i64.
-                      prim sub(c_474, 48; μ̃ v_479: i64.
-                        prim add(v_478, v_479; μ̃ v_477: i64.
-                          idyll:Std/String.digitsFrom(s_469, v_476, v_477; k_472))))))>)), μ̃ u_487: unit.
-          <idyll:Prelude/Maybe.Just(acc_471) | k_472>))))
+def idyll:Std/String.endOfText (s_469: str, i_470: i64; k_471: ptr) =
+  prim lt(i_470, 1; μ̃ v__472: bool.
+    prim if(v__472; μ̃ u_479: unit.
+      prim sub(i_470, 1; μ̃ v_478: i64.
+        idyll:Main/"#stringByteAt"(s_469, v_478; μ̃ v_477: i64.
+          idyll:Std/String.isSpaceByte(v_477; μ̃ v__473: bool.
+            prim if(v__473; μ̃ u_475: unit.
+              <i_470 | k_471>, μ̃ u_476: unit.
+              prim sub(i_470, 1; μ̃ v_474: i64.
+                idyll:Std/String.endOfText(s_469, v_474; k_471)))))), μ̃ u_480: unit.
+      <0 | k_471>))
 
-def idyll:Std/Num.Nat.double (x_490: ptr; k_491: ptr) =
-  <x_490 | case {
-    idyll:Std/Num.Nat.Nat.Z =>
-      <idyll:Std/Num.Nat.Nat.Z | k_491>;
-    idyll:Std/Num.Nat.Nat.S(n_492: ptr) =>
-      idyll:Std/Num.Nat.double(n_492; μ̃ v_494: ptr.
-        <idyll:Std/Num.Nat.Nat.S(v_494) | μ̃ v_493: ptr.
-          <idyll:Std/Num.Nat.Nat.S(v_493) | k_491>>)
-  }>
-
-def idyll:Std/String.joined (sep_495: str, x_496: ptr; k_497: ptr) =
-  <x_496 | case {
+def idyll:Std/String.nonEmpty (x_481: ptr; k_482: ptr) =
+  <x_481 | case {
     idyll:Prelude/List.Nil =>
-      <"" | k_497>;
-    idyll:Prelude/List."::"(s_498: str, rest_499: ptr) =>
-      idyll:Std/String.joined(sep_495, rest_499; μ̃ v_501: str.
-        prim concatStrings([s_498, v_501]; μ̃ v_500: str.
-          prim concatStrings([sep_495, v_500]; k_497)))
+      <idyll:Prelude/List.Nil | k_482>;
+    idyll:Prelude/List."::"(w_483: str, rest_484: ptr) =>
+      idyll:Std/String.isEmpty(w_483; μ̃ v__485: bool.
+        prim if(v__485; μ̃ u_487: unit.
+          idyll:Std/String.nonEmpty(rest_484; μ̃ v_486: ptr.
+            <idyll:Prelude/List."::"(w_483, v_486) | k_482>), μ̃ u_488: unit.
+          idyll:Std/String.nonEmpty(rest_484; k_482)))
   }>
 
-def idyll:Std/String.endOfText (s_502: str, i_503: i64; k_504: ptr) =
-  prim lt(i_503, 1; μ̃ v__505: bool.
-    prim if(v__505; μ̃ u_512: unit.
-      prim sub(i_503, 1; μ̃ v_511: i64.
-        idyll:Main/"#stringByteAt"(s_502, v_511; μ̃ v_510: i64.
-          idyll:Std/String.isSpaceByte(v_510; μ̃ v__506: bool.
-            prim if(v__506; μ̃ u_508: unit.
-              <i_503 | k_504>, μ̃ u_509: unit.
-              prim sub(i_503, 1; μ̃ v_507: i64.
-                idyll:Std/String.endOfText(s_502, v_507; k_504)))))), μ̃ u_513: unit.
-      <0 | k_504>))
+def idyll:Std/String.digitsFrom (s_489: str, i_490: i64, acc_491: i64; k_492: ptr) =
+  idyll:Std/String.byteLength(s_489; μ̃ v_508: i64.
+    prim add(i_490, 1; μ̃ v_509: i64.
+      prim lt(v_508, v_509; μ̃ v__493: bool.
+        prim if(v__493; μ̃ u_506: unit.
+          idyll:Main/"#stringByteAt"(s_489, i_490; μ̃ c_494: i64.
+            prim lt(47, c_494; μ̃ v__502: bool.
+              <μ j_503.
+                prim if(v__502; μ̃ u_504: unit.
+                  <false | j_503>, μ̃ u_505: unit.
+                  prim lt(c_494, 58; j_503)) | μ̃ v__495: bool.
+                prim if(v__495; μ̃ u_500: unit.
+                  <idyll:Prelude/Maybe.Nothing | k_492>, μ̃ u_501: unit.
+                  prim add(i_490, 1; μ̃ v_496: i64.
+                    prim mul(acc_491, 10; μ̃ v_498: i64.
+                      prim sub(c_494, 48; μ̃ v_499: i64.
+                        prim add(v_498, v_499; μ̃ v_497: i64.
+                          idyll:Std/String.digitsFrom(s_489, v_496, v_497; k_492))))))>)), μ̃ u_507: unit.
+          <idyll:Prelude/Maybe.Just(acc_491) | k_492>))))
+
+def idyll:Std/String.negated (x_510: ptr; k_511: ptr) =
+  <x_510 | case {
+    idyll:Prelude/Maybe.Nothing =>
+      <idyll:Prelude/Maybe.Nothing | k_511>;
+    idyll:Prelude/Maybe.Just(n_512: i64) =>
+      prim sub(0, n_512; μ̃ v_513: i64.
+        <idyll:Prelude/Maybe.Just(v_513) | k_511>)
+  }>
 
 def idyll:Main/"#escape" (s_594: str; k_596: ptr) =
   prim stringByteLength(s_594; μ̃ n_595: i64.

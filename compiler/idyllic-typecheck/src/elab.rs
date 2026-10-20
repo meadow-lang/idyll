@@ -717,6 +717,8 @@ impl Checker {
     }
 
     fn check_group_in(&mut self, ctx: &Ctx, group: &hir::BindGroup) -> (Ctx, Pending, LetWrap) {
+        // (what of `rec_defs` this group makes, for its overloaded names)
+        let mark = self.rec_defs.len();
         match group {
             hir::BindGroup::NonRec(b) => {
                 let (rhs, ty, usage) = match &b.ty {
@@ -736,6 +738,11 @@ impl Checker {
                         self.infer_spine = parameters(&b.rhs);
                         let (_, vsig) = self.check_type(ctx, sig);
                         self.infer_spine = 0;
+                        // a name in a type is chosen before the type is
+                        // computed with
+                        if self.lets == 0 {
+                            self.settle_deferred();
+                        }
                         let (rhs, usage) = self.check_against_sig(ctx, &b.rhs, sig, vsig.clone());
                         if let Some(effects) = self.effects_of(&usage) {
                             let allowed = self.eval(&ctx.env, &allowed);
@@ -746,6 +753,14 @@ impl Checker {
                         }
                         (rhs, vsig, usage)
                     }
+                };
+                // what its overloaded names mean, once all of it is checked
+                let rhs = if self.lets == 0 {
+                    self.settle_deferred();
+                    self.resolve_rec_defs(mark);
+                    self.resolve(&rhs, ctx.lvl)
+                } else {
+                    rhs
                 };
                 // what it left open is closed before its type is recorded,
                 // which is then what it was found to do
@@ -781,6 +796,9 @@ impl Checker {
                             self.infer_spine = parameters(&b.rhs);
                             let ty = self.check_type(ctx, sig).1;
                             self.infer_spine = 0;
+                            if self.lets == 0 {
+                                self.settle_deferred();
+                            }
                             ty
                         }
                     })
@@ -806,6 +824,13 @@ impl Checker {
                     rhs = rhs + usage;
                     let quoted = self.quote(ctx_rec.lvl, ty.clone());
                     self.record(b.id, quoted);
+                }
+                // what their overloaded names mean, once all of them are
+                // checked
+                if self.lets == 0 {
+                    self.settle_deferred();
+                    self.resolve_rec_defs(mark);
+                    members = members.into_iter().map(|(u, core)| (u, self.resolve(&core, ctx_rec.lvl))).collect();
                 }
                 // 4. if they terminate, they may compute in types from here
                 //    on; if they may not, they have to say so, unless
@@ -956,6 +981,10 @@ impl Checker {
     /// its implicit binders; the places that need a function or a particular type
     /// insert them.
     pub(super) fn infer(&mut self, ctx: &Ctx, t: &hir::Term) -> (Rc<Core>, VTy, Usage) {
+        // headed by a name with several meanings: the one that fits
+        if let Some(elaborated) = self.overloaded(ctx, t, None) {
+            return elaborated;
+        }
         let nid = t.id;
         let err = || (Rc::new(Core::Error), Rc::new(Value::Error), Usage::unknown());
         let universe = |n: Level| Rc::new(Value::Type(n));
@@ -989,7 +1018,8 @@ impl Checker {
                 let ty = self.eval(&ctx.env, &ty_c);
                 (self.elab_hole(ctx, nid, ty.clone()), ty, Usage::none())
             }
-            TermKind::Var(x) => match (x.unique, ctx.lookup(x)) {
+            TermKind::Var(x) => match self.meaning(nid, x) {
+                x => match (x.unique, ctx.lookup(&x)) {
                 // the renamer already reported this one; stay quiet
                 (None, _) => err(),
                 (Some(_), Some((core, ty, key))) => (core, ty, Usage::var(key)),
@@ -997,6 +1027,7 @@ impl Checker {
                     self.error(nid, TypeErrorKind::UnknownVariable(x.text.clone()));
                     err()
                 }
+                },
             },
             TermKind::Ann(e, sig) => {
                 let (_, vsig) = self.check_type(ctx, sig);
@@ -1333,6 +1364,13 @@ impl Checker {
         // derivative errors onto the real one.
         if matches!(*expected, Value::Error) {
             return (Rc::new(Core::Error), Usage::unknown());
+        }
+        // headed by a name with several meanings: the one that fits (once
+        // an implicit function wanted has bound its argument)
+        if !matches!(&*expected, Value::Pi { icit: Icit::Implicit, .. }) {
+            if let Some((core, _, usage)) = self.overloaded(ctx, t, Some(&expected)) {
+                return (core, usage);
+            }
         }
         let result = match (&t.kind, &*expected) {
             // An implicit function is wanted, and the surface language has no

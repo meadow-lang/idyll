@@ -110,23 +110,23 @@ def idyll:Prelude/negativeDigits (fuel_78: ptr, n_79: i64; k_80: ptr) =
               idyll:Prelude/digitString(v_88; k_80)))))
   }>
 
-def idyll:Std/Num.Nat.double (x_92: ptr; k_93: ptr) =
+def idyll:Std/Num.Nat.plus (x_92: ptr, m_93: ptr; k_94: ptr) =
   <x_92 | case {
     idyll:Std/Num.Nat.Nat.Z =>
-      <idyll:Std/Num.Nat.Nat.Z | k_93>;
-    idyll:Std/Num.Nat.Nat.S(n_94: ptr) =>
-      idyll:Std/Num.Nat.double(n_94; μ̃ v_96: ptr.
-        <idyll:Std/Num.Nat.Nat.S(v_96) | μ̃ v_95: ptr.
-          <idyll:Std/Num.Nat.Nat.S(v_95) | k_93>>)
+      <m_93 | k_94>;
+    idyll:Std/Num.Nat.Nat.S(n_95: ptr) =>
+      idyll:Std/Num.Nat.plus(n_95, m_93; μ̃ v_96: ptr.
+        <idyll:Std/Num.Nat.Nat.S(v_96) | k_94>)
   }>
 
-def idyll:Std/Num.Nat.plus (x_97: ptr, m_98: ptr; k_99: ptr) =
-  <x_97 | case {
+def idyll:Std/Num.Nat.double (x_99: ptr; k_100: ptr) =
+  <x_99 | case {
     idyll:Std/Num.Nat.Nat.Z =>
-      <m_98 | k_99>;
-    idyll:Std/Num.Nat.Nat.S(n_100: ptr) =>
-      idyll:Std/Num.Nat.plus(n_100, m_98; μ̃ v_101: ptr.
-        <idyll:Std/Num.Nat.Nat.S(v_101) | k_99>)
+      <idyll:Std/Num.Nat.Nat.Z | k_100>;
+    idyll:Std/Num.Nat.Nat.S(n_101: ptr) =>
+      idyll:Std/Num.Nat.double(n_101; μ̃ v_103: ptr.
+        <idyll:Std/Num.Nat.Nat.S(v_103) | μ̃ v_102: ptr.
+          <idyll:Std/Num.Nat.Nat.S(v_102) | k_100>>)
   }>
 
 def idyll:Std/Num.Nat.bits (fuel_104: ptr, n_105: i64; k_106: ptr) =

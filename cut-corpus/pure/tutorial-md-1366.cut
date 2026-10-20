@@ -124,31 +124,31 @@ def idyll:Std/Num.Nat.double (x_95: ptr; k_96: ptr) =
           <idyll:Std/Num.Nat.Nat.S(v_98) | k_96>>)
   }>
 
-def idyll:Main/Sized.items (self_100: ptr; k_101: ptr) =
-  <self_100 | case {
-    idyll:Main/Sized.Sized(size_102: ptr, items_103: ptr) =>
-      <items_103 | k_101>
+def idyll:Std/Num.Nat.bits (fuel_100: ptr, n_101: i64; k_102: ptr) =
+  <fuel_100 | case {
+    idyll:Std/Num.Nat.Nat.Z =>
+      <idyll:Std/Num.Nat.Nat.Z | k_102>;
+    idyll:Std/Num.Nat.Nat.S(fuel_103: ptr) =>
+      prim lt(n_101, 1; μ̃ v__104: bool.
+        prim if(v__104; μ̃ u_115: unit.
+          prim mod(n_101, 2; μ̃ v_114: i64.
+            prim eq(v_114, 1; μ̃ v__109: bool.
+              <μ j_110.
+                prim if(v__109; μ̃ u_112: unit.
+                  <idyll:Std/Num.Nat.Nat.Z | j_110>, μ̃ u_113: unit.
+                  <idyll:Std/Num.Nat.Nat.Z | μ̃ v_111: ptr.
+                    <idyll:Std/Num.Nat.Nat.S(v_111) | j_110>>) | μ̃ v_105: ptr.
+                prim div(n_101, 2; μ̃ v_108: i64.
+                  idyll:Std/Num.Nat.bits(fuel_103, v_108; μ̃ v_107: ptr.
+                    idyll:Std/Num.Nat.double(v_107; μ̃ v_106: ptr.
+                      idyll:Std/Num.Nat.plus(v_105, v_106; k_102))))>)), μ̃ u_116: unit.
+          <idyll:Std/Num.Nat.Nat.Z | k_102>))
   }>
 
-def idyll:Std/Num.Nat.bits (fuel_104: ptr, n_105: i64; k_106: ptr) =
-  <fuel_104 | case {
-    idyll:Std/Num.Nat.Nat.Z =>
-      <idyll:Std/Num.Nat.Nat.Z | k_106>;
-    idyll:Std/Num.Nat.Nat.S(fuel_107: ptr) =>
-      prim lt(n_105, 1; μ̃ v__108: bool.
-        prim if(v__108; μ̃ u_119: unit.
-          prim mod(n_105, 2; μ̃ v_118: i64.
-            prim eq(v_118, 1; μ̃ v__113: bool.
-              <μ j_114.
-                prim if(v__113; μ̃ u_116: unit.
-                  <idyll:Std/Num.Nat.Nat.Z | j_114>, μ̃ u_117: unit.
-                  <idyll:Std/Num.Nat.Nat.Z | μ̃ v_115: ptr.
-                    <idyll:Std/Num.Nat.Nat.S(v_115) | j_114>>) | μ̃ v_109: ptr.
-                prim div(n_105, 2; μ̃ v_112: i64.
-                  idyll:Std/Num.Nat.bits(fuel_107, v_112; μ̃ v_111: ptr.
-                    idyll:Std/Num.Nat.double(v_111; μ̃ v_110: ptr.
-                      idyll:Std/Num.Nat.plus(v_109, v_110; k_106))))>)), μ̃ u_120: unit.
-          <idyll:Std/Num.Nat.Nat.Z | k_106>))
+def idyll:Main/Sized.items (self_117: ptr; k_118: ptr) =
+  <self_117 | case {
+    idyll:Main/Sized.Sized(size_119: ptr, items_120: ptr) =>
+      <items_120 | k_118>
   }>
 
 def idyll:Main/"#show Vec Z Int" (x_135: ptr; k_136: ptr) =
