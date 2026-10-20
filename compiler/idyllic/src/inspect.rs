@@ -3,10 +3,11 @@
 //! The block is compiled as an entry of a session would be, with the
 //! session's declarations in scope, and each stage's form of it is rendered
 //! as text: the tokens as layout leaves them, the syntax tree, the HIR, the
-//! checker's Core, and Cut, the IR Meadow's runtimes run.  The early stages
-//! show the block alone; Core shows the block's definitions and expression;
-//! Cut shows the whole program the block makes, which is what is lowered:
-//! the block, and whatever of the session and the prelude it uses.
+//! checker's Core, Cut, the IR Meadow's runtimes run, and what Meadow makes
+//! of it: AxCut, and Silo's LLVM IR.  The early stages show the block alone;
+//! Core shows the block's definitions and expression; the IRs from Cut on
+//! show the whole program the block makes, which is what is lowered: the
+//! block, and whatever of the session and the prelude it uses.
 //!
 //! A block of declarations alone has nothing to run, and a back end leaves
 //! out what nothing uses; so it is lowered as a program whose expression is
@@ -29,7 +30,14 @@ pub const STAGES: &[(&str, &str)] = &[
     ("hir", "names resolved to uniques, definitions grouped by what they use"),
     ("core", "the checker's elaborated Core: implicit arguments, boxes and grades explicit"),
     ("cut", "Cut, the IR Meadow's runtimes, Glade and Silo, run (docs/CUT.md in Meadow)"),
+    ("axcut", "AxCut, the sequent-calculus IR Meadow lowers Cut to, which Glade and Silo compile"),
+    ("inlined", "the same, inlined: what Silo is given"),
+    ("llvm", "LLVM IR, Silo's, from the AxCut"),
 ];
+
+/// Why there is no `inlined` stage yet.
+const NOT_INLINED: &str = "Meadow inlines its own programs before they are Cut, and does not yet inline the AxCut \
+                           it lowers a program of Cut to: Silo is given the AxCut as it is (see the axcut stage)";
 
 /// What [`inspect`] makes of a block.
 pub struct Inspection {
@@ -124,7 +132,7 @@ pub fn inspect(earlier: &str, entry: &str, opts: &Options, wanted: &[&str]) -> I
     if wants("core") {
         put("core", Ok(core(&checked, &entry_defs, !declares_only)));
     }
-    if !wants("cut") {
+    if !(wants("cut") || wants("axcut") || wants("inlined") || wants("llvm")) {
         return Inspection { stages, errors: None };
     }
     let _ = (diagnostics, sources, decls);
@@ -134,7 +142,26 @@ pub fn inspect(earlier: &str, entry: &str, opts: &Options, wanted: &[&str]) -> I
     if !linking.is_empty() {
         idyllic_typecheck::packages::link(&mut checked, &linking);
     }
-    put("cut", idyllic_cut::lower::lower(&mut checked, "Main").map(|p| p.to_string()).map_err(|why| why.join("\n")));
+    let cut = idyllic_cut::lower::lower(&mut checked, "Main").map(|p| p.to_string()).map_err(|why| why.join("\n"));
+    // what Meadow makes of the Cut: its lowering, and Silo's
+    let after = |made: fn(&str) -> Result<String, String>| match &cut {
+        Ok(cut) => made(cut),
+        Err(_) => Err("it is not lowered to Cut".to_string()),
+    };
+    if wants("axcut") {
+        put("axcut", after(crate::meadow::axcut));
+    }
+    if wants("inlined") {
+        put("inlined", Err(NOT_INLINED.to_string()));
+    }
+    if wants("llvm") {
+        put("llvm", after(crate::meadow::llvm));
+    }
+    if wants("cut") {
+        put("cut", cut);
+    }
+    // in the order of STAGES
+    stages.sort_by_key(|(name, _)| STAGES.iter().position(|(n, _)| n == name));
     Inspection { stages, errors: None }
 }
 

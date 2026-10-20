@@ -242,3 +242,72 @@ pub fn build(cut: &str, runtime: Runtime, dir: &Path, name: &str) -> Result<Path
     };
     Ok(made)
 }
+
+/// Run `meadow cut` over a program of Cut in a directory of its own, with
+/// `env` set and `args` before the file, running nothing; then `read` what
+/// it left, given its standard error and the directory.
+fn made_of(cut: &str, env: &str, args: &[&str], read: impl FnOnce(&str, &Path) -> Result<String, String>) -> Result<String, String> {
+    let dir = scratch();
+    let file = dir.join("program.cut");
+    std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&file, cut)).map_err(|e| e.to_string())?;
+    let out = Command::new(meadow())
+        .arg("cut")
+        .args(args)
+        .arg("--no-run")
+        .arg(&file)
+        .env(env, "1")
+        .current_dir(&dir)
+        .output()
+        .map_err(|e| format!("{NO_MEADOW} ({e})"));
+    let made = out.and_then(|out| {
+        let err = String::from_utf8_lossy(&out.stderr).into_owned();
+        if out.status.success() {
+            read(&err, &dir)
+        } else {
+            Err(err.lines().filter(|l| !build_line(l)).collect::<Vec<_>>().join("\n"))
+        }
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+    made
+}
+
+/// The AxCut Meadow lowers a program of Cut to: what Glade's bytecode and
+/// Silo's native code are made from, each definition under its name.
+///
+/// (Read from what `MEADOW_DUMP_AXCUT` prints, until `meadow cut` has a way
+/// to ask for it.)
+pub fn axcut(cut: &str) -> Result<String, String> {
+    made_of(cut, "MEADOW_DUMP_AXCUT", &[], |err, _| {
+        Ok(err.lines().filter(|l| !build_line(l)).collect::<Vec<_>>().join("\n"))
+    })
+}
+
+/// The LLVM IR Silo compiles a program of Cut to, each unit after a line
+/// naming it.
+///
+/// (Read from the modules `MEADOW_KEEP_IR` keeps after a Silo build, until
+/// `meadow cut` has a way to ask for them.)
+pub fn llvm(cut: &str) -> Result<String, String> {
+    made_of(cut, "MEADOW_KEEP_IR", &["--runtime", "silo"], |_, dir| {
+        let at = dir.join("target/release/native/silo");
+        let mut units: Vec<PathBuf> = std::fs::read_dir(&at)
+            .map_err(|e| format!("{}: {e}", at.display()))?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "ll"))
+            .collect();
+        units.sort();
+        let mut ir = String::new();
+        for unit in &units {
+            let text = std::fs::read_to_string(unit).map_err(|e| format!("{}: {e}", unit.display()))?;
+            if units.len() > 1 {
+                ir.push_str(&format!("; ---- {}\n", unit.file_name().unwrap_or_default().to_string_lossy()));
+            }
+            ir.push_str(&text);
+        }
+        if units.is_empty() {
+            return Err("Silo kept no LLVM IR".into());
+        }
+        Ok(ir)
+    })
+}
