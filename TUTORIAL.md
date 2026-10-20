@@ -168,7 +168,7 @@ scroll, and **Esc** closes it. The stages are:
 | `core`    | the checker's elaborated Core: implicit arguments, boxes and grades explicit |
 | `cut`     | Cut, what Meadow's runtimes run (see [How programs run](#how-programs-run)) |
 | `axcut`   | AxCut, the sequent-calculus IR Meadow lowers Cut to, which Glade and Silo compile |
-| `inlined` | the same, inlined: what Silo is given (Meadow does not inline a Cut program's AxCut yet, and says so) |
+| `inlined` | the same, inlined: what Silo is given (Meadow does not inline Cut programs yet, and the tab says so) |
 | `llvm`    | LLVM IR, Silo's, from the AxCut                                |
 
 `:ir <code>` shows every stage, `:ir core,cut <code>` just those, and `:ir`
@@ -176,8 +176,7 @@ alone the last entry. The code can take several lines: start them with
 **Alt-Enter**, and end with an empty line. The declarations made so far
 are in scope, and the stages from Cut on show what the block makes
 together with whatever of the session and the prelude it uses. The stages
-after Cut are Meadow's: `meadow` makes them, and the `llvm` stage takes a
-Silo build, so it is the slow one. A block of
+after Cut are Meadow's: `meadow cut --emit` makes them. A block of
 declarations alone is shown lowered with its definitions kept, though
 nothing calls them yet. When the output isn't a terminal, the stages are
 printed one after another instead.

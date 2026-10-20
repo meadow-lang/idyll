@@ -36,8 +36,7 @@ pub const STAGES: &[(&str, &str)] = &[
 ];
 
 /// Why there is no `inlined` stage yet.
-const NOT_INLINED: &str = "Meadow inlines its own programs before they are Cut, and does not yet inline the AxCut \
-                           it lowers a program of Cut to: Silo is given the AxCut as it is (see the axcut stage)";
+const NOT_INLINED: &str = "Meadow does not inline Cut programs yet: Silo is given the AxCut as it is (see the axcut stage)";
 
 /// What [`inspect`] makes of a block.
 pub struct Inspection {
