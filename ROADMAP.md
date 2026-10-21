@@ -574,8 +574,20 @@ from what `idyll.lock` pinned.
   prelude's two traits, with instances for its own types; `"a ${e} b"`
   joins its pieces and `display e` (`${e:?}` `debug e`), the prelude's
   whatever is in scope, a hole lexed as code as Meadow's lexer does (a
-  string with a hole is read by hand, so a hole may hold strings). Left:
-  `@derive`, `Eq`/`Ord` (Meadow's `Std.Cmp`), integer types and floats.
+  string with a hole is read by hand, so a hole may hold strings).
+  Comparisons done 2026-10-21 in both compilers: the prelude's `PartialEq`
+  (`==`, `!=`) and `PartialOrd` (`<`, `>`, `<=`, `>=`, the last three
+  defaults), Meadow's names; `Int`'s instances are the primitives (and
+  `intGt` and the like, which a call is made a direct call of), and the
+  prelude's types have theirs. Their operands are unrestricted, as Rust's
+  comparisons borrow, since comparing a pair looks at its second only if
+  the first are equal; so a linear `Int` cannot be compared (say `[]`).
+  Meadow's `Eq`, a promise with no methods, is left out: `Eq` is
+  propositional equality here. An instance's methods are now a match, as a
+  definition's equations are (`Term::Equations`, a `Match` in the HIR),
+  rather than a lambda over a `case` of a tuple, whose fields were linear
+  in a linear module. Left: `Ord` with `compare` (Std's `Cmp`), `@derive`,
+  integer types and floats.
 - [x] **Arithmetic is a trait, so it works on `Nat` in types** (Chris,
   2026-10-16). `+`, `*` and the rest become a trait's methods: `Int`'s
   instance is the primitives, and `Nat`'s is `plus` and `times`. This is

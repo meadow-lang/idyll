@@ -94,9 +94,9 @@ fn primitive_types_have_their_own_representations() {
 
 #[test]
 fn functions_and_data_are_pointers() {
-    let src = "data Box = Box Int\n\nuse Box.*\n\nlet f = \\(y : Int) -> y + 1 in let b = Box 3 in f 1\n";
+    let src = "data Box = Box Int\n\nuse Box.*\n\nlet f = \\(given : Int) -> given + 1 in let b = Box 3 in f 1\n";
     assert_eq!(rep_of(src, "f"), Rep::Ptr);
-    assert_eq!(rep_of(src, "y"), Rep::I64);
+    assert_eq!(rep_of(src, "given"), Rep::I64);
     assert_eq!(rep_of(src, "b"), Rep::Ptr);
 }
 

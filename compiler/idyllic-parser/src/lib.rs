@@ -788,7 +788,7 @@ fn instance_parts(name: Option<Ident>, head: LTerm, entries: Vec<LDecl>, span: S
         if eqs.iter().any(|(ps, _)| ps.len() != arity) {
             return Err((m.span, format!("the equations of {} have different numbers of arguments", m.node)));
         }
-        fields.push((m, lambda_case(eqs, arity, span)));
+        fields.push((m, equations(eqs, arity, span)));
     }
     let body = at(Term::RecordOf(trait_name.clone(), args, fields, name.clone()));
     let decls = vec![
@@ -798,12 +798,11 @@ fn instance_parts(name: Option<Ident>, head: LTerm, entries: Vec<LDecl>, span: S
     Ok(Item::Instance(decls, name, named))
 }
 
-/// Equations of `arity` patterns each as one term: `\#0 #1 -> case (#0,
-/// #1) of (p, q) -> e; ..`, or with none, the one equation's right-hand
-/// side.
-fn lambda_case(eqs: Vec<(Vec<LPat>, Rhs)>, arity: usize, span: Span) -> LTerm {
+/// Equations of `arity` patterns each as one term: a function by matching,
+/// as a definition's equations are (`Term::Equations`), or with none, the
+/// one equation's right-hand side.
+fn equations(eqs: Vec<(Vec<LPat>, Rhs)>, arity: usize, span: Span) -> LTerm {
     let at = |t: Term| Spanned::new(t, span);
-    let names: Vec<String> = (0..arity).map(|i| format!("#{i}")).collect();
     if arity == 0 {
         // (one equation; a guarded one as a `case` on `()`)
         let (_, rhs) = eqs.into_iter().next().expect("an equation");
@@ -812,22 +811,7 @@ fn lambda_case(eqs: Vec<(Vec<LPat>, Rhs)>, arity: usize, span: Span) -> LTerm {
             rhs => at(Term::Case(Box::new(at(Term::Lit(Lit::Unit))), vec![Alt { pat: Spanned::new(Pat::Lit(Lit::Unit), span), rhs }])),
         };
     }
-    let var = |x: &str| at(Term::Var(Spanned::new(x.to_string(), span)));
-    let pair = |a: LTerm, b: LTerm| at(Term::App(Box::new(at(Term::App(Box::new(var(TUPLE)), Box::new(a)))), Box::new(b)));
-    let pair_pat = |a: LPat, b: LPat| Spanned::new(Pat::Con(Spanned::new(TUPLE.to_string(), span), vec![a, b]), span);
-    let scrutinee = names.iter().map(|x| var(x)).rev().reduce(|acc, x| pair(x, acc)).expect("an argument");
-    let alts = eqs
-        .into_iter()
-        .map(|(pats, rhs)| {
-            let pat = pats.into_iter().rev().reduce(|acc, p| pair_pat(p, acc)).expect("a pattern");
-            Alt { pat, rhs }
-        })
-        .collect();
-    let body = at(Term::Case(Box::new(scrutinee), alts));
-    names.into_iter().rev().fold(body, |acc, x| {
-        let param = Spanned::new(Param { name: Spanned::new(x, span), unbox: false, grade: None, ty: None }, span);
-        at(Term::Lam(Box::new(param), Box::new(acc)))
-    })
+    at(Term::Equations(eqs))
 }
 
 /// A record's data type and its projections: see [`record`].
@@ -1612,7 +1596,7 @@ where
         // comparisons do not chain
         let compare = cons
             .clone()
-            .then(operator("<").or(operator("==")).then(cons).or_not())
+            .then(operator("<").or(operator("==")).or(operator("!=")).or(operator(">")).or(operator("<=")).or(operator(">=")).then(cons).or_not())
             .map(move |(lhs, rest)| match rest {
                 None => lhs,
                 Some(rest) => binary(lhs, rest),

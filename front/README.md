@@ -263,9 +263,10 @@ each at the place it was made from:
   so that no node is shared;
 - `instance [name :] head where` and its equations: a `@terminating`
   definition of the record, a hint unless it is named, whose body is
-  `RecordOf` (the trait, its arguments, each method's equations as one
-  lambda over a `case`, and the instance's own name, `#instance@<offset>`
-  when it has none), which the renamer builds;
+  `RecordOf` (the trait, its arguments, each method's equations as
+  `Equations`, which the renamer makes a `Match` as it does a definition's,
+  and the instance's own name, `#instance@<offset>` when it has none),
+  which the renamer builds;
 - a string with holes, its pieces and each hole's `#display` (`#debug`
   after `:?`) joined with `#append`, as the Rust parser joins them: the
   renamer makes those the prelude's `display` and `debug` and the

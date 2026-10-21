@@ -285,6 +285,75 @@ instance Divide Int where
 instance Rem Int where
   (%) = intMod
 
+trait PartialEq (a : Type) where
+  (==) : (x : [] a) -> (y : [] a) -> Bool
+  (!=) : (x : [] a) -> (y : [] a) -> Bool
+  (!=) x y = if x == y then False else True
+
+trait PartialEq a => PartialOrd (a : Type) where
+  (<) : (x : [] a) -> (y : [] a) -> Bool
+  (>) : (x : [] a) -> (y : [] a) -> Bool
+  (>) x y = y < x
+  (<=) : (x : [] a) -> (y : [] a) -> Bool
+  (<=) x y = if y < x then False else True
+  (>=) : (x : [] a) -> (y : [] a) -> Bool
+  (>=) x y = if x < y then False else True
+
+instance PartialEq Int where
+  (==) = intEq
+  (!=) = intNe
+
+instance PartialOrd Int where
+  (<) = intLt
+  (>) = intGt
+  (<=) = intLe
+  (>=) = intGe
+
+instance PartialEq Bool where
+  x == y = if x then y else if y then False else True
+
+instance PartialEq Char where
+  x == y = intEq (charCode x) (charCode y)
+
+instance PartialOrd Char where
+  x < y = intLt (charCode x) (charCode y)
+
+instance PartialEq String where
+  x == y = intEq (stringCompare x y) 0
+
+instance PartialOrd String where
+  x < y = intLt (stringCompare x y) 0
+
+instance PartialEq () where
+  x == y = True
+
+instance PartialEq a => PartialEq b => PartialEq (a, b) where
+  p == q = case p of
+    (a, b) -> case q of
+      (c, d) -> if a == c then b == d else False
+
+instance PartialEq a => PartialEq (List a) where
+  Nil == Nil = True
+  (x :: xs) == (y :: ys) = if x == y then xs == ys else False
+  xs == ys = False
+
+instance PartialEq a => PartialEq (Maybe a) where
+  Nothing == Nothing = True
+  Just x == Just y = x == y
+  m == n = False
+
+intNe : (x : [] Int) -> (y : [] Int) -> Bool
+intNe x y = if intEq x y then False else True
+
+intGt : (x : [] Int) -> (y : [] Int) -> Bool
+intGt x y = intLt y x
+
+intLe : (x : [] Int) -> (y : [] Int) -> Bool
+intLe x y = if intLt y x then False else True
+
+intGe : (x : [] Int) -> (y : [] Int) -> Bool
+intGe x y = if intLt x y then False else True
+
 trait Display (a : Type) where
   display : (x : [] a) -> String
 

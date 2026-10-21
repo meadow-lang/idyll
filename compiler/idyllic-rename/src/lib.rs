@@ -1399,6 +1399,11 @@ impl Renamer {
             }
             A::Resolved(u, text) => self.node(sp, H::Var(Ident { unique: Some(*u), text: text.clone() })),
             A::Search => self.node(sp, H::Search),
+            // equations: each a clause of a match, as a definition's are
+            A::Equations(eqs) => {
+                let clauses = eqs.iter().map(|(pats, rhs)| self.rename_clause(sp, pats, None, rhs)).collect();
+                self.node(sp, H::Match(clauses))
+            }
             A::AutoApp(f, a) => {
                 let f = self.rename_term(f);
                 let a = self.rename_term(a);
@@ -2018,7 +2023,7 @@ fn free_variables(t: &LTerm, bound: &mut Vec<String>, known: &dyn Fn(&str) -> bo
                 out.push(x.clone());
             }
         }
-        A::Type | A::Lit(_) | A::Hole | A::Inf | A::Resolved(..) | A::Search => {}
+        A::Type | A::Lit(_) | A::Hole | A::Inf | A::Resolved(..) | A::Search | A::Equations(_) => {}
         A::Pi(x, _, g, dom, cod) => {
             grades(g, bound, out);
             free_variables(dom, bound, known, out);

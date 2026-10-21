@@ -975,6 +975,33 @@ append (Cons 1 Nil) (Cons 2 Nil)
 -- Cons 1 (Cons 2 Nil)
 ```
 
+So are comparisons: `==` and `!=` are `PartialEq`'s, and `<`, `>`, `<=`
+and `>=` are `PartialOrd`'s (whose superclass is `PartialEq`), as Meadow
+and Rust name them. The prelude gives them for `Int` (the primitives),
+`Char`, `String`, `Bool` and `()`, and for pairs, lists and `Maybe` of
+types that have them. A comparison looks at its operands as often as it
+likes, as Rust's borrow theirs, so what it compares is unrestricted. A
+type of your own needs only `==` and `<`; the rest are defaults:
+
+```
+data Size = Small | Large
+
+use Size.*
+
+rank : Size -> Int
+rank Small = 0
+rank Large = 1
+
+instance PartialEq Size where
+  x == y = rank x == rank y
+
+instance PartialOrd Size where
+  x < y = rank x < rank y
+
+(Small < Large, Large <= Small, Small != Large)
+-- (True, False, True)
+```
+
 The result type can depend on an argument in more interesting ways. Here
 `b` is a *function* from values to types, so the type of `f y` depends on
 the value `y`:
@@ -1668,7 +1695,7 @@ classify xs = case xs of
   x :: _ | x < 0 -> 1
   _ -> 2
 
-classify : (_ : [0..1] List Int) -> Int
+classify : List Int -> Int
 > classify (0 - 1 :: Nil)
 1 : Int
 ```

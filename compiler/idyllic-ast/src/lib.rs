@@ -70,6 +70,10 @@ pub enum Term {
     /// What a search for an auto argument of the type wanted finds: an
     /// instance's superclass field. Made by the renamer, never written.
     Search,
+    /// Equations as a term, each its patterns and its right-hand side: a
+    /// function by matching, as a definition's equations are (an
+    /// instance's method). Made by the parser, never written.
+    Equations(Vec<(Vec<LPat>, Rhs)>),
     /// Type annotation, `e : a`.
     Ann(Box<LTerm>, Box<LTerm>),
     /// An explicit hole, `_`: elaborates to a fresh metavariable.

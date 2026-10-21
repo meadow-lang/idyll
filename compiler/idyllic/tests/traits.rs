@@ -124,3 +124,21 @@ fn a_string_with_holes_displays_or_debugs_each() {
     // the prelude's `display` and `++`, whatever else is called that
     assert_eq!(value("display : Int -> Int\ndisplay n = n\n\n\"${5}\"\n"), "\"5\"");
 }
+
+#[test]
+fn comparisons_are_the_preludes_partial_eq_and_partial_ord() {
+    // at Int the primitives; at the prelude's other types their instances
+    assert_eq!(value("(1 < 2, 2 > 1, 3 <= 3, 4 >= 5, 1 != 2, 2 == 2)\n"), "(True, True, True, False, True, True)");
+    assert_eq!(value("(\"a\" < \"b\", 'a' <= 'b', (1, True) == (1, True), (1 :: 2 :: Nil) != (1 :: Nil), Just 3 == Just 3)\n"), "(True, True, True, True, True)");
+    // a type of one's own, by an instance; `>`, `<=` and `>=` its defaults
+    let size = "data Size = Small | Large\n\nuse Size.*\n\n\
+                rank : Size -> Int\nrank Small = 0\nrank Large = 1\n\n\
+                instance PartialEq Size where\n  x == y = rank x == rank y\n\n\
+                instance PartialOrd Size where\n  x < y = rank x < rank y\n\n";
+    assert_eq!(value(&format!("{size}(Small < Large, Large > Small, Small >= Large, Small != Large)\n")), "(True, True, False, True)");
+    // and a type with none cannot be compared
+    assert_eq!(rejected("data Color = Red\n\nuse Color.*\n\nRed == Red\n"), ["nothing in scope gives a PartialEq Color"]);
+    // `x < 0` at Int is the primitive
+    let text = pipeline::compile("f : Int -> Bool\nf x = x < 0\n\nf 1\n", &OPTIONS).cut.expect("lowered");
+    assert!(text.contains("prim lt("), "{text}");
+}

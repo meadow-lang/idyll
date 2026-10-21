@@ -672,6 +672,7 @@ mod w {
                 fields.iter().map(|(f, e)| sx([f.node.clone(), term(e)])).collect(),
             ),
             Term::Search => "search".into(),
+            Term::Equations(eqs) => with(["equations"], eqs.iter().map(|(ps, r)| sx([sx(ps.iter().map(pat)), rhs(r)])).collect()),
             Term::Ann(e, ty) => sx(["ann".into(), term(e), term(ty)]),
             Term::Hole => "_".into(),
             Term::BoxIntro(e) => sx(["box".into(), term(e)]),

@@ -882,6 +882,9 @@ pass! {
         (match recordLiteral out here r name fields with
          | Just built -> built
          | None -> unresolved out here)
+    -- equations: each a clause of a match, as a definition's are
+    | Equations { raw eqs } ->
+        Match { clauses = V.map (\q -> renameClause src out r here (surfaceEquationParams src q) None (surfaceEquationRhs src q)) eqs }
     -- the trait's arguments, given by hand, are types
     | RecordOf { name, raw args, fields, inst } ->
         (let given = V.map (\a -> asType r (\u -> resolveExpr src out r a)) args in

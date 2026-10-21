@@ -126,6 +126,10 @@ use Std.Result.Result.*
   -- an instance's record: the trait, its arguments, the methods given, and
   -- the instance's own name, which a default left to the trait is given
   Expr + RecordOf { name : Name, args : [Expr], fields : [Field], inst : Name }
+  -- equations as a term, a function by matching, as a definition's are (an
+  -- instance's method)
+  Expr + Equations { eqs : [Equation] }
+  Equation + Equation { params : [Pat], rhs : Rhs }
   Expr + Ann { expr : Expr, ty : Expr }
   Expr + Hole {}
   Expr + Box { expr : Expr }
@@ -700,7 +704,7 @@ fun levelOf (op : String) : Int =
   if op == "*" or op == "/" or op == "%" then 1
   else if op == "+" or op == "-" then 2
   else if op == "::" or op == "++" then 3
-  else if op == "<" or op == "==" then 4
+  else if op == "<" or op == "==" or op == "!=" or op == ">" or op == "<=" or op == ">=" then 4
   else if op == ".." then 5
   else 0
 
@@ -1919,7 +1923,7 @@ fun instanceDecl out (cx : Cx) (d : IdyllInstanceDecl) =
                      | None -> ())
                   else ()
                 in
-                newSurfaceField out m (nameAt out m f) (lambdaCase out m (V.map snd eqs) arity))
+                newSurfaceField out m (nameAt out m f) (equationsOf out m (V.map snd eqs) arity))
           methods
       in
       let body = newSurfaceExprRecordOf out m (nameAt out m traitName) args fields (nameAt out m name) in
@@ -1929,9 +1933,10 @@ fun instanceDecl out (cx : Cx) (d : IdyllInstanceDecl) =
       ] in
       Item.Instance decls (nameAt out m name) (M.isSome given)
 
--- Equations of `arity` patterns each as one term: `\#0 #1 -> case (#0, #1)
--- of (p, q) -> e; ..`, or with none, the one equation's right-hand side.
-fun lambdaCase out (m : Meta) (eqs : [SurfaceDecl]) (arity : Int) =
+-- Equations of `arity` patterns each as one term: a function by matching,
+-- as a definition's equations are (`Equations`), or with none, the one
+-- equation's right-hand side.
+fun equationsOf out (m : Meta) (eqs : [SurfaceDecl]) (arity : Int) =
   if arity == 0 then
     match V.head eqs with
     | Just eq ->
@@ -1940,22 +1945,7 @@ fun lambdaCase out (m : Meta) (eqs : [SurfaceDecl]) (arity : Int) =
         else
           newSurfaceExprCase out m (lit out m Literal.Unit) [newSurfaceAlt out m (newSurfacePatLit out m Literal.Unit) r]
     | None -> hole out m
-  else
-    let names = V.map (\i -> "#${i}") (V.range 0 arity) in
-    let vars = V.map (\x -> newSurfaceExprVar out m (nameAt out m x)) names in
-    let scrutinee = V.foldr (\x acc -> binary out m "(,)" x acc) (V.getOr (hole out m) vars (arity - 1)) (V.take vars (arity - 1)) in
-    let alts =
-      V.map
-        (\eq ->
-          let ps = surfaceDeclDefParams out eq in
-          let pat = V.foldr (\q acc -> newSurfacePatCon out m (nameAt out m "(,)") [q, acc]) (V.getOr (newSurfacePatWild out m) ps (arity - 1)) (V.take ps (arity - 1)) in
-          newSurfaceAlt out m pat (surfaceDeclDefRhs out eq))
-        eqs
-    in
-    V.foldr
-      (\x acc -> newSurfaceExprLam out m (newSurfaceParam out m (nameAt out m x) False None None) acc)
-      (newSurfaceExprCase out m scrutinee alts)
-      names
+  else newSurfaceExprEquations out m (V.map (\eq -> newSurfaceEquation out m (surfaceDeclDefParams out eq) (surfaceDeclDefRhs out eq)) eqs)
 
 -- An item, under its attributes: what it is, and what is wrong with where
 -- they are.
@@ -2163,6 +2153,8 @@ fun exprText (a : SurfaceArena) (e : SurfaceExpr) : String =
   | SurfaceExprApp f x -> sx ["app", go f, go x]
   | SurfaceExprImplicitApp f x -> sx ["iapp", go f, go x]
   | SurfaceExprAutoApp f x -> sx ["aapp", go f, go x]
+  | SurfaceExprEquations eqs ->
+      sx (V.append ["equations"] (V.map (\q -> sx [sx (V.map (patText a) (surfaceEquationParams a q)), rhsText a (surfaceEquationRhs a q)]) eqs))
   | SurfaceExprRecordOf r args fs me -> sx (V.append ["recordof", nameIn a r, sx (V.map go args), nameIn a me] (V.map (fieldText a) fs))
   | SurfaceExprAnn x ty -> sx ["ann", go x, go ty]
   | SurfaceExprHole -> "_"
