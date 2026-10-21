@@ -22,7 +22,7 @@ does, how it is checked, and why it is built the way it is.
 | What the tree means | `Surface.mw`: a `lang!`, written from the tree by `pass!`es | done: agrees with the Rust parser on every program; errors drawn at the nodes they are about |
 | Renaming | `Rename.mw` (a `pass!` from `Surface` to `Hir`, a `lang!`), `Hir.mw` | done: packages of modules, after the prelude and their dependencies |
 | Dependency order | `Scc.mw` (a `pass!` from `Hir` to `Hir`) | done |
-| Types | `Elab.mw` (a `pass!` from `Hir` to `Elaborated`, a `lang!`), `Check.mw`, `Matching.mw`, `Termination.mw`, `Handlers.mw`, `Sequences.mw`, `Decl.mw`, `Positivity.mw`, `Ctx.mw`, `Usage.mw`, and the machinery under them | done: agrees on every program that gets this far (431, Std's users among them), and on the whole Std package (475 declarations) |
+| Types | `Elab.mw` (a `pass!` from `Hir` to `Elaborated`, a `lang!`), `Check.mw`, `Auto.mw`, `Matching.mw`, `Termination.mw`, `Handlers.mw`, `Sequences.mw`, `Decl.mw`, `Positivity.mw`, `Ctx.mw`, `Usage.mw`, and the machinery under them | done: agrees on every program that gets this far (431, Std's users among them), and on the whole Std package (475 declarations) |
 | The CEK machine | `Cek.mw`, `World.mw` | done: the same answer, in the same number of steps, as `idyll-eval` on every program that runs (211) |
 | Cut | `Lower.mw`, `Typer.mw`, `Prune.mw`, `CutAst.mw`, `Emit.mw` | done: the same Cut as `idyllic-cut` on every program that lowers (212) |
 
@@ -233,8 +233,7 @@ each at the place it was made from:
 - `{auto d : t}` and `t => ..`, auto binders (`Icit.Auto`), `@hint` on a
   signature, and `f @{d}`, an auto argument given by hand (`AutoApp`;
   after a name the grammar reads `@{d}` as the name's `AsTail`, and the
-  pass tells it apart); the checker says it cannot search for an auto
-  argument yet;
+  pass tells it apart);
 - `trait C a => T (a : Type) where` and its block, as the Rust parser's
   `trait_decl` makes it: a record whose fields are the superclasses
   (`#super0`, ...) then the methods, marked a trait, with its defaults; a
@@ -422,6 +421,30 @@ arguments, and ask that the type found be a subtype of the one expected. A
 question that cannot be answered yet, because one side is stuck on a
 metavariable applied to something, is kept and asked again after each
 definition.
+
+**Auto arguments** (`Auto.mw`, `compiler/idyllic-typecheck/src/auto.rs`).
+Where an auto binder's argument is to be inserted (`{auto d : t}`, `t =>
+..`; a trait's method wants its record so), a term of its type is
+searched for: first among the auto binders in scope, innermost first, and
+what each holds of its trait's superclasses (the paths of `#super`
+projections); then among the hints, a trait's instances. A candidate is
+tried by applying it to new metavariables for its implicit arguments,
+unifying what it comes to with the type wanted, and searching for its own
+auto arguments in turn, 16 deep. Each trial is made on the checker itself
+and undone: `T.save` copies every table of `Tc` (each a value, so the copy
+is cheap) and `T.restore` puts them back. The innermost auto binder that
+fits is taken; of the hints, exactly one must fit, and only those whose
+type could come to the one wanted (by its head and its first argument's)
+are tried. A search whose type still has a metavariable in it waits
+behind a placeholder until the definition is checked (`settle`), and is
+`UnknownInstance` if it never becomes known; what is found is written over
+the placeholder in the definition's Core (`resolve`). Once a definition is
+checked, a call of a method at an instance with no parameters, whose
+field is a constant or a primitive, is made a call of that field
+(`specialize`), so that `plus2 n n` at `Int` lowers to `prim add`. At the
+end of the module every instance is checked to live with its trait or its
+type (`OrphanInstance`) and not to be for types that unify with another's
+(`OverlappingInstances`).
 
 **Effects.** A term's effects are collected in its usage as rows. Where a
 lambda ends, they become its type's (`a -> b ! {Log}`), and must fit what

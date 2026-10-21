@@ -49,6 +49,7 @@ use Idyll.Elaborated (Elaborated!)
 use Lingua (pass!)
 use Idyll.Matching (caseOf, inferMatch, elabMatch)
 use Idyll.Handlers (handled)
+use Idyll.Auto as A
 use Idyll.Sequences (checkSeq, inferSeq, arrayLiteral, arrayElement)
 use Idyll.Termination (checkTermination, arity)
 use Std.Collections.Vector as V
@@ -279,7 +280,7 @@ fun constant (tc : Tc) (g : Value) : Maybe Grade ! { Mut | e } = Va.asConstant (
   Core.Runtime (Note.Binds (constant tc grade) (Just (quote tc ctx.lvl dom))) (Core.Lam name body)
 
 -- Something supplied `grade` times: none, and it is never computed.
-fun argument (tc : Tc) (grade : Value) (arg : Core) : Core ! { Mut | e } =
+@pub(pkg) fun argument (tc : Tc) (grade : Value) (arg : Core) : Core ! { Mut | e } =
   match constant tc grade with
   | Just g -> if G.isZero g then Core.Runtime Note.Erased arg else arg
   | None -> arg
@@ -298,13 +299,45 @@ fun fitsMeta (tc : Tc) (ctx : Ctx) (m : Int) (ty : Value) : Bool ! { Mut | e } =
 
 -- A term applied to new metavariables for as long as its type asks for
 -- implicit arguments.
+-- (an auto argument is found by search; an implicit one, worked out)
 @pub fun insert (tc : Tc) (ctx : Ctx) (core : Core) (ty : Value) : (Core, Value) ! { Mut | e } =
   match force tc ty with
   | Value.Pi name Icit.Implicit grade _ dom cod ->
       let arg = freshMetaWith tc ctx (Origin.Inferred ("the implicit argument " ++ name)) (Just dom) in
       let argV = eval tc ctx.env arg in
       insert tc ctx (Core.App core (argument tc grade arg)) (fst (splitComp tc (apply tc cod argV)))
+  | Value.Pi name Icit.Auto grade _ dom cod ->
+      let arg = A.autoArgument tc ctx dom in
+      let argV = eval tc ctx.env arg in
+      insert tc ctx (Core.App core (argument tc grade arg)) (fst (splitComp tc (apply tc cod argV)))
   | fty -> (core, fty)
+
+-- The same, but only the implicit arguments: up to an auto one, or
+-- anything else.
+@pub fun insertImplicit (tc : Tc) (ctx : Ctx) (core : Core) (ty : Value) : (Core, Value) ! { Mut | e } =
+  match force tc ty with
+  | Value.Pi name Icit.Implicit grade _ dom cod ->
+      let arg = freshMetaWith tc ctx (Origin.Inferred ("the implicit argument " ++ name)) (Just dom) in
+      let argV = eval tc ctx.env arg in
+      insertImplicit tc ctx (Core.App core (argument tc grade arg)) (fst (splitComp tc (apply tc cod argV)))
+  | fty -> (core, fty)
+
+-- The auto arguments a type begins with, found.
+fun insertAutos (tc : Tc) (ctx : Ctx) (core : Core) (ty : Value) : (Core, Value) ! { Mut | e } =
+  match force tc ty with
+  | Value.Pi name Icit.Auto grade _ dom cod ->
+      let arg = A.autoArgument tc ctx dom in
+      let argV = eval tc ctx.env arg in
+      insertAutos tc ctx (Core.App core (argument tc grade arg)) (fst (splitComp tc (apply tc cod argV)))
+  | fty -> (core, fty)
+
+-- An application's result, with the auto arguments after the last one
+-- given found: what they are for is all there.
+fun autosAfter (tc : Tc) (ctx : Ctx) (r : (Core, Value, Usage)) : (Core, Value, Usage) ! { Mut | e } =
+  match r with
+  | (core, ty, usage) ->
+      let (c2, t2) = insertAutos tc ctx core ty in
+      (c2, t2, usage)
 
 -- --- usage against grades ----------------------------------------------------------
 
@@ -555,18 +588,20 @@ fun parameters (h : HirArena) (rhs : HirExpr) : Int =
 -- --- bindings ----------------------------------------------------------------------
 
 -- A definition against its signature: the implicit binders the signature
--- starts with are bound to the names it gave them, which the body may use.
+-- starts with are bound to the names it gave them, which the body may use;
+-- an auto binder is what a search inside may find.
 fun checkAgainstSig (tc : Tc) (ctx : Ctx) (rhs : HirExpr) (sig : HirExpr) (vsig : Value) : (Core, Usage) ! { Mut | e } =
   let h = hirOf tc in
   let fsig = force tc vsig in
   let implicitSig =
     match (h, sig) with
-    | HirExprPi (Just x) icit _ _ sigCod -> if icit == Icit.Implicit then Just (identOf h x, sigCod) else None
+    | HirExprPi (Just x) icit _ _ sigCod -> if icit != Icit.Explicit then Just (identOf h x, sigCod, icit) else None
     | _ -> None
   in
   match (implicitSig, fsig) with
-  | (Just (x, sigCod), Value.Pi name Icit.Implicit grade _ dom cod) ->
-      let ctx2 = X.graded (X.bind ctx (Just x) name dom) grade in
+  | (Just (x, sigCod, sigIcit), Value.Pi name icit grade _ dom cod) if icit != Icit.Explicit ->
+      let ctx1 = X.graded (X.bind ctx (Just x) name dom) grade in
+      let ctx2 = if sigIcit == Icit.Auto then X.autoBound ctx1 else ctx1 in
       let (codV, allowed) = splitComp tc (apply tc cod (Va.vvar ctx.lvl name)) in
       let (body, usage) = checkAgainstSig tc ctx2 rhs sigCod codV in
       let u1 = closeEffects tc ctx2 usage allowed in
@@ -614,10 +649,13 @@ fun bindName (h : HirArena) (b : HirBind) : Ident = identOf h (hirBindName h b)
 
 fun checkGroupIn (tc : Tc) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, Maybe (String, Core)) ! { Mut | e } =
   let h = hirOf tc in
+  -- (what of the recursive definitions this group makes, for what it put off)
+  let mark = V.len (getRef tc.recDefs) in
+  let top = getRef tc.lets == 0 in
   match (h, group) with
   | HirGroupNonRec hb ->
       let b = BindOf { name = bindName h hb, ty = hirBindTy h hb, rhs = hirBindRhs h hb } in
-      let (rhs, ty, usage) =
+      let (rhs0, ty, usage) =
         match b.ty with
         -- no signature: inferred, and the definition is transparent (its
         -- parameters' grades worked out from its body)
@@ -626,6 +664,8 @@ fun checkGroupIn (tc : Tc) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, Maybe
             infer tc ctx b.rhs
         | Just sig ->
             let (sigTy, allowed, vsig) = signature tc ctx sig (parameters h b.rhs) in
+            -- what a type searches for is found before the type is computed with
+            let ws = if top then A.settle tc else () in
             let (rhsC, usage) = checkAgainstSig tc ctx b.rhs sigTy vsig in
             let w =
               match effectsOf tc usage with
@@ -633,6 +673,15 @@ fun checkGroupIn (tc : Tc) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, Maybe
               | None -> ()
             in
             (rhsC, vsig, usage)
+      in
+      -- what it put off, once all of it is checked: found, and written over
+      let rhs =
+        if top then
+          let s1 = A.settle tc in
+          let s2 = A.resolveRecDefs tc mark in
+          let s3 = A.specializeRecDefs tc ctx mark in
+          A.specialize tc ctx (A.resolve tc rhs0 ctx.lvl) ctx.lvl
+        else rhs0
       in
       -- what it left open is closed before its type is recorded
       let w =
@@ -664,6 +713,7 @@ fun checkGroupIn (tc : Tc) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, Maybe
                 let w = setRef tc.inferSpine (parameters h b.rhs) in
                 let ty = snd (checkType tc ctx sig) in
                 let w2 = setRef tc.inferSpine 0 in
+                let w3 = if top then A.settle tc else () in
                 ty)
           bs
       in
@@ -671,7 +721,19 @@ fun checkGroupIn (tc : Tc) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, Maybe
       let ctxRec = V.foldl (\c bt -> match bt with | (b, ty) -> declareConstant tc c (nameOf b) ty) ctx (V.zip bs sigs) in
       let checked = V.map (\bt -> match bt with | (b, ty) -> checkMember tc ctxRec b ty) (V.zip bs sigs) in
       let rhs = V.foldl (\acc cu -> U.add acc (snd cu)) (U.none ()) checked in
-      let members = V.map (\bc -> match bc with | (b, (core, _)) -> (H.uniqueOf (nameOf b), core)) (V.zip bs checked) in
+      let members0 = V.map (\bc -> match bc with | (b, (core, _)) -> (H.uniqueOf (nameOf b), core)) (V.zip bs checked) in
+      -- what they put off, once all of them are checked; and an instance
+      -- with no parameters, what of it a method call can be made into
+      let members =
+        if top then
+          let s1 = A.settle tc in
+          let s2 = A.resolveRecDefs tc mark in
+          let s3 = A.specializeRecDefs tc ctxRec mark in
+          let ms = V.map (\uc -> match uc with | (u, core) -> (u, A.specialize tc ctxRec (A.resolve tc core ctxRec.lvl) ctxRec.lvl)) members0 in
+          let s4 = V.foldl (\acc uc -> match uc with | (u, core) -> if V.elem u (getRef tc.hints) then A.noteInstance tc ctxRec u core else ()) () ms in
+          ms
+        else members0
+      in
       -- if they terminate they may compute in types from here on; if they may
       -- not, they must say so, unless `@terminating` says they end after all
       let w =
@@ -882,8 +944,10 @@ fun within (cx : Cx) (again : Cx -> (Core, Value, Usage) ! { Mut | e }) (body : 
       let g = force tc g0 in
       (match g with
        | Value.Error -> (Core.Error, Value.Error, U.unknown ())
-       | Value.Pi name Icit.Implicit grade _ dom cod ->
-           let ctx2 = X.graded (X.bind ctx None name dom) grade in
+       | Value.Pi name icit grade _ dom cod if icit != Icit.Explicit ->
+           let ctx1 = X.graded (X.bind ctx None name dom) grade in
+           -- an auto binder is what a search inside may find
+           let ctx2 = if icit == Icit.Auto then X.autoBound ctx1 else ctx1 in
            let (codV, allowed) = splitComp tc (apply tc cod (Va.vvar ctx.lvl name)) in
            let (bodyC, _, usage) = again { cx | ctx = ctx2, goal = Just codV } in
            let u2 = closeEffects tc ctx2 usage allowed in
@@ -968,9 +1032,22 @@ pass! {
                   let (bC, _) = checkGrade c.tc c.ctx b in
                   ((if op == Prim.IntAdd then Core.GradeAdd aC bC else Core.GradeMul aC bC), g, U.none ()))
              | _ -> fallback c again g))
-    -- `f @{d}` and what a search finds: this checker has no search yet
-    | AutoApp { raw func, raw arg } -> unsupported cx.tc "auto arguments"
-    | Search {} -> unsupported cx.tc "auto arguments"
+    -- `f @{d}`: `f`'s next auto argument is `d`, rather than one searched
+    -- for; the implicit ones before it are worked out
+    | AutoApp { raw func, raw arg } ->
+        (let again = \(c : Cx) -> elabExpr src out c node in
+         mode cx again (\(c : Cx) -> inferAutoApp c.tc c.ctx func arg) (byInference again))
+    -- what a search for something of the type expected finds
+    | Search {} ->
+        (let again = \(c : Cx) -> elabExpr src out c node in
+         mode
+           cx
+           again
+           (\(c : Cx) ->
+             let tyC = freshMeta c.tc c.ctx "what to look for" in
+             let ty = eval c.tc c.ctx.env tyC in
+             (A.autoArgument c.tc c.ctx ty, ty, U.none ()))
+           (\(c : Cx) g -> (A.autoArgument c.tc c.ctx g, g, U.none ())))
     -- `f {a}`: `f`'s next implicit argument is `a`, rather than one worked out
     | ImplicitApp { raw func, raw arg } ->
         (let again = \(c : Cx) -> elabExpr src out c node in
@@ -1168,9 +1245,9 @@ fun inferPi (tc : Tc) (ctx : Ctx) (mx : Maybe Ident) (icit : Icit) (ann : Maybe 
   let spine = getRef tc.spineHere in
   let h = hirOf tc in
   let name = match mx with | Just x -> H.textOf x | None -> "_" in
-  -- (an auto argument is found by search, which this checker has not yet)
-  let wAuto = if icit == Icit.Auto then T.cannot tc "auto arguments" else () in
-  let default = if icit == Icit.Implicit then G.zero else defaultGrade tc in
+  -- an implicit argument is erased; an auto one is a value, used as often
+  -- as wanted
+  let default = if icit == Icit.Implicit then G.zero else if icit == Icit.Auto then G.default else defaultGrade tc in
   let (gs, its) = binderGrades tc ctx ann default in
   -- a parameter of a definition that says no grade, in a module that is
   -- not linear: its grade is worked out from the body
@@ -1304,6 +1381,17 @@ fun inferImplicitApp (tc : Tc) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, 
       let w = T.error tc "NoImplicitArgument" in
       failed ()
 
+-- `f @{d}`, the implicit arguments before `d`'s worked out.
+fun inferAutoApp (tc : Tc) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value, Usage) ! { Mut | e } =
+  let (fC0, fTy0, fU) = infer tc ctx f in
+  let (fC, fTy) = insertImplicit tc ctx fC0 fTy0 in
+  match fTy with
+  | Value.Pi _ Icit.Auto _ _ _ _ -> applyTo tc ctx fC fTy fU a
+  | Value.Error -> failed ()
+  | _ ->
+      let w = T.error tc "NoAutoArgument" in
+      failed ()
+
 fun inferApp (tc : Tc) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value, Usage) ! { Mut | e } =
   let h = hirOf tc in
   let argIsBox = kindHirExpr h a == HirExprKind.Box in
@@ -1337,8 +1425,8 @@ fun inferApp (tc : Tc) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value, U
         if unify tc ctx.lvl fTy (Value.Type 0) then
           let (gC, _) = checkGrade tc ctx g in
           (Core.BoxTy gC fC, Value.Type 0, fU)
-        else applyTo tc ctx fC fTy fU a
-    | _ -> applyTo tc ctx fC fTy fU a
+        else autosAfter tc ctx (applyTo tc ctx fC fTy fU a)
+    | _ -> autosAfter tc ctx (applyTo tc ctx fC fTy fU a)
 
 -- `f a`, for an `f` elaborated already, its implicit arguments inserted.
 @pub fun applyTo (tc : Tc) (ctx : Ctx) (fC : Core) (fTy : Value) (fU : Usage) (a : HirExpr) : (Core, Value, Usage) ! { Mut | e } =

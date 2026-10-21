@@ -137,6 +137,58 @@ use Std.Maybe.Maybe.*
 
 @pub fun grade (g : Grade) : Core = Core.GradeLit g
 
+-- Whether any node of `c` is one `p` holds of.
+@pub fun anyNode (c : Core) (p : Core -> Bool) : Bool =
+  if p c then True
+  else
+    let go = \x -> anyNode x p in
+    match c with
+    | Core.Pi _ _ gr inType dom cod -> go gr or go inType or go dom or go cod
+    | Core.Lam _ b -> go b
+    | Core.App a b -> go a or go b
+    | Core.BoxTy a b -> go a or go b
+    | Core.BoxIntro a -> go a
+    | Core.Unbox a -> go a
+    | Core.Let _ e b -> go e or go b
+    | Core.GradeAdd a b -> go a or go b
+    | Core.GradeMul a b -> go a or go b
+    | Core.GradeRange a b -> go a or go b
+    | Core.Case sc alts -> go sc or V.any (\a -> match a with | CaseAlt.CaseAlt _ _ _ body -> go body) alts
+    | Core.Runtime n a -> go a or (match n with | Note.Binds _ (Just t) -> go t | _ -> False)
+    | Core.Comp a e -> go a or go e
+    | Core.Row ls ts -> V.any go ls or V.any go ts
+    | Core.Handle b r ops -> go b or go r or V.any (\o -> match o with | OpClause.OpClause _ _ _ body -> go body) ops
+    | _ -> False
+
+-- Every node, outermost first: what `f` answers for one is put in its place,
+-- and what it answers nothing for is gone into. `f` takes the node and how
+-- many binders are around it.
+@pub fun transform (c : Core) (depth : Int) (f : Core -> Int -> Maybe Core) : Core =
+  match f c depth with
+  | Just replaced -> replaced
+  | None ->
+      let go = \x d -> transform x d f in
+      match c with
+      | Core.Pi name icit gr inType dom cod -> Core.Pi name icit (go gr depth) (go inType depth) (go dom depth) (go cod (depth + 1))
+      | Core.Lam x b -> Core.Lam x (go b (depth + 1))
+      | Core.App a b -> Core.App (go a depth) (go b depth)
+      | Core.BoxTy a b -> Core.BoxTy (go a depth) (go b depth)
+      | Core.BoxIntro a -> Core.BoxIntro (go a depth)
+      | Core.Unbox a -> Core.Unbox (go a depth)
+      | Core.Let x e b -> Core.Let x (go e depth) (go b (depth + 1))
+      | Core.GradeAdd a b -> Core.GradeAdd (go a depth) (go b depth)
+      | Core.GradeMul a b -> Core.GradeMul (go a depth) (go b depth)
+      | Core.GradeRange a b -> Core.GradeRange (go a depth) (go b depth)
+      | Core.Case sc alts ->
+          Core.Case (go sc depth) (V.map (\a -> match a with | CaseAlt.CaseAlt h n vs body -> CaseAlt.CaseAlt h n vs (go body (depth + V.len vs))) alts)
+      | Core.Runtime n a ->
+          let n2 = match n with | Note.Binds g (Just t) -> Note.Binds g (Just (go t depth)) | other -> other in
+          Core.Runtime n2 (go a depth)
+      | Core.Comp a e -> Core.Comp (go a depth) (go e depth)
+      | Core.Row ls ts -> Core.Row (V.map (\l -> go l depth) ls) (V.map (\t -> go t depth) ts)
+      | Core.Handle b r ops -> Core.Handle (go b depth) (go r depth) (V.map (\o -> match o with | OpClause.OpClause u n k body -> OpClause.OpClause u n k (go body depth)) ops)
+      | other -> other
+
 fun isGrade (c : Core) (g : Grade) : Bool =
   match c with
   | Core.GradeLit h -> h == g
@@ -252,6 +304,10 @@ fun go (linear : Bool) (c : Core) (prec : Int) : String =
   -- otherwise
   | Core.Pi name Icit.Implicit gr inType dom cod ->
       paren (prec > 0) ("{" ++ binder linear name gr inType G.zero dom ++ "} -> " ++ g cod 0)
+  -- an auto binder with no name is a constraint, `C a => b`
+  | Core.Pi name Icit.Auto gr inType dom cod ->
+      if name == "_" and isGrade gr G.default then paren (prec > 0) (g dom 1 ++ " => " ++ g cod 0)
+      else paren (prec > 0) ("{auto " ++ binder linear name gr inType G.default dom ++ "} -> " ++ g cod 0)
   | Core.Pi name _ gr inType dom cod ->
       if name == "_" and isGrade gr (printedDefault linear) and isGrade inType G.defaultInType then
         -- an anonymous, default-graded binder is just an arrow

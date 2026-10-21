@@ -521,8 +521,8 @@ from what `idyll.lock` pinned.
   fit. A search whose type still has a meta waits behind a placeholder
   until the definition has been checked, and is reported if it never
   becomes known. Hints are checked before everything that does not lead to
-  them (scc), and a package's hints are in its interface. front/ reads,
-  renames and dumps all of it; its checker says it cannot search yet.
+  them (scc), and a package's hints are in its interface. front/ does all
+  of it too (2026-10-21).
 - [x] **Traits as sugar**: a trait is a record, a constraint is an
   auto-implicit binder, an instance is a hint. Superclasses are fields;
   methods can have defaults. Done 2026-10-20 in the Rust compiler, the
@@ -541,8 +541,8 @@ from what `idyll.lock` pinned.
   instance is not needed to make itself), a superclass found by search.
   A search goes through an auto binder's superclasses too, and hints and
   superclass projections are checked before what does not lead to them.
-  front/ reads and renames traits; its checker does not search yet (see
-  *The compiler in Meadow*).
+  front/ does all of it too, and agrees on the corpus's trait programs
+  pass by pass, its Cut running on Glade and Silo (2026-10-21).
 - [x] **Grades on auto binders**: default `[]`, since a dictionary is used at
   run time (plain braced implicits default to `0`). `{auto p : [0] LTE n m}`
   is an erased proof, and so must be total.
@@ -1020,11 +1020,13 @@ do yet `(unsupported)`, and the tests count those apart.
   Std (types 431 programs in all).
 - [ ] Std's users through the CEK machine and Cut too (the Rust side needs
   its linking there).
-- [ ] Traits and instances (`trait`, `instance`, `@{..}`), read and
+- [x] Traits and instances (`trait`, `instance`, `@{..}`), read and
   desugared as the Rust parser does, so that the corpus can have them.
-  Read, desugared, renamed and ordered (2026-10-20): the parse and the
-  rename agree on the corpus's trait programs. Left: the checker's search
-  for an auto argument, which it says it cannot do yet.
+  Read, desugared, renamed and ordered (2026-10-20); the search for auto
+  arguments, instances' checks and the specialising of a known instance's
+  methods in the checker (`Auto.mw`, 2026-10-21): every pass agrees on the
+  corpus's trait and auto-argument programs, and their Cut runs as the
+  reference says.
 - [ ] Choosing an overloaded name by type, as the Rust checker does it
   (`overloads.rs`): its renamer keeps the candidates already, and its
   checker says it cannot choose yet, which keeps such programs out of the

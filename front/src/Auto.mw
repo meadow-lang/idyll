@@ -1,0 +1,544 @@
+-- Auto arguments: `compiler/idyllic-typecheck/src/auto.rs`. An implicit
+-- argument found by search, `{auto d : t}` or `t => ..`, as Idris finds
+-- them.
+--
+-- Where one is to be inserted, what its type asks for is searched for:
+-- first among the auto binders in scope, innermost first, and what each
+-- has inside it of its trait's superclasses; then among the hints, the
+-- definitions `@hint` offers (a trait's instances are hints). A candidate
+-- fits when its type, its implicit arguments made metavariables, comes to
+-- what is wanted, and its own auto arguments can be found in turn. Each is
+-- tried on the checker and then undone (`T.save`, `T.restore`). The
+-- innermost auto binder that fits is the one taken; among the hints,
+-- exactly one must fit.
+--
+-- What is wanted has to be known first: a search for `Show ?a` would choose
+-- `?a` rather than find what it is. So a search whose type still has a
+-- metavariable in it waits, behind a placeholder, until the definition it
+-- is in has been checked (`settle`), and is an error if it still cannot
+-- tell. What is found is written over the placeholder (`resolve`).
+--
+-- After a definition is checked, a call of a method at an instance with no
+-- parameters, whose field is a constant or a primitive, is made a call of
+-- that field (`specialize`): so `x + y` at `Int` is the primitive.
+
+use Idyll.Hir (Icit)
+use Idyll.Core (Core, Builtin, CaseAlt)
+use Idyll.Core as C
+use Idyll.Value (Value, Elim)
+use Idyll.Value as Va
+use Idyll.Tc (Tc, Meta, MetaInfo, Origin, CtorInfo)
+use Idyll.Tc as T
+use Idyll.Eval (force, apply, eval, quote, splitComp)
+use Idyll.Unify (unify)
+use Idyll.Ctx (Ctx, Entry)
+use Idyll.Ctx as X
+use Idyll.Hir (Ident)
+use Idyll.Elab (insertImplicit, argument, freshMetaWith)
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as Hm
+use Std.Collections.HashMap (HashMap)
+use Std.Sort as Srt
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+use Std.Result.Result.*
+
+-- How deep the search goes into the auto arguments of what it finds: a
+-- search that loops, a hint for `Show a` wanting `Show a`, ends here.
+def searchDepth = 16
+
+-- A name by its unique alone, to look up.
+fun named (u : Int) : Ident = Ident.Ident [u] ""
+
+fun errorCount (tc : Tc) : Int ! { Mut | e } = V.len (getRef tc.errors)
+
+-- The auto argument of type `wanted`.
+@pub fun autoArgument (tc : Tc) (ctx : Ctx) (wanted : Value) : Core ! { Mut | e } =
+  if not (known tc ctx wanted) then
+    let m = placeholder tc in
+    let w = setRef tc.deferredAutos (V.pushBack (getRef tc.deferredAutos) (m, ctx, wanted)) in
+    Core.Meta m
+  else
+    match search tc ctx wanted 0 with
+    | Ok found -> found
+    | Err why ->
+        let w = T.error tc why in
+        Core.Error
+
+-- A metavariable standing for an auto argument still to be found.
+fun placeholder (tc : Tc) : Int ! { Mut | e } =
+  let m = T.newMeta tc (MetaInfo.MetaInfo 0 (Origin.Inferred "an auto argument") None) in
+  let w = setRef tc.placeholders (V.pushBack (getRef tc.placeholders) m) in
+  m
+
+-- Whether a type is known enough to search for: no metavariable left in it.
+fun known (tc : Tc) (ctx : Ctx) (ty : Value) : Bool ! { Mut | e } =
+  let q = quote tc ctx.lvl ty in
+  let ms = getRef tc.metas in
+  not (C.anyNode q (\c ->
+    match c with
+    | Core.Meta m -> (match V.get ms m with | Just (Meta.Unsolved _) -> True | _ -> False)
+    | _ -> False))
+
+-- The placeholder `m` is `found`, which was found in `ctx`: solved with
+-- it, for what is still to be checked, and written over with it once the
+-- definition is done.
+fun choose (tc : Tc) (m : Int) (ctx : Ctx) (found : Core) =
+  let value = eval tc ctx.env found in
+  let w = match T.meta tc m with | Just (Meta.Unsolved _) -> T.solve tc m value | _ -> () in
+  setRef tc.chosen (Hm.insert m (found, ctx.lvl) (getRef tc.chosen))
+
+-- The searches that waited for their types, tried again; with `last`, what
+-- still cannot be told is an error. Whether any was settled.
+@pub fun settleAutos (tc : Tc) (last : Bool) : Bool ! { Mut | e } =
+  let waiting = getRef tc.deferredAutos in
+  let w = setRef tc.deferredAutos [] in
+  V.foldl
+    (\progress d ->
+      match d with
+      | (m, ctx, wanted) ->
+          let k = known tc ctx wanted in
+          if not k and not last then
+            let w2 = setRef tc.deferredAutos (V.pushBack (getRef tc.deferredAutos) d) in
+            progress
+          else
+            let found =
+              if k then
+                (match search tc ctx wanted 0 with
+                 | Ok f -> f
+                 | Err why ->
+                     let w3 = T.error tc why in
+                     Core.Error)
+              else
+                let w3 = T.error tc "UnknownInstance" in
+                Core.Error
+            in
+            let w4 = choose tc m ctx found in
+            True)
+    False
+    waiting
+
+-- What is put off, settled once a definition has been checked: round until
+-- nothing changes, then what still cannot be told is reported.
+@pub fun settle (tc : Tc) : () ! { Mut | e } =
+  let progress = settleAutos tc False in
+  if progress and not (V.isEmpty (getRef tc.deferredAutos)) then settle tc
+  else
+    let w = settleAutos tc True in
+    ()
+
+-- What there is of type `wanted`: an auto binder in scope, or a hint.
+fun search (tc : Tc) (ctx : Ctx) (wanted : Value) (depth : Int) : Result String Core ! { Mut | e } =
+  if depth > searchDepth then Err "NoInstance"
+  else
+    match searchLocals tc ctx wanted depth (V.reverse ctx.autos) with
+    | Just found -> found
+    | None -> searchHints tc ctx wanted depth
+
+-- The auto binders in scope, innermost first, and what each has inside it
+-- of its trait's superclasses: the first that fits.
+fun searchLocals (tc : Tc) (ctx : Ctx) (wanted : Value) (depth : Int) (levels : [Int]) : Maybe (Result String Core) ! { Mut | e } =
+  match V.head levels with
+  | None -> None
+  | Just lvl ->
+      let core = Core.Var (ctx.lvl - lvl - 1) (X.nameAt ctx lvl) in
+      let ty = X.typeAt ctx lvl in
+      let supers = match force tc ty with | Value.Opaque t _ _ -> superPaths tc ctx t 0 | _ -> [] in
+      match searchPaths tc ctx wanted depth core ty (V.append [[]] supers) with
+      | Just found -> Just found
+      | None -> searchLocals tc ctx wanted depth (V.drop levels 1)
+
+fun searchPaths (tc : Tc) (ctx : Ctx) (wanted : Value) (depth : Int) (core : Core) (ty : Value) (paths : [[Int]]) : Maybe (Result String Core) ! { Mut | e } =
+  match V.head paths with
+  | None -> None
+  | Just path ->
+      let saved = T.save tc in
+      let before = errorCount tc in
+      let fits =
+        (match through tc ctx core ty path with
+         | Just (c, t) -> M.isSome (applyCandidate tc ctx c t wanted depth)
+         | None -> False)
+          and errorCount tc == before
+      in
+      let w = T.restore tc saved in
+      if fits then
+        match through tc ctx core ty path with
+        | Just (c, t) ->
+            (match applyCandidate tc ctx c t wanted depth with
+             | Just found -> Just (Ok found)
+             | None -> Just (Err "NoInstance"))
+        | None -> Just (Err "NoInstance")
+      else searchPaths tc ctx wanted depth core ty (V.drop paths 1)
+
+-- The hints that could be for what is wanted, by what their types and it
+-- come to (a cheap look first, since a search is made for every method a
+-- program calls); of those, the one that fits.
+fun searchHints (tc : Tc) (ctx : Ctx) (wanted : Value) (depth : Int) : Result String Core ! { Mut | e } =
+  let goal = headOf tc ctx.lvl wanted in
+  let candidates =
+    V.concatMap
+      (\u ->
+        match X.lookup ctx (named u) with
+        | Just (core, ty, _) -> if compatible (headOf tc ctx.lvl ty) goal then [(u, core, ty)] else []
+        | None -> [])
+      (Srt.sort (getRef tc.hints))
+  in
+  if V.len candidates == 1 then
+    -- one that could is tried for real, and undone if it does not fit
+    match V.head candidates with
+    | Just (_, core, ty) ->
+        let saved = T.save tc in
+        let before = errorCount tc in
+        (match applyCandidate tc ctx core ty wanted depth with
+         | Just found if errorCount tc == before -> Ok found
+         | _ ->
+             let w = T.restore tc saved in
+             Err "NoInstance")
+    | None -> Err "NoInstance"
+  else
+    let fitting = V.filter (\c -> match c with | (_, core, ty) -> candidateFits tc ctx core ty wanted depth) candidates in
+    if V.len fitting == 1 then
+      match V.head fitting with
+      | Just (_, core, ty) ->
+          (match applyCandidate tc ctx core ty wanted depth with
+           | Just found -> Ok found
+           | None -> Err "NoInstance")
+      | None -> Err "NoInstance"
+    else if V.isEmpty fitting then Err "NoInstance"
+    else Err "AmbiguousInstance"
+
+-- A builtin type as a key a head is compared by.
+fun builtinKey (b : Builtin) : Int =
+  let names = ["Unit", "Int", "Bool", "String", "Grade", "Effect", "Div", "Char"] in
+  let name = C.builtinName b in
+  0 - 1000 - V.foldl (\acc i -> if V.getOr "" names i == name then i else acc) 99 (V.range 0 (V.len names))
+
+-- What a type comes to past its binders, roughly: the constant at its head,
+-- and that of its first argument, where they are constants.
+fun headOf (tc : Tc) (lvl : Int) (ty : Value) : (Maybe Int, Maybe Int) ! { Mut | e } =
+  match force tc ty with
+  | Value.Pi name icit _ _ _ cod if icit != Icit.Explicit -> headOf tc (lvl + 1) (fst (splitComp tc (apply tc cod (Va.vvar lvl name))))
+  | Value.Opaque t _ sp ->
+      let first = V.foldl (\acc e -> match (acc, e) with | (None, Elim.App a) -> Just a | _ -> acc) None sp in
+      let firstKey =
+        match first with
+        | Just a ->
+            (match force tc a with
+             | Value.Opaque u _ _ -> Just u
+             | Value.LitTy b -> Just (builtinKey b)
+             | _ -> None)
+        | None -> None
+      in
+      (Just t, firstKey)
+  | _ -> (None, None)
+
+-- Whether a hint whose type comes to `hint` could give what comes to
+-- `goal`: what is not known of either could be anything.
+fun compatible (hint : (Maybe Int, Maybe Int)) (goal : (Maybe Int, Maybe Int)) : Bool =
+  let fits = \a b -> M.isNone a or M.isNone b or a == b in
+  fits (fst hint) (fst goal) and fits (snd hint) (snd goal)
+
+-- The ways to the superclasses inside a record of trait `t`: each a path
+-- of superclass projections, its own and on through theirs.
+fun superPaths (tc : Tc) (ctx : Ctx) (t : Int) (depth : Int) : [[Int]] ! { Mut | e } =
+  if depth > 4 then []
+  else
+    V.concatMap
+      (\p ->
+        let next =
+          match X.lookup ctx (named p) with
+          | Just (_, ty, _) -> resultTrait tc ty 0
+          | None -> None
+        in
+        let rest = match next with | Just n -> V.map (\r -> V.append [p] r) (superPaths tc ctx n (depth + 1)) | None -> [] in
+        V.append [[p]] rest)
+      (Hm.getOr [] t (getRef tc.supers))
+
+-- The trait a projection's type comes to, past its binders.
+fun resultTrait (tc : Tc) (ty : Value) (lvl : Int) : Maybe Int ! { Mut | e } =
+  match force tc ty with
+  | Value.Pi name _ _ _ _ cod -> resultTrait tc (fst (splitComp tc (apply tc cod (Va.vvar lvl name)))) (lvl + 1)
+  | Value.Opaque t _ _ -> if V.elem t (getRef tc.traits) then Just t else None
+  | _ -> None
+
+-- `core : ty` taken through each projection of `path` in turn: the
+-- superclass record inside it, and its type.
+fun through (tc : Tc) (ctx : Ctx) (core : Core) (ty : Value) (path : [Int]) : Maybe (Core, Value) ! { Mut | e } =
+  match V.head path with
+  | None -> Just (core, ty)
+  | Just p ->
+      (match X.lookup ctx (named p) with
+       | None -> None
+       | Just (pCore0, pTy0, _) ->
+           let (pCore, pTy) = insertImplicit tc ctx pCore0 pTy0 in
+           (match force tc pTy with
+            | Value.Pi _ Icit.Explicit _ _ dom cod ->
+                if unify tc ctx.lvl ty dom then
+                  let value = eval tc ctx.env core in
+                  through tc ctx (Core.App pCore core) (fst (splitComp tc (apply tc cod value))) (V.drop path 1)
+                else None
+            | _ -> None))
+
+-- Whether `core : ty` gives what is wanted, as `applyCandidate` would: tried,
+-- and undone.
+fun candidateFits (tc : Tc) (ctx : Ctx) (core : Core) (ty : Value) (wanted : Value) (depth : Int) : Bool ! { Mut | e } =
+  let saved = T.save tc in
+  let before = errorCount tc in
+  let fits = M.isSome (applyCandidate tc ctx core ty wanted depth) and errorCount tc == before in
+  let w = T.restore tc saved in
+  fits
+
+-- `core : ty`, applied to metavariables for its implicit arguments and to
+-- what search finds for its auto ones, as what is wanted: if it comes to
+-- that. Its own auto arguments are looked for once what it comes to is
+-- known, which is what says what they are.
+fun applyCandidate (tc : Tc) (ctx : Ctx) (core : Core) (ty : Value) (wanted : Value) (depth : Int) : Maybe Core ! { Mut | e } =
+  let (applied, result, owed) = candidateArgs tc ctx core ty [] in
+  if not (unify tc ctx.lvl result wanted) then None
+  else settleOwed tc ctx owed depth applied
+
+fun candidateArgs (tc : Tc) (ctx : Ctx) (core : Core) (ty : Value) (owed : [(Int, Value)]) : (Core, Value, [(Int, Value)]) ! { Mut | e } =
+  match force tc ty with
+  | Value.Pi name icit grade _ dom cod if icit != Icit.Explicit ->
+      let (arg, owed2) =
+        if icit == Icit.Auto then
+          let m = placeholder tc in
+          (Core.Meta m, V.pushBack owed (m, dom))
+        else (freshMetaWith tc ctx (Origin.Inferred ("the implicit argument " ++ name)) (Just dom), owed)
+      in
+      let argV = eval tc ctx.env arg in
+      candidateArgs tc ctx (Core.App core (argument tc grade arg)) (fst (splitComp tc (apply tc cod argV))) owed2
+  | fty -> (core, fty, owed)
+
+fun settleOwed (tc : Tc) (ctx : Ctx) (owed : [(Int, Value)]) (depth : Int) (core : Core) : Maybe Core ! { Mut | e } =
+  match V.head owed with
+  | None -> Just core
+  | Just (m, dom) ->
+      (match search tc ctx dom (depth + 1) with
+       | Ok found ->
+           let w = choose tc m ctx found in
+           settleOwed tc ctx (V.drop owed 1) depth core
+       | Err _ -> None)
+
+-- --- placeholders written over ------------------------------------------------------
+
+-- `core`, of a definition checked at `base` slots, with each placeholder
+-- written over with what was found for it.
+@pub fun resolve (tc : Tc) (core : Core) (base : Int) : Core ! { Mut | e } =
+  let chosen = getRef tc.chosen in
+  if Hm.isEmpty chosen then core else resolveWith chosen core base
+
+fun resolveWith (chosen : HashMap Int (Core, Int)) (core : Core) (base : Int) : Core =
+  C.transform core 0 (\c d ->
+    match c with
+    | Core.Meta m ->
+        M.map
+          (\pr ->
+            match pr with
+            | (found, at) ->
+                -- what was found may hold placeholders in turn: a hint's own
+                -- auto arguments
+                let inner = resolveWith chosen found at in
+                -- made at `at` slots, and used at `base + d`
+                let by = base + d - at in
+                if by == 0 then inner
+                else
+                  C.transform inner 0 (\c2 i ->
+                    match c2 with
+                    | Core.Var k x -> if k >= i then Just (Core.Var (if k + by > 0 then k + by else 0) x) else None
+                    | _ -> None))
+          (Hm.lookup m chosen)
+    | _ -> None)
+
+-- The recursive definitions recorded since `mark`, their placeholders
+-- written over.
+@pub fun resolveRecDefs (tc : Tc) (mark : Int) : () ! { Mut | e } =
+  let chosen = getRef tc.chosen in
+  if Hm.isEmpty chosen then ()
+  else
+    let defs = getRef tc.recDefs in
+    setRef tc.recDefs (V.map (\i -> match V.getOr (0, 0, Core.Error) defs i with | (u, l, c) -> if i >= mark then (u, l, resolveWith chosen c l) else (u, l, c)) (V.range 0 (V.len defs)))
+
+-- --- a method of a known instance ---------------------------------------------------
+
+-- Note what of an instance's record, `core`, checked in `ctx`, a method call
+-- can be made into: those of its fields that are a constant or a primitive,
+-- if it is the record itself (an instance with no parameters). Each is
+-- kept as the name it is, so that it can be referred to from anywhere.
+@pub fun noteInstance (tc : Tc) (ctx : Ctx) (u : Int) (core : Core) : () ! { Mut | e } =
+  let (head, args) = spineOf core [] in
+  match head with
+  | Core.Opaque ctor _ ->
+      (match T.ctorInfo tc ctor with
+       | Just (CtorInfo.CtorInfo _ _ _ params fields) ->
+           if V.len args != params + fields then ()
+           else
+             let kept =
+               V.map
+                 (\a ->
+                   match stripRuntime a with
+                   | Core.Prim p -> Just (Core.Prim p)
+                   | b -> M.map (\ux -> match ux with | (v, x) -> Core.Opaque v x) (uniqueAt ctx b ctx.lvl 0))
+                 (V.drop args params)
+             in
+             setRef tc.instanceFields (Hm.insert u kept (getRef tc.instanceFields))
+       | None -> ())
+  | _ -> ()
+
+-- A term's head and the arguments it is applied to, in order.
+fun spineOf (c : Core) (args : [Core]) : (Core, [Core]) =
+  match c with
+  | Core.App f a -> spineOf f (V.append [a] args)
+  | _ -> (c, args)
+
+fun stripRuntime (c : Core) : Core =
+  match c with
+  | Core.Runtime _ inner -> stripRuntime inner
+  | _ -> c
+
+-- The name `core` is, at `depth` binders inside a term checked at `base`
+-- slots of `ctx`: a constant, or a slot of `ctx` below `base` (one past it
+-- is local to the term, and is no instance or method).
+fun uniqueAt (ctx : Ctx) (core : Core) (base : Int) (depth : Int) : Maybe (Int, String) =
+  match core with
+  | Core.Opaque u x -> Just (u, x)
+  | Core.Var i x ->
+      let l = base + depth - i - 1 in
+      if l >= 0 and l < base then M.map (\k -> (k, x)) (X.keyAt ctx l) else None
+  | _ -> None
+
+-- What `noteInstance` kept, referred to from `depth` binders inside a term
+-- checked at `base` slots of `ctx`.
+fun namedAt (ctx : Ctx) (kept : Core) (base : Int) (depth : Int) : Maybe Core =
+  match kept with
+  | Core.Opaque u x ->
+      (match Hm.lookup u ctx.names with
+       | Just (Entry.Local l) -> if l < base then Just (Core.Var (base + depth - l - 1) x) else None
+       | Just (Entry.Constant _) -> Just kept
+       | None -> None)
+  | _ -> Just kept
+
+-- `core`, checked at `base` slots, with each call of a method of a known
+-- instance, `(+) {Int} addInt x y`, made a call of what the instance gives
+-- for it, `intAdd x y`: so that a method costs what its instance's field
+-- does, a primitive's what a primitive does.
+@pub fun specialize (tc : Tc) (ctx : Ctx) (core : Core) (base : Int) : Core ! { Mut | e } =
+  let methods = getRef tc.methods in
+  let fields = getRef tc.instanceFields in
+  if Hm.isEmpty methods or Hm.isEmpty fields then core else specializeAt methods fields ctx core base 0
+
+fun specializeAt (methods : HashMap Int (Int, Int, Int)) (fields : HashMap Int [Maybe Core]) (ctx : Ctx) (core : Core) (base : Int) (depth : Int) : Core =
+  C.transform core depth (\c d ->
+    match c with
+    | Core.App _ _ ->
+        let (head, args) = spineOf c [] in
+        M.andThen
+          (\mx ->
+            M.andThen
+              (\info ->
+                match info with
+                | (_, field, params) ->
+                    M.andThen
+                      (\dict ->
+                        M.andThen
+                          (\ix ->
+                            M.andThen
+                              (\kept ->
+                                M.map
+                                  (\given -> V.foldl (\f a -> Core.App f (specializeAt methods fields ctx a base d)) given (V.drop args (params + 1)))
+                                  (namedAt ctx kept base d))
+                              (M.andThen (\fs -> M.andThen (\x -> x) (V.get fs field)) (Hm.lookup (fst ix) fields)))
+                          (uniqueAt ctx (stripRuntime dict) base d))
+                      (V.get args params))
+              (Hm.lookup (fst mx) methods))
+          (uniqueAt ctx head base d)
+    | _ -> None)
+
+-- The recursive definitions recorded since `mark`, specialized.
+@pub fun specializeRecDefs (tc : Tc) (ctx : Ctx) (mark : Int) : () ! { Mut | e } =
+  let methods = getRef tc.methods in
+  let fields = getRef tc.instanceFields in
+  if Hm.isEmpty methods or Hm.isEmpty fields then ()
+  else
+    let defs = getRef tc.recDefs in
+    setRef tc.recDefs (V.map (\i -> match V.getOr (0, 0, Core.Error) defs i with | (u, l, c) -> if i >= mark then (u, l, specializeAt methods fields ctx c l 0) else (u, l, c)) (V.range 0 (V.len defs)))
+
+-- --- instances ----------------------------------------------------------------------
+
+-- Each instance of a trait this package declares (a hint whose type comes to
+-- a trait's record, with a unique from `first` on): that it lives with its
+-- trait or with the type it is for, and that no other instance of the trait
+-- is for types that unify with its.
+@pub fun checkInstances (tc : Tc) (ctx : Ctx) (first : Int) : () ! { Mut | e } =
+  let own = \u -> u >= first in
+  let instances =
+    V.concatMap
+      (\u ->
+        match X.lookup ctx (named u) with
+        | Just (_, ty, _) ->
+            (match instanceOf tc ctx ty with
+             | Just (t, head) ->
+                 let w =
+                   if own u and not (own t) and not (match head with | Just hd -> own hd | None -> False) then T.error tc "OrphanInstance" else ()
+                 in
+                 [(u, t)]
+             | None -> [])
+        | None -> [])
+      (Srt.sort (getRef tc.hints))
+  in
+  V.foldl
+    (\acc i ->
+      match V.get instances i with
+      | Just (u, t) ->
+          if not (own u) then ()
+          else
+            let clash =
+              V.any
+                (\j -> match V.get instances j with | Just (v, s) -> s == t and headsUnify tc ctx u v | None -> False)
+                (V.range 0 i)
+            in
+            if clash then T.error tc "OverlappingInstances" else ()
+      | None -> ())
+    ()
+    (V.range 0 (V.len instances))
+
+-- The trait an instance's type is of, past its implicit and auto binders,
+-- and the type constructor of what it is for (its first argument's head),
+-- if that is a declared one.
+fun instanceOf (tc : Tc) (ctx : Ctx) (ty : Value) : Maybe (Int, Maybe Int) ! { Mut | e } = instanceAt tc ctx.lvl ty
+
+fun instanceAt (tc : Tc) (lvl : Int) (ty : Value) : Maybe (Int, Maybe Int) ! { Mut | e } =
+  match force tc ty with
+  | Value.Pi name icit _ _ _ cod if icit != Icit.Explicit -> instanceAt tc (lvl + 1) (fst (splitComp tc (apply tc cod (Va.vvar lvl name))))
+  | Value.Opaque t _ sp ->
+      if not (V.elem t (getRef tc.traits)) then None
+      else
+        let first = V.foldl (\acc e -> match (acc, e) with | (None, Elim.App a) -> Just a | _ -> acc) None sp in
+        let head = match first with | Just a -> (match force tc a with | Value.Opaque u _ _ -> Just u | _ -> None) | None -> None in
+        Just (t, head)
+  | _ -> None
+
+-- Whether the instances `u` and `v` are for types that unify, their implicit
+-- and auto binders made metavariables: tried, and undone.
+fun headsUnify (tc : Tc) (ctx : Ctx) (u : Int) (v : Int) : Bool ! { Mut | e } =
+  let saved = T.save tc in
+  let result =
+    \w ->
+      match X.lookup ctx (named w) with
+      | Just (_, ty, _) -> Just (instantiated tc ctx ty)
+      | None -> None
+  in
+  let unifies =
+    match (result u, result v) with
+    | (Just a, Just b) -> unify tc ctx.lvl a b
+    | _ -> False
+  in
+  let w2 = T.restore tc saved in
+  unifies
+
+fun instantiated (tc : Tc) (ctx : Ctx) (ty : Value) : Value ! { Mut | e } =
+  match force tc ty with
+  | Value.Pi _ icit _ _ dom cod if icit != Icit.Explicit ->
+      let arg = freshMetaWith tc ctx (Origin.Inferred "an instance's argument") (Just dom) in
+      instantiated tc ctx (fst (splitComp tc (apply tc cod (eval tc ctx.env arg))))
+  | fty -> fty

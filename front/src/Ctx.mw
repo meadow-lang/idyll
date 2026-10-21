@@ -36,10 +36,16 @@ use Std.Maybe.Maybe.*
   names : HashMap Int Entry,
   -- the slots matching has split: the constructor each turned out to be,
   -- and the slots of that constructor's arguments
-  splits : HashMap Int (Int, [Int])
+  splits : HashMap Int (Int, [Int]),
+  -- the slots that are auto binders, which a search for an auto argument
+  -- may find, by level
+  autos : [Int]
 }
 
-@pub fun empty () : Ctx = Ctx { lvl = 0, env = Va.emptyEnv (), binders = [], names = Hm.empty, splits = Hm.empty }
+@pub fun empty () : Ctx = Ctx { lvl = 0, env = Va.emptyEnv (), binders = [], names = Hm.empty, splits = Hm.empty, autos = [] }
+
+-- The innermost slot, as an auto binder: what a search may find.
+@pub fun autoBound (ctx : Ctx) : Ctx = if ctx.lvl > 0 then { ctx | autos = V.pushBack ctx.autos (ctx.lvl - 1) } else ctx
 
 @pub fun extend (ctx : Ctx) (unique : Maybe Int) (hint : String) (ty : Value) (info : Info) (value : Value) : Ctx =
   let names =
@@ -191,5 +197,6 @@ fun unknownInfo (i : Info) : Bool = i != Info.Defined
       lvl = lvl,
       env = Va.envDrop ctx.env (ctx.lvl - lvl),
       binders = V.take ctx.binders lvl,
-      splits = Hm.fromVec (V.filter (\kv -> fst kv < lvl) (Hm.toVec ctx.splits))
+      splits = Hm.fromVec (V.filter (\kv -> fst kv < lvl) (Hm.toVec ctx.splits)),
+      autos = V.filter (\l -> l < lvl) ctx.autos
     }
