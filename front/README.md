@@ -230,8 +230,24 @@ each at the place it was made from:
 - `f {a}`, an argument in braces after the function's first atom, as an
   implicit argument given by hand (`ImplicitApp`, in `Hir` too), which the
   checker gives the next implicit binder of `f`'s type;
-- `{auto d : t}` and `t => ..`, auto binders (`Icit.Auto`), and `@hint` on a
-  signature; the checker says it cannot search for an auto argument yet;
+- `{auto d : t}` and `t => ..`, auto binders (`Icit.Auto`), `@hint` on a
+  signature, and `f @{d}`, an auto argument given by hand (`AutoApp`;
+  after a name the grammar reads `@{d}` as the name's `AsTail`, and the
+  pass tells it apart); the checker says it cannot search for an auto
+  argument yet;
+- `trait C a => T (a : Type) where` and its block, as the Rust parser's
+  `trait_decl` makes it: a record whose fields are the superclasses
+  (`#super0`, ...) then the methods, marked a trait, with its defaults; a
+  function per method, `describe : {a : Type} -> {auto self : Describe a}
+  -> a -> String`, reading its field off the record found for it; and a
+  definition per default, `Describe.#twice`. The head is read as a term
+  and taken apart (`traitHead`), afresh wherever a part of it is written,
+  so that no node is shared;
+- `instance [name :] head where` and its equations: a `@terminating`
+  definition of the record, a hint unless it is named, whose body is
+  `RecordOf` (the trait, its arguments, each method's equations as one
+  lambda over a `case`, and the instance's own name, `#instance@<offset>`
+  when it has none), which the renamer builds;
 - `module M where` and its block, a `File` of its own among the file's
   `modules`, which the renamer lifts out into the module `M` under the
   file's, as the Rust renamer does;
@@ -316,6 +332,15 @@ its things with, ...). `dumped` writes the HIR out for the rename test.
 - Records are taken apart: a literal is its constructor applied to the
   fields in order, `e.x` is the projection of the one record in scope with
   an `x`, and an update is a `case` that builds the record again.
+- An instance's `RecordOf` is its trait's constructor, given the trait's
+  arguments by hand (`ImplicitApp`), then each method in field order: a
+  superclass is `Search`, what a search finds, and a method left out is
+  the trait's default given the instance itself, `Describe.#twice
+  @{instance}`, under a lambda when the method is a function.
+- A trait's methods (by the method's unique: the record, the field, how
+  many parameters the trait has), its superclass projections and its
+  defaults are tables beside the HIR, as `hir::Module` has them; the
+  rename test writes the first two as a `(trait ..)` line.
 - Sequence literals become `SeqCons`/`SeqNil`.
 
 It differs from the Rust renamer in one way, on purpose. A name that several
@@ -336,8 +361,12 @@ itself through the others is not recursive, definitions that mention each
 other are one group, and each group comes after what it uses. A definition
 by matching with a signature is recursive even if it never calls itself,
 because the checker keeps such a definition a constant that unfolds only
-when its cases can choose. The data types are put in order too, since a
-data type's kind may mention only the types before it.
+when its cases can choose. So is a hint with a signature, since an
+instance's methods find the instance itself. The hints and the superclass
+projections, which a search finds without their being named, are moved as
+far forward as what they need lets them (`earlyFirst`, the pass's context
+saying which they are). The data types are put in order too, since a data
+type's kind may mention only the types before it.
 
 ### Types
 

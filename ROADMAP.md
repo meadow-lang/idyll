@@ -541,7 +541,8 @@ from what `idyll.lock` pinned.
   instance is not needed to make itself), a superclass found by search.
   A search goes through an auto binder's superclasses too, and hints and
   superclass projections are checked before what does not lead to them.
-  front/ does not read traits yet (see *The compiler in Meadow*).
+  front/ reads and renames traits; its checker does not search yet (see
+  *The compiler in Meadow*).
 - [x] **Grades on auto binders**: default `[]`, since a dictionary is used at
   run time (plain braced implicits default to `0`). `{auto p : [0] LTE n m}`
   is an erased proof, and so must be total.
@@ -1021,6 +1022,9 @@ do yet `(unsupported)`, and the tests count those apart.
   its linking there).
 - [ ] Traits and instances (`trait`, `instance`, `@{..}`), read and
   desugared as the Rust parser does, so that the corpus can have them.
+  Read, desugared, renamed and ordered (2026-10-20): the parse and the
+  rename agree on the corpus's trait programs. Left: the checker's search
+  for an auto argument, which it says it cannot do yet.
 - [ ] Choosing an overloaded name by type, as the Rust checker does it
   (`overloads.rs`): its renamer keeps the candidates already, and its
   checker says it cannot choose yet, which keeps such programs out of the

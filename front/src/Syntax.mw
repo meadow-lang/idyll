@@ -92,7 +92,10 @@ use Idyll.Layout (Token, foldToken)
     "error" = Error _
   }
   context {
-    "record" = LowerIdent "record" before UpperIdent _
+    "record" = LowerIdent "record" before UpperIdent _,
+    "trait" = LowerIdent "trait" before UpperIdent _,
+    "instance" = LowerIdent "instance" before UpperIdent _,
+    "instance_named" = LowerIdent "instance" before LowerIdent _
   }
   grammar {
     File = "vlbrace" entries:Entry* "vrbrace"
@@ -102,7 +105,7 @@ use Idyll.Layout (Token, foldToken)
     -- --- items ---
 
     Item = attrs:AttrLine* body:ItemBody
-    ItemBody = ModuleDecl | DataDecl | RecordDecl | EffectDecl | UseDecl | Line
+    ItemBody = ModuleDecl | DataDecl | RecordDecl | TraitDecl | InstanceDecl | EffectDecl | UseDecl | Line
 
     -- `module M where`, and a block of items, as a file has
     ModuleDecl = "module" name:"upper" "where" open:("{" | "vlbrace") entries:Entry* close:("}" | "vrbrace")
@@ -134,6 +137,14 @@ use Idyll.Layout (Token, foldToken)
 
     RecordDecl = "record" name:"upper" params:Atom* "=" "{" fields:(FieldDecl ("," FieldDecl)* ","?)? "}"
     FieldDecl = name:"lower" ":" ty:Term
+
+    -- `trait C a => T (a : Type) where`, and its methods' signatures and
+    -- defaults: the head is read as a term, as the Rust parser reads it
+    TraitDecl = "trait" head:Term "where" open:("{" | "vlbrace") entries:LetEntry* close:("}" | "vrbrace")
+    -- `instance C a => T (List a) where`, or named, `instance loud : T Int
+    -- where`, and its methods' equations
+    InstanceDecl = kw:("instance" | "instance_named") name:InstanceName? head:Term "where" open:("{" | "vlbrace") entries:LetEntry* close:("}" | "vrbrace")
+    InstanceName = name:"lower" ":"
 
     EffectDecl = "effect" name:"upper" params:Atom* body:EffectBody
     EffectBody = OpBlock | EffectAlias
@@ -180,7 +191,7 @@ use Idyll.Layout (Token, foldToken)
     App = atoms:(Atom Atom*)
 
     Atom = Name | Number | StrLit | CharLit | Hole | TypeA | InfA | OpName | Paren | BoxA | SeqA
-      | Braced | RecordLit | DotA
+      | Braced | RecordLit | DotA | AutoA
     -- `x@p`, a pattern's, is a name with a pattern after it
     Name = name:("lower" | "upper" | "qual_upper" | "qual_lower") asTail:AsTail?
     AsTail = "@" pat:Atom
@@ -201,6 +212,9 @@ use Idyll.Layout (Token, foldToken)
     FieldVal = name:"lower" "=" value:Term
     RecordLit = name:("upper" | "qual_upper") "{" fields:FieldVals? "}"
     DotA = "." target:Atom
+    -- `f @{d}`: an auto argument given by hand (after a name, `f@{d}`
+    -- is read as the name's `AsTail`, and told apart after)
+    AutoA = "@" "{" arg:Term "}"
 
     -- an effect row: `{Log, Div | e}`, or one effect, `State Int` (a braced
     -- one is an atom of its own), or none, `{}`

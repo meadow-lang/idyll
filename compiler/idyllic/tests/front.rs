@@ -428,6 +428,23 @@ mod h {
             sx(d.ctors.iter().map(ctor)),
             opt(&d.seq, |(n, c)| sx(["seq".into(), ident(n), ident(c)])),
             flag("linear", d.linear),
+            flag("trait", d.is_trait),
+        ])
+    }
+
+    /// A trait's superclass projections and its methods, in their fields'
+    /// order: each method with its field and how many parameters the trait
+    /// has.
+    fn trait_line(m: &Module, d: &DataDecl) -> String {
+        let u = d.name.unique.unwrap_or(usize::MAX);
+        let supers = m.supers.get(&u).cloned().unwrap_or_default();
+        let mut methods: Vec<(usize, (usize, usize, usize))> = m.methods.iter().filter(|(_, (t, ..))| *t == u).map(|(m, i)| (*m, *i)).collect();
+        methods.sort_by_key(|(_, (_, i, _))| *i);
+        sx([
+            "trait".into(),
+            ident(&d.name),
+            sx(supers.iter().map(|p| format!("super@{p}"))),
+            sx(methods.iter().map(|(mu, (_, i, n))| sx([format!("method@{mu}"), i.to_string(), n.to_string()]))),
         ])
     }
 
@@ -443,6 +460,7 @@ mod h {
         let own = |x: &Ident| x.unique.is_some_and(|u| u >= m.uniques.0);
         let mut lines: Vec<String> = Vec::new();
         lines.extend(m.datas.iter().filter(|d| own(&d.name)).map(data));
+        lines.extend(m.datas.iter().filter(|d| own(&d.name) && d.is_trait).map(|d| trait_line(m, d)));
         lines.extend(m.effects.iter().filter(|e| own(&e.name)).map(effect));
         lines.extend(m.natives.iter().filter(|n| own(&n.name)).map(|n| sx(["native".into(), ident(&n.name), term(&n.ty)])));
         let binds = m.groups.iter().flat_map(|g| g.binds());
@@ -648,6 +666,8 @@ mod w {
             opt(&d.seq, |s| sx(["seq".into(), s.nil.node.clone(), s.cons.node.clone()])),
             visibility(d.visibility),
             opt(&d.fields, |fs| sx(fs.iter().map(|f| f.node.clone()))),
+            flag("trait", d.is_trait),
+            sx(d.defaults.iter().map(|(m, name, function)| sx([m.node.clone(), name.clone(), flag("function", *function)]))),
         ])
     }
 

@@ -968,6 +968,9 @@ pass! {
                   let (bC, _) = checkGrade c.tc c.ctx b in
                   ((if op == Prim.IntAdd then Core.GradeAdd aC bC else Core.GradeMul aC bC), g, U.none ()))
              | _ -> fallback c again g))
+    -- `f @{d}` and what a search finds: this checker has no search yet
+    | AutoApp { raw func, raw arg } -> unsupported cx.tc "auto arguments"
+    | Search {} -> unsupported cx.tc "auto arguments"
     -- `f {a}`: `f`'s next implicit argument is `a`, rather than one worked out
     | ImplicitApp { raw func, raw arg } ->
         (let again = \(c : Cx) -> elabExpr src out c node in

@@ -82,8 +82,13 @@ use Std.Result.Result.*
       seq : Maybe SeqAttr,
       vis : Visibility,
       isRecord : Bool,
-      fields : [Name]
+      fields : [Name],
+      isTrait : Bool,
+      defaults : [Default]
     }
+  -- a trait's default for a method: the method, the definition that is the
+  -- default (`Describe.#twice`), and whether the method is a function
+  Default + Default { method : Name, name : String, function : Bool }
   SeqAttr + SeqAttr { nil : Name, cons : Name }
   TypeParam + TypeParam { name : Name, kindSig : Maybe Expr }
   Ctor + Fields { name : Name, fields : [Expr] }
@@ -116,6 +121,11 @@ use Std.Result.Result.*
   Expr + App { func : Expr, arg : Expr }
   -- `f {a}`: an implicit argument given by hand
   Expr + ImplicitApp { func : Expr, arg : Expr }
+  -- `f @{d}`: an auto argument given by hand
+  Expr + AutoApp { func : Expr, arg : Expr }
+  -- an instance's record: the trait, its arguments, the methods given, and
+  -- the instance's own name, which a default left to the trait is given
+  Expr + RecordOf { name : Name, args : [Expr], fields : [Field], inst : Name }
   Expr + Ann { expr : Expr, ty : Expr }
   Expr + Hole {}
   Expr + Box { expr : Expr }
@@ -481,6 +491,7 @@ pass! {
              }
          | None -> hole out here)
     | DotA {} -> (let u = bad node "not a term" in Hole {})
+    | AutoA {} -> (let u = bad node "an auto argument, @{d}, comes after what it is given to" in Hole {})
 }
 
 fun fieldVals out (cx : Cx) (fs : IdyllFieldVals) =
@@ -673,7 +684,8 @@ fun grouped out (at : Syn) xs (ops : [String]) (lo : Int) (hi : Int) (level : In
 -- `f (x.y)`.
 fun appTerm out (cx : Cx) (a : IdyllApp) (skip : Int) =
   let m = metaOf (syntaxIdyllApp a) in
-  -- each argument, and whether it is an implicit one given by hand, `{Int}`
+  -- each argument, and whether it is an implicit one given by hand, `{Int}`,
+  -- or an auto one, `@{d}` (after a name, read as its `AsTail`)
   let terms =
     V.foldl
       (\acc atom ->
@@ -686,19 +698,37 @@ fun appTerm out (cx : Cx) (a : IdyllApp) (skip : Int) =
                  acc)
         | IdyllAtom.Braced b if not (V.isEmpty acc) and M.isNone (idyllBracedRest b) and V.len (idyllBracedItems b) == 1 ->
             (match only (idyllBracedItems b) with
-             | Just t -> V.pushBack acc (lowerSurfaceTerm () out (plain cx) (syntaxIdyllTerm t), True)
+             | Just t -> V.pushBack acc (lowerSurfaceTerm () out (plain cx) (syntaxIdyllTerm t), Icit.Implicit)
              | None -> acc)
-        | _ -> V.pushBack acc (lowerSurfaceAtom () out cx (syntaxIdyllAtom atom), False))
+        | IdyllAtom.AutoA x if not (V.isEmpty acc) ->
+            V.pushBack acc (termOr out (plain cx) (metaOf (syntaxIdyllAutoA x)) (idyllAutoAArg x), Icit.Auto)
+        | IdyllAtom.Name n if M.isSome (autoTail n) ->
+            let nm = metaOf (syntaxIdyllName n) in
+            let f = var out cx nm (nameText n) in
+            (match autoTail n with
+             | Just t -> V.pushBack (V.pushBack acc (f, Icit.Explicit)) (lowerSurfaceTerm () out (plain cx) (syntaxIdyllTerm t), Icit.Auto)
+             | None -> acc)
+        | _ -> V.pushBack acc (lowerSurfaceAtom () out cx (syntaxIdyllAtom atom), Icit.Explicit))
       []
       (V.drop (idyllAppAtoms a) skip)
   in
   match V.head terms with
   | Just (f, _) ->
       V.foldl
-        (\acc xi -> match xi with | (x, imp) -> if imp then newSurfaceExprImplicitApp out m acc x else app out m acc x)
+        (\acc xi ->
+          match xi with
+          | (x, Icit.Implicit) -> newSurfaceExprImplicitApp out m acc x
+          | (x, Icit.Auto) -> newSurfaceExprAutoApp out m acc x
+          | (x, Icit.Explicit) -> app out m acc x)
         f
         (V.drop terms 1)
   | None -> hole out m
+
+-- `f@{d}`, a name with an auto argument after it: the argument.
+fun autoTail (n : IdyllName) : Maybe IdyllTerm =
+  match M.andThen idyllAsTailPat (idyllNameAsTail n) with
+  | Just (IdyllAtom.Braced b) if M.isNone (idyllBracedRest b) -> only (idyllBracedItems b)
+  | _ -> None
 
 fun fieldName out (dot : IdyllDotA) =
   let m = metaOf (syntaxIdyllDotA dot) in
@@ -978,6 +1008,7 @@ pass! {
     | InfA {} -> (let u = bad node "not a pattern" in Wild {})
     | OpName {} -> (let u = bad node "not a pattern" in Wild {})
     | Braced {} -> (let u = bad node "not a pattern" in Wild {})
+    | AutoA {} -> (let u = bad node "not a pattern" in Wild {})
     | Paren { raw items } ->
         (if V.isEmpty items then Pat.Lit { lit = Literal.Unit }
          else
@@ -1105,6 +1136,9 @@ data Item
   | Use SurfaceUse
   | Expr SurfaceExpr
   | Module SurfaceModule
+  -- an instance's declarations, its name, and whether it was named (and so
+  -- is no hint)
+  | Instance [SurfaceDecl] SurfaceName Bool
   | Nothing
 
 -- A name an equation or a signature can be for: `f` or `(+)` -- its token.
@@ -1320,6 +1354,8 @@ fun dataDecl out (cx : Cx) (d : IdyllDataDecl) =
     (visOf cx)
     False
     []
+    False
+    []
 
 -- `record Point = { x : Int, y : Int }`: a data type with one constructor,
 -- named for the type, and its fields' projections, `Point.x`, each a field's
@@ -1354,6 +1390,8 @@ fun recordDecl out (cx : Cx) (d : IdyllRecordDecl) =
       (visOf cx)
       True
       (V.map (\f -> nameAt out (metaOf (syntaxIdyllFieldDecl f)) (fieldText f)) fields)
+      False
+      []
   in
   let droppable = \u -> newSurfaceGrade out m (newSurfaceExprRange out m (lit out m (Literal.Int 0)) (lit out m (Literal.Int 1))) None in
   let projections =
@@ -1544,6 +1582,333 @@ fun attrsOf (at : Syn) (lines : [IdyllAttrLine]) : Attrs ! { Report | e } =
     noAttrs
     lines
 
+
+-- --- traits and instances ---------------------------------------------------------
+--
+-- As the Rust parser's `trait_decl` and `instance` desugar them: a trait is a
+-- record of its superclasses (`#super0`, ...) and methods, a function per
+-- method reading it off the record found for it, and a definition per
+-- default; an instance is a definition of the trait's record.
+
+-- A trait's head, `C a => T (a : k)`: its name, its parameters with their
+-- kinds, and its superclasses.
+fun traitHead out (t : SurfaceExpr) =
+  match traitSupers out t [] with
+  | (supers, rest) ->
+      (match traitParams out rest [] with
+       | Ok (name, params) -> Ok (name, params, supers)
+       | Err why -> Err why)
+
+fun traitSupers out (t : SurfaceExpr) (acc : [SurfaceExpr]) =
+  if kindSurfaceExpr out t == SurfaceExprKind.Pi and surfaceExprPiIcit out t == Icit.Auto and M.isNone (surfaceExprPiName out t)
+    and M.isNone (surfaceExprPiGrade out t)
+  then traitSupers out (surfaceExprPiCod out t) (V.pushBack acc (surfaceExprPiDom out t))
+  else (acc, t)
+
+fun traitParams out (t : SurfaceExpr) (acc : [(String, Maybe SurfaceExpr)]) =
+  let wrong = "a trait is declared as `trait Name params where`, its superclasses first, `C a =>`" in
+  let badParam = "a trait's parameter is a name, `a` or `(a : k)`" in
+  match kindSurfaceExpr out t with
+  | SurfaceExprKind.App ->
+      let a = surfaceExprAppArg out t in
+      let param =
+        match kindSurfaceExpr out a with
+        | SurfaceExprKind.Var ->
+            let x = surfaceNameText out (surfaceExprVarName out a) in
+            (match S.charAt x 0 with
+             | Just c if C.isLower c -> Ok (x, None)
+             | _ -> Err badParam)
+        | SurfaceExprKind.Ann ->
+            let x = surfaceExprAnnExpr out a in
+            if kindSurfaceExpr out x == SurfaceExprKind.Var then Ok (surfaceNameText out (surfaceExprVarName out x), Just (surfaceExprAnnTy out a))
+            else Err badParam
+        | _ -> Err badParam
+      in
+      (match param with
+       | Ok q -> traitParams out (surfaceExprAppFunc out t) (V.pushBack acc q)
+       | Err why -> Err why)
+  | SurfaceExprKind.Var ->
+      let x = surfaceNameText out (surfaceExprVarName out t) in
+      (match S.charAt x 0 with
+       | Just c if C.isUpper c and not (S.contains "." x) -> Ok (x, V.reverse acc)
+       | _ -> Err wrong)
+  | _ -> Err wrong
+
+-- A block's lines, as the Rust parser takes a block of declarations: any
+-- separators first, and none needed.
+fun blockLines (at : Syn) (entries : [IdyllLetEntry]) =
+  separated at (V.map (\x -> match x with | IdyllLetEntry.Line y -> Just y | IdyllLetEntry.Sep _ -> None) entries) True False
+
+-- A signature's type, as a line read in `cx` makes it.
+fun sigTyOf out (cx : Cx) (m : Meta) (line : IdyllLine) =
+  match lineItem out cx line with
+  | Item.Decl d if kindSurfaceDecl out d == SurfaceDeclKind.Sig -> surfaceDeclSigTy out d
+  | _ -> hole out m
+
+-- Whether a method's type is a function's, past its implicit binders.
+fun isFunction out (t : SurfaceExpr) =
+  if kindSurfaceExpr out t == SurfaceExprKind.Pi then
+    if surfaceExprPiIcit out t == Icit.Explicit then True else isFunction out (surfaceExprPiCod out t)
+  else False
+
+-- `trait C a => T (a : Type) where`, and its methods' signatures and defaults.
+fun traitDecl out (cx : Cx) (d : IdyllTraitDecl) =
+  let at = syntaxIdyllTraitDecl d in
+  let m = metaOf at in
+  let u0 = braced at (idyllTraitDeclOpen d) (idyllTraitDeclClose d) in
+  -- the head, read afresh wherever a part of it is used
+  let head = \u -> traitHead out (termOr out top m (idyllTraitDeclHead d)) in
+  match head () with
+  | Err why ->
+      let u = bad at why in
+      Item.Nothing
+  | Ok (name, params, supers0) ->
+      let lines = blockLines at (idyllTraitDeclEntries d) in
+      let items = V.map (\l -> (l, lineItem out top l)) lines in
+      let sigs =
+        V.concatMap
+          (\it ->
+            match it with
+            | (l, Item.Decl x) if kindSurfaceDecl out x == SurfaceDeclKind.Sig -> [(surfaceNameText out (surfaceDeclSigName out x), l)]
+            | _ -> [])
+          items
+      in
+      let equations =
+        V.concatMap
+          (\it ->
+            match it with
+            | (l, Item.Decl x) if kindSurfaceDecl out x == SurfaceDeclKind.Def -> [(surfaceNameText out (surfaceDeclDefName out x), l, x)]
+            | (l, Item.Decl x) if kindSurfaceDecl out x == SurfaceDeclKind.Native ->
+                let v = bad (syntaxIdyllLine l) "a trait's methods are written as signatures, with no @native" in
+                []
+            | (_, Item.Decl _) -> []
+            | (l, _) ->
+                let v = bad (syntaxIdyllLine l) "a trait's block is its methods' signatures and defaults" in
+                [])
+          items
+      in
+      let w =
+        V.foldl
+          (\acc e ->
+            match e with
+            | (x, l, _) ->
+                if V.any (\s -> fst s == x) sigs then acc
+                else bad (syntaxIdyllLine l) "${x} is no method of ${name}: a default is for a method it declares")
+          ()
+          equations
+      in
+      let nSupers = V.len supers0 in
+      let superName = \i -> "#super${i}" in
+      let fieldNames = V.append (V.map superName (V.range 0 nSupers)) (V.map fst sigs) in
+      let nFields = V.len fieldNames in
+      let paramNames = V.map fst params in
+      let whole = \u -> V.foldl (\acc x -> app out m acc (newSurfaceExprVar out m (nameAt out m x))) (newSurfaceExprVar out m (nameAt out m name)) paramNames in
+      -- field `i`'s type, read in `c`: a superclass's from the head, a
+      -- method's from its signature
+      let fieldTy =
+        \(c : Cx) i ->
+          if i < nSupers then
+            (match head () with
+             | Ok (_, _, ss) -> V.getOr (hole out m) ss i
+             | Err _ -> hole out m)
+          else
+            (match V.get sigs (i - nSupers) with
+             | Just (_, l) -> sigTyOf out c m l
+             | None -> hole out m)
+      in
+      let ctorTy =
+        V.foldr
+          (\i acc -> newSurfaceExprPi out m (Just (nameAt out m (V.getOr "_" fieldNames i))) Icit.Explicit None (fieldTy top i) acc)
+          (whole ())
+          (V.range 0 nFields)
+      in
+      -- `{a : Type} -> {auto self : T a} -> ty`: the trait's parameters, then
+      -- the record found for them
+      let under =
+        \ty ->
+          let kinds = match head () with | Ok (_, ps, _) -> V.map snd ps | Err _ -> [] in
+          let found = newSurfaceExprPi out m (Just (nameAt out m "self")) Icit.Auto None (whole ()) ty in
+          V.foldr
+            (\i acc ->
+              let k = match V.getOr None kinds i with | Just k -> k | None -> newSurfaceExprType out m in
+              newSurfaceExprPi out m (Just (nameAt out m (V.getOr "_" paramNames i))) Icit.Implicit None k acc)
+            found
+            (V.range 0 (V.len paramNames))
+      in
+      let typeParams =
+        match head () with
+        | Ok (_, ps, _) -> V.map (\q -> match q with | (x, k) -> newSurfaceTypeParam out m (nameAt out m x) k) ps
+        | Err _ -> []
+      in
+      let droppable = \u -> newSurfaceGrade out m (newSurfaceExprRange out m (lit out m (Literal.Int 0)) (lit out m (Literal.Int 1))) None in
+      let projections =
+        V.concatMap
+          (\i ->
+            let x = V.getOr "_" fieldNames i in
+            let projection = "${name}.${x}" in
+            let before = { top | subst = V.map (\g -> (g, name)) (V.take fieldNames i) } in
+            let sig = newSurfaceExprPi out m (Just (nameAt out m "self")) Icit.Explicit (Just (droppable ())) (whole ()) (fieldTy before i) in
+            let pats =
+              V.map
+                (\j -> if j == i then newSurfacePatBind out m (newSurfaceParam out m (nameAt out m x) False None None) else newSurfacePatWild out m)
+                (V.range 0 nFields)
+            in
+            [
+              newSurfaceDeclSig out m (nameAt out m projection) sig,
+              newSurfaceDeclDef out m (nameAt out m projection) [newSurfacePatCon out m (nameAt out m name) pats] None (newSurfaceRhsPlain out m (newSurfaceExprVar out m (nameAt out m x)))
+            ])
+          (V.range 0 nFields)
+      in
+      let methods =
+        V.concatMap
+          (\sg ->
+            match sg with
+            | (x, l) ->
+                let body = app out m (newSurfaceExprVar out m (nameAt out m "${name}.${x}")) (newSurfaceExprVar out m (nameAt out m "self")) in
+                [
+                  newSurfaceDeclSig out m (nameAt out m x) (under (sigTyOf out top m l)),
+                  newSurfaceDeclDef out m (nameAt out m x) [] None (newSurfaceRhsPlain out m body)
+                ])
+          sigs
+      in
+      let defaulted = V.filter (\sg -> V.any (\e -> match e with | (x, _, _) -> x == fst sg) equations) sigs in
+      let defaultDecls =
+        V.concatMap
+          (\sg ->
+            match sg with
+            | (x, l) ->
+                let dname = "${name}.#${x}" in
+                V.append
+                  [newSurfaceDeclSig out m (nameAt out m dname) (under (sigTyOf out top m l))]
+                  (V.concatMap
+                     (\e ->
+                       match e with
+                       | (y, _, eq) ->
+                           if y == x then
+                             [newSurfaceDeclDef out m (nameAt out m dname) (surfaceDeclDefParams out eq) (surfaceDeclDefTy out eq) (surfaceDeclDefRhs out eq)]
+                           else [])
+                     equations))
+          defaulted
+      in
+      let defaults =
+        V.map
+          (\sg -> match sg with | (x, l) -> newSurfaceDefault out m (nameAt out m x) "${name}.#${x}" (isFunction out (sigTyOf out top m l)))
+          defaulted
+      in
+      let decl =
+        newSurfaceData
+          out
+          m
+          (nameAt out m name)
+          typeParams
+          None
+          [newSurfaceCtorSig out m (nameAt out m name) ctorTy]
+          None
+          (visOf cx)
+          True
+          (V.map (\x -> nameAt out m x) fieldNames)
+          True
+          defaults
+      in
+      Item.Record decl (V.concat [projections, methods, defaultDecls])
+
+-- An instance's head, past what it needs: the trait, and its arguments.
+fun instanceTrait out (t : SurfaceExpr) =
+  if kindSurfaceExpr out t == SurfaceExprKind.Pi and surfaceExprPiIcit out t == Icit.Auto then instanceTrait out (surfaceExprPiCod out t)
+  else instanceArgs out t []
+
+fun instanceArgs out (t : SurfaceExpr) (acc : [SurfaceExpr]) =
+  match kindSurfaceExpr out t with
+  | SurfaceExprKind.App -> instanceArgs out (surfaceExprAppFunc out t) (V.pushBack acc (surfaceExprAppArg out t))
+  | SurfaceExprKind.Var -> Just (surfaceNameText out (surfaceExprVarName out t), V.reverse acc)
+  | _ -> None
+
+-- `instance C a => T (List a) where`, or named, `instance loud : T Int
+-- where`, and its methods' equations: a definition of the trait's record,
+-- each method's equations one lambda over a `case`.
+fun instanceDecl out (cx : Cx) (d : IdyllInstanceDecl) =
+  let at = syntaxIdyllInstanceDecl d in
+  let m = metaOf at in
+  let u0 = braced at (idyllInstanceDeclOpen d) (idyllInstanceDeclClose d) in
+  let head = \u -> termOr out top m (idyllInstanceDeclHead d) in
+  let given = M.map (\n -> textOf (idyllInstanceNameName n)) (idyllInstanceDeclName d) in
+  let start = match R.textRange at with | (from, _) -> from in
+  let name = M.unwrapOr "#instance@${start}" given in
+  match instanceTrait out (head ()) with
+  | None ->
+      let u = bad at "an instance is of a trait applied to its arguments, as `Describe Int`" in
+      Item.Nothing
+  | Just (traitName, args) ->
+      let lines = blockLines at (idyllInstanceDeclEntries d) in
+      -- each method's equations, in the order the first of each comes
+      let methods =
+        V.foldl
+          (\acc l ->
+            match lineItem out top l with
+            | Item.Decl x if kindSurfaceDecl out x == SurfaceDeclKind.Def ->
+                let f = surfaceNameText out (surfaceDeclDefName out x) in
+                if V.any (\q -> fst q == f) acc then V.map (\q -> if fst q == f then (f, V.pushBack (snd q) (l, x)) else q) acc
+                else V.pushBack acc (f, [(l, x)])
+            | Item.Decl x ->
+                let v = bad (syntaxIdyllLine l) "an instance's methods are given by equations; their types are the trait's" in
+                acc
+            | _ ->
+                let v = bad (syntaxIdyllLine l) "an instance's block is its methods' equations" in
+                acc)
+          []
+          lines
+      in
+      let fields =
+        V.map
+          (\q ->
+            match q with
+            | (f, eqs) ->
+                let arity = match V.head eqs with | Just (_, x) -> V.len (surfaceDeclDefParams out x) | None -> 0 in
+                let w =
+                  if V.any (\e -> match e with | (_, x) -> V.len (surfaceDeclDefParams out x) != arity) eqs then
+                    (match V.head eqs with
+                     | Just (l, _) -> bad (syntaxIdyllLine l) "the equations of ${f} have different numbers of arguments"
+                     | None -> ())
+                  else ()
+                in
+                newSurfaceField out m (nameAt out m f) (lambdaCase out m (V.map snd eqs) arity))
+          methods
+      in
+      let body = newSurfaceExprRecordOf out m (nameAt out m traitName) args fields (nameAt out m name) in
+      let decls = [
+        newSurfaceDeclSig out m (nameAt out m name) (head ()),
+        newSurfaceDeclDef out m (nameAt out m name) [] None (newSurfaceRhsPlain out m body)
+      ] in
+      Item.Instance decls (nameAt out m name) (M.isSome given)
+
+-- Equations of `arity` patterns each as one term: `\#0 #1 -> case (#0, #1)
+-- of (p, q) -> e; ..`, or with none, the one equation's right-hand side.
+fun lambdaCase out (m : Meta) (eqs : [SurfaceDecl]) (arity : Int) =
+  if arity == 0 then
+    match V.head eqs with
+    | Just eq ->
+        let r = surfaceDeclDefRhs out eq in
+        if kindSurfaceRhs out r == SurfaceRhsKind.Plain then surfaceRhsPlainBody out r
+        else
+          newSurfaceExprCase out m (lit out m Literal.Unit) [newSurfaceAlt out m (newSurfacePatLit out m Literal.Unit) r]
+    | None -> hole out m
+  else
+    let names = V.map (\i -> "#${i}") (V.range 0 arity) in
+    let vars = V.map (\x -> newSurfaceExprVar out m (nameAt out m x)) names in
+    let scrutinee = V.foldr (\x acc -> binary out m "(,)" x acc) (V.getOr (hole out m) vars (arity - 1)) (V.take vars (arity - 1)) in
+    let alts =
+      V.map
+        (\eq ->
+          let ps = surfaceDeclDefParams out eq in
+          let pat = V.foldr (\q acc -> newSurfacePatCon out m (nameAt out m "(,)") [q, acc]) (V.getOr (newSurfacePatWild out m) ps (arity - 1)) (V.take ps (arity - 1)) in
+          newSurfaceAlt out m pat (surfaceDeclDefRhs out eq))
+        eqs
+    in
+    V.foldr
+      (\x acc -> newSurfaceExprLam out m (newSurfaceParam out m (nameAt out m x) False None None) acc)
+      (newSurfaceExprCase out m scrutinee alts)
+      names
+
 -- An item, under its attributes: what it is, and what is wrong with where
 -- they are.
 fun itemOf out (it : IdyllItem) =
@@ -1554,6 +1919,8 @@ fun itemOf out (it : IdyllItem) =
     match idyllItemBody it with
     | Just (IdyllItemBody.DataDecl d) -> Item.Data (dataDecl out cx d)
     | Just (IdyllItemBody.RecordDecl d) -> recordDecl out cx d
+    | Just (IdyllItemBody.TraitDecl d) -> traitDecl out cx d
+    | Just (IdyllItemBody.InstanceDecl d) -> instanceDecl out cx d
     | Just (IdyllItemBody.EffectDecl d) -> effectDecl out cx d
     | Just (IdyllItemBody.UseDecl d) -> Item.Use (useDecl out cx d)
     | Just (IdyllItemBody.ModuleDecl d) -> Item.Module (moduleDecl out d)
@@ -1671,6 +2038,16 @@ fun fileOf out (root : Syn) (raw : [IdyllEntry]) (nested : Bool) =
                         decls = V.pushBack p.decls d
                       }
                   | Item.Use u -> { p | uses = V.pushBack p.uses u }
+                  -- an instance is a hint, unless it is named, and ends: what
+                  -- it refers to of itself is under its methods' lambdas
+                  | Item.Instance ds name named ->
+                      {
+                        p |
+                        hints = if named then p.hints else V.pushBack p.hints name,
+                        terminating = V.pushBack p.terminating name,
+                        shown = (match a.vis with | Just v -> V.pushBack p.shown (newSurfaceShown out im name v) | None -> p.shown),
+                        decls = V.append p.decls ds
+                      }
                   | Item.Module mm -> { p | modules = V.pushBack p.modules mm }
                   | Item.Expr e ->
                       if i + 1 == n and not nested then { p | body = Just e }
@@ -1737,6 +2114,8 @@ fun exprText (a : SurfaceArena) (e : SurfaceExpr) : String =
   | SurfaceExprLam p body -> sx ["lam", paramIn a p, go body]
   | SurfaceExprApp f x -> sx ["app", go f, go x]
   | SurfaceExprImplicitApp f x -> sx ["iapp", go f, go x]
+  | SurfaceExprAutoApp f x -> sx ["aapp", go f, go x]
+  | SurfaceExprRecordOf r args fs me -> sx (V.append ["recordof", nameIn a r, sx (V.map go args), nameIn a me] (V.map (fieldText a) fs))
   | SurfaceExprAnn x ty -> sx ["ann", go x, go ty]
   | SurfaceExprHole -> "_"
   | SurfaceExprBox x -> sx ["box", go x]
@@ -1808,7 +2187,12 @@ fun dataText (a : SurfaceArena) (d : SurfaceData) : String =
     sx (V.map (ctorText a) (surfaceDataCtors a d)),
     opt (\s -> sx ["seq", nameIn a (surfaceSeqAttrNil a s), nameIn a (surfaceSeqAttrCons a s)]) (surfaceDataSeq a d),
     visibilityText (surfaceDataVis a d),
-    (if surfaceDataIsRecord a d then sx (V.map (nameIn a) (surfaceDataFields a d)) else "-")
+    (if surfaceDataIsRecord a d then sx (V.map (nameIn a) (surfaceDataFields a d)) else "-"),
+    flag "trait" (surfaceDataIsTrait a d),
+    sx
+      (V.map
+         (\f -> sx [nameIn a (surfaceDefaultMethod a f), surfaceDefaultName a f, flag "function" (surfaceDefaultFunction a f)])
+         (surfaceDataDefaults a d))
   ]
 
 fun opSigText (a : SurfaceArena) (o : SurfaceOpSig) : String =
@@ -1882,5 +2266,5 @@ use Lingua.Diagnostic (whereAt)
 @test fun aRecordsProjectionReadsEarlierFieldsOffSelf () =
   assertEq
     (dumped "record P = { n : Nat, v : Vec n }\n")
-    "(linear false)\n(data P () - ((P (sig (pi n e - Nat (pi v e - (app Vec n) P))))) - private (n v))\n(sig P.n (pi self e (grade (range (lit 0) (lit 1)) -) P Nat))\n(def P.n ((con P (param n - - -) _)) - (= n))\n(sig P.v (pi self e (grade (range (lit 0) (lit 1)) -) P (app Vec (app P.n self))))\n(def P.v ((con P _ (param v - - -))) - (= v))"
+    "(linear false)\n(data P () - ((P (sig (pi n e - Nat (pi v e - (app Vec n) P))))) - private (n v) - ())\n(sig P.n (pi self e (grade (range (lit 0) (lit 1)) -) P Nat))\n(def P.n ((con P (param n - - -) _)) - (= n))\n(sig P.v (pi self e (grade (range (lit 0) (lit 1)) -) P (app Vec (app P.n self))))\n(def P.v ((con P _ (param v - - -))) - (= v))"
     "a later field's type reads an earlier one off `self`"

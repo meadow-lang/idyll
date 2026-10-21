@@ -70,6 +70,15 @@ record Rn = {
   effectOps : Ref (HashMap Int [(String, Int)]),
   terminating : Ref [Int],
   hints : Ref [Int],
+  -- each trait's methods with a default: the method, the default's unique,
+  -- and whether the method is a function; by the trait's record type
+  defaults : Ref (HashMap Int [(String, Int, Bool)]),
+  -- each trait's superclasses, as the projections of its record that give
+  -- them, by the record type
+  supers : Ref (HashMap Int [Int]),
+  -- each trait's methods, by the method's unique: the trait's record, the
+  -- method's field in it, and how many parameters the trait has
+  methods : Ref (HashMap Int (Int, Int, Int)),
   -- whether the module is linear: an unannotated binder is `[1]`
   linear : Ref Bool,
   -- whether what is being renamed is a type
@@ -130,6 +139,9 @@ fun new () =
     effectOps = newRef Hm.empty,
     terminating = newRef [],
     hints = newRef [],
+    defaults = newRef Hm.empty,
+    supers = newRef Hm.empty,
+    methods = newRef Hm.empty,
     linear = newRef False,
     inType = newRef False,
     base = newRef [],
@@ -617,6 +629,11 @@ fun theRecordWith (r : Rn) (wanted : [String]) : Maybe (String, [String]) ! { Mu
   Expr + Lam { name : Ident, grade : Maybe Grade, ty : Maybe Expr, body : Expr }
   Expr + App { func : Expr, arg : Expr }
   Expr + ImplicitApp { func : Expr, arg : Expr }
+  -- `f @{d}`: an auto argument given by hand
+  Expr + AutoApp { func : Expr, arg : Expr }
+  -- what a search for an auto argument of the type wanted finds: an
+  -- instance's superclass
+  Expr + Search {}
   Expr + Ann { expr : Expr, ty : Expr }
   Expr + Hole {}
   Expr + Box { expr : Expr }
@@ -655,7 +672,7 @@ fun theRecordWith (r : Rn) (wanted : [String]) : Maybe (String, [String]) ! { Mu
   Ctor + Sig { name : Ident, ty : Expr }
   TypeParam + TypeParam { name : Ident, kindSig : Maybe Expr }
   SeqPair + SeqPair { nil : Ident, cons : Ident }
-  Data + Data { name : Ident, params : [TypeParam], kindSig : Maybe Expr, ctors : [Ctor], seq : Maybe SeqPair, linear : Bool }
+  Data + Data { name : Ident, params : [TypeParam], kindSig : Maybe Expr, ctors : [Ctor], seq : Maybe SeqPair, linear : Bool, isTrait : Bool }
   Op + Op { name : Ident, ty : Expr, many : Bool }
   Effect + Effect { name : Ident, params : [TypeParam], ops : [Op] }
   Native + Native { name : Ident, ty : Expr }
@@ -682,6 +699,49 @@ fun recordLiteral out (m : Meta) (r : Rn) (name : String) (values : [(String, Hi
       else
         let ctor = newHirExprVar out m (idNode out m (useName r name)) in
         Just (V.foldl (\f v -> match v with | Just e -> newHirExprApp out m f e | None -> f) ctor ordered)
+
+-- An instance's record, `RecordOf`: the constructor, given the trait's
+-- arguments by hand, then each method given in order, a superclass what a
+-- search finds, and a method left out the trait's default, given the
+-- instance it fills (under a lambda when the method is a function, so that
+-- the instance is not needed to make itself, as Meadow has it).
+fun recordOf out (m : Meta) (r : Rn) (name : String) (args : [HirExpr]) (values : [(String, HirExpr)]) (inst : String) =
+  match recordNamed r name True with
+  | None -> None
+  | Just fields ->
+      let ordered = inFieldOrder r name fields values True in
+      let traitU = H.uniqueOf (asType r (\u -> useName r name)) in
+      let defaults = Hm.getOr [] traitU (getRef r.defaults) in
+      let filled =
+        V.map
+          (\i ->
+            let f = V.getOr "" fields i in
+            match V.getOr None ordered i with
+            | Just v -> Just v
+            | None ->
+                if S.startsWith "#super" f then Just (newHirExprSearch out m)
+                else
+                  M.map
+                    (\df ->
+                      match df with
+                      | (_, du, function) ->
+                          let default = newHirExprVar out m (idNode out m (Ident.Ident [du] "${name}.#${f}")) in
+                          let me = newHirExprVar out m (idNode out m (useName r inst)) in
+                          let given = newHirExprAutoApp out m default me in
+                          if not function then given
+                          else
+                            let x = Ident.Ident [fresh r] "#d" in
+                            newHirExprLam out m (idNode out m x) None None (newHirExprApp out m given (newHirExprVar out m (idNode out m x))))
+                    (V.find (\df -> match df with | (mf, _, _) -> mf == f) defaults))
+          (V.range 0 (V.len fields))
+      in
+      if V.any M.isNone filled then
+        let w = bad r "${name} is built with every one of its fields" in
+        None
+      else
+        let ctor = newHirExprVar out m (idNode out m (useName r name)) in
+        let given = V.foldl (\f a -> newHirExprImplicitApp out m f a) ctor args in
+        Just (V.foldl (\f v -> match v with | Just e -> newHirExprApp out m f e | None -> f) given filled)
 
 -- `Point { x = p }`: the constructor's pattern, `_` for a field not named.
 fun recordPattern out (m : Meta) (r : Rn) (name : String) given =
@@ -798,6 +858,12 @@ pass! {
     | Expr.Seq { items } -> V.foldr (\h tl -> newHirExprSeqCons out here h tl) (newHirExprSeqNil out here) items
     | Expr.Record { name, fields } ->
         (match recordLiteral out here r name fields with
+         | Just built -> built
+         | None -> unresolved out here)
+    -- the trait's arguments, given by hand, are types
+    | RecordOf { name, raw args, fields, inst } ->
+        (let given = V.map (\a -> asType r (\u -> resolveExpr src out r a)) args in
+         match recordOf out here r name given fields inst with
          | Just built -> built
          | None -> unresolved out here)
     | Proj { expr, field } ->
@@ -1040,7 +1106,7 @@ fun renameDatas src out (r : Rn) (datas : [SurfaceData]) (names : [(Ident, [Iden
                 (\s -> newHirSeqPair out m (idNode out m (own (surfaceNameText src (surfaceSeqAttrNil src s)))) (idNode out m (own (surfaceNameText src (surfaceSeqAttrCons src s)))))
                 (surfaceDataSeq src d)
             in
-            newHirData out m (idNode out m name) params kind ctors seq (getRef r.linear)))
+            newHirData out m (idNode out m name) params kind ctors seq (getRef r.linear) (surfaceDataIsTrait src d)))
     (V.zip datas names)
 
 fun renameEffect src out (r : Rn) (e : SurfaceEffect) (names : (Ident, [Ident])) =
@@ -1229,6 +1295,7 @@ fun freeVars (a : SurfaceArena) (t : SurfaceExpr) (bound : [String]) known (out 
       under (Just (text (surfaceParamName a p))) body o2
   | SurfaceExprApp f x -> go x (go f out)
   | SurfaceExprImplicitApp f x -> go x (go f out)
+  | SurfaceExprAutoApp f x -> go x (go f out)
   | SurfaceExprAnn f x -> go x (go f out)
   | SurfaceExprRange f x -> go x (go f out)
   | SurfaceExprEff f x -> go x (go f out)
@@ -1291,7 +1358,41 @@ fun bindProgram (r : Rn) (prog : Program) (decls : [SurfaceDecl]) : Bound ! { Mu
                     match Hm.lookup "${dataName a d}.${fx}" top with | Just ps -> [(fx, V.getOr 0 ps 0)] | None -> [])
                   (surfaceDataFields a d)
               in
-              setRef r.fields (Hm.insert (H.uniqueOf name) found (getRef r.fields))
+              let u = H.uniqueOf name in
+              let w = setRef r.fields (Hm.insert u found (getRef r.fields)) in
+              if surfaceDataIsTrait a d then
+                -- its methods, the definitions named as its fields are
+                let fs = V.map (\f -> surfaceNameText a f) (surfaceDataFields a d) in
+                let nParams = V.len (surfaceDataParams a d) in
+                let w1 =
+                  V.foldl
+                    (\acc2 i ->
+                      let fx = V.getOr "" fs i in
+                      if S.startsWith "#super" fx then acc2
+                      else
+                        match Hm.lookup fx top with
+                        | Just ps -> setRef r.methods (Hm.insert (V.getOr 0 ps 0) (u, i, nParams) (getRef r.methods))
+                        | None -> acc2)
+                    ()
+                    (V.range 0 (V.len fs))
+                in
+                -- its superclasses, the fields named `#super0` and on
+                let supers = V.concatMap (\q -> match q with | (fx, pu) -> if S.startsWith "#super" fx then [pu] else []) found in
+                let w2 = if V.isEmpty supers then () else setRef r.supers (Hm.insert u supers (getRef r.supers)) in
+                -- its defaults, bound (`Describe.#twice`) with the rest
+                let ds = surfaceDataDefaults a d in
+                if V.isEmpty ds then ()
+                else
+                  let found2 =
+                    V.concatMap
+                      (\df ->
+                        match Hm.lookup (surfaceDefaultName a df) top with
+                        | Just ps -> [(surfaceNameText a (surfaceDefaultMethod a df), V.getOr 0 ps 0, surfaceDefaultFunction a df)]
+                        | None -> [])
+                      ds
+                  in
+                  setRef r.defaults (Hm.insert u found2 (getRef r.defaults))
+              else ()
             else acc
         | _ -> acc)
       ()
@@ -1379,6 +1480,9 @@ data Done = Done [HirData] [HirEffect] [HirNative] [HirBind] (Maybe HirExpr) (Ma
   terminating : [Int],
   -- the definitions `@hint` offers to the search for an auto argument
   hints : [Int],
+  -- each trait's superclass projections and methods (see `Rn`)
+  supers : HashMap Int [Int],
+  methods : HashMap Int (Int, Int, Int),
   linearBody : Bool,
   -- the module each top-level name of a module other than a package's root
   -- is in (`Collections.List` for `map`), as written before it from outside
@@ -1534,6 +1638,8 @@ fun renamePackageAt out (r : Rn) (pkg : Int) (first : Int) (progs : [Program]) (
                  first,
                  terminating = getRef r.terminating,
                  hints = getRef r.hints,
+                 supers = getRef r.supers,
+                 methods = getRef r.methods,
                  linearBody,
                  qualifiers = getRef r.qualifiers,
                  ranges = V.pushBack (V.map snd depParts) (first, getRef r.next, name)
@@ -1580,6 +1686,8 @@ fun termText (a : HirArena) (t : HirExpr) : String =
   | HirExprLam x g ty body -> sx ["lam", id x, opt (gradeText a) g, opt go ty, go body]
   | HirExprApp f x -> sx ["app", go f, go x]
   | HirExprImplicitApp f x -> sx ["iapp", go f, go x]
+  | HirExprAutoApp f x -> sx ["aapp", go f, go x]
+  | HirExprSearch -> "search"
   | HirExprAnn x ty -> sx ["ann", go x, go ty]
   | HirExprHole -> "_"
   | HirExprBox x -> sx ["box", go x]
@@ -1658,7 +1766,21 @@ fun dataText (a : HirArena) (d : HirData) : String =
            | HirCtorSig n ty -> sx [identText a n, sx ["sig", termText a ty]])
          (hirDataCtors a d)),
     opt (\q -> sx ["seq", identText a (hirSeqPairNil a q), identText a (hirSeqPairCons a q)]) (hirDataSeq a d),
-    flag "linear" (hirDataLinear a d)
+    flag "linear" (hirDataLinear a d),
+    flag "trait" (hirDataIsTrait a d)
+  ]
+
+-- A trait's superclass projections and its methods, in their fields' order:
+-- each method with its field and how many parameters the trait has.
+fun traitText (a : HirArena) (r : Renamed) (d : HirData) : String =
+  let u = uniqueIn a (hirDataName a d) in
+  let supers = Hm.getOr [] u r.supers in
+  let methods = sortOn (\q -> match q with | (_, (_, i, _)) -> i) (V.filter (\q -> match q with | (_, (t, _, _)) -> t == u) (Hm.toVec r.methods)) in
+  sx [
+    "trait",
+    identText a (hirDataName a d),
+    sx (V.map (\pu -> "super@" ++ show pu) supers),
+    sx (V.map (\q -> match q with | (mu, (_, i, n)) -> sx ["method@" ++ show mu, show i, show n]) methods)
   ]
 
 fun effectText (a : HirArena) (e : HirEffect) : String =
@@ -1681,6 +1803,7 @@ fun effectText (a : HirArena) (e : HirEffect) : String =
     "\n"
     (V.concat [
        V.map (dataText a) (V.filter (\d -> own (hirDataName a d)) (hirModuleDatas a root)),
+       V.map (traitText a r) (V.filter (\d -> own (hirDataName a d) and hirDataIsTrait a d) (hirModuleDatas a root)),
        V.map (effectText a) (V.filter (\e -> own (hirEffectName a e)) (hirModuleEffects a root)),
        V.map
          (\n -> sx ["native", identText a (hirNativeName a n), termText a (hirNativeTy a n)])

@@ -14,8 +14,15 @@
 -- The data types are put in order too: a data type's kind, and its
 -- parameters' kinds, may mention only the types before it.
 --
+-- The hints come before what may want them, which is everything they do
+-- not need themselves, since a search for an auto argument finds only what
+-- has been checked; so do a trait's superclass projections, which a search
+-- may go through without their being named. A hint with its signature is
+-- recursive, as an instance's methods find the instance itself.
+--
 -- The pass has two cases, the two places groups are: the module, and a
--- `let`. Everything else it copies as it is.
+-- `let`. Everything else it copies as it is. Its context is the hints and
+-- what comes early, which only the module's own groups are ordered by.
 
 use Lingua (pass!)
 use Idyll.Rename
@@ -27,20 +34,27 @@ use Std.Maybe as M
 use Std.Maybe.Maybe.*
 
 -- A package's definitions put in order, for the checker.
-@pub fun sccModule (r : Renamed) : Renamed ! { Mut | e } = { r | hir = regroup r.hir }
+@pub fun sccModule (r : Renamed) : Renamed ! { Mut | e } =
+  let early = V.append r.hints (V.concatMap snd (Hm.toVec r.supers)) in
+  { r | hir = regroup (Early r.hints early) r.hir }
+
+-- The hints, and what comes first: the hints and the superclass projections.
+data Early = Early [Int] [Int]
+
+def none = Early [] []
 
 pass! {
-  pub regroup : Hir -> Hir
+  pub regroup : Hir -> Hir with k
     | Module { raw datas, effects, natives, raw groups, body } ->
         Module {
-          datas = V.map (\d -> regroupData src out d) (orderDatas src datas),
+          datas = V.map (\d -> regroupData src out k d) (orderDatas src datas),
           effects,
           natives,
           -- each top-level group apart: the prelude's come before the program's
-          groups = V.concatMap (\g -> sccGroups src out [g]) groups,
+          groups = V.concatMap (\g -> sccGroups src out k [g]) groups,
           body
         }
-    | Let { raw groups, body } -> Let { groups = sccGroups src out groups, body }
+    | Let { raw groups, body } -> Let { groups = sccGroups src out none groups, body }
 }
 
 -- --- data types ----------------------------------------------------------------
@@ -89,7 +103,9 @@ fun bindsOf (a : HirArena) (g : HirGroup) : [HirBind] =
 -- The definitions of `groups` split into their components, dependencies
 -- first, each component's members in the order they came -- and written,
 -- each with what is under it regrouped too.
-fun sccGroups (a : HirArena) out (groups : [HirGroup]) =
+fun sccGroups (a : HirArena) out (k : Early) (groups : [HirGroup]) =
+  let hints = match k with | Early.Early h _ -> h in
+  let early = match k with | Early.Early _ e -> e in
   let binds = V.concatMap (bindsOf a) groups in
   let n = V.len binds in
   let uniqueOf = \b -> V.getOr (0 - 1) (hirIdentUniques a (hirBindName a b)) 0 in
@@ -111,12 +127,49 @@ fun sccGroups (a : HirArena) out (groups : [HirGroup]) =
         | (1, Just b) -> M.isSome (hirBindTy a b) and kindHirExpr a (hirBindRhs a b) == HirExprKind.Match
         | _ -> False
       in
-      let written = V.map (\b -> regroupBind a out b) bs in
+      let hint =
+        match (V.len bs, V.get bs 0) with
+        | (1, Just b) -> M.isSome (hirBindTy a b) and V.elem (uniqueOf b) hints
+        | _ -> False
+      in
+      let written = V.map (\b -> regroupBind a out k b) bs in
       let m = match V.get bs 0 with | Just b -> metaHirBind a b | None -> metaHirGroup a (V.getOr 0 groups 0) in
       match (V.len bs, V.get written 0) with
-      | (1, Just b) if not selfEdge and not byMatching -> newHirGroupNonRec out m b
+      | (1, Just b) if not selfEdge and not byMatching and not hint -> newHirGroupNonRec out m b
       | _ -> newHirGroupRec out m written)
-    (components n edges)
+    (earlyFirst (V.map (\b -> V.elem (uniqueOf b) early) binds) edges (components n edges))
+
+-- The components, dependencies first as Tarjan's algorithm finds them, with
+-- each holding one that is `early` (a hint, a superclass projection) and
+-- what it needs moved as far forward as they can go, in the order those
+-- come.
+fun earlyFirst (early : [Bool]) (edges : [[Int]]) (comps : [[Int]]) : [[Int]] ! { Mut | e } =
+  if not (V.any (\b -> b) early) then comps
+  else
+    let componentOf =
+      V.foldl
+        (\acc c -> V.foldl (\acc2 v -> Hm.insert v c acc2) acc (V.getOr [] comps c))
+        Hm.empty
+        (V.range 0 (V.len comps))
+    in
+    let done = newRef Hm.empty in
+    let order = newRef [] in
+    let firsts = V.filter (\i -> V.getOr False early i) (V.range 0 (V.len early)) in
+    let w1 = V.foldl (\acc v -> emitComponent (Hm.getOr 0 v componentOf) comps edges componentOf done order) () firsts in
+    let w2 = V.foldl (\acc c -> emitComponent c comps edges componentOf done order) () (V.range 0 (V.len comps)) in
+    V.map (\c -> V.getOr [] comps c) (getRef order)
+
+fun emitComponent (c : Int) (comps : [[Int]]) (edges : [[Int]]) componentOf done order =
+  if Hm.member c (getRef done) then ()
+  else
+    let w = setRef done (Hm.insert c True (getRef done)) in
+    let w2 =
+      V.foldl
+        (\acc v -> V.foldl (\acc2 x -> emitComponent (Hm.getOr 0 x componentOf) comps edges componentOf done order) () (V.getOr [] edges v))
+        ()
+        (V.getOr [] comps c)
+    in
+    setRef order (V.pushBack (getRef order) c)
 
 -- The strongly connected components of a graph of `n` nodes, by Tarjan's
 -- algorithm: each comes out after every component it reaches.
@@ -191,6 +244,7 @@ fun uniqueOf (a : HirArena) (x : HirIdent) : Int = V.getOr (0 - 1) (hirIdentUniq
   | HirExprVar x -> uniquesInto a x s
   | HirExprApp f x -> go x (go f s)
   | HirExprImplicitApp f x -> go x (go f s)
+  | HirExprAutoApp f x -> go x (go f s)
   | HirExprAnn f x -> go x (go f s)
   | HirExprRange f x -> go x (go f s)
   | HirExprEff f x -> go x (go f s)
