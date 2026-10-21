@@ -256,7 +256,7 @@ fn read(map: &mut SourceMap, name: &str, text: &str, diagnostics: &mut Vec<Diagn
         .into_iter()
         .map(|t| Spanned::new(t.node, Span::new(t.span.start + base, t.span.end + base)))
         .collect();
-    match parser::parse(base + text.len(), &tokens) {
+    match parser::parse_file(base, base + text.len(), &tokens) {
         Ok(program) => Some(program),
         Err(errs) => {
             diagnostics.extend(errs);

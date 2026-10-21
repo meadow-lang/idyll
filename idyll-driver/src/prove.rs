@@ -68,6 +68,8 @@ pub fn prove(earlier: &str, goal: &str, decls: &[Decl], opts: &Options, limit: u
         heads: decls
             .iter()
             .filter(|d| d.kind.is_value() && (d.kind != Kind::Operation || goal.contains('!')))
+            // (not what a program cannot write: a trait's default, `Ord.#compare`)
+            .filter(|d| !d.spelling.contains('#'))
             .filter_map(|d| Some((d.spelling.clone(), d.shape.clone()?)))
             .collect(),
         made: 0,
@@ -110,9 +112,14 @@ fn verify(earlier: &str, goal: &str, candidates: &[String], opts: &Options) -> V
     }
     let checked = pipeline::check(&source, opts);
     let errors: Vec<_> = checked.diagnostics.iter().filter(|d| d.is_error()).collect();
-    // an error that says nowhere it is could be any of them's: each is
-    // asked about alone
-    if errors.iter().any(|d| d.labels.is_empty()) {
+    // an error that says nowhere it is, or is in none of them (a parse
+    // error, which leaves the rest unchecked), could be any of them's: each
+    // is asked about alone
+    let placed = |d: &&idyllic_diagnostics::Diagnostic| d.labels.iter().any(|l| ranges.iter().any(|r| r.contains(&l.span.start)));
+    // and so could one that kept them from being checked at all: each must
+    // have been declared to be a proof
+    let declared = (0..candidates.len()).all(|i| checked.declarations.iter().any(|d| d.name == format!("__proof{i}")));
+    if !declared || errors.iter().any(|d| d.labels.is_empty() || !placed(d)) {
         return if candidates.len() == 1 {
             Vec::new()
         } else {
@@ -285,4 +292,22 @@ fn product(each: &[Vec<String>], limit: usize) -> Vec<Vec<String>> {
             .collect();
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_candidate_that_does_not_parse_lets_no_other_through_unchecked() {
+        let opts = Options { debug: false, style: idyllic_diagnostics::OutputStyle::PLAIN, live: false };
+        // checked as one batch, the parse error would leave the others
+        // unchecked: each is asked about alone instead
+        let goal = "{a : Type} -> {b : Type} -> a -> (y : [1] b) -> a";
+        let wrong = ["\\x y -> x".to_string(), "(#nothing".to_string(), "\\x y -> y".to_string()];
+        assert!(verify("", goal, &wrong, &opts).is_empty());
+        // and a proof among them is still found
+        let right = ["\\x y -> x".to_string(), "(#nothing".to_string()];
+        assert_eq!(verify("", "{a : Type} -> {b : Type} -> a -> b -> a", &right, &opts), ["\\x y -> x"]);
+    }
 }

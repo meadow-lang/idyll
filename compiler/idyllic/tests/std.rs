@@ -326,3 +326,13 @@ fn files_and_the_process() {
     assert_eq!(printed("main : () -> () ! {Fs, Console}\nmain () = putStrLn (Std.Fs.readToStringOr \"none\" \"/no/such/file\")"), "none\n");
     assert_eq!(printed("main : () -> () ! {Process, Console}\nmain () = printInt (Std.Process.argCount ())"), "0\n");
 }
+
+#[test]
+fn ord_compares_and_min_and_max_choose() {
+    let c = "use Std.Cmp (Ord, compare, min, max, clamp)\nuse Std.Num.Nat (Nat, fromInt, toInt)\nuse Std.Ordering.Ordering.*\n\n";
+    // `compare` from `<`, at the prelude's types, and Nat's own
+    assert_eq!(value(&format!("{c}(compare 1 2, compare \"b\" \"a\", compare 'c' 'c', compare (fromInt 3) (fromInt 2))\n")), "(Less, Greater, Equal, Greater)");
+    assert_eq!(value(&format!("{c}(min 3 9, max \"a\" \"b\", clamp 0 10 42, toInt (max (fromInt 2) (fromInt 5)))\n")), "(3, \"b\", 10, 5)");
+    // and Nat's `==` and `<`
+    assert_eq!(value(&format!("{c}(fromInt 4 == fromInt 4, fromInt 1 < fromInt 2)\n")), "(True, True)");
+}

@@ -9,6 +9,7 @@ use Std.Dec.Dec.*
 use Std.Void (Void)
 use Std.Ordering (Ordering)
 use Std.Ordering.Ordering.*
+use Std.Cmp (Ord)
 
 @pub
 data Nat = Z | S Nat
@@ -74,6 +75,19 @@ lessThan : (n : Nat) -> (m : Nat) -> Bool
 lessThan n Z = False
 lessThan Z (S m) = True
 lessThan (S n) (S m) = lessThan n m
+
+-- `==`, `<` and `compare` on naturals.
+@pub
+instance PartialEq Nat where
+  (==) = equal
+
+@pub
+instance PartialOrd Nat where
+  (<) = lessThan
+
+@pub
+instance Ord Nat where
+  compare = compare
 
 @pub
 max : Nat -> Nat -> Nat

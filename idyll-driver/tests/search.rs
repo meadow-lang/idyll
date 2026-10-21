@@ -84,7 +84,8 @@ fn proof_search_finds_terms_the_checker_accepts() {
 #[test]
 fn proof_search_respects_linearity() {
     // `\x y -> x` drops `y`, which a linear argument may not be
-    assert!(prove("", "{a : Type} -> {b : Type} -> a -> (y : [1] b) -> a").is_empty());
+    let found = prove("", "{a : Type} -> {b : Type} -> a -> (y : [1] b) -> a");
+    assert!(found.is_empty(), "{found:?}");
     // with `y` allowed to go unused, it is a proof: as one that says nothing
     // is, outside a linear module
     assert_eq!(prove("", "{a : Type} -> {b : Type} -> a -> b -> a").first().map(String::as_str), Some("\\x y -> x"));

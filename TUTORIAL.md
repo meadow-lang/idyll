@@ -980,8 +980,11 @@ and `>=` are `PartialOrd`'s (whose superclass is `PartialEq`), as Meadow
 and Rust name them. The prelude gives them for `Int` (the primitives),
 `Char`, `String`, `Bool` and `()`, and for pairs, lists and `Maybe` of
 types that have them. A comparison looks at its operands as often as it
-likes, as Rust's borrow theirs, so what it compares is unrestricted. A
-type of your own needs only `==` and `<`; the rest are defaults:
+likes, as Rust's borrow theirs, so what it compares is unrestricted.
+Std's `Cmp` has `Ord`, for types whose every two values are ordered:
+`compare` says how (from `<`, unless an instance says better), and `min`,
+`max` and `clamp` want it. A type of your own needs only `==` and `<`; the
+rest are defaults:
 
 ```
 data Size = Small | Large

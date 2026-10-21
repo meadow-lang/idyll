@@ -592,8 +592,11 @@ from what `idyll.lock` pinned.
   then fields), each type parameter constrained; the prelude's `Maybe` and
   `Result` are derived. (Superclass projections are now checked before
   hints, so that an instance early in a module can find a superclass
-  through one.) Left: `Ord` with `compare` (Std's `Cmp`), integer types and
-  floats.
+  through one.) `Ord` done the same day: Std's `Cmp` has it, as Meadow's,
+  `compare` a default from `<`, with `min`, `max` and `clamp`; `Int`,
+  `Char` and `String` are `Ord`, and Std's `Nat` has `PartialEq`,
+  `PartialOrd` and `Ord` of its own (`equal`, `lessThan`, `compare`).
+  Left: integer types and floats.
 - [x] **Arithmetic is a trait, so it works on `Nat` in types** (Chris,
   2026-10-16). `+`, `*` and the rest become a trait's methods: `Int`'s
   instance is the primitives, and `Nat`'s is `plus` and `times`. This is

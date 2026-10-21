@@ -1,9 +1,39 @@
--- Comparing. Idyll has no traits for an `Ord` to be one of, so what
--- compares two things is passed along: a function to an `Ordering`, as
--- `Std.Num.Int.compare` is.
+-- Comparing: `Ord`, as Meadow's `Std.Cmp` has it, and comparing by a
+-- function passed along, to an `Ordering`, as `Std.Num.Int.compare` is.
+--
+-- `==` and `<` are the prelude's `PartialEq` and `PartialOrd`. `Ord` says
+-- every two values are ordered, and `compare` says how: a type with a
+-- `PartialOrd` has it from its `<` unless it says better. (Meadow's `Eq`,
+-- a promise with no methods, is not here: `Eq` is propositional equality.)
 
 use Std.Ordering (Ordering)
 use Std.Ordering.Ordering.*
+
+@pub
+trait PartialOrd a => Ord (a : Type) where
+  compare : (x : [] a) -> (y : [] a) -> Ordering
+  compare x y = if x < y then Less else if y < x then Greater else Equal
+
+instance Ord Int where
+
+instance Ord Char where
+
+instance Ord String where
+
+-- The smaller of two; the first, if they are equal.
+@pub
+min : {a : Type} -> Ord a => (x : [] a) -> (y : [] a) -> a
+min x y = if y < x then y else x
+
+-- The larger of two; the second, if they are equal.
+@pub
+max : {a : Type} -> Ord a => (x : [] a) -> (y : [] a) -> a
+max x y = if y < x then x else y
+
+-- `x`, kept between `lo` and `hi`.
+@pub
+clamp : {a : Type} -> Ord a => (lo : [] a) -> (hi : [] a) -> (x : [] a) -> a
+clamp lo hi x = min hi (max lo x)
 
 -- The smaller of two, by `cmp`; the first, if they are equal.
 @pub

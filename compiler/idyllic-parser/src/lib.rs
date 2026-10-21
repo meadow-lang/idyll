@@ -383,6 +383,27 @@ fn signature_of(e: LTerm) -> Result<LDecl, LTerm> {
 /// Parse a program from a post-layout token stream.  `src_len` positions the
 /// end-of-input span for errors that run off the end.
 pub fn parse(src_len: usize, tokens: &[Spanned<Token>]) -> Result<Program, Vec<Diagnostic>> {
+    parse_file(0, src_len, tokens)
+}
+
+std::thread_local! {
+    /// Where the file being parsed starts in the source map its spans are
+    /// in: what an instance with no name of its own is named from, so that
+    /// its name is where it is in its file (`#instance@<byte>`), whatever
+    /// else was read before the file, as front/ names it.
+    static BASE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The same, for a file whose first byte is at `base` in the source map
+/// its tokens' spans are in.
+pub fn parse_file(base: usize, src_len: usize, tokens: &[Spanned<Token>]) -> Result<Program, Vec<Diagnostic>> {
+    let outer = BASE.with(|b| b.replace(base));
+    let parsed = parse_tokens(src_len, tokens);
+    BASE.with(|b| b.set(outer));
+    parsed
+}
+
+fn parse_tokens(src_len: usize, tokens: &[Spanned<Token>]) -> Result<Program, Vec<Diagnostic>> {
     // Post-layout, bare newlines carry no meaning (the significant ones have
     // become virtual `;`/`{`/`}`), but a few can survive; drop them.
     let toks: Vec<(Token, SimpleSpan)> = tokens
@@ -943,7 +964,8 @@ fn instance_parts(name: Option<Ident>, head: LTerm, entries: Vec<LDecl>, span: S
         return Err((head.span, "an instance is of a trait applied to its arguments, as `Describe Int`".into()));
     };
     let named = name.is_some();
-    let name = name.unwrap_or_else(|| Spanned::new(format!("#instance@{}", span.start), head.span));
+    let offset = span.start.saturating_sub(BASE.with(std::cell::Cell::get));
+    let name = name.unwrap_or_else(|| Spanned::new(format!("#instance@{offset}"), head.span));
     // each method's equations, in the order the first of each comes
     let mut methods: Vec<(Ident, Vec<(Vec<LPat>, Rhs)>)> = Vec::new();
     for d in entries {
