@@ -87,6 +87,10 @@ use Std.Result.Result.*
   | LowerIdent String
   | ConOpIdent String
   | OpIdent String
+  -- the pieces of a string with holes, as written (see `Lex`)
+  | InterpStart String
+  | InterpMid String
+  | InterpEnd String
   | VLBrace
   | VSemi
   | VRBrace
@@ -152,6 +156,9 @@ use Std.Result.Result.*
   | Raw.LowerIdent s -> Just (Token.LowerIdent s)
   | Raw.ConOpIdent s -> Just (Token.ConOpIdent s)
   | Raw.OpIdent s -> Just (Token.OpIdent s)
+  | Raw.InterpStart s -> Just (Token.InterpStart s)
+  | Raw.InterpMid s -> Just (Token.InterpMid s)
+  | Raw.InterpEnd s -> Just (Token.InterpEnd s)
 
 -- A token as the Rust compiler's `:ir tokens` writes it: its text, and the
 -- virtual ones as «{» «;» «}».
@@ -209,6 +216,9 @@ use Std.Result.Result.*
   | Token.LowerIdent s -> s
   | Token.ConOpIdent s -> s
   | Token.OpIdent s -> s
+  | Token.InterpStart s -> s
+  | Token.InterpMid s -> s
+  | Token.InterpEnd s -> s
   | Token.VLBrace -> "«{»"
   | Token.VSemi -> "«;»"
   | Token.VRBrace -> "«}»"

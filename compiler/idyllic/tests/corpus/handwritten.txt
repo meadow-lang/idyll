@@ -611,3 +611,9 @@ twice : Int -> Int
 twice n = plus2 n n
 
 twice 21
+%%%
+-- a string with holes: each hole displayed, or with `:?` debugged, and a string of its own in a hole
+name : String
+name = "world"
+
+("hello ${name}!", "${1 + 2} and ${(3, True):?}", "nested ${"x" ++ "${4}"}", "\${not a hole}", "${'c':?}")

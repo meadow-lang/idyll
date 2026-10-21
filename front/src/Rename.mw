@@ -265,6 +265,12 @@ fun noteTwin (r : Rn) (ty : Int) =
 -- A use of `name`.
 fun useName (r : Rn) (name : String) =
   if name == "(,)" then tuple r
+  -- what a string's holes are rendered and joined with: the prelude's
+  -- `display` and `debug`, and the primitive `++`, whatever else is in
+  -- scope by those names
+  else if name == "#display" then preludeName r "display"
+  else if name == "#debug" then preludeName r "debug"
+  else if name == "#append" then Ident.Ident [V.foldl (\acc i -> if V.getOr "" builtins i == "++" then i else acc) 0 (V.range 0 (V.len builtins))] "++"
   else if S.contains "." name and stringByteLength name > 1 then useQualified r name
   else
     let found = lookup r name in
@@ -318,6 +324,18 @@ fun tuple (r : Rn) =
       else
         let w = bad r "name not in scope: Pair" in
         Ident.Ident [] "Pair"
+
+-- A name of the prelude's, as it is there: from the prelude's scopes, or, in
+-- the prelude itself, its own.
+fun preludeName (r : Rn) (text : String) =
+  match V.find (\s -> Hm.member text s) (V.reverse (getRef r.base)) with
+  | Just s -> Ident.Ident (V.take (Hm.getOr [] text s) 1) text
+  | None ->
+      let own = lookup r text in
+      if not (V.isEmpty own) then Ident.Ident (V.take own 1) text
+      else
+        let w = bad r "name not in scope: ${text}" in
+        Ident.Ident [] text
 
 -- The types in scope with a constructor of this name.
 fun constructorTypes (r : Rn) (name : String) : [String] ! { Mut | e } =

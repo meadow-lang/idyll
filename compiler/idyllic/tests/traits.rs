@@ -110,3 +110,17 @@ fn an_instance_gives_its_traits_methods() {
     // a method with no instance for its type
     assert_eq!(rejected(&format!("{DESCRIBE}describe \"s\"\n")), ["nothing in scope gives a Describe String"]);
 }
+
+#[test]
+fn a_string_with_holes_displays_or_debugs_each() {
+    assert_eq!(value(r#"let name = "world" in "hello ${name}!""#), "\"hello world!\"");
+    assert_eq!(value(r#""${1 + 2} and ${(3, "s"):?}""#), r#""3 and (3, \"s\")""#);
+    // a hole holds any expression, a string with holes of its own too
+    assert_eq!(value(r#""<${"x" ++ "${4}"}>""#), "\"<x4>\"");
+    // `\$` is a dollar, and a hole of a type with no `Display` says so
+    assert_eq!(value(r#""\${x}""#), r#""${x}""#);
+    let none = "data Color = Red\n\nuse Color.*\n\n\"${Red}\"\n";
+    assert_eq!(rejected(none), ["nothing in scope gives a Display Color"]);
+    // the prelude's `display` and `++`, whatever else is called that
+    assert_eq!(value("display : Int -> Int\ndisplay n = n\n\n\"${5}\"\n"), "\"5\"");
+}

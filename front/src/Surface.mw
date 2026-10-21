@@ -404,6 +404,7 @@ fun escapeOf (k : Int) : Int =
   else if k == 92 then 92
   else if k == 39 then 39
   else if k == 34 then 34
+  else if k == 36 then 36
   else if k == 48 then 0
   else if k == 97 then 7
   else if k == 98 then 8
@@ -492,7 +493,53 @@ pass! {
          | None -> hole out here)
     | DotA {} -> (let u = bad node "not a term" in Hole {})
     | AutoA {} -> (let u = bad node "an auto argument, @{d}, comes after what it is given to" in Hole {})
+    | InterpA {} -> (match asIdyllInterpA node with | Just i -> interpolation out cx i | None -> hole out here)
 }
+
+-- `"a ${x} b ${y:?}"`: its pieces and each hole's rendering joined, `"a "
+-- ++ display x ++ " b " ++ debug y`, with no empty piece. The names are the
+-- prelude's, whatever is in scope (`#display` in the renamer).
+fun interpolation out (cx : Cx) (i : IdyllInterpA) =
+  let at = syntaxIdyllInterpA i in
+  let m = metaOf at in
+  let inner = plain cx in
+  -- a piece's text, as written: past its `"` or `}`, and before its `${`
+  -- or its closing `"`
+  let pieceText =
+    \(t : Maybe Syn) (closing : Bool) ->
+      match t with
+      | Just tok ->
+          let text = R.text tok in
+          let n = stringByteLength text in
+          let closed = n >= 2 and stringByteAt text (n - 1) == stringByteAt "\"" 0 in
+          let u = if closing and not closed then bad at "unterminated string literal" else () in
+          let body = stringSlice text 1 (if closing then (if closed then n - 1 else n) else n - 2) in
+          S.join "" (unescape tok (S.chars body) 0 [])
+      | None -> ""
+  in
+  let rendered =
+    \(h : IdyllInterpHole) ->
+      let hm = metaOf (syntaxIdyllInterpHole h) in
+      let debug =
+        match idyllInterpHoleMark h with
+        | Just mk -> if R.text mk == ":?" then True else (let u = bad mk "only :? may follow a hole" in False)
+        | None -> False
+      in
+      app out hm (newSurfaceExprVar out hm (nameAt out hm (if debug then "#debug" else "#display"))) (termOr out inner hm (idyllInterpHoleTerm h))
+  in
+  let piece = \text -> if S.isEmpty text then [] else [lit out m (Literal.Str text)] in
+  let firstHole = match idyllInterpAFirst i with | Just h -> [rendered h] | None -> [] in
+  let rest =
+    V.concatMap
+      (\r -> V.append (piece (pieceText (idyllInterpRestMid r) False)) (match idyllInterpRestHole r with | Just h -> [rendered h] | None -> []))
+      (idyllInterpARest i)
+  in
+  let parts =
+    V.concat [piece (pieceText (idyllInterpAStart i) False), firstHole, rest, piece (pieceText (idyllInterpAEnd i) True)]
+  in
+  match V.last parts with
+  | None -> lit out m (Literal.Str "")
+  | Just lastPart -> V.foldr (\p acc -> binary out m "#append" p acc) lastPart (V.take parts (V.len parts - 1))
 
 fun fieldVals out (cx : Cx) (fs : IdyllFieldVals) =
   V.map
@@ -1009,6 +1056,7 @@ pass! {
     | OpName {} -> (let u = bad node "not a pattern" in Wild {})
     | Braced {} -> (let u = bad node "not a pattern" in Wild {})
     | AutoA {} -> (let u = bad node "not a pattern" in Wild {})
+    | InterpA {} -> (let u = bad node "not a pattern" in Wild {})
     | Paren { raw items } ->
         (if V.isEmpty items then Pat.Lit { lit = Literal.Unit }
          else

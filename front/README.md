@@ -135,6 +135,14 @@ that matters, a character literal, `'é'`, which is one character but two
 bytes, the regex spells a character out in UTF-8's byte classes, as
 MeadowBoot's own lexer does.
 
+A string with a hole in it, `"a ${x} b"`, is read by hand from its quote
+(`interpolated`), as the Rust lexer reads it: its pieces are tokens of
+their own (`InterpStart` `"a ${`, `InterpMid` between two holes,
+`InterpEnd` `} b"`), and what is in each hole is lexed again as code, so a
+hole may hold anything, strings with holes of their own too. (Scythe wants
+a pattern for every variant, so the three have patterns of control
+characters no source has; the lexer makes them itself.)
+
 ### Layout
 
 `Layout.mw` is the offside rule, ported from `compiler/idyllic-layout`:
@@ -247,6 +255,10 @@ each at the place it was made from:
   `RecordOf` (the trait, its arguments, each method's equations as one
   lambda over a `case`, and the instance's own name, `#instance@<offset>`
   when it has none), which the renamer builds;
+- a string with holes, its pieces and each hole's `#display` (`#debug`
+  after `:?`) joined with `#append`, as the Rust parser joins them: the
+  renamer makes those the prelude's `display` and `debug` and the
+  primitive `++`, whatever is in scope by those names;
 - `module M where` and its block, a `File` of its own among the file's
   `modules`, which the renamer lifts out into the module `M` under the
   file's, as the Rust renamer does;

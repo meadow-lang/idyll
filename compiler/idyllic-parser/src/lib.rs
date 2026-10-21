@@ -431,6 +431,36 @@ where
     .labelled("literal")
 }
 
+/// `"a ${x} b ${y:?}"`: its pieces and each hole's rendering joined,
+/// `"a " ++ display x ++ " b " ++ debug y`, with no empty piece. The names
+/// are the prelude's, whatever is in scope (see `#display` in the renamer).
+fn interpolation(first: String, hole: (LTerm, bool), rest: Vec<(String, (LTerm, bool))>, last: String, span: Span) -> LTerm {
+    let at = |t: Term| Spanned::new(t, span);
+    let var = |x: &str| at(Term::Var(Spanned::new(x.to_string(), span)));
+    let mut parts = Vec::new();
+    let piece = |text: String, parts: &mut Vec<LTerm>| {
+        if !text.is_empty() {
+            parts.push(at(Term::Lit(Lit::Str(text))));
+        }
+    };
+    let rendered = |(e, debug): (LTerm, bool)| {
+        let f = var(if debug { "#debug" } else { "#display" });
+        Spanned::new(Term::App(Box::new(f), Box::new(e)), span)
+    };
+    piece(first, &mut parts);
+    parts.push(rendered(hole));
+    for (text, h) in rest {
+        piece(text, &mut parts);
+        parts.push(rendered(h));
+    }
+    piece(last, &mut parts);
+    parts
+        .into_iter()
+        .rev()
+        .reduce(|acc, p| at(Term::App(Box::new(at(Term::App(Box::new(var("#append")), Box::new(p)))), Box::new(acc))))
+        .unwrap_or_else(|| at(Term::Lit(Lit::Str(String::new()))))
+}
+
 /// An operator that can be defined: `+`, `==`, `<>` (not one starting with
 /// a colon: those are constructors).
 fn operator_name<'t, I>() -> impl Parser<'t, I, Ident, Extra<'t>> + Clone
@@ -1445,7 +1475,17 @@ where
             Token::UpperIdent(s) = e => Spanned::new(s, span_of(e.span())),
             Token::QualUpper(s) = e => Spanned::new(s, span_of(e.span())),
         };
+        // a hole of a string, `x` in `"a ${x}"`: `display`ed, or with `:?`
+        // after it, `debug`ged
+        let hole = term.clone().then(select! { Token::ConOpIdent(s) if s == ":?" => () }.or_not().map(|d| d.is_some()));
+        let interpolated = select! { Token::InterpStart(s) => s }
+            .then(hole.clone())
+            .then(select! { Token::InterpMid(s) => s }.then(hole).repeated().collect::<Vec<(String, (LTerm, bool))>>())
+            .then(select! { Token::InterpEnd(s) => s })
+            .map_with(|(((first, h), rest), last), e| interpolation(first, h, rest, last, span_of(e.span())));
         let atom = choice((
+            // `"a ${x} b"`
+            interpolated,
             // `Point { x = 1, y = 2 }`
             record_name
                 .then(field_values.clone().delimited_by(just(Token::LBrace), just(Token::RBrace)))

@@ -569,7 +569,13 @@ from what `idyll.lock` pinned.
   a `Map` built with the default `Ord` and used with a named one fails to
   unify instead of silently breaking its invariants.
 - [ ] **Integer types, floating point, `Show`/`Eq`/`Ord`, and string
-  interpolation**, which all wait on traits.
+  interpolation**, which all wait on traits. `Display` and `Debug` (Meadow's
+  `Show`), and interpolation, done 2026-10-21 in both compilers: the
+  prelude's two traits, with instances for its own types; `"a ${e} b"`
+  joins its pieces and `display e` (`${e:?}` `debug e`), the prelude's
+  whatever is in scope, a hole lexed as code as Meadow's lexer does (a
+  string with a hole is read by hand, so a hole may hold strings). Left:
+  `@derive`, `Eq`/`Ord` (Meadow's `Std.Cmp`), integer types and floats.
 - [x] **Arithmetic is a trait, so it works on `Nat` in types** (Chris,
   2026-10-16). `+`, `*` and the rest become a trait's methods: `Int`'s
   instance is the primitives, and `Nat`'s is `plus` and `times`. This is

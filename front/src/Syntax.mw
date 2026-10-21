@@ -86,6 +86,9 @@ use Idyll.Layout (Token, foldToken)
     "lower" = LowerIdent _,
     "conop" = ConOpIdent _,
     "op" = OpIdent _,
+    "interp_start" = InterpStart _,
+    "interp_mid" = InterpMid _,
+    "interp_end" = InterpEnd _,
     "vlbrace" = VLBrace,
     "vsemi" = VSemi,
     "vrbrace" = VRBrace,
@@ -191,7 +194,7 @@ use Idyll.Layout (Token, foldToken)
     App = atoms:(Atom Atom*)
 
     Atom = Name | Number | StrLit | CharLit | Hole | TypeA | InfA | OpName | Paren | BoxA | SeqA
-      | Braced | RecordLit | DotA | AutoA
+      | Braced | RecordLit | DotA | AutoA | InterpA
     -- `x@p`, a pattern's, is a name with a pattern after it
     Name = name:("lower" | "upper" | "qual_upper" | "qual_lower") asTail:AsTail?
     AsTail = "@" pat:Atom
@@ -215,6 +218,11 @@ use Idyll.Layout (Token, foldToken)
     -- `f @{d}`: an auto argument given by hand (after a name, `f@{d}`
     -- is read as the name's `AsTail`, and told apart after)
     AutoA = "@" "{" arg:Term "}"
+    -- `"a ${x} b ${y:?}"`: its pieces (the lexer's), each hole a term and
+    -- perhaps `:?`
+    InterpA = start:"interp_start" first:InterpHole rest:InterpRest* end:"interp_end"
+    InterpRest = mid:"interp_mid" hole:InterpHole
+    InterpHole = term:Term mark:"conop"?
 
     -- an effect row: `{Log, Div | e}`, or one effect, `State Int` (a braced
     -- one is an atom of its own), or none, `{}`

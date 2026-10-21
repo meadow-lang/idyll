@@ -905,6 +905,15 @@ impl Renamer {
         if name.node == ast::TUPLE {
             return self.tuple(name.span);
         }
+        // what a string's holes are rendered and joined with: the prelude's
+        // `display` and `debug`, and the primitive `++`, whatever else is in
+        // scope by those names
+        match name.node.as_str() {
+            "#display" => return self.prelude_name("display", name.span),
+            "#debug" => return self.prelude_name("debug", name.span),
+            "#append" => return Ident { unique: Some(idyllic_builtins::Prim::StrAppend.unique()), text: "++".into() },
+            _ => {}
+        }
         if name.node.contains('.') && name.node.len() > 1 {
             return self.use_qualified(name);
         }
@@ -965,6 +974,16 @@ impl Renamer {
             self.errors.push(RenameError::Unbound { name: "Pair".into(), span });
         }
         Ident { unique: found.map(|u| self.as_written(u)), text: "Pair".into() }
+    }
+
+    /// A name of the prelude's, as it is there: from the prelude's scopes,
+    /// or, in the prelude itself, its own.
+    fn prelude_name(&mut self, text: &str, span: Span) -> Ident {
+        let found = self.base.iter().rev().find_map(|s| s.get(text)).map(|&(u, _)| u).or_else(|| self.lookup(text));
+        if found.is_none() {
+            self.errors.push(RenameError::Unbound { name: text.into(), span });
+        }
+        Ident { unique: found, text: text.into() }
     }
 
     /// Remember a type whose constructor has its name.

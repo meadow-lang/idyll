@@ -4,8 +4,6 @@ answer str
 
 data idyll:Prelude/DigitFuel { Spent; More(ptr) }
 
-data idyll:Main/Maybe <'a0> { Nothing; Just('a0) }
-
 val idyll:Prelude/digitFuel : ptr =
   <idyll:Prelude/DigitFuel.Spent | μ̃ v_20: ptr.
     <idyll:Prelude/DigitFuel.More(v_20) | μ̃ v_19: ptr.
@@ -85,37 +83,9 @@ def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) =
               idyll:Prelude/digitString(v_71; k_63)))))
   }>
 
-def idyll:Main/"#show Maybe Bool" (x_81: ptr; k_82: ptr) =
-  <x_81 | case {
-    idyll:Main/Maybe.Nothing =>
-      <"Nothing" | k_82>;
-    idyll:Main/Maybe.Just(f_83: bool) =>
-      prim if(f_83; μ̃ u_85: unit.
-        <"False" | μ̃ s_84: str.
-          prim concatStrings(["Just", " ", s_84]; k_82)>, μ̃ u_86: unit.
-        <"True" | μ̃ s_84: str.
-          prim concatStrings(["Just", " ", s_84]; k_82)>)
-  }>
-
-def idyll:Main/"#atom Maybe Bool" (x_87: ptr; k_88: ptr) =
-  <x_87 | case {
-    idyll:Main/Maybe.Nothing =>
-      idyll:Main/"#show Maybe Bool"(x_87; k_88);
-    idyll:Main/Maybe.Just(f_89: bool) =>
-      idyll:Main/"#show Maybe Bool"(x_87; μ̃ s_90: str.
-        prim concatStrings(["(", s_90, ")"]; k_88))
-  }>
-
-def idyll:Main/"#show Maybe (Maybe Bool)" (x_77: ptr; k_78: ptr) =
-  <x_77 | case {
-    idyll:Main/Maybe.Nothing =>
-      <"Nothing" | k_78>;
-    idyll:Main/Maybe.Just(f_79: ptr) =>
-      idyll:Main/"#atom Maybe Bool"(f_79; μ̃ s_80: str.
-        prim concatStrings(["Just", " ", s_80]; k_78))
-  }>
-
 def idyll:Main/"#entry" (; k_75: ptr) =
-  <idyll:Main/Maybe.Just(true) | μ̃ v_91: ptr.
-    <idyll:Main/Maybe.Just(v_91) | μ̃ answer_76: ptr.
-      idyll:Main/"#show Maybe (Maybe Bool)"(answer_76; k_75)>>
+  prim add(2, 2; μ̃ v_79: i64.
+    prim eq(v_79, 4; μ̃ answer_76: bool.
+      prim if(answer_76; μ̃ u_77: unit.
+        <"False" | k_75>, μ̃ u_78: unit.
+        <"True" | k_75>)))

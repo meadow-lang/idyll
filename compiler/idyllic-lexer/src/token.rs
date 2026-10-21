@@ -62,6 +62,14 @@ pub enum Token {
     /// callback.
     #[regex(r#""([^"\\\n\r\x0c]|\\[^\n\r\x0c])*""#, crate::string)]
     Str(String),
+    /// The three pieces of a string with holes, `"a ${x} b ${y} c"`, which
+    /// the lexer reads by hand ([`crate::tokenize`]): the text up to the
+    /// first `${` (`"a ${`), the text between two holes (`} b ${`), and the
+    /// text after the last (`} c"`), each unquoted and unescaped. The tokens
+    /// of each hole come between them.
+    InterpStart(String),
+    InterpMid(String),
+    InterpEnd(String),
     #[regex(r"'([^'\\\n\r\x0c]|\\[^\n\r\x0c])'", crate::character)]
     Char(char),
 
@@ -159,6 +167,7 @@ impl fmt::Display for Token {
             UpperIdent(s) | LowerIdent(s) | QualUpper(s) | QualLower(s) | OpIdent(s) | ConOpIdent(s) => write!(f, "{s}"),
             Int(n) => write!(f, "{n}"),
             Str(s) => write!(f, "{s:?}"),
+            InterpStart(_) | InterpMid(_) | InterpEnd(_) => write!(f, "<string piece>"),
             Char(c) => write!(f, "{c:?}"),
             LParen => write!(f, "("),
             RParen => write!(f, ")"),

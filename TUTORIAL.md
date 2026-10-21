@@ -331,6 +331,7 @@ Supported escapes:
 | `\n` `\r` `\t` | newline, carriage return, tab           |
 | `\0` `\a` `\b` `\f` `\v` | NUL, bell, backspace, form feed, vertical tab |
 | `\\` `\"` `\'` | backslash, double quote, single quote   |
+| `\$`          | a dollar, where `${` would start a hole  |
 | `\xNN`        | code point, 1–2 hex digits               |
 | `\uNNNN`      | code point, 1–4 hex digits               |
 | `\UNNNNNNNN`  | code point, 1–8 hex digits               |
@@ -353,6 +354,21 @@ decimal, which is how a number becomes something to print:
 > "n = " ++ showInt (40 + 2)
 "n = 42" : String
 ```
+
+A string can have *holes*: `${e}` puts `e` in, written as its type's
+`Display` says (a `String` as itself), and `${e:?}` as its `Debug` says,
+the way source writes it. A hole holds any expression, a string of its own
+included:
+
+```
+> "n = ${40 + 2}"
+"n = 42" : String
+> "${(1, "one")} or ${(1, "one"):?}"
+"(1, one) or (1, \"one\")" : String
+```
+
+`Display` and `Debug` are traits (see [Traits](#traits)): the prelude gives
+them for its own types, and a type of your own has them by an instance.
 
 ### Characters
 

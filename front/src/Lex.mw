@@ -16,6 +16,7 @@ use Scythe (lexer!, Lexed, token, start, stop)
 use Std.Collections.Vector as V
 use Std.Result.Result.*
 use Std.Maybe.Maybe.*
+use Std.String as S
 
 @derive(Lexer)
 @pub data Raw
@@ -76,6 +77,14 @@ use Std.Maybe.Maybe.*
   | @regex("[_a-z][A-Za-z0-9_']*") LowerIdent String
   | @regex(":[!$%&*+./<=>?@|\\\\~:^`\\-]+") ConOpIdent String
   | @regex("[!$%&*+./<=>?@|\\\\~:^`\\-]+") OpIdent String
+  -- The pieces of a string with holes, `"a ${x} b"`, each as written: the
+  -- text up to the first `${` (`"a ${`), between two holes, and after the
+  -- last (`} b"`). The lexer reads such a string by hand (`interpolated`),
+  -- as the Rust lexer does; these patterns, of control characters no source
+  -- has, are only there because every variant needs one.
+  | @regex("\\x01\\x02") InterpStart String
+  | @regex("\\x01\\x03") InterpMid String
+  | @regex("\\x01\\x04") InterpEnd String
 
 -- Every token of `input`, as the Rust lexer reads them: where nothing
 -- matches, what the machine read before it stopped -- at least a character
@@ -83,6 +92,13 @@ use Std.Maybe.Maybe.*
 @pub fun lexed (input : String) : [Lexed (Result String Raw)] = lexedFrom input 0 []
 
 fun lexedFrom (input : String) (at : Int) (sofar : [Lexed (Result String Raw)]) : [Lexed (Result String Raw)] =
+  -- a string with a hole in it is read by hand, from its quote: the pattern
+  -- stops at a quote inside a hole, and knows nothing of holes
+  match (if byte input at == 34 then interpolated input at else None) with
+  | Just read -> (match read with | Read.Read finish _ _ -> lexedFrom input finish (pieces input at read sofar))
+  | None -> lexedOne input at sofar
+
+fun lexedOne (input : String) (at : Int) (sofar : [Lexed (Result String Raw)]) : [Lexed (Result String Raw)] =
   match nextRaw input at with
   | Ok None -> sofar
   | Ok (Just l) -> lexedFrom input (stop l) (V.pushBack sofar (Lexed (Ok (token l)) (start l) (stop l)))
@@ -90,6 +106,90 @@ fun lexedFrom (input : String) (at : Int) (sofar : [Lexed (Result String Raw)]) 
       let reached = reachRaw input at in
       let upto = if reached > at then boundary input reached else at + charWidth input at in
       lexedFrom input upto (V.pushBack sofar (Lexed (Err (stringSlice input at upto)) at upto))
+
+-- --- strings with holes ------------------------------------------------------
+
+-- The byte at `i`, or -1 past the end.
+fun byte (s : String) (i : Int) : Int = if i >= 0 and i < stringByteLength s then toInt (stringByteAt s i) else 0 - 1
+
+-- The bytes of the character at `i`; none past the end.
+fun widthAt (s : String) (i : Int) : Int = if i >= stringByteLength s then 0 else charWidth s i
+
+fun isWordByte (b : Int) : Bool = (b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b == 95
+
+-- A string read by hand: where it ends (past its closing quote, or where it
+-- stopped, never closed), whether it closed, and its holes, each from just
+-- past its `${` to its `}`.
+data Read = Read Int Bool [(Int, Int)]
+
+-- The string starting at the quote at `start`, if it has a hole in it.
+fun interpolated (s : String) (start : Int) : Maybe Read = scanString s (start + 1) []
+
+fun scanString (s : String) (i : Int) (holes : [(Int, Int)]) : Maybe Read =
+  let b = byte s i in
+  if b < 0 or b == 10 or b == 13 or b == 12 then (if V.isEmpty holes then None else Just (Read.Read i False holes))
+  else if b == 34 then (if V.isEmpty holes then None else Just (Read.Read (i + 1) True holes))
+  else if b == 92 then scanString s (i + 1 + widthAt s (i + 1)) holes
+  else if b == 36 and byte s (i + 1) == 123 then
+    match holeEnd s (i + 2) (i + 2) 0 with
+    | Just close -> scanString s (close + 1) (V.pushBack holes (i + 2, close))
+    -- a hole never closed runs to the end
+    | None -> Just (Read.Read (stringByteLength s) False (V.pushBack holes (i + 2, stringByteLength s)))
+  else scanString s (i + widthAt s i) holes
+
+-- Where the hole whose text starts at `open` ends: its `}`, past any braces,
+-- strings and characters inside it.
+fun holeEnd (s : String) (open : Int) (i : Int) (depth : Int) : Maybe Int =
+  let b = byte s i in
+  if b < 0 or b == 10 or b == 13 then None
+  else if b == 123 then holeEnd s open (i + 1) (depth + 1)
+  else if b == 125 then (if depth == 0 then Just i else holeEnd s open (i + 1) (depth - 1))
+  else if b == 34 then (match stringEnd s (i + 1) with | Just j -> holeEnd s open j depth | None -> None)
+  -- an apostrophe after a word character is part of a name (`xs'`)
+  else if b == 39 and not (i > open and isWordByte (byte s (i - 1))) then
+    let n = if byte s (i + 1) == 92 then 1 + widthAt s (i + 2) else widthAt s (i + 1) in
+    if byte s (i + 1 + n) == 39 then holeEnd s open (i + n + 2) depth else holeEnd s open (i + 1) depth
+  else holeEnd s open (i + 1) depth
+
+-- Past the string whose text starts at `i`, holes and all.
+fun stringEnd (s : String) (i : Int) : Maybe Int =
+  let b = byte s i in
+  if b < 0 or b == 10 or b == 13 then None
+  else if b == 34 then Just (i + 1)
+  else if b == 92 then stringEnd s (i + 2)
+  else if b == 36 and byte s (i + 1) == 123 then (match holeEnd s (i + 2) (i + 2) 0 with | Just c -> stringEnd s (c + 1) | None -> None)
+  else stringEnd s (i + 1)
+
+-- A string read by hand, as its pieces and the tokens of its holes.
+fun pieces (s : String) (start : Int) (read : Read) (sofar : [Lexed (Result String Raw)]) : [Lexed (Result String Raw)] =
+  match read with
+  | Read.Read finish closed holes ->
+      let n = V.len holes in
+      let step =
+        V.foldl
+          (\acc k ->
+            match acc with
+            | (out, from, stopped) ->
+                if stopped then acc
+                else
+                  (match V.get holes k with
+                   | Just (open, close) ->
+                       let piece = Lexed (Ok (if k == 0 then Raw.InterpStart (stringSlice s from open) else Raw.InterpMid (stringSlice s from open))) from open in
+                       let out2 = V.pushBack out piece in
+                       let hole = stringSlice s open close in
+                       let out3 =
+                         if S.isEmpty (S.trim hole) then V.pushBack out2 (Lexed (Err hole) open close)
+                         else V.append out2 (V.map (\l -> shift l open) (lexedFrom hole 0 []))
+                       in
+                       (out3, close, k + 1 == n and close >= stringByteLength s)
+                   | None -> acc))
+          (sofar, start, False)
+          (V.range 0 n)
+      in
+      (match step with
+       | (out, from, stopped) -> if stopped then out else V.pushBack out (Lexed (Ok (Raw.InterpEnd (stringSlice s from finish))) from finish))
+
+fun shift (l : Lexed (Result String Raw)) (by : Int) : Lexed (Result String Raw) = Lexed (token l) (start l + by) (stop l + by)
 
 -- The first character boundary from byte `at` on: where the machine stopped
 -- may be inside a character.
