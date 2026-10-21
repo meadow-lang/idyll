@@ -313,8 +313,8 @@ its things with, ...). `dumped` writes the HIR out for the rename test.
   more than one meaning there keeps them all, its own module's first,
   `(overload x@u x@v)` in the dump, as the Rust renamer keeps them in
   `hir::Module::overloads`. A local name shadows them, and they shadow the
-  prelude's. The Rust checker chooses among them by type; this one says it
-  cannot yet, which keeps such a program out of the comparisons.
+  prelude's. The checker chooses among them by type, as the Rust one does
+  (`Overloads.mw`).
 - A dependency (Std) is renamed in the same run, before the package, with
   uniques before the package's own. Its declarations go into the module
   beside the prelude's, so the checker checks them alongside, much as the
@@ -445,6 +445,19 @@ field is a constant or a primitive, is made a call of that field
 end of the module every instance is checked to live with its trait or its
 type (`OrphanInstance`) and not to be for types that unify with another's
 (`OverlappingInstances`).
+
+**Overloaded names** (`Overloads.mw`, `overloads.rs`). A term headed by a
+name with several meanings (an `Ident` with several uniques) is elaborated
+once per meaning, as a trial on the checker that is then undone, against
+the type wanted if one is; the meanings whose trial made no error fit. One
+fitting is elaborated for real, the meaning recorded by the name's node;
+several put the term off behind a placeholder, tried again once the
+definition has been checked (`settle`, which settles the searches for auto
+arguments with them); none is `NoMeaning`, and several still at the end
+`AmbiguousName`. A constructor in a pattern is chosen by the type of what
+it is matched against. The hook is where every term is inferred or
+checked (`elaborate`), after an implicit function wanted has bound its
+argument.
 
 **Effects.** A term's effects are collected in its usage as rows. Where a
 lambda ends, they become its type's (`a -> b ! {Log}`), and must fit what

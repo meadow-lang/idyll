@@ -390,9 +390,7 @@ examples need strings to take apart first (`Std.Yield` is the generators).
   several put the term off behind a placeholder until the definition has
   been checked, when it is tried again against what its type has become
   and the placeholder is written over. A constructor in a pattern is
-  chosen by its scrutinee's type. In front/, the renamer keeps the
-  candidates and the checker says it cannot choose yet (see *The compiler
-  in Meadow*). It used to be that a later `use` of a name silently
+  chosen by its scrutinee's type. front/ does the same (2026-10-21). It used to be that a later `use` of a name silently
   replaced an earlier one. Instead, a module's own top-level
   names and what its `use`s bring in are one layer, where a clash is an
   *overload*: the renamer keeps every candidate, and the elaborator takes
@@ -1027,12 +1025,12 @@ do yet `(unsupported)`, and the tests count those apart.
   methods in the checker (`Auto.mw`, 2026-10-21): every pass agrees on the
   corpus's trait and auto-argument programs, and their Cut runs as the
   reference says.
-- [ ] Choosing an overloaded name by type, as the Rust checker does it
-  (`overloads.rs`): its renamer keeps the candidates already, and its
-  checker says it cannot choose yet, which keeps such programs out of the
-  comparisons. Trials need the checker's state saved and restored, every
-  `Ref` of `Tc`, and the Core the trial wrote through the builder left
-  unused.
+- [x] Choosing an overloaded name by type, as the Rust checker does it
+  (`overloads.rs`, ported as `Overloads.mw`, 2026-10-21): each meaning
+  tried on the checker and undone (`Tc.save`/`restore` copy every table),
+  several put off behind a placeholder until the definition is checked, a
+  pattern's constructor chosen by its scrutinee's type. With it no program
+  of the corpus is left out of the type or Cut comparisons.
 - [ ] front/'s own REPL and driver, once Cut moves its Lingua pin (Lingua
   833e1a5, for LineEditor 0.2.2).
 - [ ] CI, with MeadowBoot's prerelease for the `meadow` it needs.

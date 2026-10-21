@@ -25,6 +25,7 @@ use Idyll.Elab (Pending, effectsOf, enterGroups, infer, retryPostponed, closeOpe
 use Idyll.Elaborated (ElaboratedProgram, newElaboratedBuilder, freezeElaborated, moduleRow)
 use Idyll.Tc (Meta)
 use Idyll.Auto as A
+use Idyll.Overloads as O
 use Std.St (runSt)
 use Idyll.Decl (initial, declareNatives, declareEffects, declareDatas, declareOps)
 use Idyll.Hir (Ident)
@@ -126,7 +127,7 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
         let mark = V.len (getRef tc.recDefs) in
         let (core0, ty, usage) = infer tc ctx e in
         -- what it put off, found and written over
-        let s1 = A.settle tc in
+        let s1 = O.settle tc in
         let core1 = A.resolve tc core0 ctx.lvl in
         let s2 = A.resolveRecDefs tc mark in
         let core = A.specialize tc ctx core1 ctx.lvl in

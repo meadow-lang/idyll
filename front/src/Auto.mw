@@ -83,7 +83,7 @@ fun known (tc : Tc) (ctx : Ctx) (ty : Value) : Bool ! { Mut | e } =
 -- The placeholder `m` is `found`, which was found in `ctx`: solved with
 -- it, for what is still to be checked, and written over with it once the
 -- definition is done.
-fun choose (tc : Tc) (m : Int) (ctx : Ctx) (found : Core) =
+@pub fun choose (tc : Tc) (m : Int) (ctx : Ctx) (found : Core) : () ! { Mut | e } =
   let value = eval tc ctx.env found in
   let w = match T.meta tc m with | Just (Meta.Unsolved _) -> T.solve tc m value | _ -> () in
   setRef tc.chosen (Hm.insert m (found, ctx.lvl) (getRef tc.chosen))

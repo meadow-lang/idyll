@@ -34,6 +34,7 @@
 
 use Idyll.Hir (Icit, Literal)
 use Idyll.Core (Core, Builtin, Prim, Note, Head, CaseAlt)
+use Idyll.Overloads as O
 use Idyll.Core as C
 use Idyll.Value (Value, Elim, Env, Closure, Poly)
 use Idyll.Value as Va
@@ -390,13 +391,11 @@ fun simplify (tc : Tc) (ctx : Ctx) (p : Problem) : (Step, Problem) ! { Mut | e }
                             (Step.Splits k how, p)
                         | v -> (cannotSplit tc v, p)))
             | HirPatternCon c args ->
-                let us = hirIdentUniques hir c in
-                if V.len us != 1 then
-                  -- the renamer reported an unknown name already; and a
-                  -- name several `use`s give is not chosen between yet
-                  let w = if V.len us > 1 then T.cannot tc "overloading" else () in
-                  (Step.Failed, p)
-                else conStep tc ctx p (V.getOr 0 us 0) args target rest
+                -- the renamer reported an unknown name already; a name with
+                -- several meanings is the one of the type matched against
+                (match O.patternCtor tc pat c (targetType ctx target) with
+                 | Just cu -> conStep tc ctx p cu args target rest
+                 | None -> (Step.Failed, p))
             -- `#[p, q]`: taken apart with the constructors of what it is
             -- matched against
             | HirPatternSeqNil -> seqStep tc ctx p target rest []
@@ -457,7 +456,7 @@ fun plausible (tc : Tc) (ctx : Ctx) (m : Matcher) (clause : HirClause) : Bool ! 
         | (pat, ty) ->
             (match (hir, peel hir pat) with
              | HirPatternCon c _ ->
-                 let u = uniqueIn hir c in
+                 let u = M.unwrapOr (0 - 1) (O.patternCtor tc (peel hir pat) c ty) in
                  if u < 0 then False
                  else
                    (match T.ctorInfo tc u with
@@ -784,7 +783,7 @@ fun fieldHint (tc : Tc) (ctx : Ctx) (problems : [Problem]) (k : Int) (c : Int) (
                else
                  (match (hir, peel hir pat) with
                   | HirPatternCon c2 args ->
-                      if uniqueIn hir c2 != c or i < params then None
+                      if O.patternUnique tc (peel hir pat) c2 != c or i < params then None
                       else
                         (match M.map (\q -> (hir, peel hir q)) (V.get args (i - params)) with
                          | Just (HirPatternVar x) -> Just (hirIdentText hir x)

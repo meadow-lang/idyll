@@ -50,6 +50,7 @@ use Lingua (pass!)
 use Idyll.Matching (caseOf, inferMatch, elabMatch)
 use Idyll.Handlers (handled)
 use Idyll.Auto as A
+use Idyll.Overloads as O
 use Idyll.Sequences (checkSeq, inferSeq, arrayLiteral, arrayElement)
 use Idyll.Termination (checkTermination, arity)
 use Std.Collections.Vector as V
@@ -665,7 +666,7 @@ fun checkGroupIn (tc : Tc) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, Maybe
         | Just sig ->
             let (sigTy, allowed, vsig) = signature tc ctx sig (parameters h b.rhs) in
             -- what a type searches for is found before the type is computed with
-            let ws = if top then A.settle tc else () in
+            let ws = if top then O.settle tc else () in
             let (rhsC, usage) = checkAgainstSig tc ctx b.rhs sigTy vsig in
             let w =
               match effectsOf tc usage with
@@ -677,7 +678,7 @@ fun checkGroupIn (tc : Tc) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, Maybe
       -- what it put off, once all of it is checked: found, and written over
       let rhs =
         if top then
-          let s1 = A.settle tc in
+          let s1 = O.settle tc in
           let s2 = A.resolveRecDefs tc mark in
           let s3 = A.specializeRecDefs tc ctx mark in
           A.specialize tc ctx (A.resolve tc rhs0 ctx.lvl) ctx.lvl
@@ -713,7 +714,7 @@ fun checkGroupIn (tc : Tc) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, Maybe
                 let w = setRef tc.inferSpine (parameters h b.rhs) in
                 let ty = snd (checkType tc ctx sig) in
                 let w2 = setRef tc.inferSpine 0 in
-                let w3 = if top then A.settle tc else () in
+                let w3 = if top then O.settle tc else () in
                 ty)
           bs
       in
@@ -726,7 +727,7 @@ fun checkGroupIn (tc : Tc) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, Maybe
       -- with no parameters, what of it a method call can be made into
       let members =
         if top then
-          let s1 = A.settle tc in
+          let s1 = O.settle tc in
           let s2 = A.resolveRecDefs tc mark in
           let s3 = A.specializeRecDefs tc ctxRec mark in
           let ms = V.map (\uc -> match uc with | (u, core) -> (u, A.specialize tc ctxRec (A.resolve tc core ctxRec.lvl) ctxRec.lvl)) members0 in
@@ -918,7 +919,26 @@ fun leaveGroups (usage : Usage) (pending : [Pending]) : Usage =
 
 -- The pass's function for an expression, as `install` set it up for the
 -- module being checked.
-fun elaborate (tc : Tc) (cx : Cx) (t : HirExpr) : (Core, Value, Usage) ! { Mut | e } = (getRef tc.elab) cx t
+-- A term headed by a name with several meanings is the one that fits (once
+-- an implicit function wanted has bound its argument: see `within`).
+fun elaborate (tc : Tc) (cx : Cx) (t : HirExpr) : (Core, Value, Usage) ! { Mut | e } =
+  match O.overloadedHead tc t with
+  | None -> (getRef tc.elab) cx t
+  | Just head ->
+      (match cx.goal with
+       | None -> O.overloaded tc cx.ctx t head None
+       | Just g0 ->
+           (match force tc g0 with
+            | Value.Error -> (Core.Error, Value.Error, U.unknown ())
+            | Value.Pi name icit grade _ dom cod if icit != Icit.Explicit ->
+                let ctx = cx.ctx in
+                let ctx1 = X.graded (X.bind ctx None name dom) grade in
+                let ctx2 = if icit == Icit.Auto then X.autoBound ctx1 else ctx1 in
+                let (codV, allowed) = splitComp tc (apply tc cod (Va.vvar ctx.lvl name)) in
+                let (bodyC, _, usage) = elaborate tc { cx | ctx = ctx2, goal = Just codV } t in
+                let u2 = closeEffects tc ctx2 usage allowed in
+                (lam tc ctx name grade dom bodyC, force tc g0, u2)
+            | g -> O.overloaded tc cx.ctx t head (Just g)))
 
 -- Set the pass up to check a module, writing into `out`. (Its cases answer
 -- the checker's own data, and write nothing there yet: what is written out
@@ -1000,7 +1020,7 @@ pass! {
          mode cx again (\(c : Cx) -> (Core.Type 0, Value.Type 1, U.none ())) (byInference again))
     | Expr.Var { ident } ->
         (let again = \(c : Cx) -> elabExpr src out c node in
-         mode cx again (\(c : Cx) -> variable c.tc c.ctx ident) (byInference again))
+         mode cx again (\(c : Cx) -> variable c.tc c.ctx node ident) (byInference again))
     | Expr.Lit { lit } ->
         (let again = \(c : Cx) -> elabExpr src out c node in
          mode cx again (\(c : Cx) -> (Core.Lit lit, Value.LitTy (C.literalBuiltin lit), U.none ())) (\(c : Cx) g -> literalAgainst c again lit g))
@@ -1201,12 +1221,15 @@ pass! {
              | None -> fallback c again g))
 }
 
--- A name: the binder it means, which it uses once.
-fun variable (tc : Tc) (ctx : Ctx) (x : Ident) : (Core, Value, Usage) ! { Mut | e } =
+-- A name: the binder it means, which it uses once; of an overloaded name,
+-- the meaning chosen for it where it is written, `node`.
+fun variable (tc : Tc) (ctx : Ctx) (node : Int) (x0 : Ident) : (Core, Value, Usage) ! { Mut | e } =
+  let x = match Hm.lookup node (getRef tc.forced) with | Just u -> Ident.Ident [u] (H.textOf x0) | None -> x0 in
   let us = H.uniquesOf x in
   if V.isEmpty us then failed ()
   else if V.len us > 1 then
-    let w = T.cannot tc "overloading" in
+    -- (chosen where it heads a term; anywhere else, nothing to choose by)
+    let w = T.error tc "AmbiguousName" in
     failed ()
   else
     match X.lookup ctx x with
