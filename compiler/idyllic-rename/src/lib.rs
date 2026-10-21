@@ -958,9 +958,9 @@ impl Renamer {
     }
 
     /// The prelude's `Pair`, which a tuple is made of: the type in a type,
-    /// the constructor elsewhere.
+    /// the constructor elsewhere. (In the prelude itself, its own.)
     fn tuple(&mut self, span: Span) -> Ident {
-        let found = self.base.iter().rev().find_map(|s| s.get("Pair")).map(|&(u, _)| u);
+        let found = self.base.iter().rev().find_map(|s| s.get("Pair")).map(|&(u, _)| u).or_else(|| self.lookup("Pair"));
         if found.is_none() {
             self.errors.push(RenameError::Unbound { name: "Pair".into(), span });
         }

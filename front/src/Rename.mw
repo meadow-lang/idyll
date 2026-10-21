@@ -306,14 +306,18 @@ fun lookupEffect (r : Rn) (name : String) : [Int] ! { Mut | e } =
   | Just i -> at i
   | None -> []
 
--- The prelude's `Pair`, which a tuple is made of.
+-- The prelude's `Pair`, which a tuple is made of. (In the prelude itself,
+-- its own.)
 fun tuple (r : Rn) =
   let found = V.find (\s -> Hm.member "Pair" s) (V.reverse (getRef r.base)) in
   match found with
   | Just s -> Ident.Ident (distinct (V.map (asWritten r) (Hm.getOr [] "Pair" s))) "Pair"
   | None ->
-      let w = bad r "name not in scope: Pair" in
-      Ident.Ident [] "Pair"
+      let own = lookup r "Pair" in
+      if not (V.isEmpty own) then Ident.Ident (distinct (V.map (asWritten r) (V.take own 1))) "Pair"
+      else
+        let w = bad r "name not in scope: Pair" in
+        Ident.Ident [] "Pair"
 
 -- The types in scope with a constructor of this name.
 fun constructorTypes (r : Rn) (name : String) : [String] ! { Mut | e } =

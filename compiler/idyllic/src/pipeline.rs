@@ -285,6 +285,63 @@ instance Divide Int where
 instance Rem Int where
   (%) = intMod
 
+trait Display (a : Type) where
+  display : (x : [] a) -> String
+
+trait Debug (a : Type) where
+  debug : (x : [] a) -> String
+
+instance Display Int where
+  display n = showInt n
+
+instance Display String where
+  display s = s
+
+instance Display Char where
+  display c = charString c
+
+instance Display Bool where
+  display b = if b then \"True\" else \"False\"
+
+instance Display () where
+  display u = \"()\"
+
+instance Display a => Display b => Display (a, b) where
+  display p = case p of
+    (x, y) -> \"(\" ++ display x ++ \", \" ++ display y ++ \")\"
+
+instance Debug Int where
+  debug n = showInt n
+
+instance Debug String where
+  debug s = \"\\\"\" ++ escapedChars (arrayToList (stringToChars s)) ++ \"\\\"\"
+
+instance Debug Char where
+  debug c = \"'\" ++ escaped c ++ \"'\"
+
+instance Debug Bool where
+  debug b = if b then \"True\" else \"False\"
+
+instance Debug () where
+  debug u = \"()\"
+
+instance Debug a => Debug b => Debug (a, b) where
+  debug p = case p of
+    (x, y) -> \"(\" ++ debug x ++ \", \" ++ debug y ++ \")\"
+
+charString : (c : [] Char) -> String
+charString c = charsToString (arrayFromList (c :: Nil))
+
+escapedChars : (cs : [] List Char) -> String
+escapedChars Nil = \"\"
+escapedChars (c :: rest) = escaped c ++ escapedChars rest
+
+escaped : (c : [] Char) -> String
+escaped c = if charCode c == 34 then backslashed 34 else if charCode c == 92 then backslashed 92 else if charCode c == 10 then backslashed 110 else if charCode c == 9 then backslashed 116 else charString c
+
+backslashed : (k : [] Int) -> String
+backslashed k = charsToString (arrayFromList (charFromCode 92 :: charFromCode k :: Nil))
+
 @native
 Array : Type -> Type
 
