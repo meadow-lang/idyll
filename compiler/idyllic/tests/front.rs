@@ -206,6 +206,106 @@ fn the_example_packages_build_and_run_alike() {
     assert!(built.len() >= 6, "the examples are all there");
 }
 
+/// front/'s own command line (`Idyll run`, a `cli!` over a `make!`), run
+/// in `dir`: what it printed, and whether it succeeded.
+fn front_tool(exe: &std::path::Path, dir: &std::path::Path, args: &[&str]) -> (String, bool) {
+    let out = std::process::Command::new(exe).args(args).current_dir(dir).output().expect("front/ runs");
+    // what it printed, the build's lines first and then the program's; and,
+    // if it failed, what it wrote as errors (Silo's build says what it is
+    // doing there too)
+    let text = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
+    let errors = String::from_utf8_lossy(&out.stderr).replace("\r\n", "\n");
+    (if out.status.success() { text } else { text + &errors }, out.status.success())
+}
+
+/// A package with a dependency by path, built and run by front/'s own
+/// `idyll run`: each package a unit of Lingua's `make!`, compiled only when
+/// what it was compiled from changed.
+#[test]
+fn front_builds_and_runs_a_package_with_a_dependency() {
+    let Ok(exe) = front() else {
+        eprintln!("no front/ to build with");
+        return;
+    };
+    let root = std::env::temp_dir().join(format!("idyll-front-make-{}", std::process::id()));
+    let (util, app) = (root.join("util"), root.join("app"));
+    for d in [&util, &app] {
+        std::fs::create_dir_all(d.join("src")).expect("a directory");
+    }
+    std::fs::write(util.join("Idyll.toml"), "[package]\nname = \"Util\"\nversion = \"0.1.0\"\n").unwrap();
+    std::fs::write(util.join("src/Lib.idl"), "@pub\nanswer : Int\nanswer = 42\n").unwrap();
+    std::fs::write(app.join("Idyll.toml"), "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n[dependencies]\nUtil = { path = \"../util\" }\n").unwrap();
+    std::fs::write(app.join("src/Main.idl"), "use Util (answer)\n\nmain : () -> () ! Eff\nmain () = putStrLn \"the answer is ${answer}\"\n").unwrap();
+    // built, both, and run
+    let (said, ok) = front_tool(&exe, &app, &["run"]);
+    assert!(ok, "{said}");
+    assert!(said.contains("idyll: 2 compiled, 0 up to date") && said.contains("the answer is 42\n"), "{said}");
+    // nothing changed: nothing compiled, and the program is what it was
+    let (said, ok) = front_tool(&exe, &app, &["run"]);
+    assert!(ok && said.contains("idyll: 0 compiled, 2 up to date") && said.contains("Fresh link") && said.contains("the answer is 42\n"), "{said}");
+    // the dependency changed: both compiled again
+    std::fs::write(util.join("src/Lib.idl"), "@pub\nanswer : Int\nanswer = 6 * 7 + 1\n").unwrap();
+    let (said, ok) = front_tool(&exe, &app, &["run"]);
+    assert!(ok && said.contains("idyll: 2 compiled, 0 up to date") && said.contains("the answer is 43\n"), "{said}");
+    // the package alone changed: only it
+    std::fs::write(app.join("src/Main.idl"), "use Util (answer)\n\nmain : () -> () ! Eff\nmain () = putStrLn \"now ${answer}\"\n").unwrap();
+    let (said, ok) = front_tool(&exe, &app, &["run"]);
+    assert!(ok && said.contains("idyll: 1 compiled, 1 up to date") && said.contains("now 43\n"), "{said}");
+    // and a package that does not check says so, and runs nothing
+    std::fs::write(app.join("src/Main.idl"), "main : () -> () ! Eff\nmain () = putStrLn 5\n").unwrap();
+    let (said, ok) = front_tool(&exe, &app, &["run"]);
+    assert!(!ok && said.contains("Failed"), "{said}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Every example package run by front/'s own `idyll run` (on Silo where its
+/// profile says so), from a copy of it: what this compiler's build prints.
+#[test]
+fn front_runs_every_example_itself() {
+    let Ok(exe) = front() else {
+        eprintln!("no front/ to build with");
+        return;
+    };
+    let opts = idyllic::pipeline::Options { debug: false, style: idyllic_diagnostics::OutputStyle::PLAIN, live: false };
+    let root = std::env::temp_dir().join(format!("idyll-front-run-{}", std::process::id()));
+    let mut ran = Vec::new();
+    for e in std::fs::read_dir(repo().join("examples")).expect("the examples").flatten() {
+        let pkg = e.path();
+        if !pkg.join("Idyll.toml").exists() {
+            continue;
+        }
+        let name = pkg.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let copy = root.join(&name);
+        copy_tree(&pkg, &copy);
+        let silo = std::fs::read_to_string(pkg.join("Idyll.toml")).unwrap_or_default().contains("backend = \"silo\"");
+        let (said, ok) = front_tool(&exe, &copy, if silo { &["run", "--release"] } else { &["run"] });
+        assert!(ok, "{name}: {said}");
+        let package = idyllic::pipeline::load_package(&pkg).expect("the package reads");
+        let runtime = if silo { idyllic::meadow::Runtime::Silo } else { idyllic::meadow::Runtime::Glade };
+        let expected = idyllic::pipeline::run_package_on(&package, &opts, Vec::new(), runtime);
+        assert!(said.ends_with(&expected.printed), "{name} printed\n{said}\nwhere this compiler's build prints\n{}", expected.printed);
+        ran.push(name);
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    eprintln!("examples: {} run by front/'s own idyll run ({})", ran.len(), ran.join(", "));
+    assert!(ran.len() >= 6);
+}
+
+/// A directory copied, all but what a build left in it.
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).expect("a directory");
+    for e in std::fs::read_dir(from).expect("a directory").flatten() {
+        let (src, dst) = (e.path(), to.join(e.file_name()));
+        if src.is_dir() {
+            if e.file_name() != "target" {
+                copy_tree(&src, &dst);
+            }
+        } else {
+            std::fs::copy(&src, &dst).expect("a copy");
+        }
+    }
+}
+
 // --- the Cut, written out ------------------------------------------------------
 //
 // Both compilers' Cut as its text (`front/` builds it with the Cut package,

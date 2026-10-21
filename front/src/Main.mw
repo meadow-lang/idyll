@@ -43,6 +43,7 @@ use Idyll.Cek as Cek
 use Idyll.World as W
 use Idyll.Core as C
 use Idyll.Hir (Literal)
+use Idyll.Driver as D
 use Lingua.Green (dump)
 use Lingua.Diagnostic (renderAll)
 use Std.Collections.Vector as V
@@ -51,7 +52,15 @@ use Std.Maybe.Maybe.*
 
 fun main () =
   let args = argv () in
+  -- `idyll build`, `run` and `check` on a package (`Driver`); the passes'
+  -- dumps, which the differential tests compare, are given `--prelude`
+  let testing = V.get args 1 == Just "--prelude" in
   match V.get args 0 with
+  | Just "build" if not testing -> D.drive ()
+  | Just "run" if not testing -> D.drive ()
+  | Just "check" -> D.drive ()
+  | Just "help" -> D.drive ()
+  | Just "--help" -> D.drive ()
   | Just "tokens" -> V.foldl (\u f -> each f dumpTokens) () (V.drop args 1)
   | Just "tree" -> V.foldl (\u f -> each f dumpTree) () (V.drop args 1)
   | Just "parse" -> V.foldl (\u f -> each f Surface.dumped) () (V.drop args 1)

@@ -1,0 +1,304 @@
+@linear
+
+@seq(nil = Nil, cons = (::))
+data List a = Nil | (::) a (List a)
+
+@derive(Display, Debug, PartialEq, PartialOrd)
+data Maybe a = Nothing | Just a
+
+@derive(Display, Debug, PartialEq, PartialOrd)
+data Result e a = Err e | Ok a
+
+data Pair a b = Pair a b
+
+use List.*
+use Maybe.*
+use Result.*
+
+trait Add (a : Type) where
+  (+) : a -> a -> a
+
+trait Sub (a : Type) where
+  (-) : a -> a -> a
+
+trait Mul (a : Type) where
+  (*) : a -> a -> a
+
+trait Divide (a : Type) where
+  (/) : a -> a -> a
+
+trait Rem (a : Type) where
+  (%) : a -> a -> a
+
+instance Add Int where
+  (+) = intAdd
+
+instance Sub Int where
+  (-) = intSub
+
+instance Mul Int where
+  (*) = intMul
+
+instance Divide Int where
+  (/) = intDiv
+
+instance Rem Int where
+  (%) = intMod
+
+trait PartialEq (a : Type) where
+  (==) : (x : [] a) -> (y : [] a) -> Bool
+  (!=) : (x : [] a) -> (y : [] a) -> Bool
+  (!=) x y = if x == y then False else True
+
+trait PartialEq a => PartialOrd (a : Type) where
+  (<) : (x : [] a) -> (y : [] a) -> Bool
+  (>) : (x : [] a) -> (y : [] a) -> Bool
+  (>) x y = y < x
+  (<=) : (x : [] a) -> (y : [] a) -> Bool
+  (<=) x y = if y < x then False else True
+  (>=) : (x : [] a) -> (y : [] a) -> Bool
+  (>=) x y = if x < y then False else True
+
+instance PartialEq Int where
+  (==) = intEq
+  (!=) = intNe
+
+instance PartialOrd Int where
+  (<) = intLt
+  (>) = intGt
+  (<=) = intLe
+  (>=) = intGe
+
+instance PartialEq Bool where
+  x == y = if x then y else if y then False else True
+
+instance PartialEq Char where
+  x == y = intEq (charCode x) (charCode y)
+
+instance PartialOrd Char where
+  x < y = intLt (charCode x) (charCode y)
+
+instance PartialEq String where
+  x == y = intEq (stringCompare x y) 0
+
+instance PartialOrd String where
+  x < y = intLt (stringCompare x y) 0
+
+instance PartialEq () where
+  x == y = True
+
+instance PartialEq a => PartialEq b => PartialEq (a, b) where
+  p == q = case p of
+    (a, b) -> case q of
+      (c, d) -> if a == c then b == d else False
+
+instance PartialEq a => PartialEq (List a) where
+  Nil == Nil = True
+  (x :: xs) == (y :: ys) = if x == y then xs == ys else False
+  xs == ys = False
+
+intNe : (x : [] Int) -> (y : [] Int) -> Bool
+intNe x y = if intEq x y then False else True
+
+intGt : (x : [] Int) -> (y : [] Int) -> Bool
+intGt x y = intLt y x
+
+intLe : (x : [] Int) -> (y : [] Int) -> Bool
+intLe x y = if intLt y x then False else True
+
+intGe : (x : [] Int) -> (y : [] Int) -> Bool
+intGe x y = if intLt x y then False else True
+
+trait Display (a : Type) where
+  display : (x : [] a) -> String
+
+trait Debug (a : Type) where
+  debug : (x : [] a) -> String
+
+instance Display Int where
+  display n = showInt n
+
+instance Display String where
+  display s = s
+
+instance Display Char where
+  display c = charString c
+
+instance Display Bool where
+  display b = if b then "True" else "False"
+
+instance Display () where
+  display u = "()"
+
+instance Display a => Display b => Display (a, b) where
+  display p = case p of
+    (x, y) -> "(" ++ display x ++ ", " ++ display y ++ ")"
+
+instance Debug Int where
+  debug n = showInt n
+
+instance Debug String where
+  debug s = "\"" ++ escapedChars (arrayToList (stringToChars s)) ++ "\""
+
+instance Debug Char where
+  debug c = "'" ++ escaped c ++ "'"
+
+instance Debug Bool where
+  debug b = if b then "True" else "False"
+
+instance Debug () where
+  debug u = "()"
+
+instance Debug a => Debug b => Debug (a, b) where
+  debug p = case p of
+    (x, y) -> "(" ++ debug x ++ ", " ++ debug y ++ ")"
+
+charString : (c : [] Char) -> String
+charString c = charsToString (arrayFromList (c :: Nil))
+
+escapedChars : (cs : [] List Char) -> String
+escapedChars Nil = ""
+escapedChars (c :: rest) = escaped c ++ escapedChars rest
+
+escaped : (c : [] Char) -> String
+escaped c = if charCode c == 34 then backslashed 34 else if charCode c == 92 then backslashed 92 else if charCode c == 10 then backslashed 110 else if charCode c == 9 then backslashed 116 else charString c
+
+backslashed : (k : [] Int) -> String
+backslashed k = charsToString (arrayFromList (charFromCode 92 :: charFromCode k :: Nil))
+
+@native
+Array : Type -> Type
+
+@native
+arrayLen : {a : Type} -> (xs : [0..1] Array a) -> Int
+
+@native
+arrayGet : {a : Type} -> (xs : [0..1] Array a) -> Int -> a
+
+@native
+arrayGetOr : {a : Type} -> (d : [0..1] a) -> (xs : [0..1] Array a) -> Int -> a
+
+@native
+arraySet : {a : Type} -> (xs : [0..1] Array a) -> Int -> a -> Array a
+
+@native
+arrayPush : {a : Type} -> Array a -> a -> Array a
+
+@native
+arrayPop : {a : Type} -> (xs : [0..1] Array a) -> Array a
+
+@native
+arraySlice : {a : Type} -> (xs : [0..1] Array a) -> Int -> Int -> Array a
+
+@native
+arrayConcat : {a : Type} -> Array a -> Array a -> Array a
+
+@native
+arrayFromList : {a : Type} -> List a -> Array a
+
+@native
+arrayToList : {a : Type} -> Array a -> List a
+
+@native
+stringByteLength : (s : [0..1] String) -> Int
+
+@native
+stringByteAt : (s : [0..1] String) -> Int -> Int
+
+@native
+stringSlice : (s : [0..1] String) -> Int -> Int -> String
+
+@native
+stringCompare : (a : [0..1] String) -> (b : [0..1] String) -> Int
+
+@native
+stringIndexOf : (s : [0..1] String) -> (needle : [0..1] String) -> Int -> Int
+
+@native
+stringToChars : (s : [0..1] String) -> Array Char
+
+@native
+charsToString : (cs : [0..1] Array Char) -> String
+
+@native
+charCode : Char -> Int
+
+@native
+charFromCode : Int -> Char
+
+effect Console where
+  putStr : String -> ()
+  putErr : String -> ()
+  readLine : () -> Maybe String
+
+putStrLn : String -> () ! Console
+putStrLn s = putStr (s ++ "\n")
+
+printInt : (n : [] Int) -> () ! Console
+printInt n = putStrLn (showInt n)
+
+showInt : (n : [] Int) -> String
+showInt n = if n < 0 then "-" ++ negativeDigits digitFuel n else negativeDigits digitFuel (0 - n)
+
+data DigitFuel = Spent | More DigitFuel
+
+digitFuel : DigitFuel
+digitFuel = DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More DigitFuel.Spent)))))))))))))))))))
+
+negativeDigits : (fuel : [] DigitFuel) -> (n : [] Int) -> String
+negativeDigits DigitFuel.Spent n = ""
+negativeDigits (DigitFuel.More fuel) n =if (0 - 10) < n then digitString (0 - n) else negativeDigits fuel (n / 10) ++ digitString (0 - n % 10)
+
+digitString : (d : [] Int) -> String
+digitString d = if d == 0 then "0" else if d == 1 then "1" else if d == 2 then "2" else if d == 3 then "3" else if d == 4 then "4" else if d == 5 then "5" else if d == 6 then "6" else if d == 7 then "7" else if d == 8 then "8" else "9"
+
+effect Fs where
+  readToString : String -> Result String String
+  writeString : String -> String -> Result String ()
+  appendString : String -> String -> Result String ()
+  removeFile : String -> Result String ()
+  createDir : String -> Result String ()
+  createDirAll : String -> Result String ()
+  removeDir : String -> Result String ()
+  removeDirAll : String -> Result String ()
+  rename : String -> String -> Result String ()
+  copy : String -> String -> Result String Int
+  listDir : String -> Result String (Array String)
+  exists : String -> Bool
+  isFile : String -> Bool
+  isDir : String -> Bool
+
+effect Process where
+  exit : Int -> ()
+  currentPid : () -> Int
+  argv : () -> Array String
+  getEnv : String -> Maybe String
+  setEnv : String -> String -> ()
+  removeEnv : String -> ()
+  isTerminal : Int -> Bool
+
+readDir : String -> Result String (List String) ! Fs
+readDir path = case listDir path of
+  Err e -> Err e
+  Ok names -> Ok (arrayToList names)
+
+args : () -> List String ! Process
+args () = arrayToList (argv ())
+
+effect Random where
+  nextInt : () -> Int
+  intBetween : Int -> Int -> Int
+  nextSeed : () -> Int
+
+effect Time where
+  now : () -> Int
+  monotonic : () -> Int
+  sleep : Int -> ()
+
+effect Test where
+  fail : String -> ()
+
+effect Abort where
+  abort : {a : Type} -> String -> a
+
+effect Eff = {Console, Fs, Process, Random, Time, Test, Abort, Div}

@@ -34,9 +34,34 @@ then.
 
 ## How it is run
 
-`front/` is a Meadow package (`Meadow.toml`). Its executable, `Idyll`, takes a
-pass and some files, and writes what that pass made of each file, after a line
-`== <file>`:
+`front/` is a Meadow package (`Meadow.toml`). Its executable, `Idyll`, is
+Idyll's command line, as the Rust driver's `idyll` is, on a package (a
+directory with an `Idyll.toml` and a `src/`):
+
+```sh
+cd examples/hello
+../../front/target/release/native/silo/Idyll run           # build it, and run it on Glade
+../../front/target/release/native/silo/Idyll run --release # on Silo, as native code
+../../front/target/release/native/silo/Idyll build         # build it into Cut, and say where it is
+../../front/target/release/native/silo/Idyll check         # check it and what it depends on
+../../front/target/release/native/silo/Idyll help
+```
+
+That is `Driver.mw`: a `cli!` (Lingua's command line) over a `make!`
+(Lingua's build), each package a unit. A package's `[dependencies]` by
+`path` are units it depends on; Std is in the program (`includeStr`), and a
+package that names it has it; so is the prelude, `compiler/idyllic/src/
+prelude.idl`, the Rust compiler's own. A unit's interface is its sources and
+those of every package it reaches, since this compiler checks a package's
+dependencies alongside it, so a package is compiled again only when its own
+sources or a dependency's changed, and a dependency that changed compiles
+what depends on it. The link lowers the root package to Cut, its `main` the
+entry, into `target/link/program.cut`, and `run` hands that to `meadow cut`.
+`front_builds_and_runs_a_package_with_a_dependency` and
+`front_runs_every_example_itself` hold it to that.
+
+The same executable, given a pass and some files, writes what that pass
+made of each file, after a line `== <file>`:
 
 ```sh
 cd front

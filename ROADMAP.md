@@ -1081,8 +1081,19 @@ do yet `(unsupported)`, and the tests count those apart.
   several put off behind a placeholder until the definition is checked, a
   pattern's constructor chosen by its scrutinee's type. With it no program
   of the corpus is left out of the type or Cut comparisons.
-- [ ] front/'s own REPL and driver, once Cut moves its Lingua pin (Lingua
-  833e1a5, for LineEditor 0.2.2).
+- [x] front/'s own driver (2026-10-21): `Idyll build`, `run` (`--release`
+  for Silo) and `check` on a package, a Lingua `cli!` over a `make!` with
+  each package a unit (path dependencies; Std and the prelude embedded with
+  `includeStr`, the prelude now one file, `compiler/idyllic/src/
+  prelude.idl`, that the Rust compiler includes too). A unit is compiled
+  again only when its sources or a dependency's changed; the link lowers the
+  root to Cut and `run` hands it to `meadow cut`. Every example runs through
+  it as the Rust driver runs it. Left: git dependencies, profiles and
+  options as `make!` has them, error messages drawn where they are (the
+  checker's errors are kinds only), and real interfaces (types, not
+  sources) once the checker can import a compiled package.
+- [ ] front/'s own REPL, once Cut moves its Lingua pin (Lingua 833e1a5, for
+  LineEditor 0.2.2).
 - [ ] CI, with MeadowBoot's prerelease for the `meadow` it needs.
 - [ ] **The rest of the passes on Lingua's `lang!`/`pass!`**, as MeadowBoot's
   are (Chris, 2026-10-18: "that's the whole point of Lingua"). Done:

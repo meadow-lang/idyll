@@ -1,0 +1,267 @@
+-- Idyll's command line, written with Lingua: `idyll build`, `idyll run` and
+-- `idyll check` on a package, as the Rust driver (`idyll-driver`) has them.
+--
+-- The command line is a `cli!`, and the build a `make!` over packages: a
+-- package is a unit, a directory with an `Idyll.toml` naming its
+-- `[dependencies]` (`Util = { path = "../util" }`) and a `src/` of modules.
+-- A unit's interface is what its dependents need of it: here, since this
+-- compiler checks a package's dependencies alongside it, their sources --
+-- its own and every package it reaches, in dependency order. Std is not a
+-- unit: it is in this program (`includeStr`), and a package that names it
+-- has it. The link lowers the root package to Cut, its `main` the entry,
+-- into `target/link/program.cut`, which `run` hands to `meadow cut`.
+
+use Lingua (cli!, make!)
+use Lingua.Make (Given, Linking, unitDir, unitSources, unitImports, linkRoot, linkUnits, linkOut, linkDir)
+use Lingua.Diagnostic (renderAll)
+use Idyll.Surface (SurfaceProgram)
+use Idyll.Surface as Surface
+use Idyll.Rename (renamePackage)
+use Idyll.Scc (sccModule)
+use Idyll.Check (checked)
+use Idyll.Lower as Lo
+use Std.Macro (Reflect, Datum, toDatum, fromDatum)
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Maybe as M
+use Std.Path as Path
+use Std.Fs (writeString, readDir, isDir, exists)
+use Std.Process (runInherit)
+use Std.Maybe.Maybe.*
+use Std.Result.Result.*
+
+cli! {
+  pub Tool "idyll" "Idyll, built by its compiler written in Meadow"
+    | build "Build a package into Cut, which Meadow runs" { path : Maybe String "the package (here, if left out)" }
+    | run "Build a package and run it on Meadow" {
+        path : Maybe String "the package (here, if left out)"
+        release : Flag "Run it as native code, built by Silo"
+      }
+    | check "Check a package and what it depends on" { path : Maybe String "the package (here, if left out)" }
+}
+
+make! {
+  pub Units "idyll"
+    | sources = ".idl"
+    | manifest = "Idyll.toml"
+    | compile = compileUnit
+    | dependencies = dependenciesOf
+    | files = filesOf
+    | link = linkProgram
+}
+
+-- What a package gives those that depend on it: its sources and those of
+-- every package it reaches, each package its name (`Util@0.1.0`) and its
+-- modules, a path (`Collections.List`, the root's empty) and the text;
+-- dependencies first.
+@derive(Reflect)
+data Module = Module String String
+
+@derive(Reflect)
+data Package = Package String [Module]
+
+@derive(Reflect)
+data Interface = Interface [Package]
+
+fun packagesOf (i : Interface) : [(String, [(String, String)])] =
+  match i with
+  | Interface.Interface ps ->
+      V.map (\p -> match p with | Package.Package n ms -> (n, V.map (\m -> match m with | Module.Module a b -> (a, b)) ms)) ps
+
+fun interfaceOf (ps : [(String, [(String, String)])]) : Interface =
+  Interface.Interface (V.map (\p -> Package.Package (fst p) (V.map (\m -> Module.Module (fst m) (snd m)) (snd p))) ps)
+
+-- --- the command line ---------------------------------------------------------
+
+@pub fun drive () =
+  match argsTool () with
+  | Tool.Build r -> (let ok = buildUnits (here r.path) in if ok then writeOutput "${cutOf (here r.path)}\n" else exit 1)
+  | Tool.Check r -> if buildUnits (here r.path) then () else exit 1
+  | Tool.Run r ->
+      let root = here r.path in
+      if not (buildUnits root) then exit 1
+      else
+        let args = if r.release then ["cut", "--runtime", "silo", cutOf root] else ["cut", cutOf root] in
+        (match runInherit "meadow" args with
+         | Ok 0 -> ()
+         | Ok code -> exit code
+         | Err why ->
+             let w = writeError "could not run meadow: ${why}\n" in
+             exit 1)
+
+fun here (path : Maybe String) : String = M.unwrapOr "." path
+
+-- Where the link put a package's Cut.
+fun cutOf (root : String) : String = Path.join (linkDir root) "program.cut"
+
+-- --- what the build is told -----------------------------------------------------
+
+-- A package's sources: its `src/` of modules, and its manifest, which says
+-- its name.
+fun filesOf (dir : String) : [String] ! { Fs | e } =
+  V.pushBack (V.map (\f -> Path.join (Path.join dir "src") f) (idlFiles (Path.join dir "src") [])) (Path.join dir "Idyll.toml")
+
+-- The `.idl` files under a directory, by their paths in it.
+fun idlFiles (dir : String) (prefix : [String]) : [String] ! { Fs | e } =
+  let at = if V.isEmpty prefix then dir else Path.join dir (S.join "/" prefix) in
+  match readDir at with
+  | Err _ -> []
+  | Ok names ->
+      V.concatMap
+        (\n ->
+          if isDir (Path.join at n) then idlFiles dir (V.pushBack prefix n)
+          else if S.endsWith ".idl" n then [S.join "/" (V.pushBack prefix n)]
+          else [])
+        names
+
+-- The packages a package depends on: the `path`s of its `[dependencies]`.
+fun dependenciesOf (root : String) (dir : String) (manifest : String) : Result String [String] =
+  let lines = S.lines manifest in
+  let section = V.foldl (\acc l -> match acc with | (inDeps, found) -> (let t = S.trim l in if S.startsWith "[" t then (t == "[dependencies]", found) else if inDeps and S.contains "path" t then (inDeps, V.pushBack found t) else acc)) (False, []) lines in
+  Ok
+    (V.concatMap
+      (\t ->
+        match V.get (S.split "\"" (S.drop t (M.unwrapOr 0 (S.indexOf "path" t)))) 1 with
+        | Just p -> [Path.join dir p]
+        | None -> [])
+      (snd section))
+
+-- --- compiling a package ---------------------------------------------------------
+
+-- A package's name, from its manifest: `Name@version`, as the Rust compiler
+-- names a package's symbols.
+fun nameOf (dir : String) (sources : [(String, String)]) : String =
+  let manifest = M.unwrapOr "" (M.map snd (V.find (\s -> S.endsWith "Idyll.toml" (fst s)) sources)) in
+  let field = \key -> V.foldl (\acc l -> match acc with | Just v -> Just v | None -> (let t = S.trim l in if S.startsWith key t and S.contains "=" t then V.get (S.split "\"" t) 1 else None)) None (S.lines manifest) in
+  let name = M.unwrapOr (M.unwrapOr dir (V.last (S.split "/" dir))) (field "name") in
+  match field "version" with
+  | Just v -> "${name}@${v}"
+  | None -> name
+
+-- A source's module path, from where it is under `src/`: `src/Collections/
+-- List.idl` is `Collections.List`; `Main.idl` or `Lib.idl` the root.
+fun modulePath (dir : String) (path : String) : [String] =
+  let src = Path.join dir "src" in
+  let rel = if S.startsWith src path then S.drop path (S.byteLength src + 1) else path in
+  let segs = V.concatMap (\x -> S.split "\\" x) (S.split "/" rel) in
+  let last = M.unwrapOr "" (V.last segs) in
+  let named = V.pushBack (V.take segs (V.len segs - 1)) (S.take last (S.byteLength last - 4)) in
+  if V.len named == 1 and (V.getOr "" named 0 == "Main" or V.getOr "" named 0 == "Lib") then [] else named
+
+-- A package's modules, the root (whose path is empty) first: the renamer
+-- takes the first for the root.
+fun rootFirst (modules : [(String, String)]) : [(String, String)] =
+  V.append (V.filter (\m -> fst m == "") modules) (V.filter (\m -> fst m != "") modules)
+
+-- A package's modules parsed, or what is wrong with them, drawn.
+fun parsedModules (modules : [(String, String)]) : Result String [([String], SurfaceProgram)] =
+  V.foldl
+    (\acc m ->
+      match m with
+      | (p, text) ->
+          let path = if p == "" then [] else S.split "." p in
+          (match (acc, Surface.parsed text) with
+           | (Ok done, Ok prog) -> Ok (V.pushBack done (path, prog))
+           | (Ok _, Err ds) -> Err (renderAll (if p == "" then "Main" else p) text ds)
+           | (Err e, Ok _) -> Err e
+           | (Err e, Err ds) -> Err (e ++ renderAll p text ds)))
+    (Ok [])
+    modules
+
+-- The packages a package is checked with: those it depends on, and Std if
+-- any of it names Std.
+fun withStd (packages : [(String, [(String, String)])]) : [(String, [(String, String)])] =
+  let named = V.any (\p -> V.any (\m -> S.contains "Std" (snd m)) (snd p)) packages in
+  if named then V.append [("Std", stdModules)] packages else packages
+
+-- A package renamed with what it depends on: the module, or what is wrong.
+fun renamedWith (name : String) (own : [(String, String)]) (deps : [(String, [(String, String)])]) =
+  match (Surface.parsed prelude, parsedModules own) with
+  | (Err _, _) -> Err "the prelude does not parse"
+  | (_, Err why) -> Err why
+  | (Ok pre, Ok modules) ->
+      let parsedDeps = V.foldl (\acc d -> match (acc, parsedModules (snd d)) with | (Ok ds, Ok ms) -> Ok (V.pushBack ds (fst d, ms)) | (Err e, _) -> Err e | (_, Err e) -> Err e) (Ok []) (withStd (V.pushBack deps (name, own))) in
+      (match parsedDeps with
+       | Err why -> Err why
+       | Ok all ->
+           -- (a package is used by its name, its version only in its symbols)
+           let others = V.map (\d -> (V.getOr "" (S.split "@" (fst d)) 0, snd d)) (V.take all (V.len all - 1)) in
+           (match renamePackage name modules pre others with
+            | (m, problems) -> if V.isEmpty problems then Ok m else Err (S.join "\n" problems)))
+
+-- Compile a package: its modules checked with those of the packages it
+-- depends on; its interface, their sources and its own.
+fun compileUnit (u : Given Interface) : Result String Interface ! { Mut, Fs | e } =
+  let dir = unitDir u in
+  let sources = unitSources u in
+  let name = nameOf dir sources in
+  let own = rootFirst (V.concatMap (\s -> if S.endsWith ".idl" (fst s) then [(S.join "." (modulePath dir (fst s)), snd s)] else []) sources) in
+  let deps = V.foldl (\acc i -> V.foldl (\a p -> if V.any (\q -> fst q == fst p) a then a else V.pushBack a p) acc (packagesOf (snd i))) [] (unitImports u) in
+  match renamedWith name own deps with
+  | Err why -> Err why
+  | Ok m ->
+      let c = checked (sccModule m) in
+      let errors = getRef c.tc.errors in
+      if V.isEmpty errors then Ok (interfaceOf (V.pushBack deps (name, own)))
+      else Err ("${name} does not check: ${S.join ", " errors}")
+
+-- Put the program together: the root package lowered to Cut, its `main` the
+-- entry.
+fun linkProgram (l : Linking Interface) : Result String () ! { Mut, Fs | e } =
+  let root = linkRoot l in
+  match V.find (\u -> match u with | (d, _, _) -> d == root) (linkUnits l) with
+  | None -> Err "the root package was not built"
+  | Just (_, i, _) ->
+      let packages = packagesOf i in
+      (match V.last packages with
+       | None -> Err "the root package has no modules"
+       | Just (name, own) ->
+           (match renamedWith name own (V.take packages (V.len packages - 1)) with
+            | Err why -> Err why
+            | Ok m ->
+                let text = Lo.cutTextAt (sccModule m) "Main" True in
+                if S.startsWith "(" text then Err "${name} is not lowered: ${text}"
+                else
+                  match writeString (Path.join (linkOut l) "program.cut", text) with
+                  | Ok _ -> Ok ()
+                  | Err why -> Err why))
+
+-- --- what this program holds ------------------------------------------------------
+
+-- The prelude, the Rust compiler's own (`compiler/idyllic/src/prelude.idl`).
+def prelude = includeStr "../../compiler/idyllic/src/prelude.idl"
+
+-- Std's modules, as the Rust compiler embeds them (`stdlib::MODULES`).
+def stdModules : [(String, String)] =
+  [
+    ("", includeStr "../../lib/std/src/Lib.idl"),
+    ("Bool", includeStr "../../lib/std/src/Bool.idl"),
+    ("Char", includeStr "../../lib/std/src/Char.idl"),
+    ("Cmp", includeStr "../../lib/std/src/Cmp.idl"),
+    ("Collections.Array", includeStr "../../lib/std/src/Collections/Array.idl"),
+    ("Collections.List", includeStr "../../lib/std/src/Collections/List.idl"),
+    ("Collections.MArray", includeStr "../../lib/std/src/Collections/MArray.idl"),
+    ("Collections.Vec", includeStr "../../lib/std/src/Collections/Vec.idl"),
+    ("Collections.Vector", includeStr "../../lib/std/src/Collections/Vector.idl"),
+    ("Console", includeStr "../../lib/std/src/Console.idl"),
+    ("Dec", includeStr "../../lib/std/src/Dec.idl"),
+    ("Either", includeStr "../../lib/std/src/Either.idl"),
+    ("Eq", includeStr "../../lib/std/src/Eq.idl"),
+    ("Exn", includeStr "../../lib/std/src/Exn.idl"),
+    ("Fs", includeStr "../../lib/std/src/Fs.idl"),
+    ("Function", includeStr "../../lib/std/src/Function.idl"),
+    ("Maybe", includeStr "../../lib/std/src/Maybe.idl"),
+    ("Num.Fin", includeStr "../../lib/std/src/Num/Fin.idl"),
+    ("Num.Int", includeStr "../../lib/std/src/Num/Int.idl"),
+    ("Num.Nat", includeStr "../../lib/std/src/Num/Nat.idl"),
+    ("Ordering", includeStr "../../lib/std/src/Ordering.idl"),
+    ("Process", includeStr "../../lib/std/src/Process.idl"),
+    ("Result", includeStr "../../lib/std/src/Result.idl"),
+    ("Sigma", includeStr "../../lib/std/src/Sigma.idl"),
+    ("Sort", includeStr "../../lib/std/src/Sort.idl"),
+    ("State", includeStr "../../lib/std/src/State.idl"),
+    ("String", includeStr "../../lib/std/src/String.idl"),
+    ("Tuple", includeStr "../../lib/std/src/Tuple.idl"),
+    ("Void", includeStr "../../lib/std/src/Void.idl"),
+    ("Yield", includeStr "../../lib/std/src/Yield.idl")
+  ]
