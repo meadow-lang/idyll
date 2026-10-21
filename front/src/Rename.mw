@@ -110,8 +110,14 @@ def package = "Main"
 def builtins : [String] =
   ["Unit", "Int", "Bool", "String", "Grade", "Effect", "Div", "Char", "+", "*", "-", "<", "==", "/", "%", "++"]
 
+-- The primitives' other names, each with its operator's: what an instance
+-- of a trait whose method the operator is gives.
+def aliases : [(String, String)] =
+  [("intAdd", "+"), ("intMul", "*"), ("intSub", "-"), ("intLt", "<"), ("intEq", "=="), ("intDiv", "/"), ("intMod", "%"), ("stringAppend", "++")]
+
 fun new () =
-  let global = V.foldl (\m i -> Hm.insert (V.getOr "" builtins i) [i] m) Hm.empty (V.range 0 (V.len builtins)) in
+  let named = V.foldl (\m i -> Hm.insert (V.getOr "" builtins i) [i] m) Hm.empty (V.range 0 (V.len builtins)) in
+  let global = V.foldl (\m a -> match a with | (alias, op) -> Hm.insert alias (Hm.getOr [] op named) m) named aliases in
   Rn {
     scopes = newRef [global],
     ownAt = newRef (0 - 1),

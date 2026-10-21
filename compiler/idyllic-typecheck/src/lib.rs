@@ -1128,6 +1128,11 @@ pub struct Checker {
     traits: HashSet<usize>,
     /// each trait's superclass projections, by its record type
     supers: HashMap<usize, Vec<usize>>,
+    /// each trait's methods (see [`hir::Module::methods`]), and each
+    /// instance with no parameters, with those of its fields that are a
+    /// constant or a primitive: a method of it is that (see [`auto`])
+    methods: HashMap<usize, (usize, usize, usize)>,
+    instance_fields: HashMap<usize, Vec<Option<Rc<Core>>>>,
 }
 
 /// A parameter's grade being worked out: how many variables its meta is
@@ -1336,6 +1341,8 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         deferred_autos: Vec::new(),
         traits: m.datas.iter().filter(|d| d.is_trait).filter_map(|d| d.name.unique).collect(),
         supers: m.supers.clone(),
+        methods: m.methods.clone(),
+        instance_fields: HashMap::new(),
     };
     for b in m.groups.iter().flat_map(hir::BindGroup::binds) {
         if let Some(u) = b.name.unique.filter(|u| m.hints.contains(u)) {
@@ -1349,6 +1356,7 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
     for p in deps {
         tc.hints.extend(p.hints.iter().copied());
         tc.traits.extend(p.traits.iter().copied());
+        tc.instance_fields.extend(p.instance_fields.iter().cloned());
         for (u, package, path) in &p.symbols {
             if p.hints.contains(u) {
                 tc.hint_names.insert(*u, format!("{path}, from `{package}`"));
@@ -1408,6 +1416,8 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
             tc.settle_deferred();
             let core = tc.resolve(&core, ctx.lvl);
             tc.resolve_rec_defs(mark);
+            let core = tc.specialize(&ctx, &core, ctx.lvl);
+            tc.specialize_rec_defs(&ctx, mark);
             // (a `main` that is wrong has said so already)
             if main_fits != Some(false) {
                 tc.unhandled(&ctx, body.id, &usage, &world);

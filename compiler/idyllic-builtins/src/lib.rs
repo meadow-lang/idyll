@@ -102,6 +102,22 @@ impl Prim {
         }
     }
 
+    /// Its other name, a plain one: what an instance of a trait whose
+    /// method an operator is gives (`instance Add Int where (+) = intAdd`),
+    /// the operator itself being the method's.
+    pub fn alias(self) -> &'static str {
+        match self {
+            Prim::IntAdd => "intAdd",
+            Prim::IntMul => "intMul",
+            Prim::IntSub => "intSub",
+            Prim::IntDiv => "intDiv",
+            Prim::IntMod => "intMod",
+            Prim::IntLt => "intLt",
+            Prim::IntEq => "intEq",
+            Prim::StrAppend => "stringAppend",
+        }
+    }
+
     /// The name unique reserved for this primitive; they follow the builtins.
     pub fn unique(self) -> usize {
         Builtin::COUNT + self as usize

@@ -305,6 +305,10 @@ pub struct Module {
     /// each trait's superclasses, as the projections of its record that
     /// give them, by the record type: this package's and those it depends on
     pub supers: std::collections::HashMap<usize, Vec<usize>>,
+    /// each trait's methods, by the method's unique: the trait's record, the
+    /// method's field in it, and how many parameters the trait has (the
+    /// method's implicit arguments before the record found for it)
+    pub methods: std::collections::HashMap<usize, (usize, usize, usize)>,
     /// Every name with more than one meaning in scope where it is written,
     /// by the node it was written at (a [`TermKind::Var`]'s term, or a
     /// [`PatKind::Con`]'s pattern): what it may mean, the first of which
@@ -323,6 +327,9 @@ pub struct PackageNames {
     /// each trait's superclass projections, by the trait's record type
     #[serde(default)]
     pub supers: Vec<(usize, Vec<usize>)>,
+    /// each trait's methods: see [`Module::methods`]
+    #[serde(default)]
+    pub methods: Vec<(usize, (usize, usize, usize))>,
     /// its modules' paths, the root's empty
     pub modules: Vec<Vec<String>>,
     /// each module's names: module, name, unique, and how visible it is

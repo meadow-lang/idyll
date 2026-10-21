@@ -90,6 +90,10 @@ pub struct CompiledPackage {
     /// its traits' records
     #[serde(default)]
     pub traits: Vec<usize>,
+    /// its instances with no parameters, and those of their fields that are
+    /// a constant or a primitive (see [`Checker::specialize`])
+    #[serde(default)]
+    pub instance_fields: Vec<(usize, Vec<Option<Rc<Core>>>)>,
 }
 
 impl Checker {
@@ -243,6 +247,12 @@ impl Checker {
                 hints
             },
             traits: m.datas.iter().filter(|d| d.is_trait).filter_map(|d| d.name.unique).filter(|u| own_set.contains(u)).collect(),
+            instance_fields: {
+                let mut fields: Vec<(usize, Vec<Option<Rc<Core>>>)> =
+                    self.instance_fields.iter().filter(|(u, _)| own_set.contains(u)).map(|(u, f)| (*u, f.clone())).collect();
+                fields.sort_by_key(|(u, _)| *u);
+                fields
+            },
         }
     }
 }

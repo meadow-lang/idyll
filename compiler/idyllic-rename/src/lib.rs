@@ -195,6 +195,8 @@ struct Renamer {
     defaults: HashMap<usize, Vec<(String, usize, bool)>>,
     /// each trait's superclass projections, by its record type
     supers: HashMap<usize, Vec<usize>>,
+    /// each trait's methods: see [`hir::Module::methods`]
+    methods: HashMap<usize, (usize, usize, usize)>,
     /// whether the package's modules are all linear (`--linear`)
     linear_package: bool,
     /// whether the module being renamed is: its unannotated binders get
@@ -326,6 +328,7 @@ pub fn rename_package(
         r.fields.extend(names.fields.iter().cloned());
         r.defaults.extend(names.defaults.iter().cloned());
         r.supers.extend(names.supers.iter().cloned());
+        r.methods.extend(names.methods.iter().cloned());
     }
     r.next_unique = r.next_unique.max(first_unique);
     let first = r.next_unique;
@@ -416,6 +419,11 @@ pub fn rename_package(
             .filter(|d: &&hir::DataDecl| own(&d.name.unique))
             .filter_map(|d| Some((d.name.unique?, r.supers.get(&d.name.unique?)?.clone())))
             .collect(),
+        methods: {
+            let mut methods: Vec<(usize, (usize, usize, usize))> = r.methods.iter().filter(|(m, _)| **m >= first).map(|(m, i)| (*m, *i)).collect();
+            methods.sort_unstable();
+            methods
+        },
     };
     let module = hir::Module {
         datas,
@@ -432,6 +440,7 @@ pub fn rename_package(
         terminating: r.terminating,
         hints: r.hints,
         supers: r.supers,
+        methods: r.methods,
         overloads: r.overloads,
         version: None,
         linear_body: linear || modules.first().is_some_and(|m| m.program.linear),
@@ -486,7 +495,7 @@ impl Renamer {
     /// primitive types and operations, holding the uniques they reserve.
     fn new(package: &str) -> Self {
         let builtins = Builtin::ALL.iter().map(|b| (b.name(), b.unique()));
-        let prims = Prim::ALL.iter().map(|p| (p.name(), p.unique()));
+        let prims = Prim::ALL.iter().flat_map(|p| [(p.name(), p.unique()), (p.alias(), p.unique())]);
         let global: Scope =
             builtins.chain(prims).map(|(n, u)| (n.to_string(), (u, Span::at(0)))).collect();
         Renamer {
@@ -502,6 +511,7 @@ impl Renamer {
             hints: Default::default(),
             defaults: HashMap::new(),
             supers: HashMap::new(),
+            methods: HashMap::new(),
             linear_package: false,
             linear: false,
             in_type: false,
@@ -572,6 +582,15 @@ impl Renamer {
                 })
                 .collect();
             self.fields.insert(u, found);
+            // a trait's methods, the definitions named as its fields are
+            if d.node.is_trait {
+                let scope = self.scopes.last().expect("scope stack is never empty");
+                for (i, f) in fields.iter().enumerate() {
+                    if let Some(&(m, _)) = scope.get(&f.node).filter(|_| !f.node.starts_with("#super")) {
+                        self.methods.insert(m, (u, i, d.node.params.len()));
+                    }
+                }
+            }
             // a trait's superclasses, the fields named `#super0` and on
             if d.node.is_trait {
                 let supers: Vec<usize> =

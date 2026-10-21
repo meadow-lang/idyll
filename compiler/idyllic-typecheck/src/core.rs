@@ -519,6 +519,57 @@ impl Core {
     /// The same term with its leaves rewritten: `f` is given each `Var`,
     /// `Opaque` and `Meta`, with how many binders are around it there, and
     /// what it returns replaces it (`None` keeps it as it is).
+    /// Every node, outermost first: what `f` answers for one is put in its
+    /// place, and what it answers nothing for is gone into. `f` takes the
+    /// node and how many binders are around it.
+    pub fn transform(self: &Rc<Core>, depth: usize, f: &dyn Fn(&Rc<Core>, usize) -> Option<Rc<Core>>) -> Rc<Core> {
+        if let Some(replaced) = f(self, depth) {
+            return replaced;
+        }
+        let go = |c: &Rc<Core>, d: usize| c.transform(d, f);
+        match &**self {
+            Core::Var(..) | Core::Opaque(..) | Core::Meta(_) => self.clone(),
+            Core::Type(_) | Core::LitTy(_) | Core::Lit(_) | Core::Prim(_) | Core::GradeLit(_) | Core::Error => self.clone(),
+            Core::Pi { name, icit, grade, in_type, dom, cod } => Rc::new(Core::Pi {
+                name: name.clone(),
+                icit: *icit,
+                grade: go(grade, depth),
+                in_type: go(in_type, depth),
+                dom: go(dom, depth),
+                cod: go(cod, depth + 1),
+            }),
+            Core::Lam(x, b) => Rc::new(Core::Lam(x.clone(), go(b, depth + 1))),
+            Core::App(a, b) => Rc::new(Core::App(go(a, depth), go(b, depth))),
+            Core::BoxTy(a, b) => Rc::new(Core::BoxTy(go(a, depth), go(b, depth))),
+            Core::BoxIntro(a) => Rc::new(Core::BoxIntro(go(a, depth))),
+            Core::Unbox(a) => Rc::new(Core::Unbox(go(a, depth))),
+            Core::Let(x, e, b) => Rc::new(Core::Let(x.clone(), go(e, depth), go(b, depth + 1))),
+            Core::GradeAdd(a, b) => Rc::new(Core::GradeAdd(go(a, depth), go(b, depth))),
+            Core::GradeMul(a, b) => Rc::new(Core::GradeMul(go(a, depth), go(b, depth))),
+            Core::GradeRange(a, b) => Rc::new(Core::GradeRange(go(a, depth), go(b, depth))),
+            Core::Case(s, alts) => {
+                let alts = alts.iter().map(|a| CaseAlt { body: go(&a.body, depth + a.vars.len()), ..a.clone() }).collect();
+                Rc::new(Core::Case(go(s, depth), Rc::new(alts)))
+            }
+            Core::Runtime(n, a) => {
+                let n = match n {
+                    Note::Binds { grade, ty: Some(t) } => Note::Binds { grade: *grade, ty: Some(go(t, depth)) },
+                    other => other.clone(),
+                };
+                Rc::new(Core::Runtime(n, go(a, depth)))
+            }
+            Core::Comp(a, e) => Rc::new(Core::Comp(go(a, depth), go(e, depth))),
+            Core::Row(labels, tails) => Rc::new(Core::Row(
+                labels.iter().map(|l| go(l, depth)).collect(),
+                tails.iter().map(|t| go(t, depth)).collect(),
+            )),
+            Core::Handle(b, r, ops) => {
+                let ops = ops.iter().map(|op| OpClause { body: go(&op.body, depth), ..op.clone() }).collect();
+                Rc::new(Core::Handle(go(b, depth), go(r, depth), Rc::new(ops)))
+            }
+        }
+    }
+
     pub fn rewrite(self: &Rc<Core>, depth: usize, f: &dyn Fn(&Core, usize) -> Option<Rc<Core>>) -> Rc<Core> {
         let go = |c: &Rc<Core>, d: usize| c.rewrite(d, f);
         match &**self {

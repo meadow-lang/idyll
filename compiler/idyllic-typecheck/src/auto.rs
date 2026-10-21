@@ -134,13 +134,38 @@ impl Checker {
                 }
             }
         }
-        // then the hints that are in scope here
+        // then the hints that are in scope here, and could be for what is
+        // wanted, by what their types and it come to (a cheap look first,
+        // since a search is made for every method a program calls)
+        let goal = self.head_of(ctx.lvl, wanted);
         let mut hints: Vec<usize> = self.hints.iter().copied().collect();
         hints.sort_unstable();
-        let mut fitting = Vec::new();
+        let mut candidates = Vec::new();
         for u in hints {
             let x = hir::Ident { unique: Some(u), text: String::new() };
             let Some((core, ty, _)) = ctx.lookup(&x) else { continue };
+            let head = self.head_of(ctx.lvl, &ty);
+            if compatible(&head, &goal) {
+                candidates.push((u, core, ty));
+            }
+        }
+        // one that could is tried for real, with no copy to try it on: what
+        // is wanted is known, and a hint's type is closed, so all trying it
+        // can change is metas it makes itself, which are forgotten if it
+        // does not fit
+        if candidates.len() == 1 {
+            let (_, core, ty) = candidates.pop().expect("one");
+            let mark = self.mark();
+            return match self.apply_candidate(ctx, node, core, ty, wanted, depth) {
+                Some(found) if self.errors.len() == mark.errors => Ok(found),
+                _ => {
+                    self.roll_back(mark);
+                    Err(TypeErrorKind::NoInstance { wanted: shown(), deep: false })
+                }
+            };
+        }
+        let mut fitting = Vec::new();
+        for (u, core, ty) in candidates {
             if self.candidate_fits(ctx, node, &core, &ty, wanted, depth) {
                 fitting.push((u, core, ty));
             }
@@ -156,6 +181,136 @@ impl Checker {
                 Err(TypeErrorKind::AmbiguousInstance { wanted: shown(), candidates: names })
             }
         }
+    }
+
+    /// Note what of an instance's record, `core`, checked in `ctx`, a method
+    /// call can be made into: those of its fields that are a constant or a
+    /// primitive, if it is the record itself (an instance with no
+    /// parameters). Each is kept as the name it is, `Opaque`, so that it
+    /// can be referred to from anywhere (see [`Checker::named_at`]).
+    pub(super) fn note_instance(&mut self, ctx: &Ctx, u: usize, core: &Rc<Core>) {
+        let mut args = Vec::new();
+        let mut head = core;
+        while let Core::App(f, a) = &**head {
+            args.push(a.clone());
+            head = f;
+        }
+        args.reverse();
+        let Core::Opaque(ctor, _) = &**head else { return };
+        let Some(info) = self.ctors.get(ctor) else { return };
+        if args.len() != info.params + info.fields {
+            return;
+        }
+        let fields = args[info.params..]
+            .iter()
+            .map(|a| {
+                let mut a = a;
+                while let Core::Runtime(_, inner) = &**a {
+                    a = inner;
+                }
+                match &**a {
+                    Core::Prim(_) => Some(a.clone()),
+                    _ => unique_at(ctx, a, ctx.lvl, 0).map(|(u, x)| Rc::new(Core::Opaque(u, x))),
+                }
+            })
+            .collect();
+        self.instance_fields.insert(u, fields);
+    }
+
+    /// `core`, checked at level `base`, with each call of a method of a
+    /// known instance, `(+) {Int} addInt x y`, made a call of what the
+    /// instance gives for it, `intAdd x y`: so that a method costs what its
+    /// instance's field does, a primitive's what a primitive does.
+    pub(super) fn specialize(&self, ctx: &Ctx, core: &Rc<Core>, base: Lvl) -> Rc<Core> {
+        if self.methods.is_empty() || self.instance_fields.is_empty() {
+            return core.clone();
+        }
+        self.specialize_at(ctx, core, base, 0)
+    }
+
+    fn specialize_at(&self, ctx: &Ctx, core: &Rc<Core>, base: Lvl, depth: usize) -> Rc<Core> {
+        core.transform(depth, &|c, d| {
+            let Core::App(..) = &**c else { return None };
+            let mut args = Vec::new();
+            let mut head = c;
+            while let Core::App(f, a) = &**head {
+                args.push(a.clone());
+                head = f;
+            }
+            args.reverse();
+            let (method, _) = unique_at(ctx, head, base, d)?;
+            let &(_, field, params) = self.methods.get(&method)?;
+            let mut dict = args.get(params)?;
+            while let Core::Runtime(_, inner) = &**dict {
+                dict = inner;
+            }
+            let (instance, _) = unique_at(ctx, dict, base, d)?;
+            let given = self.instance_fields.get(&instance)?.get(field)?.as_ref()?;
+            let given = named_at(ctx, given, base, d)?;
+            Some(args[params + 1..].iter().fold(given, |f, a| Rc::new(Core::App(f, self.specialize_at(ctx, a, base, d)))))
+        })
+    }
+
+    /// The recursive definitions recorded since `mark`, specialized.
+    pub(super) fn specialize_rec_defs(&mut self, ctx: &Ctx, mark: usize) {
+        if self.methods.is_empty() || self.instance_fields.is_empty() {
+            return;
+        }
+        for i in mark..self.rec_defs.len() {
+            // what is around it past `ctx` is local, not a method
+            let d = &self.rec_defs[i];
+            let core = self.specialize(ctx, &d.core, d.lvl);
+            self.rec_defs[i].core = core;
+        }
+    }
+
+    /// Where the checker's growing state is, to go back to.
+    fn mark(&self) -> Mark {
+        Mark {
+            metas: self.metas.len(),
+            errors: self.errors.len(),
+            postponed: self.postponed.len(),
+            opened: self.opened.len(),
+            joins: self.joins.len(),
+            deferred: self.deferred.len(),
+            deferred_autos: self.deferred_autos.len(),
+        }
+    }
+
+    /// Back to `mark`: what was made since forgotten.
+    fn roll_back(&mut self, mark: Mark) {
+        self.metas.truncate(mark.metas);
+        self.errors.truncate(mark.errors);
+        self.postponed.truncate(mark.postponed);
+        self.opened.truncate(mark.opened);
+        self.joins.truncate(mark.joins);
+        self.deferred.truncate(mark.deferred);
+        self.deferred_autos.truncate(mark.deferred_autos);
+        self.chosen.retain(|m, _| *m < mark.metas);
+        self.placeholders.retain(|m| *m < mark.metas);
+        self.inferred.retain(|m, _| *m < mark.metas);
+    }
+
+    /// What a type comes to past its binders, roughly: the constant at its
+    /// head, and that of its first argument, where they are constants.
+    fn head_of(&self, lvl: Lvl, ty: &VTy) -> (Option<usize>, Option<usize>) {
+        let mut ty = self.force(ty.clone());
+        let mut l = lvl;
+        while let Value::Pi { name, icit: Icit::Implicit | Icit::Auto, cod, .. } = &*ty {
+            ty = self.force(self.split_comp(self.apply(cod, vvar(l, name.clone()))).0);
+            l += 1;
+        }
+        let Value::Opaque(t, _, spine) = &*ty else { return (None, None) };
+        let first = spine.iter().find_map(|e| match e {
+            Elim::App(a) => Some(a.clone()),
+            _ => None,
+        });
+        let first = first.and_then(|a| match &*self.force(a) {
+            Value::Opaque(u, _, _) => Some(*u),
+            Value::LitTy(b) => Some(usize::MAX - *b as usize),
+            _ => None,
+        });
+        (Some(*t), first)
     }
 
     /// The ways to the superclasses inside a record of trait `t`: each a
@@ -378,5 +533,48 @@ impl Checker {
             Some((_, ty, _)) => format!("the instance {}", self.quote(ctx.lvl, ty)),
             None => "an instance".to_string(),
         }
+    }
+}
+
+/// How far the checker's growing state had grown (see [`Checker::mark`]).
+struct Mark {
+    metas: usize,
+    errors: usize,
+    postponed: usize,
+    opened: usize,
+    joins: usize,
+    deferred: usize,
+    deferred_autos: usize,
+}
+
+/// Whether a hint whose type comes to `hint` could give what comes to
+/// `goal`: what is not known of either could be anything.
+fn compatible(hint: &(Option<usize>, Option<usize>), goal: &(Option<usize>, Option<usize>)) -> bool {
+    let fits = |a: Option<usize>, b: Option<usize>| a.is_none() || b.is_none() || a == b;
+    fits(hint.0, goal.0) && fits(hint.1, goal.1)
+}
+
+/// The name `core` is, at `depth` binders inside a term checked at level
+/// `base` of `ctx`: a constant, or a slot of `ctx` below `base` (one past
+/// it is local to the term, and is no instance or method).
+fn unique_at(ctx: &Ctx, core: &Rc<Core>, base: Lvl, depth: usize) -> Option<(usize, String)> {
+    match &**core {
+        Core::Opaque(u, x) => Some((*u, x.clone())),
+        Core::Var(i, x) => {
+            let l = (base + depth).checked_sub(i + 1).filter(|l| *l < base)?;
+            Some((ctx.binders.get(l)?.key?, x.clone()))
+        }
+        _ => None,
+    }
+}
+
+/// What [`Checker::note_instance`] kept, referred to from `depth` binders
+/// inside a term checked at level `base` of `ctx`.
+fn named_at(ctx: &Ctx, kept: &Rc<Core>, base: Lvl, depth: usize) -> Option<Rc<Core>> {
+    let Core::Opaque(u, x) = &**kept else { return Some(kept.clone()) };
+    match ctx.names.get(u)? {
+        Entry::Local(l) if *l < base => Some(Rc::new(Core::Var(base + depth - l - 1, x.clone()))),
+        Entry::Local(_) => None,
+        Entry::Opaque(_) => Some(kept.clone()),
     }
 }

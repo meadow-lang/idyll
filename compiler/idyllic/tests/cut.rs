@@ -310,3 +310,20 @@ fn a_native_with_no_primitive_is_a_def_of_the_programs_own() {
     has(&text, "prim stFreeze(m_N; k_N)");
     assert!(!text.contains("prim arraySet("), "{text}");
 }
+
+#[test]
+fn a_method_of_a_known_instance_is_what_the_instance_gives() {
+    // `plus2 n n` at `Int` is the instance's field, the primitive: no
+    // record is looked into, and no method called
+    let text = lowered(
+        "trait Plus (a : Type) where\n  plus2 : a -> a -> a\n\ninstance Plus Int where\n  plus2 = intAdd\n\n\
+         twice : Int -> Int\ntwice n = plus2 n n\n\ntwice 21\n",
+    );
+    has(&text, "def idyll:Main/twice (n_N: i64; k_N: ptr) =\n  prim add(n_N, n_N; k_N)");
+    // where the instance is not known, the method is called with the record
+    let text = lowered(
+        "trait Plus (a : Type) where\n  plus2 : a -> a -> a\n\ninstance Plus Int where\n  plus2 = intAdd\n\n\
+         twice : {a : Type} -> Plus a => a -> a\ntwice n = plus2 n n\n\ntwice 21\n",
+    );
+    has(&text, "idyll:Main/plus2(");
+}

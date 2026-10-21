@@ -791,7 +791,9 @@ impl Checker {
                 let rhs = if self.lets == 0 {
                     self.settle_deferred();
                     self.resolve_rec_defs(mark);
-                    self.resolve(&rhs, ctx.lvl)
+                    self.specialize_rec_defs(ctx, mark);
+                    let rhs = self.resolve(&rhs, ctx.lvl);
+                    self.specialize(ctx, &rhs, ctx.lvl)
                 } else {
                     rhs
                 };
@@ -863,7 +865,16 @@ impl Checker {
                 if self.lets == 0 {
                     self.settle_deferred();
                     self.resolve_rec_defs(mark);
+                    self.specialize_rec_defs(&ctx_rec, mark);
                     members = members.into_iter().map(|(u, core)| (u, self.resolve(&core, ctx_rec.lvl))).collect();
+                    members = members.into_iter().map(|(u, core)| (u, self.specialize(&ctx_rec, &core, ctx_rec.lvl))).collect();
+                    // an instance with no parameters: what of it a method
+                    // call can be made into
+                    for (u, core) in &members {
+                        if self.hints.contains(u) {
+                            self.note_instance(&ctx_rec, *u, core);
+                        }
+                    }
                 }
                 // 4. if they terminate, they may compute in types from here
                 //    on; if they may not, they have to say so, unless
