@@ -36,6 +36,7 @@ use Std.Result.Result.*
 -- The grammar's tokens: the lexer's, with what the layout step inserts.
 @pub data Token
   = Mod
+  | Module
   | Use
   | Data
   | Type
@@ -100,6 +101,7 @@ use Std.Result.Result.*
   | Raw.Newline -> None
   | Raw.Comment -> None
   | Raw.Mod -> Just Token.Mod
+  | Raw.Module -> Just Token.Module
   | Raw.Use -> Just Token.Use
   | Raw.Data -> Just Token.Data
   | Raw.Type -> Just Token.Type
@@ -156,6 +158,7 @@ use Std.Result.Result.*
 @pub fun shown (t : Token) : String =
   match t with
   | Token.Mod -> "mod"
+  | Token.Module -> "module"
   | Token.Use -> "use"
   | Token.Data -> "data"
   | Token.Type -> "type"

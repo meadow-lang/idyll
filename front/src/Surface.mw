@@ -60,8 +60,11 @@ use Std.Result.Result.*
       shown : [Shown],
       terminating : [Name],
       linear : Bool,
-      body : Maybe Expr
+      body : Maybe Expr,
+      modules : [Module]
     }
+  -- `module M where ..`: a module written inside a file, with what is in it
+  Module + Module { name : Name, file : File }
   Name + Name { text : String }
   -- how visible a declaration is said to be
   Shown + Shown { name : Name, vis : Visibility }
@@ -1079,6 +1082,7 @@ data Item
   | Decl SurfaceDecl
   | Use SurfaceUse
   | Expr SurfaceExpr
+  | Module SurfaceModule
   | Nothing
 
 -- A name an equation or a signature can be for: `f` or `(+)` -- its token.
@@ -1528,6 +1532,7 @@ fun itemOf out (it : IdyllItem) =
     | Just (IdyllItemBody.RecordDecl d) -> recordDecl out cx d
     | Just (IdyllItemBody.EffectDecl d) -> effectDecl out cx d
     | Just (IdyllItemBody.UseDecl d) -> Item.Use (useDecl out cx d)
+    | Just (IdyllItemBody.ModuleDecl d) -> Item.Module (moduleDecl out d)
     | Just (IdyllItemBody.Line l) ->
         (match lineItem out cx l with
          -- an upper-case signature with an attribute on it
@@ -1555,6 +1560,7 @@ fun itemOf out (it : IdyllItem) =
   in
   let u3 =
     match item with
+    | Item.Module _ -> if M.isSome a.vis or M.isSome a.seq or a.linear then bad at "a module takes no attribute: what is in it does" else ()
     | Item.Expr _ -> if M.isSome a.vis or M.isSome a.seq then bad at "an expression has no attributes" else ()
     | Item.Data _ -> ()
     | _ -> if M.isSome a.seq then bad at "@seq goes on a data type" else ()
@@ -1576,17 +1582,31 @@ record Parts = {
   shown : [SurfaceShown],
   terminating : [SurfaceName],
   linear : Bool,
-  body : Maybe SurfaceExpr
+  body : Maybe SurfaceExpr,
+  modules : [SurfaceModule]
 }
 
 fun program out (root : Syn) =
-  let m = metaOf root in
   let file = asIdyllFile root in
   let entries =
     match file with
-    | Just f -> V.map (\x -> match x with | IdyllEntry.Item y -> Just y | IdyllEntry.Sep _ -> None) (idyllFileEntries f)
+    | Just f -> idyllFileEntries f
     | None -> []
   in
+  fileOf out root entries False
+
+-- `module M where`: its block is a program, as a file is, with no
+-- expression of its own.
+fun moduleDecl out (d : IdyllModuleDecl) =
+  let at = syntaxIdyllModuleDecl d in
+  let u = braced at (idyllModuleDeclOpen d) (idyllModuleDeclClose d) in
+  let name = nameOf out (M.unwrapOr at (idyllModuleDeclName d)) in
+  newSurfaceModule out (metaOf at) name (fileOf out at (idyllModuleDeclEntries d) True)
+
+-- The items of a file, or of a module inside one (`nested`), as a program.
+fun fileOf out (root : Syn) (raw : [IdyllEntry]) (nested : Bool) =
+  let m = metaOf root in
+  let entries = V.map (\x -> match x with | IdyllEntry.Item y -> Just y | IdyllEntry.Sep _ -> None) raw in
   let items = separated root entries True False in
   let n = V.len items in
   let parts =
@@ -1618,20 +1638,24 @@ fun program out (root : Syn) =
                         decls = V.pushBack p.decls d
                       }
                   | Item.Use u -> { p | uses = V.pushBack p.uses u }
+                  | Item.Module mm -> { p | modules = V.pushBack p.modules mm }
                   | Item.Expr e ->
-                      if i + 1 == n then { p | body = Just e }
+                      if i + 1 == n and not nested then { p | body = Just e }
                       else
                         (match upperSig out im e with
                          -- `Matrix : Nat -> Nat -> Type`, with more after it
                          | Just d -> { p | decls = V.pushBack p.decls d }
                          | None ->
-                             let u = bad at "an expression can only come last in a program" in
+                             let u =
+                               if nested then bad at "a module inside a file has no expression of its own"
+                               else bad at "an expression can only come last in a program"
+                             in
                              p)
                   | Item.Nothing -> p)))
-      (Parts { uses = [], datas = [], effects = [], decls = [], shown = [], terminating = [], linear = False, body = None })
+      (Parts { uses = [], datas = [], effects = [], decls = [], shown = [], terminating = [], linear = False, body = None, modules = [] })
       (V.range 0 n)
   in
-  newSurfaceFile out m parts.uses parts.datas parts.effects parts.decls parts.shown parts.terminating parts.linear parts.body
+  newSurfaceFile out m parts.uses parts.datas parts.effects parts.decls parts.shown parts.terminating parts.linear parts.body parts.modules
 
 -- --- writing a program out ---------------------------------------------------------
 
@@ -1777,9 +1801,11 @@ fun useText (a : SurfaceArena) (u : SurfaceUse) : String =
 
 -- A program, a line for each part: whether it is linear, then its uses, data
 -- types, effects, declarations, visibilities, `@terminating`s and body.
-@pub fun programText (p : SurfaceProgram) : String =
-  let a = surfaceArena p in
-  let f = surfaceRoot p in
+@pub fun programText (p : SurfaceProgram) : String = fileText (surfaceArena p) (surfaceRoot p)
+
+-- A file's program, or a module's inside it: each module after the rest,
+-- its own program indented under it.
+fun fileText (a : SurfaceArena) (f : SurfaceFile) : String =
   S.join
     "\n"
     (V.concat [
@@ -1790,7 +1816,13 @@ fun useText (a : SurfaceArena) (u : SurfaceUse) : String =
        V.map (declText a) (surfaceFileDecls a f),
        V.map (\v -> sx ["vis", nameIn a (surfaceShownName a v), visibilityText (surfaceShownVis a v)]) (surfaceFileShown a f),
        V.map (\x -> sx ["terminating", nameIn a x]) (surfaceFileTerminating a f),
-       (match surfaceFileBody a f with | Just e -> [sx ["body", exprText a e]] | None -> [])
+       (match surfaceFileBody a f with | Just e -> [sx ["body", exprText a e]] | None -> []),
+       V.concatMap
+         (\mm ->
+           V.append
+             [sx ["module", nameIn a (surfaceModuleName a mm)]]
+             (V.map (\l -> "  " ++ l) (S.lines (fileText a (surfaceModuleFile a mm)))))
+         (surfaceFileModules a f)
      ])
 
 -- --- tests -----------------------------------------------------------------------

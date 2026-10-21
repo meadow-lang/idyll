@@ -35,6 +35,7 @@ use Idyll.Layout (Token, foldToken)
   lexer Token
   tokens {
     "mod" = Mod,
+    "module" = Module,
     "use" = Use,
     "data" = Data,
     "type" = Type,
@@ -101,7 +102,10 @@ use Idyll.Layout (Token, foldToken)
     -- --- items ---
 
     Item = attrs:AttrLine* body:ItemBody
-    ItemBody = DataDecl | RecordDecl | EffectDecl | UseDecl | Line
+    ItemBody = ModuleDecl | DataDecl | RecordDecl | EffectDecl | UseDecl | Line
+
+    -- `module M where`, and a block of items, as a file has
+    ModuleDecl = "module" name:"upper" "where" open:("{" | "vlbrace") entries:Entry* close:("}" | "vrbrace")
 
     AttrLine = "@" name:"lower" args:AttrArgs? sep:(";" | "vsemi")?
     AttrArgs = "(" args:(AttrArg ("," AttrArg)*)? ")"

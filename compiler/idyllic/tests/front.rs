@@ -654,6 +654,11 @@ mod w {
         lines.extend(p.visibility.iter().map(|(x, v)| sx(["vis".into(), x.node.clone(), visibility(*v)])));
         lines.extend(p.terminating.iter().map(|x| sx(["terminating".into(), x.node.clone()])));
         lines.extend(p.body.iter().map(|e| sx(["body".into(), term(e)])));
+        // a module inside the file, its own program indented under it
+        for (name, inner) in &p.modules {
+            lines.push(sx(["module".into(), name.node.clone()]));
+            lines.extend(program(inner).lines().map(|l| format!("  {l}")));
+        }
         lines.join("\n")
     }
 }

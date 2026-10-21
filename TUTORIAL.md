@@ -2382,6 +2382,31 @@ without it, `Syntax`: the root's children are in scope by name. The
 package's name on its own is the root module, for a child that wants
 something the root declares.
 
+A module can also be written inside another's file, indented under
+`module M where`, which saves a file for something small. It is the module
+`M` under the file's, exactly as if it were `src/M.idl` beside it (or
+`src/Outer/M.idl`, inside `src/Outer.idl`), so it is a namespace of its own
+too, and may have modules inside it in turn:
+
+```
+module Shapes where
+  use Shape.*
+
+  data Shape = Circle Int | Square Int
+
+  area : Shape -> Int
+  area (Circle r) = 3 * r * r
+  area (Square w) = w * w
+
+use Shapes (Shape, area)
+use Shapes.Shape.*
+
+area (Circle 2)
+```
+
+Only the root module's last line may be an expression, so one inside a
+file has none, and its name may not be one the package has already.
+
 ### `use`
 
 | Form | What it brings |

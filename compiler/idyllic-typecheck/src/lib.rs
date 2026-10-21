@@ -293,6 +293,9 @@ struct HoleInfo {
 pub struct TypeError {
     pub node: NodeId,
     pub kind: TypeErrorKind,
+    /// what else to say: where each of two types of one name is from, when
+    /// both are in what the error shows
+    pub notes: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -466,6 +469,10 @@ fn times(used: &Core) -> String {
 
 impl TypeError {
     pub fn to_diagnostic(&self, spans: &SpanTable) -> Diagnostic {
+        self.notes.iter().fold(self.diagnostic(spans), |d, note| d.help(note.clone()))
+    }
+
+    fn diagnostic(&self, spans: &SpanTable) -> Diagnostic {
         let here = spans.get(self.node).unwrap_or(Span::at(0));
         match &self.kind {
             TypeErrorKind::Mismatch { expected, actual } => Diagnostic::error("type mismatch")
@@ -1045,6 +1052,9 @@ pub struct Checker {
     overload_names: HashMap<NodeId, String>,
     written_as: HashMap<usize, String>,
     origin: HashMap<usize, String>,
+    /// where each type and constructor is from, by unique: its package, for
+    /// a message about two of one name
+    homes: HashMap<usize, String>,
 }
 
 /// A parameter's grade being worked out: how many variables its meta is
@@ -1247,7 +1257,25 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         overload_names: HashMap::new(),
         written_as: HashMap::new(),
         origin: HashMap::new(),
+        homes: HashMap::new(),
     };
+    // (a package is known by its name and version: `Shapes@0.1.0`)
+    let this = match &m.version {
+        Some(v) => format!("`{}@{v}`", m.package),
+        None => format!("`{}`", m.package),
+    };
+    let in_prelude: HashSet<usize> = m.prelude.values().copied().collect();
+    for d in &m.datas {
+        for u in std::iter::once(&d.name).chain(d.ctors.iter().map(|c| &c.name)).filter_map(|x| x.unique) {
+            let home = if in_prelude.contains(&u) { "the prelude".to_string() } else { this.clone() };
+            tc.homes.insert(u, home);
+        }
+    }
+    for p in deps {
+        for (u, package, _) in &p.symbols {
+            tc.homes.insert(*u, format!("`{package}`"));
+        }
+    }
     if !m.overloads.is_empty() {
         tc.name_meanings(m, deps);
     }
@@ -1453,7 +1481,29 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
 
 impl Checker {
     fn error(&mut self, node: NodeId, kind: TypeErrorKind) {
-        self.errors.push(TypeError { node, kind });
+        let notes = self.homes_of(&kind);
+        self.errors.push(TypeError { node, kind, notes });
+    }
+
+    /// For an error that shows two types: each name in them that stands for
+    /// two different types, and where each is from, as Meadow says it.
+    fn homes_of(&self, kind: &TypeErrorKind) -> Vec<String> {
+        let (a, b) = match kind {
+            TypeErrorKind::Mismatch { expected, actual } => (expected, actual),
+            TypeErrorKind::BinderMismatch { expected, given } => (expected, given),
+            _ => return Vec::new(),
+        };
+        let (ours, theirs) = (core::opaques(a), core::opaques(b));
+        let mut notes = Vec::new();
+        for (u, name) in &ours {
+            for (v, other) in &theirs {
+                if name == other && u != v && !notes.iter().any(|n: &String| n.starts_with(&format!("`{name}` "))) {
+                    let home = |u: &usize| self.homes.get(u).cloned().unwrap_or_else(|| "somewhere else".into());
+                    notes.push(format!("`{name}` is two types here: the one expected is from {}, this one from {}", home(u), home(v)));
+                }
+            }
+        }
+        notes
     }
 
     fn record(&mut self, node: NodeId, ty: Rc<Core>) {

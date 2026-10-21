@@ -65,6 +65,8 @@ pub enum RenameError {
     ModuleNotValue { path: String, span: Span },
     /// a record built, matched, read or updated wrongly: what, and where
     Record { message: String, label: String, span: Span },
+    /// `module M where` inside a file, for a module the package has already
+    DuplicateModule { path: String, span: Span },
 }
 
 impl RenameError {
@@ -97,6 +99,9 @@ impl RenameError {
                 Diagnostic::error(format!("{module} has no {name}")).label(*span, "used here")
             }
             RenameError::Record { message, label, span } => Diagnostic::error(message.clone()).label(*span, label.clone()),
+            RenameError::DuplicateModule { path, span } => Diagnostic::error(format!("the package has a module {path} already"))
+                .label(*span, "a second module of this name")
+                .help("a module inside a file is the module under that file's: give it a name of its own"),
             RenameError::ModuleNotValue { path, span } => Diagnostic::error(format!("{path} is a module"))
                 .label(*span, "a module is not a value; name something in it, as in M.x"),
             RenameError::AliasForType { path, span } => {
@@ -268,7 +273,12 @@ pub fn rename_package(
     first_unique: usize,
     linear: bool,
 ) -> RenameResult {
+    // a module written inside a file is a module of the package's like any
+    // other, under the one it is written in
+    let mut errors = Vec::new();
+    let modules = &lifted(modules, &mut errors);
     let mut r = Renamer::new(package);
+    r.errors = errors;
     r.linear_package = linear;
     // the prelude's names get scopes of their own (what it brings in with
     // `use`, then what it declares), so that redefining a builtin shadows it
@@ -405,6 +415,29 @@ pub fn rename_package(
         linear_body: linear || modules.first().is_some_and(|m| m.program.linear),
     };
     RenameResult { module, spans: r.spans, errors: r.errors }
+}
+
+/// Every module of a package, and each module written inside one of their
+/// files, after them: `module Inner where` in `src/Outer.idl` is
+/// `Outer.Inner`. One whose path a module has already is an error, and is
+/// left out.
+fn lifted<'a>(modules: &[ModuleSource<'a>], errors: &mut Vec<RenameError>) -> Vec<ModuleSource<'a>> {
+    let mut all: Vec<ModuleSource<'a>> = modules.iter().map(|m| ModuleSource { path: m.path.clone(), program: m.program }).collect();
+    let mut i = 0;
+    while i < all.len() {
+        let (path, program) = (all[i].path.clone(), all[i].program);
+        for (name, inner) in &program.modules {
+            let mut at = path.clone();
+            at.push(name.node.clone());
+            if all.iter().any(|m| m.path == at) {
+                errors.push(RenameError::DuplicateModule { path: at.join("."), span: name.span });
+                continue;
+            }
+            all.push(ModuleSource { path: at, program: inner });
+        }
+        i += 1;
+    }
+    all
 }
 
 /// Whether a module says how visible anything in it is.

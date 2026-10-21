@@ -900,6 +900,33 @@ record Use = {
   names : Maybe [String]
 }
 
+-- Every module of a package, then each module written inside one of their
+-- files, under it: `module Inner where` in `src/Outer.idl` is `Outer.Inner`.
+fun lifted (modules : [([String], SurfaceProgram)]) : [([String], SurfaceProgram)] =
+  let inner =
+    V.concatMap
+      (\m ->
+        match m with
+        | (path, p) ->
+            let a = surfaceArena p in
+            V.map
+              (\mm -> (V.pushBack path (surfaceNameText a (surfaceModuleName a mm)), SurfaceProgram a (surfaceModuleFile a mm)))
+              (surfaceFileModules a (surfaceRoot p)))
+      modules
+  in
+  if V.isEmpty inner then modules else V.append modules (lifted inner)
+
+-- A module's path given twice: one written inside a file, of a module the
+-- package has already.
+fun twice (r : Rn) (modules : [([String], SurfaceProgram)]) =
+  let paths = V.map fst modules in
+  V.foldl
+    (\acc i ->
+      let path = V.getOr [] paths i in
+      if V.any (\j -> V.getOr [] paths j == path) (V.range 0 i) then bad r "the package has a module ${S.join "." path} already" else acc)
+    ()
+    (V.range 0 (V.len paths))
+
 @pub fun programOf (p : SurfaceProgram) : Program =
   let a = surfaceArena p in
   let f = surfaceRoot p in
@@ -1435,7 +1462,9 @@ fun renamePackageAt out (r : Rn) (pkg : Int) (first : Int) (progs : [Program]) (
         let w4 = setRef r.linear False in
         let w5 = setRef r.base (getRef r.scopes) in
         -- the root package is 0, its dependencies 1 on
-        let allPackages = V.append [(name, V.map (\m -> (fst m, programOf (snd m))) modules)] (V.map (\d -> (fst d, V.map (\m -> (fst m, programOf (snd m))) (snd d))) deps) in
+        -- (a module inside a file is one of its package's like any other)
+        let w0 = twice r (lifted modules) in
+        let allPackages = V.append [(name, V.map (\m -> (fst m, programOf (snd m))) (lifted modules))] (V.map (\d -> (fst d, V.map (\m -> (fst m, programOf (snd m))) (lifted (snd d)))) deps) in
         let w6 = setRef r.packageNames (V.map fst allPackages) in
         let w7 = setRef r.packageDeps (V.append [V.range 1 (V.len allPackages)] (V.map (\d -> []) deps)) in
         let w8 = setRef r.visibilityMentioned (V.map (\pm -> V.any (\m -> mentionsVisibility (snd m)) (snd pm)) allPackages) in

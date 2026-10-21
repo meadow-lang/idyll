@@ -350,7 +350,7 @@ examples need strings to take apart first (`Std.Yield` is the generators).
 
 ## Phase 3: Modules, packages and the build system
 
-- [~] **Modules in the language**: `module`, `use`, and visibility (`@pub`,
+- [x] **Modules in the language**: `module`, `use`, and visibility (`@pub`,
   `@pub(pkg)`, `@pub(super)`). Unlike Meadow, **an interface must carry the
   bodies of transparent definitions**, not just their types, because
   importers may compute with them in types. Port `meadow-intern` and
@@ -371,10 +371,14 @@ examples need strings to take apart first (`Std.Yield` is the generators).
   and case trees of terminating recursive ones, so another package's
   functions compute in types), each package names its things from a range
   of uniques of its own, and a program is linked by nesting every package's
-  definitions in dependency order, as OCaml initialises modules. Left:
-  `module M where` inside a file, and saying which package a type is from
-  when two of one name meet. (`compiler/idyllic/tests/modules.rs`,
-  `packages.rs`)
+  definitions in dependency order, as OCaml initialises modules. A module
+  may be written inside another's file, `module M where` and an indented
+  block (or braces): it is the module `M` under the file's, lifted out by
+  the renamer as Meadow lifts its `mod M { .. }`, in front/ too (done
+  2026-10-20). Two types of one name in an error say which package each is
+  from, as Meadow's do: "`Shape` is two types here: the one expected is
+  from `Shapes@0.1.0`, this one from `Figures@0.1.0`" (2026-10-20).
+  (`compiler/idyllic/tests/modules.rs`, `packages.rs`)
 - [x] **One name from several `use`s, chosen by type**, as Meadow does
   it, after Idris (Chris, 2026-10-16). Done 2026-10-20, in the Rust
   compiler (`idyllic-typecheck/src/overloads.rs`,

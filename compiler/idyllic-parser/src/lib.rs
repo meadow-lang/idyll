@@ -103,6 +103,8 @@ enum Item {
     Decl(LDecl),
     Use(Spanned<Use>),
     Expr(LTerm),
+    /// `module M where ..`, and what is in it
+    Module(Ident, Vec<Attributed>),
 }
 
 /// What can be written in front of a top-level item, each on a line of its
@@ -237,7 +239,12 @@ pub fn parse(src_len: usize, tokens: &[Spanned<Token>]) -> Result<Program, Vec<D
                 })
                 .collect()
         });
+    build(items?, false)
+}
 
+/// A program of its items; `nested` for a module inside a file, which has no
+/// expression of its own.
+fn build(items: Vec<Attributed>, nested: bool) -> Result<Program, Vec<Diagnostic>> {
     let mut program = Program {
         datas: Vec::new(),
         effects: Vec::new(),
@@ -247,8 +254,9 @@ pub fn parse(src_len: usize, tokens: &[Spanned<Token>]) -> Result<Program, Vec<D
         terminating: Vec::new(),
         linear: false,
         body: None,
+        modules: Vec::new(),
     };
-    let mut items = items?.into_iter().peekable();
+    let mut items = items.into_iter().peekable();
     while let Some((item, vis, terminating, linear)) = items.next() {
         program.linear |= linear;
         // the name a definition's visibility is for
@@ -277,7 +285,19 @@ pub fn parse(src_len: usize, tokens: &[Spanned<Token>]) -> Result<Program, Vec<D
                 program.decls.push(d);
             }
             Item::Use(u) => program.uses.push(u),
-            Item::Expr(e) if items.peek().is_none() => program.body = Some(e),
+            Item::Module(name, inner) => {
+                if vis.is_some() || terminating || linear {
+                    return Err(vec![Diagnostic::error("parse error")
+                        .label(name.span, "a module takes no attribute: what is in it does")]);
+                }
+                program.modules.push((name, build(inner, true)?));
+            }
+            Item::Expr(e) if items.peek().is_none() && !nested => program.body = Some(e),
+            Item::Expr(e) if nested && signature_of(e.clone()).is_err() => {
+                return Err(vec![Diagnostic::error("parse error")
+                    .label(e.span, "a module inside a file has no expression of its own")
+                    .help("only the root module's last line may be an expression")]);
+            }
             // `Matrix : Nat -> Nat -> Type`, with more after it: an
             // upper-case name's signature
             Item::Expr(e) if signature_of(e.clone()).is_ok() => {
@@ -308,16 +328,33 @@ where
     let attribute = choice((seq_attribute().map(Attribute::Seq), visibility().map(Attribute::Vis), native, terminating, linear))
         .map_with(|a, e| (a, span_of(e.span())))
         .then_ignore(semi.clone().or_not());
-    let item = attribute
+    let item = recursive(|item| {
+        // `module M where`, and a block of items
+        let upper = select! { Token::UpperIdent(s) = e => Spanned::new(s, span_of(e.span())) };
+        let block = semi
+            .clone()
+            .repeated()
+            .ignore_then(item.separated_by(semi.clone()).allow_trailing().collect::<Vec<_>>());
+        let module = just(Token::Module)
+            .ignore_then(upper)
+            .then_ignore(just(Token::Where))
+            .then(choice((
+                block.clone().delimited_by(just(Token::VLBrace), just(Token::VRBrace)),
+                block.delimited_by(just(Token::LBrace), just(Token::RBrace)),
+            )))
+            .map(|(name, items)| Item::Module(name, items));
+        attribute
+        .clone()
         .repeated()
         .collect::<Vec<_>>()
         .then(choice((
+            module,
             data(term.clone()).map(Item::Data),
             record(term.clone()).map(|(d, ps)| Item::Record(d, ps)),
             effect(term.clone()),
             use_item().map(Item::Use),
             decl(term.clone()).map(Item::Decl),
-            term.map(Item::Expr),
+            term.clone().map(Item::Expr),
         )))
         .validate(|(attrs, item), e, emitter| match attributed(attrs, item) {
             Ok(done) => done,
@@ -327,7 +364,8 @@ where
                 // (reported; what is left is nothing)
                 (Item::Decl(Spanned::new(Decl::Sig(Spanned::new("_".into(), at), Spanned::new(Term::Hole, at)), at)), None, false, false)
             }
-        });
+        })
+    });
     // a separator with nothing before it is what a leading comment or blank
     // line leaves behind; a file with nothing in it is an empty module
     let items = semi

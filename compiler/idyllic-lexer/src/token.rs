@@ -114,6 +114,8 @@ pub enum Token {
     Infinity,
     #[token("mod")]
     Mod,
+    #[token("module")]
+    Module,
     #[token("use")]
     Use,
     #[token("data")]
@@ -183,6 +185,7 @@ impl fmt::Display for Token {
             At => write!(f, "@"),
             Infinity => write!(f, "∞"),
             Mod => write!(f, "mod"),
+            Module => write!(f, "module"),
             Use => write!(f, "use"),
             Data => write!(f, "data"),
             Type => write!(f, "Type"),

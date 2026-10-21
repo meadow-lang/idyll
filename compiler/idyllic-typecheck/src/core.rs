@@ -254,6 +254,21 @@ fn printed_default() -> Grade {
     if LINEAR_PRINTING.with(std::cell::Cell::get) { Grade::ONE } else { Grade::DEFAULT }
 }
 
+/// Every constant a term mentions, with the name it is printed with.
+pub fn opaques(c: &Rc<Core>) -> Vec<(usize, String)> {
+    let found = std::cell::RefCell::new(Vec::new());
+    c.rewrite(0, &|c, _| {
+        if let Core::Opaque(u, name) = c {
+            let mut found = found.borrow_mut();
+            if !found.iter().any(|(v, _)| v == u) {
+                found.push((*u, name.clone()));
+            }
+        }
+        None
+    });
+    found.into_inner()
+}
+
 /// `a`, if `g` is `Pair a`: a pair's type, waiting for its second.
 fn pair_of(g: &Core) -> Option<&Rc<Core>> {
     match g {

@@ -215,6 +215,9 @@ pub struct Program {
     /// unrestricted, `[]`
     pub linear: bool,
     pub body: Option<LTerm>,
+    /// `module M where ..`: a module written inside this one's file, rather
+    /// than in a file of its own; it is the module `M` under this one
+    pub modules: Vec<(Ident, Program)>,
 }
 
 /// Who may see a declaration, from outside the module it is in.

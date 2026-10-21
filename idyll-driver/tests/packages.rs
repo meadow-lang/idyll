@@ -329,11 +329,16 @@ fn two_packages_may_each_declare_a_type_of_one_name() {
     // One package's value is no value of the other's type.
     let crossed =
         two_shapes("crossed", "use Shapes (shapesArea)\nuse Figures (figuresUnit)\n\nshapesArea figuresUnit\n");
-    // (Meadow names each with its package and version -- `Shape` (from
-    // `Shapes@0.1.0`) -- which Idyll's message does not yet: both are
-    // printed `Shape`.)
+    // Both are printed `Shape`, and the message says which is from where,
+    // by package and version, as Meadow's does.
     let got = run_app(&crossed);
     assert!(got.contains("type mismatch: expected Shape, but this has type Shape"), "{got}");
+    let out = pipeline::build(&crossed, Profile::Debug, &common::OPTS);
+    let help: Vec<&String> = out.reported.iter().flat_map(|r| &r.diagnostics).flat_map(|d| &d.help).collect();
+    assert!(
+        help.iter().any(|h| *h == "`Shape` is two types here: the one expected is from `Shapes@0.1.0`, this one from `Figures@0.1.0`"),
+        "{help:?}"
+    );
     // Named bare, `Shape` is neither's: a dependency's type is in scope only
     // where a `use` brings it.
     let unnamed = two_shapes("unnamed", "f : Shape -> Shape\nf s = s\n\n1\n");

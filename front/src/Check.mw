@@ -160,13 +160,16 @@ fun symbolsOf (m : Renamed) : HashMap Int (String, String) =
   let h = hirArena m.hir in
   let root = hirRoot m.hir in
   let text = \x -> hirIdentText h x in
-  let add = \acc x path -> Hm.insert (uniqueOf h x) (packageOf m (uniqueOf h x), qualified m (uniqueOf h x) path) acc in
+  -- `x`, written as `path` from inside the module of `owner`'s
+  let under = \acc x owner path -> Hm.insert (uniqueOf h x) (packageOf m (uniqueOf h x), qualified m (uniqueOf h owner) path) acc in
+  let add = \acc x path -> under acc x x path in
   let ctorName = \c -> match (h, c) with | HirCtorFields n _ -> n | HirCtorSig n _ -> n in
+  -- (a constructor, or an operation, is in the module its type is in)
   let withDatas =
     V.foldl
       (\acc d ->
         let dn = hirDataName h d in
-        V.foldl (\a c -> add a (ctorName c) (text dn ++ "." ++ text (ctorName c))) (add acc dn (text dn)) (hirDataCtors h d))
+        V.foldl (\a c -> under a (ctorName c) dn (text dn ++ "." ++ text (ctorName c))) (add acc dn (text dn)) (hirDataCtors h d))
       Hm.empty
       (hirModuleDatas h root)
   in
@@ -174,7 +177,7 @@ fun symbolsOf (m : Renamed) : HashMap Int (String, String) =
     V.foldl
       (\acc e ->
         let en = hirEffectName h e in
-        V.foldl (\a o -> add a (hirOpName h o) (text en ++ "." ++ text (hirOpName h o))) (add acc en (text en)) (hirEffectOps h e))
+        V.foldl (\a o -> under a (hirOpName h o) en (text en ++ "." ++ text (hirOpName h o))) (add acc en (text en)) (hirEffectOps h e))
       withDatas
       (hirModuleEffects h root)
   in

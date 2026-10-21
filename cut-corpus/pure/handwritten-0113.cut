@@ -2,14 +2,11 @@ cut 0
 entry idyll:Main/"#entry"
 answer str
 
-data idyll:Prelude/List <'a0> { Nil; "::"('a0, ptr) }
+data idyll:Prelude/Pair <'a0, 'a1> { Pair('a0, 'a1) }
 
 data idyll:Prelude/DigitFuel { Spent; More(ptr) }
 
-roles {
-  nil = idyll:Prelude/List.Nil
-  cons = idyll:Prelude/List."::"
-}
+data idyll:Main/Shapes.Shape { Circle(i64); Square(i64) }
 
 val idyll:Prelude/digitFuel : ptr =
   <idyll:Prelude/DigitFuel.Spent | μ̃ v_20: ptr.
@@ -33,6 +30,9 @@ val idyll:Prelude/digitFuel : ptr =
                                       <idyll:Prelude/DigitFuel.More(v_3) | μ̃ v_2: ptr.
                                         <idyll:Prelude/DigitFuel.More(v_2) | μ̃ v_1: ptr.
                                           <idyll:Prelude/DigitFuel.More(v_1) | halt>>>>>>>>>>>>>>>>>>>>>
+
+val idyll:Main/Shapes.Units.unit : i64 =
+  <1 | halt>
 
 def idyll:Prelude/digitString (d_22: i64; k_23: ptr) =
   prim eq(d_22, 0; μ̃ v__24: bool.
@@ -90,26 +90,57 @@ def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) =
               idyll:Prelude/digitString(v_71; k_63)))))
   }>
 
-def idyll:Main/all <'a_76 = d_a_75> (d_a_75: desc, p_77: ptr, xs_78: ptr; k_79: ptr) =
-  <xs_78 | case {
-    idyll:Prelude/List.Nil =>
-      <true | k_79>;
-    idyll:Prelude/List."::"(x_80: 'a_76, xs_81: ptr) =>
-      <p_77 | apply(x_80; μ̃ v__82: bool.
-        prim if(v__82; μ̃ u_87: unit.
-          <false | k_79>, μ̃ u_88: unit.
-          idyll:Main/all(d_a_75, p_77, xs_81; k_79)))>
+def idyll:Main/Shapes.area (x_75: ptr; k_76: ptr) =
+  <x_75 | case {
+    idyll:Main/Shapes.Shape.Circle(r_77: i64) =>
+      prim mul(3, r_77; μ̃ v_78: i64.
+        prim mul(v_78, r_77; k_76));
+    idyll:Main/Shapes.Shape.Square(w_79: i64) =>
+      prim mul(w_79, w_79; k_76)
   }>
 
-def idyll:Main/"#entry" (; k_89: ptr) =
-  <idyll:Prelude/List.Nil | μ̃ v_98: ptr.
-    <idyll:Prelude/List."::"(3, v_98) | μ̃ v_97: ptr.
-      <idyll:Prelude/List."::"(2, v_97) | μ̃ v_96: ptr.
-        <idyll:Prelude/List."::"(1, v_96) | μ̃ v_95: ptr.
-          idyll:Main/all(desc(i64), cocase {
-            apply(x_93: i64; k_94: ptr) =>
-              prim lt(0, x_93; k_94)
-          }, v_95; μ̃ answer_90: bool.
-            prim if(answer_90; μ̃ u_91: unit.
-              <"False" | k_89>, μ̃ u_92: unit.
-              <"True" | k_89>))>>>>
+def idyll:Main/"#items (Int, Int)" (x_90: ptr; k_91: ptr) =
+  <x_90 | case {
+    idyll:Prelude/Pair.Pair(f_92: i64, f_93: i64) =>
+      idyll:Prelude/showInt(f_92; μ̃ s_94: str.
+        idyll:Prelude/showInt(f_93; μ̃ s_95: str.
+          prim concatStrings([s_94, ", ", s_95]; k_91)))
+  }>
+
+def idyll:Main/"#show (Int, Int)" (x_96: ptr; k_97: ptr) =
+  idyll:Main/"#items (Int, Int)"(x_96; μ̃ s_98: str.
+    prim concatStrings(["(", s_98, ")"]; k_97))
+
+def idyll:Main/"#items (Int, Int, Int)" (x_86: ptr; k_87: ptr) =
+  <x_86 | case {
+    idyll:Prelude/Pair.Pair(f_88: i64, f_89: ptr) =>
+      idyll:Prelude/showInt(f_88; μ̃ s_99: str.
+        idyll:Main/"#items (Int, Int)"(f_89; μ̃ s_100: str.
+          prim concatStrings([s_99, ", ", s_100]; k_87)))
+  }>
+
+def idyll:Main/"#show (Int, Int, Int)" (x_101: ptr; k_102: ptr) =
+  idyll:Main/"#items (Int, Int, Int)"(x_101; μ̃ s_103: str.
+    prim concatStrings(["(", s_103, ")"]; k_102))
+
+def idyll:Main/"#items (Int, Int, Int, Int)" (x_82: ptr; k_83: ptr) =
+  <x_82 | case {
+    idyll:Prelude/Pair.Pair(f_84: i64, f_85: ptr) =>
+      idyll:Prelude/showInt(f_84; μ̃ s_104: str.
+        idyll:Main/"#items (Int, Int, Int)"(f_85; μ̃ s_105: str.
+          prim concatStrings([s_104, ", ", s_105]; k_83)))
+  }>
+
+def idyll:Main/"#show (Int, Int, Int, Int)" (x_106: ptr; k_107: ptr) =
+  idyll:Main/"#items (Int, Int, Int, Int)"(x_106; μ̃ s_108: str.
+    prim concatStrings(["(", s_108, ")"]; k_107))
+
+def idyll:Main/"#entry" (; k_80: ptr) =
+  <idyll:Main/Shapes.Shape.Circle(2) | μ̃ v_115: ptr.
+    idyll:Main/Shapes.area(v_115; μ̃ v_109: i64.
+      <idyll:Main/Shapes.Shape.Square(3) | μ̃ v_114: ptr.
+        idyll:Main/Shapes.area(v_114; μ̃ v_111: i64.
+          <idyll:Prelude/Pair.Pair(idyll:Main/Shapes.Units.unit, idyll:Main/Shapes.Units.unit) | μ̃ v_112: ptr.
+            <idyll:Prelude/Pair.Pair(v_111, v_112) | μ̃ v_110: ptr.
+              <idyll:Prelude/Pair.Pair(v_109, v_110) | μ̃ answer_81: ptr.
+                idyll:Main/"#show (Int, Int, Int, Int)"(answer_81; k_80)>>>)>)>
