@@ -51,8 +51,19 @@ meadow run . -- types --prelude p.idl --std ../lib/Std/src f.idl   # the same, S
 meadow run . -- package --prelude p.idl Std ../lib/Std/src         # a whole package checked
 meadow run . -- run --prelude p.idl f.idl     # its answer, steps and output, on the CEK machine
 meadow run . -- cut --prelude p.idl f.idl     # its Cut, which `meadow cut` runs
+meadow run . -- run --prelude p.idl --std ../lib/Std/src f.idl     # run and cut take --std too
+meadow run . -- build --prelude p.idl --std ../lib/Std/src ../examples/hello > hello.cut
+meadow cut hello.cut                          # a whole package, built by front/, run
 meadow build --release                        # native, into target/release/native/silo/
 ```
+
+`build` makes a package's Cut: its modules (`src/`, `Main.idl` or `Lib.idl`
+the root, as the Rust driver has it), and Std if any of them names it, its
+`main` the entry (`Check.checkedAt` with `entry`: `main ()` is run and its
+`()` not shown), its symbols named `Name@version` as `Idyll.toml` says. The
+test `the_example_packages_build_and_run_alike` builds every package in
+`examples/` so, and holds it to the Rust compiler's Cut and to what that
+compiler's build prints when run.
 
 ## How it is checked: the differential tests
 

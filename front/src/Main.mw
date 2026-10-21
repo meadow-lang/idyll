@@ -72,20 +72,32 @@ fun main () =
            (match readToString path with
             | Ok text ->
                 (match Surface.parsed text with
-                 | Ok prelude -> V.foldl (\u f -> each f (cutOf prelude)) () (V.drop args 3)
+                 | Ok prelude ->
+                     (match (V.get args 3, V.get args 4) with
+                      | (Just "--std", Just dir) ->
+                          (match packageModules dir with
+                           | Ok std -> V.foldl (\u f -> each f (cutWith prelude (Just std))) () (V.drop args 5)
+                           | Err why -> writeError "Std: ${why}\n")
+                      | _ -> V.foldl (\u f -> each f (cutOf prelude)) () (V.drop args 3))
                  | Err _ -> writeError "the prelude does not parse\n")
             | Err e -> writeError "could not read the prelude: ${e}\n")
-       | _ -> writeError "usage: Idyll cut --prelude <file> <file>...\n")
+       | _ -> writeError "usage: Idyll cut --prelude <file> [--std <dir>] <file>...\n")
   | Just "run" ->
       (match (V.get args 1, V.get args 2) with
        | (Just "--prelude", Just path) ->
            (match readToString path with
             | Ok text ->
                 (match Surface.parsed text with
-                 | Ok prelude -> V.foldl (\u f -> each f (ran prelude)) () (V.drop args 3)
+                 | Ok prelude ->
+                     (match (V.get args 3, V.get args 4) with
+                      | (Just "--std", Just dir) ->
+                          (match packageModules dir with
+                           | Ok std -> V.foldl (\u f -> each f (ranWith prelude (Just std))) () (V.drop args 5)
+                           | Err why -> writeError "Std: ${why}\n")
+                      | _ -> V.foldl (\u f -> each f (ran prelude)) () (V.drop args 3))
                  | Err _ -> writeError "the prelude does not parse\n")
             | Err e -> writeError "could not read the prelude: ${e}\n")
-       | _ -> writeError "usage: Idyll run --prelude <file> <file>...\n")
+       | _ -> writeError "usage: Idyll run --prelude <file> [--std <dir>] <file>...\n")
   | Just "types" ->
       (match (V.get args 1, V.get args 2) with
        | (Just "--prelude", Just path) ->
@@ -117,7 +129,56 @@ fun main () =
                  | (_, Err why) -> writeError "${name}: ${why}\n")
             | Err e -> writeError "could not read the prelude: ${e}\n")
        | _ -> writeError "usage: Idyll package --prelude <file> <name> <dir>\n")
+  -- a package built to run: its modules, with Std, lowered to Cut, its
+  -- `main` the entry; the Cut `meadow cut` runs
+  | Just "build" ->
+      (match (V.get args 1, V.get args 2, V.get args 3, V.get args 4, V.get args 5) with
+       | (Just "--prelude", Just path, Just "--std", Just stdDir, Just dir) ->
+           (match readToString path with
+            | Ok text ->
+                (match (Surface.parsed text, packageModules stdDir, packageModules (dir ++ "/src")) with
+                 | (Ok prelude, Ok std, Ok modules) ->
+                     -- Std only if the package uses it, which it does by naming it, as
+                     -- the Rust compiler links it only then
+                     let named = V.any (\f -> match readToString (dir ++ "/src/" ++ f) with | Ok t -> S.contains "Std" t | Err _ -> False) (idlFiles (dir ++ "/src") []) in
+                     writeOutput "${built prelude (if named then [("Std", std)] else []) (packageName dir) modules}\n"
+                 | (Err _, _, _) -> writeError "the prelude does not parse\n"
+                 | (_, Err why, _) -> writeError "Std: ${why}\n"
+                 | (_, _, Err why) -> writeError "${dir}: ${why}\n")
+            | Err e -> writeError "could not read the prelude: ${e}\n")
+       | _ -> writeError "usage: Idyll build --prelude <file> --std <dir> <package>\n")
   | _ -> writeError "usage: Idyll (tokens | tree | parse | errors | rename --prelude <file> | types --prelude <file>) <file>...\n"
+
+-- A package built to run, as Cut: `(error)` if it does not rename or check.
+fun built prelude deps (name : String) (modules : [([String], SurfaceProgram)]) : String ! { Mut | e } =
+  match renamePackage name modules prelude deps with
+  | (m, problems) -> if V.isEmpty problems then Lo.cutTextAt (sccModule m) "Main" True else "(error: ${S.join "; " problems})"
+
+-- A package's name, as its `Idyll.toml` says (`name = "Hello"`), or the
+-- directory's; with its version, `Hello@0.1.0`, if it says one, as the Rust
+-- compiler names a package's symbols.
+fun packageName (dir : String) : String ! { Fs | e } =
+  let fallback = M.unwrapOr dir (V.last (S.split "/" dir)) in
+  match readToString (dir ++ "/Idyll.toml") with
+  | Err _ -> fallback
+  | Ok text ->
+      let name = M.unwrapOr fallback (manifestField text "name") in
+      (match manifestField text "version" with
+       | Just v -> "${name}@${v}"
+       | None -> name)
+
+-- A field of a manifest's, `key = "value"`: its value.
+fun manifestField (text : String) (key : String) : Maybe String =
+  V.foldl
+    (\acc line ->
+      match acc with
+      | Just n -> Just n
+      | None ->
+          let t = S.trim line in
+          let parts = S.split "\"" t in
+          if S.startsWith key t and S.trim (S.drop (S.take t (S.byteLength (V.getOr "" parts 0))) (S.byteLength key)) == "=" then V.get parts 1 else None)
+    None
+    (S.lines text)
 
 -- `file`'s dump, under a line naming it.
 fun each (file : String) dumpOf =
@@ -175,7 +236,8 @@ fun packageTypes prelude (name : String) (modules : [([String], SurfaceProgram)]
 
 -- A package's modules, read from its source directory: each `.idl` file
 -- under it, its path the file's (`Collections/List.idl` is
--- `Collections.List`), `Lib.idl` the root; the root first, then the rest
+-- `Collections.List`), `Main.idl` or `Lib.idl` the root, as the Rust driver
+-- has it; the root first, then the rest
 -- by path.
 fun packageModules (dir : String) : Result String [([String], SurfaceProgram)] ! { Fs, Mut | e } =
   let files = idlFiles dir [] in
@@ -185,7 +247,7 @@ fun packageModules (dir : String) : Result String [([String], SurfaceProgram)] !
         let path = V.take (S.split "/" rel) (V.len (S.split "/" rel)) in
         let last = M.unwrapOr "" (V.last path) in
         let segs = V.pushBack (V.take path (V.len path - 1)) (S.take last (S.byteLength last - 4)) in
-        let p = if V.len segs == 1 and V.getOr "" segs 0 == "Lib" then [] else segs in
+        let p = if V.len segs == 1 and (V.getOr "" segs 0 == "Lib" or V.getOr "" segs 0 == "Main") then [] else segs in
         (p, rel))
       files
   in
@@ -228,11 +290,19 @@ def fuel = 5000000
 -- its answer as the REPL shows it (or `-`, for a function or a type) and
 -- how many steps it took, or how it stopped; and what it printed. `(error)`
 -- if it does not check, `(no expression)` if it has nothing to run.
-fun ran prelude (text : String) : String ! { Mut | e } =
+fun ran prelude (text : String) : String ! { Mut | e } = ranWith prelude None text
+
+-- The same, with the standard library's modules given (see `cutWith`).
+fun ranWith prelude std (text : String) : String ! { Mut | e } =
   match Surface.parsed text with
   | Err _ -> "(error)"
   | Ok prog ->
-      (match renameModule prog prelude with
+      let renamed =
+        match std with
+        | Just mods -> if S.contains "Std" text then renamePackage "Main" [([], prog)] prelude [("Std", mods)] else renameModule prog prelude
+        | None -> renameModule prog prelude
+      in
+      (match renamed with
        | (m, problems) ->
            if not (V.isEmpty problems) then "(error)"
            else
@@ -261,9 +331,19 @@ fun runCore p term : String ! { Mut | e } =
 
 -- A program lowered to Cut, as its text: `(error)` if it does not check,
 -- `(not lowered: ..)` with why, if it cannot be.
-fun cutOf prelude (text : String) : String ! { Mut | e } =
+fun cutOf prelude (text : String) : String ! { Mut | e } = cutWith prelude None text
+
+-- The same, with the standard library's modules given: a program that
+-- names `Std` is the root of a package that depends on it, Std checked and
+-- lowered alongside.
+fun cutWith prelude std (text : String) : String ! { Mut | e } =
   match Surface.parsed text with
   | Err _ -> "(error)"
   | Ok prog ->
-      (match renameModule prog prelude with
+      let renamed =
+        match std with
+        | Just mods -> if S.contains "Std" text then renamePackage "Main" [([], prog)] prelude [("Std", mods)] else renameModule prog prelude
+        | None -> renameModule prog prelude
+      in
+      (match renamed with
        | (m, problems) -> if not (V.isEmpty problems) then "(error)" else Lo.cutText (sccModule m) "Main")

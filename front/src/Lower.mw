@@ -44,7 +44,7 @@ use Idyll.CutAst (Rep, Sym, Binder, CData, COp, CEffect, CDef, CVal)
 use Idyll.CutAst as A
 use Cut as C
 use Cut (CutBuilder, CutProd, CutCons, CutStmt, CutConsKind, kindCutCons)
-use Idyll.Check (checkedIn)
+use Idyll.Check (checkedIn, checkedAt)
 use Idyll.Rename (Renamed)
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
@@ -277,9 +277,13 @@ fun writeProgram (l : L s) (entry : Maybe Sym) (answer : Bool) (datas : [CData])
 -- A module checked and lowered, in one `runSt` -- the checker's state and
 -- the Cut written share it -- as what the Cut test compares: the program's
 -- Cut, or why there is none.
-@pub fun cutText (m : Renamed) (package : String) : String ! { Mut | e } =
+@pub fun cutText (m : Renamed) (package : String) : String ! { Mut | e } = cutTextAt m package False
+
+-- The same; with `entry`, a program with a `main` and no expression runs
+-- `main ()` (see `Check.checkedAt`): a package built to run.
+@pub fun cutTextAt (m : Renamed) (package : String) (entry : Bool) : String ! { Mut | e } =
   runSt (\() ->
-    let c = checkedIn m in
+    let c = checkedAt m entry in
     if not (V.isEmpty (getRef c.tc.unsupported)) then "(unsupported)"
     else if not (V.isEmpty (getRef c.tc.errors)) then "(error)"
     else

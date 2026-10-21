@@ -13,7 +13,7 @@ use Idyll.Core (Core, Builtin)
 use Idyll.Core as C
 use Idyll.Value (Value, Row)
 use Idyll.Value as Va
-use Idyll.Hir (Icit)
+use Idyll.Hir (Icit, Literal)
 use Idyll.Tc (Tc)
 use Idyll.Tc as T
 use Idyll.Eval (force, apply, eval, quote, row, rowParts, splitComp)
@@ -78,7 +78,12 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
 -- All of it in one `runSt`, whose state the pass's tables are (`Elaborated`).
 @pub fun checked (m : Renamed) : Checked ! { Mut | e } = runSt (\() -> checkedIn m)
 
-@pub fun checkedIn (m : Renamed) =
+@pub fun checkedIn (m : Renamed) = checkedAt m False
+
+-- The same; with `entry`, a module with a `main` and no expression of its
+-- own runs `main ()`, as a package built to run does (`check_module`'s
+-- `entry`), and its answer, `()`, is not shown.
+@pub fun checkedAt (m : Renamed) (entry : Bool) =
   let h = hirArena m.hir in
   let root = hirRoot m.hir in
   let datas = hirModuleDatas h root in
@@ -134,8 +139,13 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
         let s3 = A.specializeRecDefs tc ctx mark in
         let w2 = if mainFits == Just False then () else unhandled tc ctx usage world in
         Just (core, quote tc ctx.lvl ty)
-    | None -> None
+    -- `main ()`
+    | None ->
+        if entry and mainFits == Just True then
+          M.andThen (\b -> M.map (\found -> match found with | (f, _, _) -> (Core.App f (Core.Lit Literal.Unit), Core.LitTy Builtin.Unit)) (X.lookup ctx (identOf h (hirBindName h b)))) main
+        else None
   in
+  let ranMain = M.isNone (hirModuleBody h root) and M.isSome body in
   -- instances of traits: where they live, and that no two overlap
   let wi = A.checkInstances tc ctx m.first in
   let w2 = reportHoles tc in
@@ -162,7 +172,7 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
   let root = moduleRow out program defs metas in
   Checked {
     tc,
-    bodyType = M.map snd body,
+    bodyType = if ranMain then None else M.map snd body,
     program,
     elaborated = ElaboratedProgram (freezeElaborated out) root,
     toplevel,

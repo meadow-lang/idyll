@@ -124,7 +124,86 @@ fn the_std_package_agrees() {
 fn the_cut_agrees() {
     let source = idyllic::pipeline::PRELUDE;
     let prelude = program(source).expect("the prelude parses");
-    agree_with(&["cut", "--prelude", "_prelude.txt"], &[("_prelude.txt", source)], |src| cut(&prelude, src), cut_canonical);
+    let std_dir = repo().join("lib/Std/src");
+    let std_dir = std_dir.to_string_lossy();
+    agree_with(
+        &["cut", "--prelude", "_prelude.txt", "--std", &std_dir],
+        &[("_prelude.txt", source)],
+        |src| cut(&prelude, src),
+        cut_canonical,
+    );
+}
+
+/// Every example package (`examples/`), a whole program of modules using
+/// Std, built by front/ (`Idyll build`): to the same Cut as this
+/// compiler's, which runs on Meadow (on Silo where the package's debug
+/// profile says so, as `idyll run` would) to print what this compiler's
+/// build prints.
+#[test]
+fn the_example_packages_build_and_run_alike() {
+    let Ok(exe) = front() else {
+        eprintln!("no front/ to build the examples with");
+        return;
+    };
+    let opts = idyllic::pipeline::Options { debug: false, style: idyllic_diagnostics::OutputStyle::PLAIN, live: false };
+    let dir = std::env::temp_dir().join(format!("idyll-front-examples-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let prelude = dir.join("_prelude.txt");
+    std::fs::write(&prelude, idyllic::pipeline::PRELUDE).expect("the prelude can be written");
+    let std_dir = repo().join("lib/Std/src");
+    let mut packages: Vec<std::path::PathBuf> = std::fs::read_dir(repo().join("examples"))
+        .expect("the examples")
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.join("Idyll.toml").exists())
+        .collect();
+    packages.sort();
+    let mut built = Vec::new();
+    for pkg in &packages {
+        let name = pkg.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let out = std::process::Command::new(&exe)
+            .arg("build")
+            .arg("--prelude")
+            .arg(&prelude)
+            .arg("--std")
+            .arg(&std_dir)
+            .arg(pkg)
+            .output()
+            .expect("front/ runs");
+        let theirs = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
+        assert!(theirs.starts_with("cut "), "front/ did not build {name}: {theirs}{}", String::from_utf8_lossy(&out.stderr));
+        // the same Cut
+        let package = idyllic::pipeline::load_package(pkg).expect("the package reads");
+        let ours = idyllic::pipeline::compile_package(&package, &opts);
+        let ours_cut = ours.cut.unwrap_or_else(|| panic!("{name} is not lowered here: {:?}", ours.not_lowered));
+        let (a, b) = (cut_canonical(&ours_cut), cut_canonical(theirs.trim_end()));
+        if a != b && std::env::var_os("IDYLL_FRONT_KEEP").is_some() {
+            let _ = std::fs::write(std::env::temp_dir().join(format!("{name}.here.cut")), &a);
+            let _ = std::fs::write(std::env::temp_dir().join(format!("{name}.front.cut")), &b);
+        }
+        assert!(a == b, "{name}'s Cut differs: {}", first_difference(&a, &b));
+        // and it runs to what this compiler's build prints
+        let silo = std::fs::read_to_string(pkg.join("Idyll.toml")).unwrap_or_default().contains("backend = \"silo\"");
+        let file = dir.join(format!("{name}.cut"));
+        std::fs::write(&file, &theirs).expect("the Cut can be written");
+        let mut cmd = std::process::Command::new(meadow());
+        cmd.arg("cut");
+        if silo {
+            cmd.args(["--runtime", "silo"]);
+        }
+        let ran = cmd.arg(&file).output().expect("meadow runs");
+        let printed = String::from_utf8_lossy(&ran.stdout).replace("\r\n", "\n");
+        let runtime = if silo { idyllic::meadow::Runtime::Silo } else { idyllic::meadow::Runtime::Glade };
+        let expected = idyllic::pipeline::run_package_on(&package, &opts, Vec::new(), runtime);
+        assert!(expected.diagnostics.is_empty(), "{name} does not build here");
+        // (Silo says what it is building first)
+        assert!(printed.ends_with(&expected.printed), "{name} printed\n{printed}\nwhere this compiler's build prints\n{}", expected.printed);
+        assert!(!expected.printed.is_empty(), "{name} printed nothing");
+        built.push(name);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    eprintln!("examples: {} built by front/ and run alike ({})", built.len(), built.join(", "));
+    assert!(built.len() >= 6, "the examples are all there");
 }
 
 // --- the Cut, written out ------------------------------------------------------
@@ -140,6 +219,19 @@ fn the_cut_agrees() {
 /// What this compiler lowers `src` to, after the prelude, as Cut's text.
 fn cut(prelude: &idyllic_ast::Program, src: &str) -> String {
     let Some(p) = program(src) else { return "(error)".to_string() };
+    // a program that names `Std` depends on it: compiled, and linked with it
+    if src.contains("Std") {
+        let opts = idyllic::pipeline::Options { debug: false, style: idyllic_diagnostics::OutputStyle::PLAIN, live: false };
+        let out = idyllic::pipeline::compile(src, &opts);
+        if out.has_errors() {
+            return "(error)".to_string();
+        }
+        let Some(mut checked) = out.checked else { return "(error)".to_string() };
+        return match idyllic_cut::lower::lower(&mut checked, "Main") {
+            Ok(program) => program.to_string(),
+            Err(why) => format!("(not lowered: {})", why.join("; ")),
+        };
+    }
     let result = idyllic_rename::rename_module(&p, prelude);
     if !result.errors.is_empty() {
         return "(error)".to_string();

@@ -27,8 +27,10 @@ const FUEL: u64 = 5_000_000;
 fn the_runs_agree() {
     let source = idyllic::pipeline::PRELUDE;
     let prelude = harness::program(source).expect("the prelude parses");
+    let std_dir = harness::repo().join("lib/Std/src");
+    let std_dir = std_dir.to_string_lossy();
     harness::agree_with(
-        &["run", "--prelude", "_prelude.txt"],
+        &["run", "--prelude", "_prelude.txt", "--std", &std_dir],
         &[("_prelude.txt", source)],
         |src| ran(&prelude, src),
         |d| d.to_string(),
@@ -56,7 +58,9 @@ fn cut_runs_on(runtime: &str) {
     let source = idyllic::pipeline::PRELUDE;
     let prelude = harness::program(source).expect("the prelude parses");
     let programs = harness::corpus();
-    let cuts = match harness::dumps(&["cut", "--prelude", "_prelude.txt"], &[("_prelude.txt", source)], &programs) {
+    let std_dir = harness::repo().join("lib/Std/src");
+    let std_dir = std_dir.to_string_lossy();
+    let cuts = match harness::dumps(&["cut", "--prelude", "_prelude.txt", "--std", &std_dir], &[("_prelude.txt", source)], &programs) {
         Ok(d) => d,
         Err(why) if why.starts_with("no meadow") => {
             eprintln!("{why}: front/ was not checked");
@@ -137,16 +141,7 @@ fn cut_runs_on(runtime: &str) {
 /// `None` if it does not check, has nothing to run, or stops otherwise than
 /// with an answer or an exit.
 fn expected(prelude: &idyllic_ast::Program, src: &str) -> Option<(String, Option<String>, i32)> {
-    let p = harness::program(src)?;
-    let result = idyllic_rename::rename_module(&p, prelude);
-    if !result.errors.is_empty() {
-        return None;
-    }
-    let module = idyllic_scc::scc_module(result.module);
-    let checked = idyllic_typecheck::check_module(&module, result.spans.len(), false, &[]);
-    if !checked.errors.is_empty() {
-        return None;
-    }
+    let checked = checked(prelude, src)?;
     let mut world = World::captured();
     let outcome = idyll_eval::evaluate_in(&checked, FUEL, &mut world)?;
     let (printed, _) = world.into_streams();
@@ -157,21 +152,30 @@ fn expected(prelude: &idyllic_ast::Program, src: &str) -> Option<(String, Option
     }
 }
 
+/// A program checked after the prelude, if it checks; one that names `Std`
+/// depends on it, and is linked with it, as the pipeline links a program.
+fn checked(prelude: &idyllic_ast::Program, src: &str) -> Option<idyllic_typecheck::TypeCheckResult> {
+    let p = harness::program(src)?;
+    if src.contains("Std") {
+        let opts = idyllic::pipeline::Options { debug: false, style: idyllic_diagnostics::OutputStyle::PLAIN, live: false };
+        let out = idyllic::pipeline::compile(src, &opts);
+        return if out.has_errors() { None } else { out.checked };
+    }
+    let result = idyllic_rename::rename_module(&p, prelude);
+    if !result.errors.is_empty() {
+        return None;
+    }
+    let module = idyllic_scc::scc_module(result.module);
+    let checked = idyllic_typecheck::check_module(&module, result.spans.len(), false, &[]);
+    checked.errors.is_empty().then_some(checked)
+}
+
 /// A program run here, after the prelude, as `front/src/Main.mw` writes its
 /// run: the answer as the REPL shows it (`-` for a function or a type) and
 /// the steps it took, or how it stopped; then what it printed, and what it
 /// wrote as errors.
 fn ran(prelude: &idyllic_ast::Program, src: &str) -> String {
-    let Some(p) = harness::program(src) else { return "(error)".to_string() };
-    let result = idyllic_rename::rename_module(&p, prelude);
-    if !result.errors.is_empty() {
-        return "(error)".to_string();
-    }
-    let module = idyllic_scc::scc_module(result.module);
-    let checked = idyllic_typecheck::check_module(&module, result.spans.len(), false, &[]);
-    if !checked.errors.is_empty() {
-        return "(error)".to_string();
-    }
+    let Some(checked) = checked(prelude, src) else { return "(error)".to_string() };
     let mut world = World::captured();
     let Some(outcome) = idyll_eval::evaluate_in(&checked, FUEL, &mut world) else {
         return "(no expression)".to_string();

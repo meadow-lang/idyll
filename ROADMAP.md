@@ -1039,8 +1039,17 @@ do yet `(unsupported)`, and the tests count those apart.
   compiled one is imported). The whole Std package agrees with the Rust
   checker, all 475 declarations, and so do the 39 corpus programs that use
   Std (types 431 programs in all).
-- [ ] Std's users through the CEK machine and Cut too (the Rust side needs
-  its linking there).
+- [x] Std's users through the CEK machine and Cut too (2026-10-21): front/'s
+  `run` and `cut` take `--std`, Std checked and lowered alongside; the Rust
+  side's reference is its pipeline's, which links compiled Std in. Their Cut
+  agrees on every one of them, and runs on Glade and Silo as the reference
+  says (239 programs).
+- [x] Whole packages (2026-10-21): `Idyll build` makes a package's Cut, its
+  `main` the entry. Every package in `examples/` (hello, euler, effects,
+  vectors, linear, interpreter: modules, Std, effects and handlers,
+  dependent types, linear arrays) builds to the Rust compiler's Cut, and
+  runs to what that compiler's build prints
+  (`the_example_packages_build_and_run_alike`).
 - [x] Traits and instances (`trait`, `instance`, `@{..}`), read and
   desugared as the Rust parser does, so that the corpus can have them.
   Read, desugared, renamed and ordered (2026-10-20); the search for auto
@@ -1069,9 +1078,9 @@ do yet `(unsupported)`, and the tests count those apart.
   `lang!`, as MeadowBoot's `Seq` lowers its Core.
 
 *Done when:* `front/` compiles the corpus and the tutorial to Cut that Glade
-and Silo run with the answers the CEK machine gives. As of 2026-10-17 it
-compiles them to the same Cut as the Rust compiler; what is left is running
-it there in a test, and packages.
+and Silo run with the answers the CEK machine gives. Done 2026-10-21, and
+whole packages too, Std's users among them. What is left is front/'s own
+driver (`idyll run` as front/), its REPL, and error messages compared.
 
 ## Not porting
 
