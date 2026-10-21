@@ -194,7 +194,7 @@ fn scc_binds_with(binds: Vec<Bind>, hints: &HashSet<usize>, early: &HashSet<usiz
             tarjan.visit(v, &edges);
         }
     }
-    let components = early_first(&binds, &edges, tarjan.components, early);
+    let components = early_first(&binds, &edges, tarjan.components, early, hints);
 
     // move the binds out by index, in the order the components were found
     let mut slots: Vec<Option<Bind>> = binds.into_iter().map(Some).collect();
@@ -229,9 +229,17 @@ fn scc_binds_with(binds: Vec<Bind>, hints: &HashSet<usize>, early: &HashSet<usiz
 
 /// The components, dependencies first as Tarjan's algorithm finds them, with
 /// each holding one of `early` (a hint, a superclass projection) and what
-/// it needs moved as far forward as they can go, in the order those come:
-/// a search finds only what has been checked, and need not be named.
-fn early_first(binds: &[Bind], edges: &[Vec<usize>], components: Vec<Vec<usize>>, early: &HashSet<usize>) -> Vec<Vec<usize>> {
+/// it needs moved as far forward as they can go: the projections first, in
+/// the order they come, then the hints (a search for a hint's own auto
+/// arguments may go through a projection it does not name), since a
+/// search finds only what has been checked, and need not be named.
+fn early_first(
+    binds: &[Bind],
+    edges: &[Vec<usize>],
+    components: Vec<Vec<usize>>,
+    early: &HashSet<usize>,
+    hints: &HashSet<usize>,
+) -> Vec<Vec<usize>> {
     let is_early = |i: usize| binds[i].name.unique.is_some_and(|u| early.contains(&u));
     if !(0..binds.len()).any(is_early) {
         return components;
@@ -256,7 +264,8 @@ fn early_first(binds: &[Bind], edges: &[Vec<usize>], components: Vec<Vec<usize>>
     let mut done = vec![false; components.len()];
     let mut order = Vec::new();
     let mut firsts: Vec<usize> = (0..binds.len()).filter(|&i| is_early(i)).collect();
-    firsts.sort_unstable();
+    let is_hint = |i: usize| binds[i].name.unique.is_some_and(|u| hints.contains(&u));
+    firsts.sort_unstable_by_key(|&i| (is_hint(i), i));
     for v in firsts {
         emit(component_of[v], &components, edges, &component_of, &mut done, &mut order);
     }

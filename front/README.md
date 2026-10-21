@@ -267,6 +267,12 @@ each at the place it was made from:
   `Equations`, which the renamer makes a `Match` as it does a definition's,
   and the instance's own name, `#instance@<offset>` when it has none),
   which the renamer builds;
+- `@derive(Display, Debug, PartialEq, PartialOrd)` on a data type: an
+  instance of each, as the Rust parser's `derived` writes it (`derived`
+  here), its methods equations by the constructors (patterns `T.C #a0 ..`,
+  comparing with `#eq` and `#lt`, the prelude's `==` and `<`), its head
+  the trait at the type, each type parameter constrained, its name
+  `#instance@<the data type's byte, plus which trait it is>`;
 - a string with holes, its pieces and each hole's `#display` (`#debug`
   after `:?`) joined with `#append`, as the Rust parser joins them: the
   renamer makes those the prelude's `display` and `debug` and the

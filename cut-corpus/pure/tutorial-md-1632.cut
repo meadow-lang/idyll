@@ -2,8 +2,6 @@ cut 0
 entry idyll:Main/"#entry"
 answer str
 
-data idyll:Prelude/Pair <'a0, 'a1> { Pair('a0, 'a1) }
-
 data idyll:Prelude/DigitFuel { Spent; More(ptr) }
 
 val idyll:Prelude/digitFuel : ptr =
@@ -85,29 +83,14 @@ def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) =
               idyll:Prelude/digitString(v_71; k_63)))))
   }>
 
-def idyll:Main/swap (x_75: ptr; k_76: ptr) =
-  <x_75 | case {
-    idyll:Prelude/Pair.Pair(n_77: i64, b_78: bool) =>
-      <idyll:Prelude/Pair.Pair(b_78, n_77) | k_76>
-  }>
+def idyll:Main/fact (n_75: i64; k_76: ptr) =
+  prim eq(n_75, 0; μ̃ v_82: bool.
+    prim if(v_82; μ̃ u_80: unit.
+      prim sub(n_75, 1; μ̃ v_79: i64.
+        idyll:Main/fact(v_79; μ̃ v_77: i64.
+          prim mul(n_75, v_77; k_76))), μ̃ u_81: unit.
+      <1 | k_76>))
 
-def idyll:Main/"#items (Bool, Int)" (x_81: ptr; k_82: ptr) =
-  <x_81 | case {
-    idyll:Prelude/Pair.Pair(f_83: bool, f_84: i64) =>
-      prim if(f_83; μ̃ u_87: unit.
-        <"False" | μ̃ s_85: str.
-          idyll:Prelude/showInt(f_84; μ̃ s_86: str.
-            prim concatStrings([s_85, ", ", s_86]; k_82))>, μ̃ u_88: unit.
-        <"True" | μ̃ s_85: str.
-          idyll:Prelude/showInt(f_84; μ̃ s_86: str.
-            prim concatStrings([s_85, ", ", s_86]; k_82))>)
-  }>
-
-def idyll:Main/"#show (Bool, Int)" (x_89: ptr; k_90: ptr) =
-  idyll:Main/"#items (Bool, Int)"(x_89; μ̃ s_91: str.
-    prim concatStrings(["(", s_91, ")"]; k_90))
-
-def idyll:Main/"#entry" (; k_79: ptr) =
-  <idyll:Prelude/Pair.Pair(1, true) | μ̃ v_93: ptr.
-    idyll:Main/swap(v_93; μ̃ answer_80: ptr.
-      idyll:Main/"#show (Bool, Int)"(answer_80; k_79))>
+def idyll:Main/"#entry" (; k_83: ptr) =
+  idyll:Main/fact(10; μ̃ answer_84: i64.
+    idyll:Prelude/showInt(answer_84; k_83))

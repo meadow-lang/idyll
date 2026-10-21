@@ -65,30 +65,27 @@ def idyll:Prelude/showInt (n_52: i64; k_53: ptr) =
       idyll:Prelude/negativeDigits(idyll:Prelude/digitFuel, n_52; μ̃ v_58: str.
         prim concatStrings(["-", v_58]; k_53))))
 
-def idyll:Main/sumTo (xs_62: ptr; k_63: ptr) =
-  prim arrayLen(xs_62; μ̃ v_64: i64.
-    prim arrayGet(xs_62, 0; μ̃ v_65: i64.
-      prim add(v_64, v_65; k_63)))
+def idyll:Main/id <'a_65 = d_a_64> (d_a_64: desc, x_66: 'a_65; k_67: ptr) =
+  <x_66 | k_67>
 
-def idyll:Prelude/negativeDigits (fuel_66: ptr, n_67: i64; k_68: ptr) =
-  <fuel_66 | case {
+def idyll:Prelude/negativeDigits (fuel_68: ptr, n_69: i64; k_70: ptr) =
+  <fuel_68 | case {
     idyll:Prelude/DigitFuel.Spent =>
-      <"" | k_68>;
-    idyll:Prelude/DigitFuel.More(fuel_69: ptr) =>
-      prim sub(0, 10; μ̃ v_79: i64.
-        prim lt(v_79, n_67; μ̃ v__70: bool.
-          prim if(v__70; μ̃ u_77: unit.
-            prim div(n_67, 10; μ̃ v_75: i64.
-              idyll:Prelude/negativeDigits(fuel_69, v_75; μ̃ v_71: str.
-                prim mod(n_67, 10; μ̃ v_74: i64.
-                  prim sub(0, v_74; μ̃ v_73: i64.
-                    idyll:Prelude/digitString(v_73; μ̃ v_72: str.
-                      prim concatStrings([v_71, v_72]; k_68)))))), μ̃ u_78: unit.
-            prim sub(0, n_67; μ̃ v_76: i64.
-              idyll:Prelude/digitString(v_76; k_68)))))
+      <"" | k_70>;
+    idyll:Prelude/DigitFuel.More(fuel_71: ptr) =>
+      prim sub(0, 10; μ̃ v_81: i64.
+        prim lt(v_81, n_69; μ̃ v__72: bool.
+          prim if(v__72; μ̃ u_79: unit.
+            prim div(n_69, 10; μ̃ v_77: i64.
+              idyll:Prelude/negativeDigits(fuel_71, v_77; μ̃ v_73: str.
+                prim mod(n_69, 10; μ̃ v_76: i64.
+                  prim sub(0, v_76; μ̃ v_75: i64.
+                    idyll:Prelude/digitString(v_75; μ̃ v_74: str.
+                      prim concatStrings([v_73, v_74]; k_70)))))), μ̃ u_80: unit.
+            prim sub(0, n_69; μ̃ v_78: i64.
+              idyll:Prelude/digitString(v_78; k_70)))))
   }>
 
-def idyll:Main/"#entry" (; k_80: ptr) =
-  <[40, 2] | μ̃ v_82: ptr.
-    idyll:Main/sumTo(v_82; μ̃ answer_81: i64.
-      idyll:Prelude/showInt(answer_81; k_80))>
+def idyll:Main/"#entry" (; k_82: ptr) =
+  idyll:Main/id(desc(i64), 3; μ̃ answer_83: i64.
+    idyll:Prelude/showInt(answer_83; k_82))

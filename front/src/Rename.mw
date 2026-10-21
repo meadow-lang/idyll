@@ -270,6 +270,9 @@ fun useName (r : Rn) (name : String) =
   -- scope by those names
   else if name == "#display" then preludeName r "display"
   else if name == "#debug" then preludeName r "debug"
+  -- and what derived instances compare with
+  else if name == "#eq" then preludeName r "=="
+  else if name == "#lt" then preludeName r "<"
   else if name == "#append" then Ident.Ident [V.foldl (\acc i -> if V.getOr "" builtins i == "++" then i else acc) 0 (V.range 0 (V.len builtins))] "++"
   else if S.contains "." name and stringByteLength name > 1 then useQualified r name
   else

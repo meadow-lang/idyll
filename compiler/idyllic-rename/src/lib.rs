@@ -911,6 +911,9 @@ impl Renamer {
         match name.node.as_str() {
             "#display" => return self.prelude_name("display", name.span),
             "#debug" => return self.prelude_name("debug", name.span),
+            // and what derived instances compare with
+            "#eq" => return self.prelude_name("==", name.span),
+            "#lt" => return self.prelude_name("<", name.span),
             "#append" => return Ident { unique: Some(idyllic_builtins::Prim::StrAppend.unique()), text: "++".into() },
             _ => {}
         }

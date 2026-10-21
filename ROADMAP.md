@@ -586,8 +586,14 @@ from what `idyll.lock` pinned.
   propositional equality here. An instance's methods are now a match, as a
   definition's equations are (`Term::Equations`, a `Match` in the HIR),
   rather than a lambda over a `case` of a tuple, whose fields were linear
-  in a linear module. Left: `Ord` with `compare` (Std's `Cmp`), `@derive`,
-  integer types and floats.
+  in a linear module. `@derive(Display, Debug, PartialEq, PartialOrd)` on a
+  data type done the same day, in both compilers' parsers: Meadow's derived
+  instances (`C(f1, f2)`; equal constructor and fields; by constructor,
+  then fields), each type parameter constrained; the prelude's `Maybe` and
+  `Result` are derived. (Superclass projections are now checked before
+  hints, so that an instance early in a module can find a superclass
+  through one.) Left: `Ord` with `compare` (Std's `Cmp`), integer types and
+  floats.
 - [x] **Arithmetic is a trait, so it works on `Nat` in types** (Chris,
   2026-10-16). `+`, `*` and the rest become a trait's methods: `Int`'s
   instance is the primitives, and `Nat`'s is `plus` and `times`. This is

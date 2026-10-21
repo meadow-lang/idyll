@@ -245,8 +245,10 @@ pub const PRELUDE: &str = "\
 @seq(nil = Nil, cons = (::))
 data List a = Nil | (::) a (List a)
 
+@derive(Display, Debug, PartialEq, PartialOrd)
 data Maybe a = Nothing | Just a
 
+@derive(Display, Debug, PartialEq, PartialOrd)
 data Result e a = Err e | Ok a
 
 data Pair a b = Pair a b
@@ -336,11 +338,6 @@ instance PartialEq a => PartialEq (List a) where
   Nil == Nil = True
   (x :: xs) == (y :: ys) = if x == y then xs == ys else False
   xs == ys = False
-
-instance PartialEq a => PartialEq (Maybe a) where
-  Nothing == Nothing = True
-  Just x == Just y = x == y
-  m == n = False
 
 intNe : (x : [] Int) -> (y : [] Int) -> Bool
 intNe x y = if intEq x y then False else True

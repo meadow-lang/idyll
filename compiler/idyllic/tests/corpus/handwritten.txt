@@ -634,3 +634,21 @@ instance PartialOrd Size where
   x < y = rank x < rank y
 
 (1 < 2, 3 >= 4, "a" <= "b", (1, 'c') == (1, 'c'), (1 :: Nil) != Nil, Small < Large, Large <= Small)
+%%%
+-- derived instances: rendered, compared and ordered by constructor, then fields
+@derive(Display, Debug, PartialEq, PartialOrd)
+data Shape a = Dot | Circle Int | Box a a
+
+@derive(Display, PartialEq)
+data Tree = Leaf | Node Tree Int Tree
+
+use Shape.*
+use Tree.*
+
+dot : Shape Int
+dot = Dot
+
+circle : Int -> Shape Int
+circle r = Circle r
+
+(display (Box "a" "b"), debug (Box "a" "b"), display (circle 3), dot == dot, circle 1 == circle 2, dot < circle 0, Box 2 1 < Box 1 2, display (Node Leaf 1 (Node Leaf 2 Leaf)), Node Leaf 1 Leaf != Leaf, "${Just 4} ${Ok 5 == Ok 5}")

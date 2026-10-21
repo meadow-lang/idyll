@@ -193,10 +193,12 @@ record Attrs = {
   native : Bool,
   terminating : Bool,
   hint : Bool,
-  linear : Bool
+  linear : Bool,
+  -- `@derive(Display, PartialEq)`: the traits, each with where it is written
+  derive : Maybe [(Syn, String)]
 }
 
-def noAttrs = Attrs { seq = None, vis = None, native = False, terminating = False, hint = False, linear = False }
+def noAttrs = Attrs { seq = None, vis = None, native = False, terminating = False, hint = False, linear = False, derive = None }
 
 -- What the passes carry down the tree: a record's earlier fields, which a
 -- later one's type reads off `self` -- each field's name, and the record's
@@ -1191,6 +1193,8 @@ data Item
   -- an instance's declarations, its name, and whether it was named (and so
   -- is no hint)
   | Instance [SurfaceDecl] SurfaceName Bool
+  -- a data type with `@derive(..)` on it, and the instances it derives
+  | Derived SurfaceData [Item]
   | Nothing
 
 -- A name an equation or a signature can be for: `f` or `(+)` -- its token.
@@ -1589,7 +1593,7 @@ fun useDecl out (cx : Cx) (d : IdyllUseDecl) =
 
 -- --- attributes ------------------------------------------------------------------------
 
-data Attribute = Seq String String | Vis Visibility | Native | Terminating | Hint | Linear
+data Attribute = Seq String String | Vis Visibility | Native | Terminating | Hint | Linear | Derive [(Syn, String)]
 
 fun attribute (line : IdyllAttrLine) =
   let name = textOf (idyllAttrLineName line) in
@@ -1612,6 +1616,14 @@ fun attribute (line : IdyllAttrLine) =
   | ("terminating", 0, _, _) -> Just Attribute.Terminating
   | ("hint", 0, _, _) -> Just Attribute.Hint
   | ("linear", 0, _, _) -> Just Attribute.Linear
+  -- `@derive(Display, PartialEq)`: upper-case names, and nothing else
+  | ("derive", c, _, _) if c >= 2 ->
+      let xs = match idyllAttrLineArgs line with | Just a -> idyllAttrArgsArgs a | None -> [] in
+      let ok = V.all (\x -> isKind TokenUpperIdent (idyllAttrArgKey x) and M.isNone (idyllAttrArgValue x)) xs in
+      if ok then Just (Attribute.Derive (V.map (\x -> (syntaxIdyllAttrArg x, textOf (idyllAttrArgKey x))) xs))
+      else
+        let u = bad (syntaxIdyllAttrLine line) "@derive names traits: @derive(Display, PartialEq)" in
+        None
   | _ ->
       let u = bad (syntaxIdyllAttrLine line) "not an attribute: @${name}" in
       None
@@ -1630,6 +1642,7 @@ fun attrsOf (at : Syn) (lines : [IdyllAttrLine]) : Attrs ! { Report | e } =
           if acc.terminating then let u = twice () in acc else { acc | terminating = True }
       | Just Attribute.Hint -> if acc.hint then let u = twice () in acc else { acc | hint = True }
       | Just Attribute.Linear -> { acc | linear = True }
+      | Just (Attribute.Derive ts) -> if M.isSome acc.derive then let u = twice () in acc else { acc | derive = Just ts }
       | None -> acc)
     noAttrs
     lines
@@ -1864,6 +1877,151 @@ fun traitDecl out (cx : Cx) (d : IdyllTraitDecl) =
       in
       Item.Record decl (V.concat [projections, methods, defaultDecls])
 
+-- The instance of trait `t` that `@derive` writes for the data type `d`
+-- (its name at byte `at`, one apart for each trait derived), as the Rust
+-- parser's `derived` writes it: each parameter that is a type given the
+-- trait too, and the methods by the constructors. `Display` and `Debug`
+-- render a constructor and its fields, `Just(5)`; `PartialEq` says two
+-- values are the same constructor with equal fields; `PartialOrd` orders
+-- them by constructor, in the order declared, then by their fields.
+fun derived out (d : SurfaceData) (t : (Syn, String)) (at : Int) : [Item] ! { Report, St s | e } =
+  let tat = fst t in
+  let tname = snd t in
+  let m = metaSurfaceData out d in
+  let name = surfaceNameText out (surfaceDataName out d) in
+  let var = \x -> newSurfaceExprVar out m (nameAt out m x) in
+  let text = \s -> lit out m (Literal.Str s) in
+  let truth = \b -> lit out m (Literal.Bool b) in
+  let append = \a b -> app out m (app out m (var "#append") a) b in
+  let ifThen =
+    \c a b ->
+      newSurfaceExprCase
+        out
+        m
+        c
+        [
+          newSurfaceAlt out m (newSurfacePatLit out m (Literal.Bool True)) (newSurfaceRhsPlain out m a),
+          newSurfaceAlt out m (newSurfacePatLit out m (Literal.Bool False)) (newSurfaceRhsPlain out m b)
+        ]
+  in
+  let shapes =
+    V.map
+      (\c ->
+        if kindSurfaceCtor out c == SurfaceCtorKind.Fields then
+          Just (surfaceNameText out (surfaceCtorFieldsName out c), V.len (surfaceCtorFieldsFields out c))
+        else None)
+      (surfaceDataCtors out d)
+  in
+  if V.any M.isNone shapes then
+    let u = bad tat "@derive writes instances for constructors given by their fields, `C a b`" in
+    []
+  else
+    let ctors = V.concatMap (\s -> match s with | Just x -> [x] | None -> []) shapes in
+    let bind = \x -> newSurfacePatBind out m (newSurfaceParam out m (nameAt out m x) False None None) in
+    let wild = \u -> newSurfacePatWild out m in
+    let con = \c args -> newSurfacePatCon out m (nameAt out m "${name}.${c}") args in
+    let vars = \p n -> V.map (\i -> "#${p}${i}") (V.range 0 n) in
+    let eq = \f pats body -> newSurfaceDeclDef out m (nameAt out m f) pats None (newSurfaceRhsPlain out m body) in
+    let rendered =
+      \method render ->
+        V.map
+          (\cn ->
+            match cn with
+            | (c, n) ->
+                let xs = vars "a" n in
+                let body =
+                  if n == 0 then text c
+                  else
+                    let parts =
+                      V.concat [
+                        [text "${c}("],
+                        V.concatMap (\i -> V.append (if i > 0 then [text ", "] else []) [app out m (var render) (var (V.getOr "" xs i))]) (V.range 0 n),
+                        [text ")"]
+                      ]
+                    in
+                    V.foldr (\q acc -> append q acc) (V.getOr (text "") parts (V.len parts - 1)) (V.take parts (V.len parts - 1))
+                in
+                eq method [con c (V.map bind xs)] body)
+          ctors
+    in
+    let entries =
+      if tname == "Display" then Just (rendered "display" "#display")
+      else if tname == "Debug" then Just (rendered "debug" "#debug")
+      else if tname == "PartialEq" then
+        let own =
+          V.map
+            (\cn ->
+              match cn with
+              | (c, n) ->
+                  let xs = vars "a" n in
+                  let ys = vars "b" n in
+                  let same = \i -> app out m (app out m (var "#eq") (var (V.getOr "" xs i))) (var (V.getOr "" ys i)) in
+                  let body =
+                    if n == 0 then truth True
+                    else V.foldr (\i acc -> ifThen (same i) acc (truth False)) (same (n - 1)) (V.range 0 (n - 1))
+                  in
+                  eq "==" [con c (V.map bind xs), con c (V.map bind ys)] body)
+            ctors
+        in
+        Just (if V.len ctors > 1 then V.pushBack own (eq "==" [wild (), wild ()] (truth False)) else own)
+      else if tname == "PartialOrd" then
+        Just
+          (V.concatMap
+            (\i ->
+              match V.get ctors i with
+              | Just (c, n) ->
+                  V.concatMap
+                    (\j ->
+                      match V.get ctors j with
+                      | Just (c2, n2) ->
+                          if i == j then
+                            let xs = vars "a" n in
+                            let ys = vars "b" n in
+                            let less = \f -> app out m (app out m (var "#lt") (var (V.getOr "" xs f))) (var (V.getOr "" ys f)) in
+                            let same = \f -> app out m (app out m (var "#eq") (var (V.getOr "" xs f))) (var (V.getOr "" ys f)) in
+                            let body =
+                              if n == 0 then truth False
+                              else V.foldr (\f acc -> ifThen (less f) (truth True) (ifThen (same f) acc (truth False))) (less (n - 1)) (V.range 0 (n - 1))
+                            in
+                            [eq "<" [con c (V.map bind xs), con c (V.map bind ys)] body]
+                          else [eq "<" [con c (V.map (\u -> wild ()) (V.range 0 n)), con c2 (V.map (\u -> wild ()) (V.range 0 n2))] (truth (i < j))]
+                      | None -> [])
+                    (V.range 0 (V.len ctors))
+              | None -> [])
+            (V.range 0 (V.len ctors)))
+      else None
+    in
+    match entries with
+    | None ->
+        let u = bad tat "@derive writes Display, Debug, PartialEq and PartialOrd, not ${tname}" in
+        []
+    | Just defs ->
+        let params = surfaceDataParams out d in
+        let whole = \u -> V.foldl (\acc q -> app out m acc (var (surfaceNameText out (surfaceTypeParamName out q)))) (var name) params in
+        let types =
+          V.filter
+            (\q -> match surfaceTypeParamKindSig out q with | None -> True | Just k -> kindSurfaceExpr out k == SurfaceExprKind.Type)
+            params
+        in
+        let head =
+          \u ->
+            V.foldr
+              (\q acc -> newSurfaceExprPi out m None Icit.Auto None (app out m (var tname) (var (surfaceNameText out (surfaceTypeParamName out q)))) acc)
+              (app out m (var tname) (whole ()))
+              types
+        in
+        -- each method's equations, in the order the first of each comes
+        let method = match V.head defs with | Just x -> surfaceNameText out (surfaceDeclDefName out x) | None -> "" in
+        let arity = match V.head defs with | Just x -> V.len (surfaceDeclDefParams out x) | None -> 0 in
+        let inst = "#instance@${at}" in
+        let fields = [newSurfaceField out m (nameAt out m method) (equationsOf out m defs arity)] in
+        let body = newSurfaceExprRecordOf out m (nameAt out m tname) [whole ()] fields (nameAt out m inst) in
+        let decls = [
+          newSurfaceDeclSig out m (nameAt out m inst) (head ()),
+          newSurfaceDeclDef out m (nameAt out m inst) [] None (newSurfaceRhsPlain out m body)
+        ] in
+        [Item.Instance decls (nameAt out m inst) False]
+
 -- An instance's head, past what it needs: the trait, and its arguments.
 fun instanceTrait out (t : SurfaceExpr) =
   if kindSurfaceExpr out t == SurfaceExprKind.Pi and surfaceExprPiIcit out t == Icit.Auto then instanceTrait out (surfaceExprPiCod out t)
@@ -1955,7 +2113,13 @@ fun itemOf out (it : IdyllItem) =
   let cx = { top | attrs = a } in
   let item =
     match idyllItemBody it with
-    | Just (IdyllItemBody.DataDecl d) -> Item.Data (dataDecl out cx d)
+    | Just (IdyllItemBody.DataDecl d) ->
+        (match a.derive with
+         | None -> Item.Data (dataDecl out cx d)
+         | Just ts ->
+             let dd = dataDecl out cx d in
+             let start = match R.textRange (syntaxIdyllDataDecl d) with | (from, _) -> from in
+             Item.Derived dd (V.concatMap (\k -> match V.get ts k with | Just t -> derived out dd t (start + k) | None -> []) (V.range 0 (V.len ts))))
     | Just (IdyllItemBody.RecordDecl d) -> recordDecl out cx d
     | Just (IdyllItemBody.TraitDecl d) -> traitDecl out cx d
     | Just (IdyllItemBody.InstanceDecl d) -> instanceDecl out cx d
@@ -2059,6 +2223,23 @@ fun fileOf out (root : Syn) (raw : [IdyllEntry]) (nested : Bool) =
                  let p = { p | linear = p.linear or a.linear } in
                  (match item with
                   | Item.Data d -> { p | datas = V.pushBack p.datas d }
+                  -- a data type, and the instances `@derive` wrote: as visible as it
+                  | Item.Derived d instances ->
+                      let dvis = surfaceDataVis out d in
+                      V.foldl
+                        (\(q : Parts) inst ->
+                          match inst with
+                          | Item.Instance ds name _ ->
+                              {
+                                q |
+                                hints = V.pushBack q.hints name,
+                                terminating = V.pushBack q.terminating name,
+                                shown = (if dvis == Visibility.Private then q.shown else V.pushBack q.shown (newSurfaceShown out im name dvis)),
+                                decls = V.append q.decls ds
+                              }
+                          | _ -> q)
+                        { p | datas = V.pushBack p.datas d }
+                        instances
                   | Item.Record d ps ->
                       let shown =
                         match a.vis with

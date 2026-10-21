@@ -137,13 +137,14 @@ fun sccGroups (a : HirArena) out (k : Early) (groups : [HirGroup]) =
       match (V.len bs, V.get written 0) with
       | (1, Just b) if not selfEdge and not byMatching and not hint -> newHirGroupNonRec out m b
       | _ -> newHirGroupRec out m written)
-    (earlyFirst (V.map (\b -> V.elem (uniqueOf b) early) binds) edges (components n edges))
+    (earlyFirst (V.map (\b -> V.elem (uniqueOf b) early) binds) (V.map (\b -> V.elem (uniqueOf b) hints) binds) edges (components n edges))
 
 -- The components, dependencies first as Tarjan's algorithm finds them, with
 -- each holding one that is `early` (a hint, a superclass projection) and
--- what it needs moved as far forward as they can go, in the order those
--- come.
-fun earlyFirst (early : [Bool]) (edges : [[Int]]) (comps : [[Int]]) : [[Int]] ! { Mut | e } =
+-- what it needs moved as far forward as they can go: the projections first,
+-- in the order they come, then the hints (a search for a hint's own auto
+-- arguments may go through a projection it does not name).
+fun earlyFirst (early : [Bool]) (isHint : [Bool]) (edges : [[Int]]) (comps : [[Int]]) : [[Int]] ! { Mut | e } =
   if not (V.any (\b -> b) early) then comps
   else
     let componentOf =
@@ -154,7 +155,8 @@ fun earlyFirst (early : [Bool]) (edges : [[Int]]) (comps : [[Int]]) : [[Int]] ! 
     in
     let done = newRef Hm.empty in
     let order = newRef [] in
-    let firsts = V.filter (\i -> V.getOr False early i) (V.range 0 (V.len early)) in
+    let earlies = V.filter (\i -> V.getOr False early i) (V.range 0 (V.len early)) in
+    let firsts = V.append (V.filter (\i -> not (V.getOr False isHint i)) earlies) (V.filter (\i -> V.getOr False isHint i) earlies) in
     let w1 = V.foldl (\acc v -> emitComponent (Hm.getOr 0 v componentOf) comps edges componentOf done order) () firsts in
     let w2 = V.foldl (\acc c -> emitComponent c comps edges componentOf done order) () (V.range 0 (V.len comps)) in
     V.map (\c -> V.getOr [] comps c) (getRef order)

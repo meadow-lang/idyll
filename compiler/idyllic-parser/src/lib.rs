@@ -108,6 +108,9 @@ enum Item {
     /// `instance ..`: its definition, its name, and whether that was given
     /// (a named instance is not a hint)
     Instance(Vec<LDecl>, Ident, bool),
+    /// a data type with `@derive(..)` on it, and the instances it derives
+    /// (each an `Instance`)
+    Derived(LData, Vec<Item>),
 }
 
 /// What can be written in front of a top-level item, each on a line of its
@@ -128,6 +131,9 @@ enum Attribute {
     /// `@hint`, on a signature: the definition is offered to the search for
     /// an auto argument
     Hint,
+    /// `@derive(Display, PartialEq)`, on a data type: the traits whose
+    /// instances are written for it
+    Derive(Vec<Ident>),
 }
 
 /// The item with its attributes, or what is wrong with them.
@@ -143,8 +149,10 @@ fn attributed(attrs: Vec<(Attribute, Span)>, item: Item) -> Result<Attributed, (
     let mut terminating = None;
     let mut hint = None;
     let mut linear = false;
+    let mut derive = None;
     for (attr, at) in attrs {
         match attr {
+            Attribute::Derive(ts) if derive.is_none() => derive = Some((ts, at)),
             Attribute::Seq(s) if seq.is_none() => seq = Some(s),
             Attribute::Vis(v) if vis.is_none() => vis = Some(v),
             Attribute::Native if native.is_none() => native = Some(at),
@@ -213,7 +221,148 @@ fn attributed(attrs: Vec<(Attribute, Span)>, item: Item) -> Result<Attributed, (
     if seq.is_some() {
         return Err((Span::at(0), "@seq goes on a data type".into()));
     }
+    // the instances `@derive` writes, beside the data type
+    let item = match (derive, item) {
+        (None, item) => item,
+        (Some((traits, at)), Item::Data(d)) => {
+            let mut instances = Vec::new();
+            for (k, t) in traits.iter().enumerate() {
+                instances.push(derived(&d, t, k)?);
+            }
+            let _ = at;
+            Item::Derived(d, instances)
+        }
+        (Some((_, at)), _) => return Err((at, "@derive goes on a data type".into())),
+    };
     Ok((item, vis, terminating.is_some(), linear, hint.is_some()))
+}
+
+/// The instance of trait `t` that `@derive` writes for the data type `d`,
+/// the `k`th it derives: each of its parameters given the trait too, and
+/// its methods by the constructors, as Meadow's derived instances are.
+/// `Display` and `Debug` render a constructor and its fields, `Just(5)`;
+/// `PartialEq` says two values are the same constructor with equal fields;
+/// `PartialOrd` orders them by constructor, in the order they are
+/// declared, and then by their fields, left to right.
+fn derived(d: &LData, t: &Ident, k: usize) -> Result<Item, (Span, String)> {
+    let span = d.span;
+    let at = |x: Term| Spanned::new(x, span);
+    let var = |x: &str| at(Term::Var(Spanned::new(x.to_string(), span)));
+    let app = |f: LTerm, a: LTerm| at(Term::App(Box::new(f), Box::new(a)));
+    let lit = |l: Lit| at(Term::Lit(l));
+    let text = |s: String| lit(Lit::Str(s));
+    let truth = |b: bool| lit(Lit::Bool(b));
+    // the prelude's, whatever is in scope by these names (as a string's
+    // holes are joined)
+    let append = |a: LTerm, b: LTerm| app(app(var("#append"), a), b);
+    let if_then = |c: LTerm, a: LTerm, b: LTerm| {
+        let alt = |v: bool, body: LTerm| Alt { pat: Spanned::new(Pat::Lit(Lit::Bool(v)), span), rhs: Rhs::Plain(body) };
+        at(Term::Case(Box::new(c), vec![alt(true, a), alt(false, b)]))
+    };
+    let name = &d.node.name.node;
+    let mut ctors = Vec::new();
+    for (c, shape) in &d.node.ctors {
+        match shape {
+            Ctor::Fields(fs) => ctors.push((c.node.clone(), fs.len())),
+            Ctor::Sig(_) => return Err((c.span, "@derive writes instances for constructors given by their fields, `C a b`".into())),
+        }
+    }
+    let bind = |x: String| Spanned::new(Pat::Bind(Param { name: Spanned::new(x, span), unbox: false, grade: None, ty: None }), span);
+    let wild = || Spanned::new(Pat::Wild, span);
+    let con = |c: &str, args: Vec<LPat>| Spanned::new(Pat::Con(Spanned::new(format!("{name}.{c}"), span), args), span);
+    let vars = |p: &str, n: usize| (0..n).map(|i| format!("#{p}{i}")).collect::<Vec<String>>();
+    let eq = |f: &str, pats: Vec<LPat>, body: LTerm| Spanned::new(Decl::Def(Spanned::new(f.to_string(), span), pats, None, Rhs::Plain(body)), span);
+    let entries: Vec<LDecl> = match t.node.as_str() {
+        "Display" | "Debug" => {
+            let (method, render) = if t.node == "Display" { ("display", "#display") } else { ("debug", "#debug") };
+            ctors
+                .iter()
+                .map(|(c, n)| {
+                    let xs = vars("a", *n);
+                    let body = if *n == 0 {
+                        text(c.clone())
+                    } else {
+                        let mut parts = vec![text(format!("{c}("))];
+                        for (i, x) in xs.iter().enumerate() {
+                            if i > 0 {
+                                parts.push(text(", ".into()));
+                            }
+                            parts.push(app(var(render), var(x)));
+                        }
+                        parts.push(text(")".into()));
+                        parts.into_iter().rev().reduce(|acc, p| append(p, acc)).expect("parts")
+                    };
+                    eq(method, vec![con(c, xs.into_iter().map(bind).collect())], body)
+                })
+                .collect()
+        }
+        "PartialEq" => {
+            let mut eqs: Vec<LDecl> = ctors
+                .iter()
+                .map(|(c, n)| {
+                    let (xs, ys) = (vars("a", *n), vars("b", *n));
+                    let body = (0..*n).rev().fold(None, |rest: Option<LTerm>, i| {
+                        let same = app(app(var("#eq"), var(&xs[i])), var(&ys[i]));
+                        Some(match rest {
+                            None => same,
+                            Some(rest) => if_then(same, rest, truth(false)),
+                        })
+                    });
+                    let pats = vec![con(c, xs.iter().cloned().map(bind).collect()), con(c, ys.iter().cloned().map(bind).collect())];
+                    eq("==", pats, body.unwrap_or_else(|| truth(true)))
+                })
+                .collect();
+            if ctors.len() > 1 {
+                eqs.push(eq("==", vec![wild(), wild()], truth(false)));
+            }
+            eqs
+        }
+        "PartialOrd" => {
+            let mut eqs = Vec::new();
+            for (i, (c, n)) in ctors.iter().enumerate() {
+                for (j, (c2, n2)) in ctors.iter().enumerate() {
+                    let body = if i == j {
+                        let (xs, ys) = (vars("a", *n), vars("b", *n));
+                        let lex = (0..*n).rev().fold(None, |rest: Option<LTerm>, f| {
+                            let less = app(app(var("#lt"), var(&xs[f])), var(&ys[f]));
+                            Some(match rest {
+                                None => less,
+                                Some(rest) => {
+                                    let same = app(app(var("#eq"), var(&xs[f])), var(&ys[f]));
+                                    if_then(less, truth(true), if_then(same, rest, truth(false)))
+                                }
+                            })
+                        });
+                        let pats = vec![con(c, xs.iter().cloned().map(bind).collect()), con(c, ys.iter().cloned().map(bind).collect())];
+                        eqs.push(eq("<", pats, lex.unwrap_or_else(|| truth(false))));
+                        continue;
+                    } else {
+                        truth(i < j)
+                    };
+                    let pats = vec![con(c, (0..*n).map(|_| wild()).collect()), con(c2, (0..*n2).map(|_| wild()).collect())];
+                    eqs.push(eq("<", pats, body));
+                }
+            }
+            eqs
+        }
+        other => return Err((t.span, format!("@derive writes Display, Debug, PartialEq and PartialOrd, not {other}"))),
+    };
+    // `Display a => Display b => Display (T a b)`: each parameter that is a
+    // type wants the trait too
+    let whole = d.node.params.iter().fold(var(name), |acc, (p, _)| app(acc, var(&p.node)));
+    let types: Vec<&Ident> = d
+        .node
+        .params
+        .iter()
+        .filter(|(_, k)| k.as_ref().is_none_or(|k| matches!(k.node, Term::Type)))
+        .map(|(p, _)| p)
+        .collect();
+    let head = types.iter().rev().fold(app(var(&t.node), whole), |acc, p| {
+        at(Term::Pi(None, Icit::Auto, None, Box::new(app(var(&t.node), var(&p.node))), Box::new(acc)))
+    });
+    // a name of its own, `#instance@<where>`, one for each trait derived
+    let span_k = Span::new(span.start + k, span.end);
+    instance_parts(None, head, entries, span_k)
 }
 
 /// `Name : a`, read as an annotated expression, as the signature it is when
@@ -280,6 +429,21 @@ fn build(items: Vec<Attributed>, nested: bool) -> Result<Program, Vec<Diagnostic
         };
         match item {
             Item::Data(d) => program.datas.push(d),
+            // a data type, and the instances `@derive` wrote: as visible as it
+            Item::Derived(d, instances) => {
+                let dvis = d.node.visibility;
+                program.datas.push(d);
+                for i in instances {
+                    if let Item::Instance(decls, name, _) = i {
+                        program.hints.push(name.clone());
+                        program.terminating.push(name.clone());
+                        if dvis != Visibility::Private {
+                            program.visibility.push((name, dvis));
+                        }
+                        program.decls.extend(decls);
+                    }
+                }
+            }
             // a field is as visible as its record
             Item::Record(d, projections) => {
                 let vis = d.node.visibility;
@@ -354,7 +518,18 @@ where
         just(Token::At).ignore_then(select! { Token::LowerIdent(s) if s == "terminating" => () }).to(Attribute::Terminating);
     let hint = just(Token::At).ignore_then(select! { Token::LowerIdent(s) if s == "hint" => () }).to(Attribute::Hint);
     let linear = just(Token::At).ignore_then(select! { Token::LowerIdent(s) if s == "linear" => () }).to(Attribute::Linear);
-    let attribute = choice((seq_attribute().map(Attribute::Seq), visibility().map(Attribute::Vis), native, terminating, hint, linear))
+    // `@derive(Display, PartialEq)`
+    let derive = just(Token::At)
+        .ignore_then(select! { Token::LowerIdent(s) if s == "derive" => () })
+        .ignore_then(
+            select! { Token::UpperIdent(s) = e => Spanned::new(s, span_of(e.span())) }
+                .separated_by(just(Token::Comma))
+                .at_least(1)
+                .collect::<Vec<Ident>>()
+                .delimited_by(just(Token::LParen), just(Token::RParen)),
+        )
+        .map(Attribute::Derive);
+    let attribute = choice((seq_attribute().map(Attribute::Seq), visibility().map(Attribute::Vis), native, terminating, hint, linear, derive))
         .map_with(|a, e| (a, span_of(e.span())))
         .then_ignore(semi.clone().or_not());
     let item = recursive(|item| {

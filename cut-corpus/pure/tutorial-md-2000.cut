@@ -1,6 +1,6 @@
 cut 0
 entry idyll:Main/"#entry"
-answer str
+answer none
 
 data idyll:Prelude/DigitFuel { Spent; More(ptr) }
 
@@ -83,13 +83,5 @@ def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) =
               idyll:Prelude/digitString(v_71; k_63)))))
   }>
 
-def idyll:Main/count (n_75: i64; k_76: ptr) =
-  prim eq(n_75, 0; μ̃ v__77: bool.
-    prim if(v__77; μ̃ u_80: unit.
-      prim sub(n_75, 1; μ̃ v_79: i64.
-        idyll:Main/count(v_79; k_76)), μ̃ u_81: unit.
-      <0 | k_76>))
-
-def idyll:Main/"#entry" (; k_82: ptr) =
-  idyll:Main/count(3; μ̃ answer_83: i64.
-    idyll:Prelude/showInt(answer_83; k_82))
+def idyll:Main/"#entry" (; k_75: ptr) =
+  <unit | k_75>

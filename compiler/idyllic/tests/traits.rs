@@ -142,3 +142,20 @@ fn comparisons_are_the_preludes_partial_eq_and_partial_ord() {
     let text = pipeline::compile("f : Int -> Bool\nf x = x < 0\n\nf 1\n", &OPTIONS).cut.expect("lowered");
     assert!(text.contains("prim lt("), "{text}");
 }
+
+#[test]
+fn derive_writes_display_debug_partial_eq_and_partial_ord() {
+    let shape = "@derive(Display, Debug, PartialEq, PartialOrd)\ndata Shape a = Dot | Circle Int | Box a a\n\nuse Shape.*\n\n\
+                 dot : Shape Int\ndot = Dot\n\n";
+    // a constructor and its fields, each by its own instance, as Meadow's
+    assert_eq!(value(&format!("{shape}(display (Box \"a\" \"b\"), debug (Box \"a\" \"b\"), display dot)\n")), r#"("Box(a, b)", "Box(\"a\", \"b\")", "Dot")"#);
+    // the same constructor with equal fields; by constructor, then fields
+    assert_eq!(value(&format!("{shape}(dot == dot, (Circle 1 : Shape Int) == Circle 2, dot < Circle 0, Box 2 1 < Box 1 2, Box 1 2 < Box 1 3)\n")), "(True, False, True, False, True)");
+    // a parameter's instance is wanted for the type's
+    let tree = "@derive(PartialEq)\ndata Pair a = Two a a\n\nuse Pair.*\n\ndata Color = Red\n\nuse Color.*\n\n";
+    assert_eq!(rejected(&format!("{tree}Two Red Red == Two Red Red\n")), ["nothing in scope gives a PartialEq (Pair Color)"]);
+    // the prelude's Maybe and Result are derived
+    assert_eq!(value("let x = Just 3 in (\"${x}\", x == Just 3, x < Just 4)\n"), "(\"Just(3)\", True, True)");
+    // and only the four can be
+    assert!(rejected("@derive(Ord)\ndata T = A\n\n1\n").iter().any(|m| m.contains("parse error")));
+}

@@ -1002,6 +1002,24 @@ instance PartialOrd Size where
 -- (True, False, True)
 ```
 
+An instance that only follows the type's shape can be written for you,
+with `@derive`, as Meadow writes it. `Display` and `Debug` render a
+constructor and its fields, each by its own instance, `Box(a, b)`;
+`PartialEq` says two values are the same constructor with equal fields;
+`PartialOrd` orders them by constructor, in the order they are declared,
+then by their fields, left to right. Each parameter of the type that is a
+type wants the trait too. The prelude's `Maybe` and `Result` are derived:
+
+```
+@derive(Display, Debug, PartialEq, PartialOrd)
+data Shape a = Dot | Circle Int | Box a a
+
+use Shape.*
+
+(display (Box "a" "b"), debug (Box "a" "b"), Box 1 2 < Box 1 3, "${Just 4}")
+-- ("Box(a, b)", "Box(\"a\", \"b\")", True, "Just(4)")
+```
+
 The result type can depend on an argument in more interesting ways. Here
 `b` is a *function* from values to types, so the type of `f y` depends on
 the value `y`:

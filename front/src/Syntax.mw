@@ -115,7 +115,7 @@ use Idyll.Layout (Token, foldToken)
 
     AttrLine = "@" name:"lower" args:AttrArgs? sep:(";" | "vsemi")?
     AttrArgs = "(" args:(AttrArg ("," AttrArg)*)? ")"
-    AttrArg = key:"lower" value:AttrValue?
+    AttrArg = key:("lower" | "upper") value:AttrValue?
     AttrValue = "=" name:CtorName
 
     -- an equation, a signature, or the program's expression
