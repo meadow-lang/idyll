@@ -104,6 +104,23 @@ fn naturals_compute_in_types_and_their_proofs_check() {
 }
 
 #[test]
+fn a_length_is_written_with_plus() {
+    // `+` at `Nat` is `plus`, the prelude's `Add`'s instance for it, and
+    // computes in types: so `append` says its length as it is said
+    let src = "use Std.Num.Nat (Nat, plusComm)\nuse Std.Num.Nat.Nat.*\nuse Std.Eq (Eq)\nuse Std.Eq.Eq.*\n\n\
+               data Vec : Nat -> Type -> Type where\n  Nil : {a : Type} -> Vec Z a\n  Cons : {n : Nat} -> {a : Type} -> a -> Vec n a -> Vec (S n) a\n\n\
+               use Vec.*\n\n\
+               append : {n m : Nat} -> {a : Type} -> Vec n a -> Vec m a -> Vec (n + m) a\nappend Nil ys = ys\nappend (Cons x xs) ys = Cons x (append xs ys)\n\n\
+               three : Vec (S (S (S Z))) Int\nthree = append (Cons 1 Nil) (Cons 2 (Cons 3 Nil))\n\n\
+               swapped : Eq (S Z + S (S Z)) (S (S Z) + S Z)\nswapped = plusComm (S Z) (S (S Z))\n\n";
+    assert_eq!(value(&format!("{src}three")), "Cons 1 (Cons 2 (Cons 3 Nil))");
+    // a length that is not the sum is a mismatch
+    assert!(!rejected(&format!("{src}two : Vec (S (S Z)) Int\ntwo = append (Cons 1 Nil) (Cons 2 (Cons 3 Nil))\n\ntwo")).is_empty());
+    // and `+` at `Int` is the primitive still
+    assert_eq!(value("(2 + 3) * 4 - 6 / 2 % 2"), "19");
+}
+
+#[test]
 fn integers() {
     let i = "use Std.Num.Int (gcd, pow, max, abs)\n\n";
     assert_eq!(value(&format!("{i}gcd 84 36")), "12");

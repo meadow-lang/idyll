@@ -933,6 +933,32 @@ instance loud : Describe Int where
 -- ("3", "3!", "3!3!")
 ```
 
+Arithmetic is traits too, the prelude's: `+` is `Add`'s method, `-`
+`Sub`'s, `*` `Mul`'s, `/` `Divide`'s and `%` `Rem`'s, and `Int`'s
+instances are the primitives (a call at `Int` *is* the primitive, so it
+costs what it always did). Each takes its operands once, as the
+primitives do, which is how a grade counts `x + x` as two uses of `x`.
+Std gives `Nat` an `Add`, `plus`, so a length is written as it is said,
+and `Z + m` is `m` in a type:
+
+```
+use Std.Num.Nat (Nat)
+use Std.Num.Nat.Nat.*
+
+data Vec : Nat -> Type -> Type where
+  Nil : {a : Type} -> Vec Z a
+  Cons : {n : Nat} -> {a : Type} -> a -> Vec n a -> Vec (S n) a
+
+use Vec.*
+
+append : {n m : Nat} -> {a : Type} -> Vec n a -> Vec m a -> Vec (n + m) a
+append Nil ys = ys
+append (Cons x xs) ys = Cons x (append xs ys)
+
+append (Cons 1 Nil) (Cons 2 Nil)
+-- Cons 1 (Cons 2 Nil)
+```
+
 The result type can depend on an argument in more interesting ways. Here
 `b` is a *function* from values to types, so the type of `f y` depends on
 the value `y`:

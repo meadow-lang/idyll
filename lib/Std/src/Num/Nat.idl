@@ -20,6 +20,14 @@ plus : Nat -> Nat -> Nat
 plus Z m = m
 plus (S n) m = S (plus n m)
 
+-- `n + m` is `plus n m`, as the prelude's `Add` has it: so a length is
+-- written as it is said, `Vec (n + m) a`, and `Z + m` is `m` in a type.
+-- (Not `*`: an instance takes its operands once each, as the primitives
+-- do, and `times` uses its second more often than that.)
+@pub
+instance Add Nat where
+  (+) = plus
+
 @pub
 times : Nat -> (m : Nat) -> Nat
 times Z m = Z
@@ -105,24 +113,24 @@ show n = showInt (toInt n)
 -- Proofs. Each is a function from naturals to an equality, by induction:
 -- the case for `S n` uses the proof for `n`.
 
--- `Z` on the right changes nothing (on the left, `plus` says so itself).
+-- `Z` on the right changes nothing (on the left, `+` says so itself).
 @pub
-plusZero : (n : Nat) -> Eq (plus n Z) n
+plusZero : (n : Nat) -> Eq (n + Z) n
 plusZero Z = Refl
 plusZero (S n) = cong S (plusZero n)
 
 @pub
-plusSucc : (n : Nat) -> (m : [0] Nat) -> Eq (plus n (S m)) (S (plus n m))
+plusSucc : (n : Nat) -> (m : [0] Nat) -> Eq (n + S m) (S (n + m))
 plusSucc Z m = Refl
 plusSucc (S n) m = cong S (plusSucc n m)
 
 @pub
-plusComm : (n : Nat) -> (m : Nat) -> Eq (plus n m) (plus m n)
+plusComm : (n : Nat) -> (m : Nat) -> Eq (n + m) (m + n)
 plusComm Z m = sym (plusZero m)
 plusComm (S n) m = trans (cong S (plusComm n m)) (sym (plusSucc m n))
 
 @pub
-plusAssoc : (n : Nat) -> (m : [0] Nat) -> (k : [0] Nat) -> Eq (plus (plus n m) k) (plus n (plus m k))
+plusAssoc : (n : Nat) -> (m : [0] Nat) -> (k : [0] Nat) -> Eq ((n + m) + k) (n + (m + k))
 plusAssoc Z m k = Refl
 plusAssoc (S n) m k = cong S (plusAssoc n m k)
 

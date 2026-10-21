@@ -570,7 +570,7 @@ from what `idyll.lock` pinned.
   unify instead of silently breaking its invariants.
 - [ ] **Integer types, floating point, `Show`/`Eq`/`Ord`, and string
   interpolation**, which all wait on traits.
-- [ ] **Arithmetic is a trait, so it works on `Nat` in types** (Chris,
+- [x] **Arithmetic is a trait, so it works on `Nat` in types** (Chris,
   2026-10-16). `+`, `*` and the rest become a trait's methods: `Int`'s
   instance is the primitives, and `Nat`'s is `plus` and `times`. This is
   Idris's `Num`. Then a length is written as it is said:
@@ -598,6 +598,23 @@ from what `idyll.lock` pinned.
 
   *Done when:* the `append` above checks, Std's `Nat` proofs are stated
   with `+`, and `Int` arithmetic costs what it does today.
+
+  Done 2026-10-21, in both compilers. The prelude declares `Add`, `Sub`,
+  `Mul`, `Divide` (not Meadow's `Div`, which is the divergence effect
+  here) and `Rem`, with `Int`'s instances the primitives; Std gives `Nat`
+  `Add`, `plus`. Each method takes its operands once, as the primitive it
+  stands for, so grades still count `x + x` as two uses of `x`, and Int's
+  instances fit exactly. That is why `Nat` has no `Mul`: `times` uses its
+  second argument more than once, and an instance of an operand-linear
+  method must use each once. Once a definition is checked, a method of a
+  known instance is the instance's field (`specialize`), so the Cut of
+  every program is what it was, and a search waiting for its type is
+  tried again once an application's arguments are elaborated, as Lean
+  synthesizes instances, so `2 + 2` and `Z + m` compute in types. Std
+  checks in 311 ms, from 290. Grade arithmetic reads the methods as it
+  read the primitives. Left: literals read through the trait (`n + 1` at
+  `Nat`); comparisons, which are still the primitives, as Meadow has them
+  until `Cmp`.
 
 Meadow's `RUNTIME.md` section *Traits are dictionaries, and then they are
 not* is worth reading when the optimiser gets to removing dictionary passing.

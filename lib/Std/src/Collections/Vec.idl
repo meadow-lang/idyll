@@ -3,7 +3,7 @@
 -- given a `Fin n`, cannot be out of range. A literal knows its length:
 -- `(#[1, 2, 3] : Vec (S (S (S Z))) Int)`.
 
-use Std.Num.Nat (Nat, plus)
+use Std.Num.Nat (Nat)
 use Std.Num.Nat.Nat.*
 use Std.Num.Fin (Fin)
 use Std.Num.Fin.Fin.*
@@ -64,7 +64,7 @@ foldl f z (Cons x xs) = foldl f (f z x) xs
 
 -- Two vectors, one after the other: as long as both.
 @pub
-append : {n m : Nat} -> {a : Type} -> Vec n a -> Vec m a -> Vec (plus n m) a
+append : {n m : Nat} -> {a : Type} -> Vec n a -> Vec m a -> Vec (n + m) a
 append Nil ys = ys
 append (Cons x xs) ys = Cons x (append xs ys)
 
@@ -105,7 +105,7 @@ unzip (Cons (x, y) rest) = case unzip rest of
 -- The first `n` elements and the rest, of a vector the type says is long
 -- enough to have them.
 @pub
-splitAt : {m : Nat} -> {a : Type} -> (n : Nat) -> Vec (plus n m) a -> (Vec n a, Vec m a)
+splitAt : {m : Nat} -> {a : Type} -> (n : Nat) -> Vec (n + m) a -> (Vec n a, Vec m a)
 splitAt Z v = (Nil, v)
 splitAt (S k) (Cons x xs) = case splitAt k xs of
   (front, back) -> (Cons x front, back)
