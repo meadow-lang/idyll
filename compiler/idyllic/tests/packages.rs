@@ -102,6 +102,46 @@ fn a_chain_of_packages_links_in_order() {
     assert_eq!(out.evaluation, Some(Evaluation::Opaque));
 }
 
+/// A package with a trait, an instance of it, and a type of its own.
+const SHOWS: &str = "@pub\ntrait Describe (a : Type) where\n  describe : a -> String\n\n\
+                     @pub\ninstance Describe Int where\n  describe n = showInt n\n\n\
+                     @pub\ndata Shape = Square | Circle\n";
+
+#[test]
+fn another_packages_instances_are_found() {
+    let shows = library("Shows", SHOWS, &[], &[], 1);
+    let out = program("use Shows (Describe, describe)\n\ndescribe 42\n", &[&shows], &[("Shows", &shows)]);
+    assert!(out.diagnostics.is_empty(), "{:#?}", diags(&out));
+    assert_eq!(out.evaluation, Some(Evaluation::Value("\"42\"".into())));
+}
+
+#[test]
+fn an_instance_lives_with_its_trait_or_its_type() {
+    let shows = library("Shows", SHOWS, &[], &[], 1);
+    // the trait is another package's, and so is the type: an orphan
+    let orphan = program(
+        "use Shows (Describe, describe, Shape)\nuse Shows.Shape.*\n\ninstance Describe Shape where\n  describe s = \"a shape\"\n\n1\n",
+        &[&shows],
+        &[("Shows", &shows)],
+    );
+    assert!(diags(&orphan).iter().any(|d| d.starts_with("an instance Describe Shape cannot be here")), "{:#?}", diags(&orphan));
+    // the type is this package's: it lives with it
+    let own = program(
+        "use Shows (Describe, describe)\n\ndata Color = Red\n\nuse Color.*\n\ninstance Describe Color where\n  describe c = \"red\"\n\ndescribe Red\n",
+        &[&shows],
+        &[("Shows", &shows)],
+    );
+    assert!(own.diagnostics.is_empty(), "{:#?}", diags(&own));
+    assert_eq!(own.evaluation, Some(Evaluation::Value("\"red\"".into())));
+    // and a named one may live anywhere, given by hand
+    let named = program(
+        "use Shows (Describe, describe, Shape)\nuse Shows.Shape.*\n\ninstance mine : Describe Shape where\n  describe s = \"mine\"\n\ndescribe @{mine} Square\n",
+        &[&shows],
+        &[("Shows", &shows)],
+    );
+    assert!(named.diagnostics.is_empty(), "{:#?}", diags(&named));
+}
+
 #[test]
 fn a_packages_types_are_its_own() {
     // two packages each declaring a `Shape` have two types

@@ -53,6 +53,23 @@ pub enum Term {
     /// An implicit argument given by hand, `f {Int}`: the next implicit
     /// binder of `f`'s type is given this, rather than worked out.
     ImplicitApp(Box<LTerm>, Box<LTerm>),
+    /// An auto argument given by hand, `f @{loud}`: the next auto binder of
+    /// `f`'s type is given this, rather than searched for (its implicit
+    /// arguments before it are still worked out).
+    AutoApp(Box<LTerm>, Box<LTerm>),
+    /// What a name already resolved to, by its unique: never written, only
+    /// made by the renamer (a trait's default, where an instance leaves a
+    /// method out), with the name it is shown by.
+    Resolved(usize, String),
+    /// A record built with its type's arguments given, as an instance's
+    /// body is: `Describe {List a} { describe = .. }`, so that its fields
+    /// are checked against types that are known; with the instance it is,
+    /// which a trait's default for a method left out is given. Made by the
+    /// parser, never written.
+    RecordOf(Ident, Vec<LTerm>, Vec<(Ident, LTerm)>, Ident),
+    /// What a search for an auto argument of the type wanted finds: an
+    /// instance's superclass field. Made by the renamer, never written.
+    Search,
     /// Type annotation, `e : a`.
     Ann(Box<LTerm>, Box<LTerm>),
     /// An explicit hole, `_`: elaborates to a fresh metavariable.
@@ -323,6 +340,12 @@ pub struct Data {
     /// a record's fields, in order: what its one constructor's fields are
     /// called (`record Point = { x : Int, y : Int }`)
     pub fields: Option<Vec<Ident>>,
+    /// a trait's methods with a default, the definition that is it
+    /// (`Describe.#twice`), and whether the method is a function: what an
+    /// instance that leaves one out gets
+    pub defaults: Vec<(Ident, String, bool)>,
+    /// whether it is a trait's record, which instances are of
+    pub is_trait: bool,
 }
 
 /// The empty sequence and adding an element to the front of one.

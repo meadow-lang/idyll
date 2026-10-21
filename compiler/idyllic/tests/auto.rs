@@ -104,6 +104,19 @@ fn a_constraint_is_printed_as_written() {
 }
 
 #[test]
+fn a_proof_is_found_as_any_auto_argument_is() {
+    // search works for any type: `LTE n m`, by its hints, erased
+    let lte = "data Nat = Z | S Nat\n\nuse Nat.*\n\n\
+               data LTE : Nat -> Nat -> Type where\n  LTEZero : LTE Z n\n  LTESucc : LTE n m -> LTE (S n) (S m)\n\nuse LTE.*\n\n\
+               @hint\nlteZero : {n : Nat} -> LTE Z n\nlteZero = LTEZero\n\n\
+               @hint\nlteSucc : {n m : Nat} -> {auto p : LTE n m} -> LTE (S n) (S m)\nlteSucc = LTESucc p\n\n\
+               smaller : (n : Nat) -> (m : Nat) -> {auto p : [0] LTE n m} -> Int\nsmaller n m = 1\n\n";
+    // the proof comes after the arguments it is about, and is found then
+    assert_eq!(value(&format!("{lte}smaller (S Z) (S (S Z))\n")), "1");
+    assert_eq!(rejected(&format!("{lte}smaller (S Z) Z\n")), ["nothing in scope gives a LTE (S Z) Z"]);
+}
+
+#[test]
 fn hint_goes_on_a_signature() {
     let said = rejected("@hint\ndata T = T\n\n1\n");
     assert!(!said.is_empty());

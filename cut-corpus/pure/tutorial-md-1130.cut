@@ -83,9 +83,16 @@ def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) =
               idyll:Prelude/digitString(v_71; k_63)))))
   }>
 
-def idyll:Main/"#entry" (; k_75: ptr) =
-  prim add(2, 2; μ̃ v_79: i64.
-    prim eq(v_79, 4; μ̃ answer_76: bool.
-      prim if(answer_76; μ̃ u_77: unit.
-        <"False" | k_75>, μ̃ u_78: unit.
-        <"True" | k_75>)))
+def idyll:Main/fib (n_75: i64; k_76: ptr) =
+  prim lt(n_75, 2; μ̃ v__77: bool.
+    prim if(v__77; μ̃ u_83: unit.
+      prim sub(n_75, 1; μ̃ v_82: i64.
+        idyll:Main/fib(v_82; μ̃ v_78: i64.
+          prim sub(n_75, 2; μ̃ v_81: i64.
+            idyll:Main/fib(v_81; μ̃ v_79: i64.
+              prim add(v_78, v_79; k_76))))), μ̃ u_84: unit.
+      <n_75 | k_76>))
+
+def idyll:Main/"#entry" (; k_85: ptr) =
+  idyll:Main/fib(20; μ̃ answer_86: i64.
+    idyll:Prelude/showInt(answer_86; k_85))

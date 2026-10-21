@@ -30,8 +30,11 @@ pub fn scc_module(m: Module) -> Module {
     // (and the hints before what may want them, which is everything that
     // they do not need themselves: a search for an auto argument finds only
     // what has been checked)
+    // (so are a trait's superclass projections, which a search inside a
+    // definition may go through without its naming them)
     let hints = m.hints.clone();
-    let groups = m.groups.into_iter().flat_map(|g| scc_groups_with(vec![g], &hints)).collect();
+    let early: HashSet<usize> = hints.iter().copied().chain(m.supers.values().flatten().copied()).collect();
+    let groups = m.groups.into_iter().flat_map(|g| scc_groups_with(vec![g], &hints, &early)).collect();
     let datas = order_datas(m.datas);
     Module { groups, datas, body: m.body.map(scc_term), ..m }
 }
@@ -79,16 +82,16 @@ fn order_datas(datas: Vec<DataDecl>) -> Vec<DataDecl> {
 /// renamer's conservative recursive group in place, and a plain nested
 /// `let x = 1` is then wrongly told it needs a signature.)
 fn scc_groups(groups: Vec<BindGroup>) -> Vec<BindGroup> {
-    scc_groups_with(groups, &HashSet::new())
+    scc_groups_with(groups, &HashSet::new(), &HashSet::new())
 }
 
-fn scc_groups_with(groups: Vec<BindGroup>, hints: &HashSet<usize>) -> Vec<BindGroup> {
+fn scc_groups_with(groups: Vec<BindGroup>, hints: &HashSet<usize>, early: &HashSet<usize>) -> Vec<BindGroup> {
     let binds = groups
         .into_iter()
         .flat_map(BindGroup::into_binds)
         .map(|b| Bind { ty: b.ty.map(scc_term), rhs: scc_term(b.rhs), ..b })
         .collect();
-    scc_binds_with(binds, hints)
+    scc_binds_with(binds, hints, early)
 }
 
 /// Rewrite every `let` in a term so its groups are dependency-ordered SCCs,
@@ -99,6 +102,8 @@ pub fn scc_term(t: Term) -> Term {
         k @ (Type | Hole | Omitted | Inf | Lit(_) | Var(_) | SeqNil) => k,
         App(f, a) => App(Box::new(scc_term(*f)), Box::new(scc_term(*a))),
         ImplicitApp(f, a) => ImplicitApp(Box::new(scc_term(*f)), Box::new(scc_term(*a))),
+        AutoApp(f, a) => AutoApp(Box::new(scc_term(*f)), Box::new(scc_term(*a))),
+        Search => Search,
         SeqCons(h, t) => SeqCons(Box::new(scc_term(*h)), Box::new(scc_term(*t))),
         ArrayLit(items) => ArrayLit(items.into_iter().map(scc_term).collect()),
         Ann(e, a) => Ann(Box::new(scc_term(*e)), Box::new(scc_term(*a))),
@@ -161,12 +166,12 @@ fn scc_grades(g: GradeAnn) -> GradeAnn {
 /// uses, components come out dependencies-first — the order type checking
 /// wants.  Members of a component keep their source order.
 pub fn scc_binds(binds: Vec<Bind>) -> Vec<BindGroup> {
-    scc_binds_with(binds, &HashSet::new())
+    scc_binds_with(binds, &HashSet::new(), &HashSet::new())
 }
 
 /// The same, with each of `hints` before every binding it does not itself
 /// lead to.
-fn scc_binds_with(binds: Vec<Bind>, hints: &HashSet<usize>) -> Vec<BindGroup> {
+fn scc_binds_with(binds: Vec<Bind>, hints: &HashSet<usize>, early: &HashSet<usize>) -> Vec<BindGroup> {
     let index_of: HashMap<usize, usize> = binds
         .iter()
         .enumerate()
@@ -183,19 +188,17 @@ fn scc_binds_with(binds: Vec<Bind>, hints: &HashSet<usize>) -> Vec<BindGroup> {
             deps
         })
         .collect();
-    let edges = before_hints(&binds, edges, hints);
-
     let mut tarjan = Tarjan::new(binds.len());
     for v in 0..binds.len() {
         if tarjan.index[v].is_none() {
             tarjan.visit(v, &edges);
         }
     }
+    let components = early_first(&binds, &edges, tarjan.components, early);
 
     // move the binds out by index, in the order the components were found
     let mut slots: Vec<Option<Bind>> = binds.into_iter().map(Some).collect();
-    tarjan
-        .components
+    components
         .into_iter()
         .map(|mut members| {
             members.sort_unstable();
@@ -211,7 +214,11 @@ fn scc_binds_with(binds: Vec<Bind>, hints: &HashSet<usize>) -> Vec<BindGroup> {
             // (One with no signature stays as it is: a recursive definition's
             // type is not inferred.)
             let by_matching = bs.len() == 1 && bs[0].ty.is_some() && matches!(bs[0].rhs.kind, TermKind::Match(_));
-            if bs.len() == 1 && !self_edge && !by_matching {
+            // A hint, with its signature, is a recursive one too: an
+            // instance's methods find the instance itself, as what a
+            // recursive call at its type wants.
+            let hint = bs.len() == 1 && bs[0].ty.is_some() && bs[0].name.unique.is_some_and(|u| hints.contains(&u));
+            if bs.len() == 1 && !self_edge && !by_matching && !hint {
                 BindGroup::NonRec(bs.pop().unwrap())
             } else {
                 BindGroup::Rec(bs)
@@ -220,38 +227,44 @@ fn scc_binds_with(binds: Vec<Bind>, hints: &HashSet<usize>) -> Vec<BindGroup> {
         .collect()
 }
 
-/// `edges`, and an edge from each binding to each hint among `binds` that
-/// does not lead back to it: that the hint is checked first.
-fn before_hints(binds: &[Bind], mut edges: Vec<Vec<usize>>, hints: &HashSet<usize>) -> Vec<Vec<usize>> {
-    let hinted: Vec<usize> = (0..binds.len()).filter(|&i| binds[i].name.unique.is_some_and(|u| hints.contains(&u))).collect();
-    if hinted.is_empty() {
-        return edges;
+/// The components, dependencies first as Tarjan's algorithm finds them, with
+/// each holding one of `early` (a hint, a superclass projection) and what
+/// it needs moved as far forward as they can go, in the order those come:
+/// a search finds only what has been checked, and need not be named.
+fn early_first(binds: &[Bind], edges: &[Vec<usize>], components: Vec<Vec<usize>>, early: &HashSet<usize>) -> Vec<Vec<usize>> {
+    let is_early = |i: usize| binds[i].name.unique.is_some_and(|u| early.contains(&u));
+    if !(0..binds.len()).any(is_early) {
+        return components;
     }
-    // what each hint leads to, by the edges as they were
-    let reach = |from: usize| {
-        let mut seen = vec![false; binds.len()];
-        let mut todo = vec![from];
-        while let Some(v) = todo.pop() {
-            if !std::mem::replace(&mut seen[v], true) {
-                todo.extend(edges[v].iter().copied());
-            }
-        }
-        seen
-    };
-    let reached: Vec<(usize, Vec<bool>)> = hinted.iter().map(|&h| (h, reach(h))).collect();
-    for (h, leads) in reached {
-        for (b, out) in edges.iter_mut().enumerate() {
-            // (hints among themselves only by what they use: one hint wanting
-            // another, where neither uses the other, would tie them together)
-            if b != h && !leads[b] && !out.contains(&h) && !hinted.contains(&b) {
-                out.push(h);
-            }
+    let mut component_of = vec![0; binds.len()];
+    for (c, members) in components.iter().enumerate() {
+        for &v in members {
+            component_of[v] = c;
         }
     }
-    for out in &mut edges {
-        out.sort_unstable();
+    fn emit(c: usize, components: &[Vec<usize>], edges: &[Vec<usize>], component_of: &[usize], done: &mut [bool], order: &mut Vec<usize>) {
+        if std::mem::replace(&mut done[c], true) {
+            return;
+        }
+        for &v in &components[c] {
+            for &w in &edges[v] {
+                emit(component_of[w], components, edges, component_of, done, order);
+            }
+        }
+        order.push(c);
     }
-    edges
+    let mut done = vec![false; components.len()];
+    let mut order = Vec::new();
+    let mut firsts: Vec<usize> = (0..binds.len()).filter(|&i| is_early(i)).collect();
+    firsts.sort_unstable();
+    for v in firsts {
+        emit(component_of[v], &components, edges, &component_of, &mut done, &mut order);
+    }
+    for c in 0..components.len() {
+        emit(c, &components, edges, &component_of, &mut done, &mut order);
+    }
+    let mut slots: Vec<Option<Vec<usize>>> = components.into_iter().map(Some).collect();
+    order.into_iter().filter_map(|c| slots[c].take()).collect()
 }
 
 struct Tarjan {
@@ -324,13 +337,13 @@ pub fn free_uniques(t: &Term) -> HashSet<usize> {
     fn go(t: &Term, out: &mut HashSet<usize>) {
         use TermKind::*;
         match &t.kind {
-            Type | Hole | Omitted | Inf | Lit(_) | SeqNil => {}
+            Type | Hole | Omitted | Inf | Lit(_) | SeqNil | Search => {}
             Var(i) => {
                 if let Some(u) = i.unique {
                     out.insert(u);
                 }
             }
-            App(f, a) | ImplicitApp(f, a) | Ann(f, a) | Range(f, a) | Eff(f, a) | SeqCons(f, a) => {
+            App(f, a) | ImplicitApp(f, a) | AutoApp(f, a) | Ann(f, a) | Range(f, a) | Eff(f, a) | SeqCons(f, a) => {
                 go(f, out);
                 go(a, out);
             }

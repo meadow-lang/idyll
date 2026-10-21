@@ -523,25 +523,49 @@ from what `idyll.lock` pinned.
   becomes known. Hints are checked before everything that does not lead to
   them (scc), and a package's hints are in its interface. front/ reads,
   renames and dumps all of it; its checker says it cannot search yet.
-- [ ] **Traits as sugar**: a trait is a record, a constraint is an
+- [x] **Traits as sugar**: a trait is a record, a constraint is an
   auto-implicit binder, an instance is a hint. Superclasses are fields;
-  methods can have defaults.
-- [~] **Grades on auto binders**: default `[]`, since a dictionary is used at
+  methods can have defaults. Done 2026-10-20 in the Rust compiler, the
+  parser desugaring all of it (`compiler/idyllic/tests/traits.rs`): `trait
+  C a => T (a : Type) where` and a block of signatures and default
+  equations is a record of the superclasses (`#super0`) and methods, a
+  function per method reading it off the record found for it (`describe :
+  {a : Type} -> {auto self : Describe a} -> a -> String`), and a definition
+  per default, `Describe.#twice`, of the method's type. `instance C a => T
+  (List a) where` and equations is a `@hint`, `@terminating` recursive
+  definition (it finds itself, for recursion at its own type) whose body
+  is the record with the trait's arguments given, so that its fields are
+  checked against known types: each method's equations one lambda over a
+  `case`, a method left out the default applied to the instance itself
+  (under a lambda when the method is a function, as Meadow has it, so the
+  instance is not needed to make itself), a superclass found by search.
+  A search goes through an auto binder's superclasses too, and hints and
+  superclass projections are checked before what does not lead to them.
+  front/ does not read traits yet (see *The compiler in Meadow*).
+- [x] **Grades on auto binders**: default `[]`, since a dictionary is used at
   run time (plain braced implicits default to `0`). `{auto p : [0] LTE n m}`
   is an erased proof, and so must be total.
-- [ ] **Instances.** Unnamed instances are the canonical set: used by search,
+  Done 2026-10-20: an auto binder's grade is `[]` unless it says
+  otherwise, and a proof found by search, `{auto p : [0] LTE n m}`, is
+  erased; one after the last argument given is found then
+  (`compiler/idyllic/tests/auto.rs`).
+- [x] **Instances.** Unnamed instances are the canonical set: used by search,
   at most one per trait and head (checked by whether heads unify), and
   subject to an orphan rule, as in Rust: an instance lives with its trait or
   with its head type. Without the orphan rule, two libraries could each
   define an unnamed `Show Int`. Named instances are not searched, have no
   coherence requirement, may live anywhere, and are used only as
   `f @{name}`: they are the escape hatch for exactly the orphan case.
-- [~] **Giving implicit arguments by hand**: `f {Int}` for an ordinary
-  implicit and `f @{name}` for an auto one. `f {Int}` is done
-  (2026-10-20), in front/ too: the argument in braces is the one the
-  next implicit binder of `f`'s type takes, and what is not given is
-  worked out (`compiler/idyllic/tests/decls.rs`). `f @{name}` comes
-  with auto binders.
+  Done 2026-10-20: two instances of a trait whose heads unify (their
+  implicit and auto binders metas) are an error; an instance whose trait
+  and whose type (its first argument's head) are both another package's is
+  an orphan; `instance name : ..` is not a hint, and `f @{name}` gives the
+  next auto argument by hand, the implicit ones before it worked out.
+- [x] **Giving implicit arguments by hand**: `f {Int}` for an ordinary
+  implicit and `f @{name}` for an auto one. Both done (2026-10-20), `f
+  {Int}` in front/ too: the argument in braces is the one the next
+  implicit binder of `f`'s type takes, and what is not given is worked
+  out (`compiler/idyllic/tests/decls.rs`, `traits.rs`).
 - [ ] **Instance-sensitive collections take the instance in their type**, so
   a `Map` built with the default `Ord` and used with a named one fails to
   unify instead of silently breaking its invariants.
@@ -995,6 +1019,8 @@ do yet `(unsupported)`, and the tests count those apart.
   Std (types 431 programs in all).
 - [ ] Std's users through the CEK machine and Cut too (the Rust side needs
   its linking there).
+- [ ] Traits and instances (`trait`, `instance`, `@{..}`), read and
+  desugared as the Rust parser does, so that the corpus can have them.
 - [ ] Choosing an overloaded name by type, as the Rust checker does it
   (`overloads.rs`): its renamer keeps the candidates already, and its
   checker says it cannot choose yet, which keeps such programs out of the

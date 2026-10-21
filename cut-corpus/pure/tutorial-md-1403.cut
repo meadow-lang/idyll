@@ -2,14 +2,9 @@ cut 0
 entry idyll:Main/"#entry"
 answer str
 
-data idyll:Prelude/List <'a0> { Nil; "::"('a0, ptr) }
+data idyll:Prelude/Pair <'a0, 'a1> { Pair('a0, 'a1) }
 
 data idyll:Prelude/DigitFuel { Spent; More(ptr) }
-
-roles {
-  nil = idyll:Prelude/List.Nil
-  cons = idyll:Prelude/List."::"
-}
 
 val idyll:Prelude/digitFuel : ptr =
   <idyll:Prelude/DigitFuel.Spent | μ̃ v_20: ptr.
@@ -90,19 +85,29 @@ def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) =
               idyll:Prelude/digitString(v_71; k_63)))))
   }>
 
-def idyll:Main/"#show List Int" (x_77: ptr; k_78: ptr) =
-  <x_77 | case {
-    idyll:Prelude/List.Nil =>
-      <"Nil" | k_78>;
-    idyll:Prelude/List."::"(f_79: i64, f_80: ptr) =>
-      idyll:Prelude/showInt(f_79; μ̃ s_81: str.
-        idyll:Main/"#show List Int"(f_80; μ̃ s_82: str.
-          prim concatStrings([s_81, " :: ", s_82]; k_78)))
+def idyll:Main/swap (x_75: ptr; k_76: ptr) =
+  <x_75 | case {
+    idyll:Prelude/Pair.Pair(n_77: i64, b_78: bool) =>
+      <idyll:Prelude/Pair.Pair(b_78, n_77) | k_76>
   }>
 
-def idyll:Main/"#entry" (; k_75: ptr) =
-  <idyll:Prelude/List.Nil | μ̃ v_85: ptr.
-    <idyll:Prelude/List."::"(3, v_85) | μ̃ v_84: ptr.
-      <idyll:Prelude/List."::"(2, v_84) | μ̃ v_83: ptr.
-        <idyll:Prelude/List."::"(1, v_83) | μ̃ answer_76: ptr.
-          idyll:Main/"#show List Int"(answer_76; k_75)>>>>
+def idyll:Main/"#items (Bool, Int)" (x_81: ptr; k_82: ptr) =
+  <x_81 | case {
+    idyll:Prelude/Pair.Pair(f_83: bool, f_84: i64) =>
+      prim if(f_83; μ̃ u_87: unit.
+        <"False" | μ̃ s_85: str.
+          idyll:Prelude/showInt(f_84; μ̃ s_86: str.
+            prim concatStrings([s_85, ", ", s_86]; k_82))>, μ̃ u_88: unit.
+        <"True" | μ̃ s_85: str.
+          idyll:Prelude/showInt(f_84; μ̃ s_86: str.
+            prim concatStrings([s_85, ", ", s_86]; k_82))>)
+  }>
+
+def idyll:Main/"#show (Bool, Int)" (x_89: ptr; k_90: ptr) =
+  idyll:Main/"#items (Bool, Int)"(x_89; μ̃ s_91: str.
+    prim concatStrings(["(", s_91, ")"]; k_90))
+
+def idyll:Main/"#entry" (; k_79: ptr) =
+  <idyll:Prelude/Pair.Pair(1, true) | μ̃ v_93: ptr.
+    idyll:Main/swap(v_93; μ̃ answer_80: ptr.
+      idyll:Main/"#show (Bool, Int)"(answer_80; k_79))>

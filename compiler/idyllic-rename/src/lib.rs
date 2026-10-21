@@ -189,6 +189,12 @@ struct Renamer {
     terminating: std::collections::HashSet<usize>,
     /// the definitions marked `@hint`
     hints: std::collections::HashSet<usize>,
+    /// each trait's methods with a default, the default, and whether the
+    /// method is a function, by the trait's record type: what an instance
+    /// leaving one out gets
+    defaults: HashMap<usize, Vec<(String, usize, bool)>>,
+    /// each trait's superclass projections, by its record type
+    supers: HashMap<usize, Vec<usize>>,
     /// whether the package's modules are all linear (`--linear`)
     linear_package: bool,
     /// whether the module being renamed is: its unannotated binders get
@@ -318,6 +324,8 @@ pub fn rename_package(
         }
         r.effect_ops.extend(names.effect_ops.iter().cloned());
         r.fields.extend(names.fields.iter().cloned());
+        r.defaults.extend(names.defaults.iter().cloned());
+        r.supers.extend(names.supers.iter().cloned());
     }
     r.next_unique = r.next_unique.max(first_unique);
     let first = r.next_unique;
@@ -398,6 +406,16 @@ pub fn rename_package(
             .filter(|d: &&hir::DataDecl| own(&d.name.unique))
             .filter_map(|d| Some((d.name.unique?, r.fields.get(&d.name.unique?)?.clone())))
             .collect(),
+        defaults: datas
+            .iter()
+            .filter(|d: &&hir::DataDecl| own(&d.name.unique))
+            .filter_map(|d| Some((d.name.unique?, r.defaults.get(&d.name.unique?)?.clone())))
+            .collect(),
+        supers: datas
+            .iter()
+            .filter(|d: &&hir::DataDecl| own(&d.name.unique))
+            .filter_map(|d| Some((d.name.unique?, r.supers.get(&d.name.unique?)?.clone())))
+            .collect(),
     };
     let module = hir::Module {
         datas,
@@ -413,6 +431,7 @@ pub fn rename_package(
         uniques: (first, r.next_unique),
         terminating: r.terminating,
         hints: r.hints,
+        supers: r.supers,
         overloads: r.overloads,
         version: None,
         linear_body: linear || modules.first().is_some_and(|m| m.program.linear),
@@ -481,6 +500,8 @@ impl Renamer {
             fields: HashMap::new(),
             terminating: Default::default(),
             hints: Default::default(),
+            defaults: HashMap::new(),
+            supers: HashMap::new(),
             linear_package: false,
             linear: false,
             in_type: false,
@@ -551,6 +572,25 @@ impl Renamer {
                 })
                 .collect();
             self.fields.insert(u, found);
+            // a trait's superclasses, the fields named `#super0` and on
+            if d.node.is_trait {
+                let supers: Vec<usize> =
+                    self.fields.get(&u).map(|fs| fs.iter().filter(|(f, _)| f.starts_with("#super")).map(|(_, p)| *p).collect()).unwrap_or_default();
+                if !supers.is_empty() {
+                    self.supers.insert(u, supers);
+                }
+            }
+            // a trait's defaults, bound (`Describe.#twice`) with the rest
+            if !d.node.defaults.is_empty() {
+                let scope = self.scopes.last().expect("scope stack is never empty");
+                let found = d
+                    .node
+                    .defaults
+                    .iter()
+                    .filter_map(|(m, def, function)| scope.get(def).map(|&(p, _)| (m.node.clone(), p, *function)))
+                    .collect();
+                self.defaults.insert(u, found);
+            }
         }
         for (_, name, _) in &defs {
             if let (Some(u), true) = (name.unique, prog.terminating.iter().any(|x| x.node == name.text)) {
@@ -1120,9 +1160,64 @@ impl Renamer {
 
     /// `Point { x = 1, y = 2 }`: the constructor, given every field, in the
     /// order they are declared (and so computed in that order).
+    /// The same, with the type's arguments given first, by hand.
+    fn record_of(&mut self, name: &ast::Ident, args: &[LTerm], values: &[(ast::Ident, LTerm)], instance: &ast::Ident, span: Span) -> Option<LTerm> {
+        let built = self.record_built(name, values, Some(instance), span)?;
+        // `C f g`: the arguments go between `C` and the fields
+        fn under(t: LTerm, args: &[LTerm], span: Span) -> LTerm {
+            match t.node {
+                ast::Term::App(f, a) => Spanned::new(ast::Term::App(Box::new(under(*f, args, span)), a), t.span),
+                ctor => args
+                    .iter()
+                    .fold(Spanned::new(ctor, t.span), |f, a| Spanned::new(ast::Term::ImplicitApp(Box::new(f), Box::new(a.clone())), span)),
+            }
+        }
+        Some(under(built, args, span))
+    }
+
     fn record_literal(&mut self, name: &ast::Ident, values: &[(ast::Ident, LTerm)], span: Span) -> Option<LTerm> {
+        self.record_built(name, values, None, span)
+    }
+
+    /// The same, as the body of `instance`, if it is one: a trait's default
+    /// for a method left out is given it, `Describe.#twice @{instance}`.
+    fn record_built(&mut self, name: &ast::Ident, values: &[(ast::Ident, LTerm)], instance: Option<&ast::Ident>, span: Span) -> Option<LTerm> {
         let fields = self.record_named(name, true)?;
         let ordered = self.in_field_order(&name.node, &fields, values, true);
+        // a trait's method left out is its default, if it has one
+        let defaults = self.as_type(|r| r.use_name(name)).unique.and_then(|u| self.defaults.get(&u)).cloned().unwrap_or_default();
+        let filled: Vec<Option<LTerm>> = fields
+            .iter()
+            .zip(&ordered)
+            .map(|(f, v)| match v {
+                Some(v) => Some((*v).clone()),
+                // a superclass is what a search for it finds
+                None if f.starts_with("#super") && instance.is_some() => Some(Spanned::new(ast::Term::Search, span)),
+                None => defaults.iter().find(|(m, ..)| m == f).map(|&(_, u, function)| {
+                    let default = Spanned::new(ast::Term::Resolved(u, format!("{}.#{f}", name.node)), span);
+                    // given the instance it fills, not one searched for
+                    let default = match instance {
+                        Some(me) => {
+                            let me = Spanned::new(ast::Term::Var(me.clone()), span);
+                            Spanned::new(ast::Term::AutoApp(Box::new(default), Box::new(me)), span)
+                        }
+                        None => default,
+                    };
+                    if !function {
+                        return default;
+                    }
+                    // `\x -> default x`: under a lambda, so that the instance
+                    // it is given (the one being built) is not needed to
+                    // make itself, as Meadow has it
+                    let x = Spanned::new("#d".to_string(), span);
+                    let var = Spanned::new(ast::Term::Var(x.clone()), span);
+                    let call = Spanned::new(ast::Term::App(Box::new(default), Box::new(var)), span);
+                    let param = Spanned::new(ast::Param { name: x, unbox: false, grade: None, ty: None }, span);
+                    Spanned::new(ast::Term::Lam(Box::new(param), Box::new(call)), span)
+                }),
+            })
+            .collect();
+        let ordered: Vec<Option<&LTerm>> = filled.iter().map(Option::as_ref).collect();
         let missing: Vec<&String> = fields.iter().zip(&ordered).filter(|(_, v)| v.is_none()).map(|(f, _)| f).collect();
         if !missing.is_empty() {
             let missing: Vec<&str> = missing.iter().map(|f| f.as_str()).collect();
@@ -1264,6 +1359,13 @@ impl Renamer {
                 let a = self.rename_term(a);
                 self.node(sp, H::App(Box::new(f), Box::new(a)))
             }
+            A::Resolved(u, text) => self.node(sp, H::Var(Ident { unique: Some(*u), text: text.clone() })),
+            A::Search => self.node(sp, H::Search),
+            A::AutoApp(f, a) => {
+                let f = self.rename_term(f);
+                let a = self.rename_term(a);
+                self.node(sp, H::AutoApp(Box::new(f), Box::new(a)))
+            }
             // what is given is most often a type, and read as one
             A::ImplicitApp(f, a) => {
                 let f = self.rename_term(f);
@@ -1356,6 +1458,10 @@ impl Renamer {
             A::RecordLit(name, values) => match self.record_literal(name, values, sp) {
                 Some(built) => self.rename_term(&built),
                 // (reported; nothing to say about it after)
+                None => self.node(sp, H::Var(Ident { unique: None, text: "_".into() })),
+            },
+            A::RecordOf(name, args, values, instance) => match self.record_of(name, args, values, instance, sp) {
+                Some(built) => self.rename_term(&built),
                 None => self.node(sp, H::Var(Ident { unique: None, text: "_".into() })),
             },
             A::Proj(e, field) => match self.projection(e, field, sp) {
@@ -1590,7 +1696,7 @@ impl Renamer {
                         Ident { unique: found, text: c.node.clone() }
                     };
                     let seq = d.node.seq.as_ref().map(|s| (own(r, &s.nil), own(r, &s.cons)));
-                    hir::DataDecl { id, name, params, kind, ctors, seq, linear: r.linear }
+                    hir::DataDecl { id, name, params, kind, ctors, seq, linear: r.linear, is_trait: d.node.is_trait }
                 })
             })
             .collect()
@@ -1874,7 +1980,7 @@ fn free_variables(t: &LTerm, bound: &mut Vec<String>, known: &dyn Fn(&str) -> bo
                 out.push(x.clone());
             }
         }
-        A::Type | A::Lit(_) | A::Hole | A::Inf => {}
+        A::Type | A::Lit(_) | A::Hole | A::Inf | A::Resolved(..) | A::Search => {}
         A::Pi(x, _, g, dom, cod) => {
             grades(g, bound, out);
             free_variables(dom, bound, known, out);
@@ -1887,7 +1993,7 @@ fn free_variables(t: &LTerm, bound: &mut Vec<String>, known: &dyn Fn(&str) -> bo
             }
             under(Some(&p.node.name.node), body, bound, out);
         }
-        A::App(f, a) | A::ImplicitApp(f, a) | A::Ann(f, a) | A::Range(f, a) | A::Eff(f, a) => {
+        A::App(f, a) | A::ImplicitApp(f, a) | A::AutoApp(f, a) | A::Ann(f, a) | A::Range(f, a) | A::Eff(f, a) => {
             free_variables(f, bound, known, out);
             free_variables(a, bound, known, out);
         }
@@ -1899,6 +2005,10 @@ fn free_variables(t: &LTerm, bound: &mut Vec<String>, known: &dyn Fn(&str) -> bo
         A::BoxIntro(e) => free_variables(e, bound, known, out),
         A::Seq(items) | A::ArrayLit(items) => items.iter().for_each(|e| free_variables(e, bound, known, out)),
         A::RecordLit(_, values) => values.iter().for_each(|(_, e)| free_variables(e, bound, known, out)),
+        A::RecordOf(_, args, values, _) => {
+            args.iter().for_each(|e| free_variables(e, bound, known, out));
+            values.iter().for_each(|(_, e)| free_variables(e, bound, known, out));
+        }
         A::Proj(e, _) => free_variables(e, bound, known, out),
         A::Update(e, values) => {
             free_variables(e, bound, known, out);

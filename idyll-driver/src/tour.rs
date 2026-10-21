@@ -430,6 +430,25 @@ use Maybe.*"),
         ],
     },
     Step {
+        title: "Traits",
+        section: Section::Dependent,
+        text: &[
+            "A trait is that record, written as what it means: methods, some",
+            "with defaults, and instances that give them for a type. Each",
+            "method is found by the type it is used at, and an instance may",
+            "want instances of its own, `Measure a => Measure (List a)`. Two of one",
+            "trait for types that unify are an error, so a search never has",
+            "two to choose from; a named one, `instance big : ..`, is only",
+            "ever given by hand, `measure @{big} 3`.",
+        ],
+        examples: &[
+            ok("trait Measure (a : Type) where\n  measure : (x : [] a) -> Int\n  big : (x : [] a) -> Bool\n  big x = 10 < measure x"),
+            ok("instance Measure Int where\n  measure n = n"),
+            ok("instance Measure a => Measure (List a) where\n  measure Nil = 0\n  measure (x :: xs) = measure x + measure xs"),
+            ok("(measure (3 :: 4 :: Nil), big 12)"),
+        ],
+    },
+    Step {
         title: "Holes",
         section: Section::Dependent,
         text: &[

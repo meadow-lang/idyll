@@ -87,6 +87,9 @@ pub struct CompiledPackage {
     /// its definitions offered to the search for an auto argument
     #[serde(default)]
     pub hints: Vec<usize>,
+    /// its traits' records
+    #[serde(default)]
+    pub traits: Vec<usize>,
 }
 
 impl Checker {
@@ -239,6 +242,7 @@ impl Checker {
                 hints.sort_unstable();
                 hints
             },
+            traits: m.datas.iter().filter(|d| d.is_trait).filter_map(|d| d.name.unique).filter(|u| own_set.contains(u)).collect(),
         }
     }
 }

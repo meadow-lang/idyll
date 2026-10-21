@@ -867,6 +867,72 @@ one, more than one hint that does, or a type that is never known well
 enough to look, is an error. An auto argument is used at run time, so its
 grade is `[]` unless it says otherwise.
 
+### Traits
+
+A *trait* is that record written as what it means: a set of methods, some
+with a default, and *instances* that give them for a type.
+
+```
+trait Describe (a : Type) where
+  describe : a -> String
+  twice : a -> String
+  twice x = describe x ++ describe x
+
+instance Describe Int where
+  describe n = showInt n
+
+instance Describe Bool where
+  describe True = "yes"
+  describe False = "no"
+  twice b = "twice " ++ describe b
+
+instance Describe a => Describe (List a) where
+  describe Nil = "."
+  describe (x :: xs) = describe x ++ "," ++ describe xs
+
+(twice 4, twice False, describe (1 :: 2 :: Nil))
+-- ("44", "twice no", "1,2,.")
+```
+
+It is sugar, as in Idris. `Describe` is a record of its methods, and each
+method a function of the record found for it: `describe : {a : Type} ->
+Describe a => a -> String`. An instance is a hint whose value is that
+record, its methods given by equations as any definition's are, the
+trait's defaults for those it leaves out. So `describe` is found by the
+type it is used at, and the instance for lists, which wants its elements',
+finds itself for the rest of the list.
+
+A trait may have *superclasses*, written as constraints before its name.
+They are fields of its record, found for each instance, and what wants the
+trait has them too:
+
+```
+trait Describe a => Loud (a : Type) where
+  shout : a -> String
+  shout x = describe x ++ "!"
+
+instance Loud Int where
+
+louder : {a : Type} -> Loud a => a -> String
+louder x = shout x ++ " (" ++ describe x ++ ")"
+```
+
+Instances are *coherent*: two of one trait whose types unify are an error,
+so a search never has two to choose from. And an instance lives with its
+trait or with its type, the package that declares one of them, so that two
+packages cannot each give the same one. A *named* instance, `instance
+loud : Describe Int where ..`, is the exception: it may live anywhere and
+overlap anything, because it is never searched for. It is only given by
+hand, with `@{..}`, which gives a function its next auto argument:
+
+```
+instance loud : Describe Int where
+  describe n = showInt n ++ "!"
+
+(describe 3, describe @{loud} 3, twice @{loud} 3)
+-- ("3", "3!", "3!3!")
+```
+
 The result type can depend on an argument in more interesting ways. Here
 `b` is a *function* from values to types, so the type of `f y` depends on
 the value `y`:

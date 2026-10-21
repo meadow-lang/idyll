@@ -319,6 +319,15 @@ pub enum TypeErrorKind {
     AmbiguousInstance { wanted: Rc<Core>, candidates: Vec<String> },
     /// what an auto argument is to be was never known well enough to look
     UnknownInstance(Rc<Core>),
+    /// an auto argument given by hand, `f @{d}`, to something whose type
+    /// has no auto binder next
+    NoAutoArgument(Rc<Core>),
+    /// an instance of a trait of another package, for a type of another
+    /// package: the trait, and the type
+    OrphanInstance { instance: Rc<Core>, trait_name: String },
+    /// two instances whose heads unify: which one a search should take
+    /// cannot be told
+    OverlappingInstances { instance: Rc<Core>, other: String },
     /// no meaning of an overloaded name fits where it is used: its
     /// spelling, the type wanted there if one was, and each meaning
     NoMeaning { name: String, wanted: Option<Rc<Core>>, candidates: Vec<String> },
@@ -536,6 +545,19 @@ impl TypeError {
                     .label(here, "an auto argument is wanted here")
                     .help(format!("the hints that do:\n  {}", candidates.join("\n  ")))
             }
+            TypeErrorKind::OrphanInstance { instance, trait_name } => {
+                Diagnostic::error(format!("an instance {instance} cannot be here"))
+                    .label(here, format!("neither {trait_name} nor the type it is for is this package's"))
+                    .help("an instance lives with its trait or with its type, so that no two packages give the same one; a named instance, `instance name : ..`, may live anywhere, and is given by hand, `f @{name}`")
+            }
+            TypeErrorKind::OverlappingInstances { instance, other } => {
+                Diagnostic::error(format!("this instance {instance} overlaps another"))
+                    .label(here, format!("{other} is for the same types"))
+                    .help("two instances of a trait may not be for types that unify: a search could not tell which to take; name one, `instance name : ..`, to give it by hand")
+            }
+            TypeErrorKind::NoAutoArgument(ty) => Diagnostic::error("no auto argument is taken here")
+                .label(here, format!("given by hand, but what it is given to has type {ty}"))
+                .help("`f @{d}` gives `f` the auto argument its type binds next, as `{auto d : ..} ->` or `.. =>`"),
             TypeErrorKind::UnknownInstance(wanted) => Diagnostic::error("cannot tell what to look for")
                 .label(here, format!("an auto argument of type {wanted} is wanted here, and what it is is never worked out"))
                 .help("say more of the type, with an annotation"),
@@ -1102,6 +1124,10 @@ pub struct Checker {
     hints: HashSet<usize>,
     hint_names: HashMap<usize, String>,
     deferred_autos: Vec<auto::DeferredAuto>,
+    /// the traits' records, this package's and those it depends on
+    traits: HashSet<usize>,
+    /// each trait's superclass projections, by its record type
+    supers: HashMap<usize, Vec<usize>>,
 }
 
 /// A parameter's grade being worked out: how many variables its meta is
@@ -1308,6 +1334,8 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         hints: m.hints.clone(),
         hint_names: HashMap::new(),
         deferred_autos: Vec::new(),
+        traits: m.datas.iter().filter(|d| d.is_trait).filter_map(|d| d.name.unique).collect(),
+        supers: m.supers.clone(),
     };
     for b in m.groups.iter().flat_map(hir::BindGroup::binds) {
         if let Some(u) = b.name.unique.filter(|u| m.hints.contains(u)) {
@@ -1320,6 +1348,7 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
     }
     for p in deps {
         tc.hints.extend(p.hints.iter().copied());
+        tc.traits.extend(p.traits.iter().copied());
         for (u, package, path) in &p.symbols {
             if p.hints.contains(u) {
                 tc.hint_names.insert(*u, format!("{path}, from `{package}`"));
@@ -1395,6 +1424,8 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
     let ran_main = m.body.is_none() && body.is_some();
     let program = body.as_ref().map(|(core, _)| Checker::wrap_lets(core.clone(), lets.clone()));
     let body_type = body.as_ref().map(|(_, ty)| ty.clone());
+    // instances of traits: where they live, and that no two overlap
+    tc.check_instances(&ctx, m);
     tc.report_holes();
     tc.retry_postponed(true);
     tc.close_opened();

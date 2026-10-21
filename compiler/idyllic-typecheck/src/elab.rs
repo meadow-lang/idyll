@@ -357,6 +357,32 @@ impl Checker {
 
     /// Apply a term to fresh metas for as long as its type asks for implicit
     /// arguments.
+    /// The same, but only the implicit arguments: up to an auto one, or
+    /// anything else.
+    pub(super) fn insert_implicit(&mut self, ctx: &Ctx, node: NodeId, mut core: Rc<Core>, mut ty: VTy) -> (Rc<Core>, VTy) {
+        loop {
+            ty = self.force(ty);
+            let Value::Pi { name, icit: Icit::Implicit, grade, dom, cod, .. } = &*ty else { return (core, ty) };
+            let desc = MetaOrigin::Inferred(format!("the implicit argument {name}"));
+            let arg = self.fresh_meta_with(ctx, node, desc, Some(dom.clone()));
+            let arg_v = self.eval(&ctx.env, &arg);
+            core = Rc::new(Core::App(core, self.argument(grade, arg)));
+            ty = self.split_comp(self.apply(cod, arg_v)).0;
+        }
+    }
+
+    /// The auto arguments a type begins with, found.
+    fn insert_autos(&mut self, ctx: &Ctx, node: NodeId, mut core: Rc<Core>, mut ty: VTy) -> (Rc<Core>, VTy) {
+        loop {
+            ty = self.force(ty);
+            let Value::Pi { icit: Icit::Auto, grade, dom, cod, .. } = &*ty else { return (core, ty) };
+            let arg = self.auto_argument(ctx, node, dom.clone());
+            let arg_v = self.eval(&ctx.env, &arg);
+            core = Rc::new(Core::App(core, self.argument(grade, arg)));
+            ty = self.split_comp(self.apply(cod, arg_v)).0;
+        }
+    }
+
     pub(super) fn insert(&mut self, ctx: &Ctx, node: NodeId, mut core: Rc<Core>, mut ty: VTy) -> (Rc<Core>, VTy) {
         loop {
             ty = self.force(ty);
@@ -1020,6 +1046,12 @@ impl Checker {
             }
             // a hole in inference position needs a meta for its type as well
             // as for its value
+            // (with nothing to say what to look for)
+            TermKind::Search => {
+                let ty_c = self.fresh_meta(ctx, nid, "what to look for");
+                let ty = self.eval(&ctx.env, &ty_c);
+                (self.auto_argument(ctx, nid, ty.clone()), ty, Usage::none())
+            }
             TermKind::Hole => {
                 let ty_c = self.fresh_meta(ctx, nid, "the type of this hole");
                 let ty = self.eval(&ctx.env, &ty_c);
@@ -1084,7 +1116,13 @@ impl Checker {
                         let (grade_c, _) = self.check_grade(ctx, grade);
                         (Rc::new(Core::BoxTy(grade_c, f_c)), universe(0), f_usage)
                     }
-                    _ => self.apply_to(ctx, f.id, (f_c, f_ty, f_usage), a),
+                    _ => {
+                        let (core, ty, usage) = self.apply_to(ctx, f.id, (f_c, f_ty, f_usage), a);
+                        // an auto argument after the last one given is
+                        // found now: what it is for is all there
+                        let (core, ty) = self.insert_autos(ctx, nid, core, ty);
+                        (core, ty, usage)
+                    }
                 }
             }
             // `f {a}`: `f`'s next implicit argument is `a`, rather than one
@@ -1097,6 +1135,21 @@ impl Checker {
                     _ => {
                         let ty = self.quote(ctx.lvl, f_ty);
                         self.error(a.id, TypeErrorKind::NoImplicitArgument(ty));
+                        err()
+                    }
+                }
+            }
+            // `f @{d}`: `f`'s next auto argument is `d`, rather than one
+            // searched for; the implicit ones before it are worked out
+            TermKind::AutoApp(f, a) => {
+                let (f_c, f_ty, f_usage) = self.infer(ctx, f);
+                let (f_c, f_ty) = self.insert_implicit(ctx, f.id, f_c, f_ty);
+                match &*self.force(f_ty.clone()) {
+                    Value::Pi { icit: Icit::Auto, .. } => self.apply_to(ctx, f.id, (f_c, f_ty, f_usage), a),
+                    Value::Error => err(),
+                    _ => {
+                        let ty = self.quote(ctx.lvl, f_ty);
+                        self.error(a.id, TypeErrorKind::NoAutoArgument(ty));
                         err()
                     }
                 }
@@ -1524,6 +1577,8 @@ impl Checker {
             // a hole is exactly what a metavariable is for: its type is
             // whatever was expected here, so nothing needs to be inferred
             (TermKind::Hole, _) => (self.elab_hole(ctx, nid, expected.clone()), Usage::none()),
+            // what a search for something of the type expected finds
+            (TermKind::Search, _) => (self.auto_argument(ctx, nid, expected.clone()), Usage::none()),
             (TermKind::LetBox(x, boxed, body), _) => match self.unbox(ctx, x, boxed) {
                 Some((ctx2, grade, unboxed, boxed_usage)) => {
                     let (body_c, mut usage) = self.check(&ctx2, body, expected.clone());

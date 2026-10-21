@@ -2,14 +2,9 @@ cut 0
 entry idyll:Main/"#entry"
 answer str
 
-data idyll:Prelude/List <'a0> { Nil; "::"('a0, ptr) }
+data idyll:Prelude/Pair <'a0, 'a1> { Pair('a0, 'a1) }
 
 data idyll:Prelude/DigitFuel { Spent; More(ptr) }
-
-roles {
-  nil = idyll:Prelude/List.Nil
-  cons = idyll:Prelude/List."::"
-}
 
 val idyll:Prelude/digitFuel : ptr =
   <idyll:Prelude/DigitFuel.Spent | μ̃ v_20: ptr.
@@ -90,19 +85,17 @@ def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) =
               idyll:Prelude/digitString(v_71; k_63)))))
   }>
 
-def idyll:Main/sum (xs_75: ptr; k_76: ptr) =
-  <xs_75 | case {
-    idyll:Prelude/List.Nil =>
-      <0 | k_76>;
-    idyll:Prelude/List."::"(y_77: i64, ys_78: ptr) =>
-      idyll:Main/sum(ys_78; μ̃ v_79: i64.
-        prim add(y_77, v_79; k_76))
+def idyll:Main/third <'a_76 = d_a_75, 'b_78 = d_b_77, 'c_80 = d_c_79> (d_a_75: desc, d_b_77: desc, d_c_79: desc, t_81: ptr; k_82: ptr) =
+  <t_81 | case {
+    idyll:Prelude/Pair.Pair(x_83: 'a_76, x_84: ptr) =>
+      <x_84 | case {
+        idyll:Prelude/Pair.Pair(y_85: 'b_78, z_86: 'c_80) =>
+          <z_86 | k_82>
+      }>
   }>
 
-def idyll:Main/"#entry" (; k_81: ptr) =
-  <idyll:Prelude/List.Nil | μ̃ v_86: ptr.
-    <idyll:Prelude/List."::"(3, v_86) | μ̃ v_85: ptr.
-      <idyll:Prelude/List."::"(2, v_85) | μ̃ v_84: ptr.
-        <idyll:Prelude/List."::"(1, v_84) | μ̃ v_83: ptr.
-          idyll:Main/sum(v_83; μ̃ answer_82: i64.
-            idyll:Prelude/showInt(answer_82; k_81))>>>>
+def idyll:Main/"#entry" (; k_87: ptr) =
+  <idyll:Prelude/Pair.Pair("two", 3) | μ̃ v_97: ptr.
+    <idyll:Prelude/Pair.Pair(1, v_97) | μ̃ v_96: ptr.
+      idyll:Main/third(desc(i64), desc(str), desc(i64), v_96; μ̃ answer_88: i64.
+        idyll:Prelude/showInt(answer_88; k_87))>>

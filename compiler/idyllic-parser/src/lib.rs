@@ -105,6 +105,9 @@ enum Item {
     Expr(LTerm),
     /// `module M where ..`, and what is in it
     Module(Ident, Vec<Attributed>),
+    /// `instance ..`: its definition, its name, and whether that was given
+    /// (a named instance is not a hint)
+    Instance(Vec<LDecl>, Ident, bool),
 }
 
 /// What can be written in front of a top-level item, each on a line of its
@@ -300,6 +303,16 @@ fn build(items: Vec<Attributed>, nested: bool) -> Result<Program, Vec<Diagnostic
                 program.decls.push(d);
             }
             Item::Use(u) => program.uses.push(u),
+            // an instance is a hint, unless it is named, and ends: what it
+            // refers to of itself is under its methods' lambdas
+            Item::Instance(decls, name, named) => {
+                if !named {
+                    program.hints.push(name.clone());
+                }
+                program.terminating.push(name.clone());
+                program.visibility.extend(vis.map(|v| (name.clone(), v)));
+                program.decls.extend(decls);
+            }
             Item::Module(name, inner) => {
                 if vis.is_some() || terminating || linear || hint {
                     return Err(vec![Diagnostic::error("parse error")
@@ -367,6 +380,8 @@ where
             module,
             data(term.clone()).map(Item::Data),
             record(term.clone()).map(|(d, ps)| Item::Record(d, ps)),
+            trait_decl(term.clone()).map(|(d, ps)| Item::Record(d, ps)),
+            instance(term.clone()),
             effect(term.clone()),
             use_item().map(Item::Use),
             decl(term.clone()).map(Item::Decl),
@@ -482,7 +497,7 @@ where
         .then(body)
         .map_with(|(((name, params), kind), ctors), e| {
             let visibility = Visibility::Private;
-            Spanned::new(Data { name, params, kind, ctors, seq: None, visibility, fields: None }, span_of(e.span()))
+            Spanned::new(Data { name, params, kind, ctors, seq: None, visibility, fields: None, defaults: Vec::new(), is_trait: false }, span_of(e.span()))
         })
         .labelled("data declaration")
         .boxed()
@@ -524,6 +539,267 @@ where
         .boxed()
 }
 
+/// `trait Describe (a : Type) where` and a block of its methods' signatures
+/// and the defaults some have: a record of the methods, as `record` makes
+/// one, then a function for each, `describe : {a : Type} -> {auto self :
+/// Describe a} -> a -> String`, reading it off the record found for it, and
+/// a definition for each default, `Describe.#twice`, of the same type, whose
+/// equations are the default's.
+fn trait_decl<'t, I>(term: impl Parser<'t, I, LTerm, Extra<'t>> + Clone + 't) -> Boxed<'t, 't, I, (LData, Vec<LDecl>), Extra<'t>>
+where
+    I: ValueInput<'t, Token = Token, Span = SimpleSpan>,
+{
+    let semi = just(Token::VSemi).or(just(Token::Semi));
+    let entries = semi
+        .clone()
+        .repeated()
+        .ignore_then(decl(term.clone()).separated_by(semi.clone()).allow_trailing().collect::<Vec<LDecl>>());
+    // the head, read as a term: `Describe a => Loud (a : Type)`, its
+    // superclasses its auto binders, then the trait's name and parameters
+    let head = term.try_map(|t: LTerm, at| trait_head(t).map_err(|why| Rich::custom(at, why)));
+    select! { Token::LowerIdent(s) if s == "trait" => () }
+        .ignore_then(head)
+        .then_ignore(just(Token::Where))
+        .then(choice((
+            entries.clone().delimited_by(just(Token::VLBrace), just(Token::VRBrace)),
+            entries.delimited_by(just(Token::LBrace), just(Token::RBrace)),
+        )))
+        .validate(|((name, params, supers), entries), e, emitter| {
+            let span = span_of(e.span());
+            let supers: Vec<(Ident, LTerm)> =
+                supers.into_iter().enumerate().map(|(i, c)| (Spanned::new(format!("#super{i}"), c.span), c)).collect();
+            let sigs: Vec<(Ident, LTerm)> = entries
+                .iter()
+                .filter_map(|d| match &d.node {
+                    Decl::Sig(x, ty) => Some((x.clone(), ty.clone())),
+                    _ => None,
+                })
+                .collect();
+            let defaults: Vec<&LDecl> = entries.iter().filter(|d| matches!(d.node, Decl::Def(..))).collect();
+            for d in &defaults {
+                if let Decl::Def(x, ..) = &d.node {
+                    if !sigs.iter().any(|(m, _)| m.node == x.node) {
+                        emitter.emit(Rich::custom(SimpleSpan::from(x.span.range()), format!("{} is no method of {}: a default is for a method it declares", x.node, name.node)));
+                    }
+                }
+            }
+            if entries.iter().any(|d| matches!(d.node, Decl::Native(..))) {
+                emitter.emit(Rich::custom(e.span(), "a trait's methods are written as signatures, with no @native"));
+            }
+            trait_parts(name, params, supers, sigs, defaults, span)
+        })
+        .labelled("trait declaration")
+        .boxed()
+}
+
+/// A trait's head: its superclasses, then its name applied to its
+/// parameters, each `a` or `(a : k)`.
+#[allow(clippy::type_complexity)]
+fn trait_head(t: LTerm) -> Result<(Ident, Vec<(Ident, Option<LTerm>)>, Vec<LTerm>), String> {
+    let mut supers = Vec::new();
+    let mut t = t;
+    while let Term::Pi(None, Icit::Auto, None, dom, cod) = t.node {
+        supers.push(*dom);
+        t = *cod;
+    }
+    let mut params = Vec::new();
+    let mut head = t;
+    loop {
+        match head.node {
+            Term::App(f, a) => {
+                let param = match a.node {
+                    Term::Var(x) if x.node.starts_with(|c: char| c.is_ascii_lowercase()) => (x, None),
+                    Term::Ann(x, k) => match x.node {
+                        Term::Var(x) => (x, Some(*k)),
+                        _ => return Err("a trait's parameter is a name, `a` or `(a : k)`".into()),
+                    },
+                    _ => return Err("a trait's parameter is a name, `a` or `(a : k)`".into()),
+                };
+                params.push(param);
+                head = *f;
+            }
+            Term::Var(name) if name.node.starts_with(|c: char| c.is_ascii_uppercase()) && !name.node.contains('.') => {
+                params.reverse();
+                return Ok((name, params, supers));
+            }
+            _ => return Err("a trait is declared as `trait Name params where`, its superclasses first, `C a =>`".into()),
+        }
+    }
+}
+
+/// A trait's record, its methods and its defaults: see [`trait_decl`].
+/// Its superclasses are fields of the record too, before its methods.
+fn trait_parts(
+    name: Ident,
+    params: Vec<(Ident, Option<LTerm>)>,
+    supers: Vec<(Ident, LTerm)>,
+    sigs: Vec<(Ident, LTerm)>,
+    defaults: Vec<&LDecl>,
+    span: Span,
+) -> (LData, Vec<LDecl>) {
+    let at = |t: Term| Spanned::new(t, span);
+    let var = |x: &str| at(Term::Var(Spanned::new(x.to_string(), span)));
+    let app = |f: LTerm, a: LTerm| at(Term::App(Box::new(f), Box::new(a)));
+    let whole = params.iter().fold(var(&name.node), |acc, (p, _)| app(acc, var(&p.node)));
+    let fields: Vec<(Ident, LTerm)> = supers.iter().cloned().chain(sigs.iter().cloned()).collect();
+    let (mut data, mut decls) = record_parts(name.clone(), params.clone(), fields, span);
+    data.node.is_trait = true;
+    // `{a : Type} -> {auto self : Describe a} -> ..`: the trait's parameters,
+    // then the record found for them
+    let under = |ty: &LTerm| {
+        let found = at(Term::Pi(Some(Spanned::new("self".into(), span)), Icit::Auto, None, Box::new(whole.clone()), Box::new(ty.clone())));
+        params.iter().rev().fold(found, |acc, (p, k)| {
+            let kind = k.clone().unwrap_or_else(|| at(Term::Type));
+            at(Term::Pi(Some(p.clone()), Icit::Implicit, None, Box::new(kind), Box::new(acc)))
+        })
+    };
+    for (m, ty) in &sigs {
+        let projection = format!("{}.{}", name.node, m.node);
+        decls.push(Spanned::new(Decl::Sig(m.clone(), under(ty)), m.span));
+        let body = app(var(&projection), var("self"));
+        decls.push(Spanned::new(Decl::Def(m.clone(), Vec::new(), None, Rhs::Plain(body)), m.span));
+    }
+    for (m, ty) in &sigs {
+        let equations: Vec<&LDecl> = defaults.iter().copied().filter(|d| matches!(&d.node, Decl::Def(x, ..) if x.node == m.node)).collect();
+        if equations.is_empty() {
+            continue;
+        }
+        let default = Spanned::new(format!("{}.#{}", name.node, m.node), m.span);
+        decls.push(Spanned::new(Decl::Sig(default.clone(), under(ty)), m.span));
+        for eq in equations {
+            if let Decl::Def(_, pats, ty, rhs) = &eq.node {
+                decls.push(Spanned::new(Decl::Def(default.clone(), pats.clone(), ty.clone(), rhs.clone()), eq.span));
+            }
+        }
+        // a function, past its implicit binders: `.. -> ..`
+        let mut t = ty;
+        while let Term::Pi(_, Icit::Implicit | Icit::Auto, _, _, cod) = &t.node {
+            t = cod;
+        }
+        let function = matches!(t.node, Term::Pi(_, Icit::Explicit, ..));
+        data.node.defaults.push((m.clone(), default.node, function));
+    }
+    (data, decls)
+}
+
+/// `instance Describe Int where` and a block of its methods' equations, or
+/// with what it needs first, `instance Describe a => Describe (List a)
+/// where`; or named, `instance loud : Describe Int where`, which only being
+/// given by hand uses. A definition of the record whose type the head is:
+/// each method, its equations as one lambda; what it leaves out, the
+/// trait's default.
+fn instance<'t, I>(term: impl Parser<'t, I, LTerm, Extra<'t>> + Clone + 't) -> Boxed<'t, 't, I, Item, Extra<'t>>
+where
+    I: ValueInput<'t, Token = Token, Span = SimpleSpan>,
+{
+    let semi = just(Token::VSemi).or(just(Token::Semi));
+    let entries = semi
+        .clone()
+        .repeated()
+        .ignore_then(decl(term.clone()).separated_by(semi.clone()).allow_trailing().collect::<Vec<LDecl>>());
+    select! { Token::LowerIdent(s) if s == "instance" => () }
+        .ignore_then(lower().then_ignore(just(Token::Colon)).or_not())
+        .then(term)
+        .then_ignore(just(Token::Where))
+        .then(choice((
+            entries.clone().delimited_by(just(Token::VLBrace), just(Token::VRBrace)),
+            entries.delimited_by(just(Token::LBrace), just(Token::RBrace)),
+        )))
+        .validate(|((name, head), entries), e, emitter| {
+            let span = span_of(e.span());
+            match instance_parts(name, head, entries, span) {
+                Ok(item) => item,
+                Err((at, why)) => {
+                    emitter.emit(Rich::custom(SimpleSpan::from(at.range()), why));
+                    Item::Instance(Vec::new(), Spanned::new("_".into(), span), true)
+                }
+            }
+        })
+        .labelled("instance declaration")
+        .boxed()
+}
+
+/// An instance's definition: see [`instance`].
+fn instance_parts(name: Option<Ident>, head: LTerm, entries: Vec<LDecl>, span: Span) -> Result<Item, (Span, String)> {
+    let at = |t: Term| Spanned::new(t, span);
+    // the trait: what the head comes to, past what it needs, applied
+    let mut result = &head;
+    while let Term::Pi(_, Icit::Auto, _, _, cod) = &result.node {
+        result = cod;
+    }
+    let mut trait_name = result;
+    let mut args = Vec::new();
+    while let Term::App(f, a) = &trait_name.node {
+        args.push((**a).clone());
+        trait_name = f;
+    }
+    args.reverse();
+    let Term::Var(trait_name) = &trait_name.node else {
+        return Err((head.span, "an instance is of a trait applied to its arguments, as `Describe Int`".into()));
+    };
+    let named = name.is_some();
+    let name = name.unwrap_or_else(|| Spanned::new(format!("#instance@{}", span.start), head.span));
+    // each method's equations, in the order the first of each comes
+    let mut methods: Vec<(Ident, Vec<(Vec<LPat>, Rhs)>)> = Vec::new();
+    for d in entries {
+        match d.node {
+            Decl::Def(m, pats, _, rhs) => match methods.iter_mut().find(|(x, _)| x.node == m.node) {
+                Some((_, eqs)) => eqs.push((pats, rhs)),
+                None => methods.push((m, vec![(pats, rhs)])),
+            },
+            Decl::Sig(x, _) | Decl::Native(x, _) => {
+                return Err((x.span, "an instance's methods are given by equations; their types are the trait's".into()));
+            }
+        }
+    }
+    let mut fields = Vec::new();
+    for (m, eqs) in methods {
+        let arity = eqs[0].0.len();
+        if eqs.iter().any(|(ps, _)| ps.len() != arity) {
+            return Err((m.span, format!("the equations of {} have different numbers of arguments", m.node)));
+        }
+        fields.push((m, lambda_case(eqs, arity, span)));
+    }
+    let body = at(Term::RecordOf(trait_name.clone(), args, fields, name.clone()));
+    let decls = vec![
+        Spanned::new(Decl::Sig(name.clone(), head), span),
+        Spanned::new(Decl::Def(name.clone(), Vec::new(), None, Rhs::Plain(body)), span),
+    ];
+    Ok(Item::Instance(decls, name, named))
+}
+
+/// Equations of `arity` patterns each as one term: `\#0 #1 -> case (#0,
+/// #1) of (p, q) -> e; ..`, or with none, the one equation's right-hand
+/// side.
+fn lambda_case(eqs: Vec<(Vec<LPat>, Rhs)>, arity: usize, span: Span) -> LTerm {
+    let at = |t: Term| Spanned::new(t, span);
+    let names: Vec<String> = (0..arity).map(|i| format!("#{i}")).collect();
+    if arity == 0 {
+        // (one equation; a guarded one as a `case` on `()`)
+        let (_, rhs) = eqs.into_iter().next().expect("an equation");
+        return match rhs {
+            Rhs::Plain(e) => e,
+            rhs => at(Term::Case(Box::new(at(Term::Lit(Lit::Unit))), vec![Alt { pat: Spanned::new(Pat::Lit(Lit::Unit), span), rhs }])),
+        };
+    }
+    let var = |x: &str| at(Term::Var(Spanned::new(x.to_string(), span)));
+    let pair = |a: LTerm, b: LTerm| at(Term::App(Box::new(at(Term::App(Box::new(var(TUPLE)), Box::new(a)))), Box::new(b)));
+    let pair_pat = |a: LPat, b: LPat| Spanned::new(Pat::Con(Spanned::new(TUPLE.to_string(), span), vec![a, b]), span);
+    let scrutinee = names.iter().map(|x| var(x)).rev().reduce(|acc, x| pair(x, acc)).expect("an argument");
+    let alts = eqs
+        .into_iter()
+        .map(|(pats, rhs)| {
+            let pat = pats.into_iter().rev().reduce(|acc, p| pair_pat(p, acc)).expect("a pattern");
+            Alt { pat, rhs }
+        })
+        .collect();
+    let body = at(Term::Case(Box::new(scrutinee), alts));
+    names.into_iter().rev().fold(body, |acc, x| {
+        let param = Spanned::new(Param { name: Spanned::new(x, span), unbox: false, grade: None, ty: None }, span);
+        at(Term::Lam(Box::new(param), Box::new(acc)))
+    })
+}
+
 /// A record's data type and its projections: see [`record`].
 fn record_parts(name: Ident, params: Vec<(Ident, Option<LTerm>)>, fields: Vec<(Ident, LTerm)>, span: Span) -> (LData, Vec<LDecl>) {
     let at = |t: Term| Spanned::new(t, span);
@@ -544,6 +820,8 @@ fn record_parts(name: Ident, params: Vec<(Ident, Option<LTerm>)>, fields: Vec<(I
             seq: None,
             visibility: Visibility::Private,
             fields: Some(fields.iter().map(|(f, _)| f.clone()).collect()),
+            defaults: Vec::new(),
+            is_trait: false,
         },
         span,
     );
@@ -1224,16 +1502,24 @@ where
                 Spanned::new(Term::Proj(Box::new(e), f), span)
             })
             .boxed();
-        // an argument, or an implicit one given by hand, `{Int}`
+        // an argument, or an implicit one given by hand, `{Int}`, or an auto
+        // one, `@{loud}`
         let argument = choice((
-            atom.clone().map(|a| (a, false)),
-            term.clone().delimited_by(just(Token::LBrace), just(Token::RBrace)).map(|a| (a, true)),
+            atom.clone().map(|a| (a, Icit::Explicit)),
+            term.clone().delimited_by(just(Token::LBrace), just(Token::RBrace)).map(|a| (a, Icit::Implicit)),
+            just(Token::At)
+                .ignore_then(term.clone().delimited_by(just(Token::LBrace), just(Token::RBrace)))
+                .map(|a| (a, Icit::Auto)),
         ));
         let app = atom
             .clone()
-            .foldl(argument.repeated(), |f: LTerm, (a, implicit): (LTerm, bool)| {
+            .foldl(argument.repeated(), |f: LTerm, (a, icit): (LTerm, Icit)| {
                 let span = f.span.merge(a.span);
-                let applied = if implicit { Term::ImplicitApp(Box::new(f), Box::new(a)) } else { Term::App(Box::new(f), Box::new(a)) };
+                let applied = match icit {
+                    Icit::Explicit => Term::App(Box::new(f), Box::new(a)),
+                    Icit::Implicit => Term::ImplicitApp(Box::new(f), Box::new(a)),
+                    Icit::Auto => Term::AutoApp(Box::new(f), Box::new(a)),
+                };
                 Spanned::new(applied, span)
             })
             .boxed();

@@ -19,6 +19,7 @@
 //! into the term.
 
 use super::*;
+use crate::value::Elim;
 
 /// How deep the search goes into the auto arguments of what it finds: a
 /// search that loops, a hint for `Show a` wanting `Show a`, ends here.
@@ -106,13 +107,31 @@ impl Checker {
         if depth > DEPTH {
             return Err(TypeErrorKind::NoInstance { wanted: shown(), deep: true });
         }
-        // the auto binders in scope, innermost first
+        // the auto binders in scope, innermost first, and what each has
+        // inside it of its trait's superclasses
         let locals: Vec<Lvl> = (0..ctx.lvl).rev().filter(|&l| ctx.binders[l].auto).collect();
         for lvl in locals {
             let core = Rc::new(Core::Var(ctx.lvl - lvl - 1, ctx.binders[lvl].name.clone()));
             let ty = ctx.binders[lvl].ty.clone();
-            if self.candidate_fits(ctx, node, &core, &ty, wanted, depth) {
-                return self.apply_candidate(ctx, node, core, ty, wanted, depth).ok_or_else(|| TypeErrorKind::NoInstance { wanted: shown(), deep: false });
+            let mut paths = vec![Vec::new()];
+            if let Value::Opaque(t, _, _) = &*self.force(ty.clone()) {
+                paths.extend(self.super_paths(ctx, *t, 0));
+            }
+            for path in paths {
+                let found = {
+                    let saved = self.clone();
+                    let before = self.errors.len();
+                    let fits = match self.through(ctx, node, core.clone(), ty.clone(), &path) {
+                        Some((c, t)) => self.apply_candidate(ctx, node, c, t, wanted, depth).is_some(),
+                        None => false,
+                    } && self.errors.len() == before;
+                    *self = saved;
+                    fits
+                };
+                if found {
+                    let (c, t) = self.through(ctx, node, core.clone(), ty.clone(), &path).expect("it was found");
+                    return self.apply_candidate(ctx, node, c, t, wanted, depth).ok_or_else(|| TypeErrorKind::NoInstance { wanted: shown(), deep: false });
+                }
             }
         }
         // then the hints that are in scope here
@@ -133,10 +152,62 @@ impl Checker {
             }
             0 => Err(TypeErrorKind::NoInstance { wanted: shown(), deep: false }),
             _ => {
-                let names = fitting.iter().map(|(u, _, _)| self.hint_name(*u)).collect();
+                let names = fitting.iter().map(|(u, _, _)| self.hint_name(ctx, *u)).collect();
                 Err(TypeErrorKind::AmbiguousInstance { wanted: shown(), candidates: names })
             }
         }
+    }
+
+    /// The ways to the superclasses inside a record of trait `t`: each a
+    /// path of superclass projections, its own and on through theirs.
+    fn super_paths(&self, ctx: &Ctx, t: usize, depth: usize) -> Vec<Vec<usize>> {
+        if depth > 4 {
+            return Vec::new();
+        }
+        let mut paths = Vec::new();
+        for &p in self.supers.get(&t).into_iter().flatten() {
+            paths.push(vec![p]);
+            // what the projection gives: the trait its type comes to
+            let x = hir::Ident { unique: Some(p), text: String::new() };
+            if let Some(next) = ctx.lookup(&x).and_then(|(_, ty, _)| self.result_trait(&ty)) {
+                for rest in self.super_paths(ctx, next, depth + 1) {
+                    paths.push(std::iter::once(p).chain(rest).collect());
+                }
+            }
+        }
+        paths
+    }
+
+    /// The trait a projection's type comes to, past its binders.
+    fn result_trait(&self, ty: &VTy) -> Option<usize> {
+        let mut ty = self.force(ty.clone());
+        let mut lvl = 0;
+        while let Value::Pi { name, cod, .. } = &*ty {
+            ty = self.force(self.split_comp(self.apply(cod, vvar(lvl, name.clone()))).0);
+            lvl += 1;
+        }
+        match &*ty {
+            Value::Opaque(t, _, _) if self.traits.contains(t) => Some(*t),
+            _ => None,
+        }
+    }
+
+    /// `core : ty` taken through each projection of `path` in turn: the
+    /// superclass record inside it, and its type.
+    fn through(&mut self, ctx: &Ctx, node: NodeId, mut core: Rc<Core>, mut ty: VTy, path: &[usize]) -> Option<(Rc<Core>, VTy)> {
+        for &p in path {
+            let x = hir::Ident { unique: Some(p), text: String::new() };
+            let (p_core, p_ty, _) = ctx.lookup(&x)?;
+            let (p_core, p_ty) = self.insert_implicit(ctx, node, p_core, p_ty);
+            let Value::Pi { icit: Icit::Explicit, dom, cod, .. } = &*self.force(p_ty) else { return None };
+            if !self.unify(ctx.lvl, ty.clone(), dom.clone()) {
+                return None;
+            }
+            let value = self.eval(&ctx.env, &core);
+            ty = self.split_comp(self.apply(cod, value)).0;
+            core = Rc::new(Core::App(p_core, core));
+        }
+        Some((core, ty))
     }
 
     /// Whether `core : ty` gives what is wanted, as [`Checker::apply_candidate`]
@@ -191,12 +262,121 @@ impl Checker {
         Some(core)
     }
 
+    /// Each instance of a trait this package declares (a hint whose type
+    /// comes to a trait's record): that it lives with its trait or with the
+    /// type it is for, and that no other instance of the trait is for types
+    /// that unify with its.
+    pub(super) fn check_instances(&mut self, ctx: &Ctx, m: &hir::Module) {
+        let own = |u: usize| (m.uniques.0..m.uniques.1).contains(&u);
+        let mut instances: Vec<(usize, NodeId, usize)> = Vec::new();
+        let mut hints: Vec<usize> = self.hints.iter().copied().collect();
+        hints.sort_unstable();
+        let node_of: HashMap<usize, NodeId> =
+            m.groups.iter().flat_map(hir::BindGroup::binds).filter_map(|b| Some((b.name.unique?, b.id))).collect();
+        for u in hints {
+            let x = hir::Ident { unique: Some(u), text: String::new() };
+            let Some((_, ty, _)) = ctx.lookup(&x) else { continue };
+            let Some((trait_u, head)) = self.instance_of(ctx, &ty) else { continue };
+            instances.push((u, node_of.get(&u).copied().unwrap_or(NodeId(0)), trait_u));
+            if !own(u) {
+                continue;
+            }
+            let node = node_of.get(&u).copied().unwrap_or(NodeId(0));
+            if !own(trait_u) && !head.is_some_and(own) {
+                let instance = self.quote(ctx.lvl, ty.clone());
+                let trait_name = self.homes.get(&trait_u).map_or_else(|| "its trait".to_string(), |h| format!("the trait, from {h},"));
+                self.error(node, TypeErrorKind::OrphanInstance { instance, trait_name });
+            }
+        }
+        // each own instance against those before it of the same trait
+        for i in 0..instances.len() {
+            let (u, node, t) = instances[i];
+            if !own(u) {
+                continue;
+            }
+            for j in 0..i {
+                let (v, _, s) = instances[j];
+                if s != t {
+                    continue;
+                }
+                if self.heads_unify(ctx, u, v) {
+                    let x = hir::Ident { unique: Some(u), text: String::new() };
+                    let instance = ctx.lookup(&x).map(|(_, ty, _)| self.quote(ctx.lvl, ty)).unwrap_or_else(|| Rc::new(Core::Error));
+                    let other = self.hint_name(ctx, v);
+                    self.error(node, TypeErrorKind::OverlappingInstances { instance, other });
+                    break;
+                }
+            }
+        }
+    }
+
+    /// The trait an instance's type `ty` is of, past its implicit and auto
+    /// binders, and the type constructor of what it is for (its first
+    /// argument's head), if that is a declared one.
+    fn instance_of(&self, ctx: &Ctx, ty: &VTy) -> Option<(usize, Option<usize>)> {
+        let mut ty = self.force(ty.clone());
+        let mut lvl = ctx.lvl;
+        while let Value::Pi { name, icit: Icit::Implicit | Icit::Auto, cod, .. } = &*ty {
+            ty = self.force(self.split_comp(self.apply(cod, vvar(lvl, name.clone()))).0);
+            lvl += 1;
+        }
+        let Value::Opaque(t, _, spine) = &*ty else { return None };
+        if !self.traits.contains(t) {
+            return None;
+        }
+        let head = spine.iter().find_map(|e| match e {
+            Elim::App(a) => Some(a.clone()),
+            _ => None,
+        });
+        let head = head.and_then(|a| match &*self.force(a) {
+            Value::Opaque(u, _, _) => Some(*u),
+            _ => None,
+        });
+        Some((*t, head))
+    }
+
+    /// Whether the instances `u` and `v` are for types that unify, their
+    /// implicit and auto binders made metas: on a copy.
+    fn heads_unify(&mut self, ctx: &Ctx, u: usize, v: usize) -> bool {
+        let saved = self.clone();
+        let result = |s: &mut Self, w: usize| -> Option<VTy> {
+            let x = hir::Ident { unique: Some(w), text: String::new() };
+            let (_, mut ty, _) = ctx.lookup(&x)?;
+            loop {
+                ty = s.force(ty);
+                let (dom, cod) = match &*ty {
+                    Value::Pi { icit: Icit::Implicit | Icit::Auto, dom, cod, .. } => (dom.clone(), cod.clone()),
+                    _ => break,
+                };
+                let arg = s.fresh_meta_with(ctx, NodeId(0), MetaOrigin::Inferred("an instance's argument".into()), Some(dom));
+                let arg_v = s.eval(&ctx.env, &arg);
+                ty = s.split_comp(s.apply(&cod, arg_v)).0;
+            }
+            Some(ty)
+        };
+        let unify = match (result(self, u), result(self, v)) {
+            (Some(a), Some(b)) => self.unify(ctx.lvl, a, b),
+            _ => false,
+        };
+        *self = saved;
+        unify
+    }
+
     /// A hint, as a message names it.
-    fn hint_name(&self, u: usize) -> String {
-        match (self.written_as.get(&u), self.origin.get(&u)) {
+    fn hint_name(&self, ctx: &Ctx, u: usize) -> String {
+        let name = match (self.written_as.get(&u), self.origin.get(&u)) {
             (Some(w), Some(o)) => format!("{w}, from {o}"),
             (Some(w), None) => w.clone(),
             _ => self.hint_names.get(&u).cloned().unwrap_or_else(|| format!("hint #{u}")),
+        };
+        // an instance with no name of its own is known by its type
+        if !name.starts_with("#instance") && !name.contains(".#instance") {
+            return name;
+        }
+        let x = hir::Ident { unique: Some(u), text: String::new() };
+        match ctx.lookup(&x) {
+            Some((_, ty, _)) => format!("the instance {}", self.quote(ctx.lvl, ty)),
+            None => "an instance".to_string(),
         }
     }
 }

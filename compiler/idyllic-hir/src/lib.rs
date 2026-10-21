@@ -55,6 +55,10 @@ pub enum TermKind {
     App(Box<Term>, Box<Term>),
     /// `f {a}`: an implicit argument given by hand.
     ImplicitApp(Box<Term>, Box<Term>),
+    /// `f @{d}`: an auto argument given by hand.
+    AutoApp(Box<Term>, Box<Term>),
+    /// What a search for an auto argument of the type wanted finds.
+    Search,
     /// `e : a`.
     Ann(Box<Term>, Box<Term>),
     /// `_`: becomes a fresh metavariable during type checking.
@@ -179,6 +183,8 @@ pub struct DataDecl {
     /// whether it was declared in a linear module, where a field that says
     /// nothing is linear (elsewhere it is `[]`, as any binder is)
     pub linear: bool,
+    /// whether it is a trait's record, which instances are of
+    pub is_trait: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -296,6 +302,9 @@ pub struct Module {
     pub terminating: std::collections::HashSet<usize>,
     /// the definitions `@hint` offers to the search for an auto argument
     pub hints: std::collections::HashSet<usize>,
+    /// each trait's superclasses, as the projections of its record that
+    /// give them, by the record type: this package's and those it depends on
+    pub supers: std::collections::HashMap<usize, Vec<usize>>,
     /// Every name with more than one meaning in scope where it is written,
     /// by the node it was written at (a [`TermKind::Var`]'s term, or a
     /// [`PatKind::Con`]'s pattern): what it may mean, the first of which
@@ -307,6 +316,13 @@ pub struct Module {
 /// see it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PackageNames {
+    /// each trait's methods with a default, the default's unique, and
+    /// whether the method is a function, by the trait's record type
+    #[serde(default)]
+    pub defaults: Vec<(usize, Vec<(String, usize, bool)>)>,
+    /// each trait's superclass projections, by the trait's record type
+    #[serde(default)]
+    pub supers: Vec<(usize, Vec<usize>)>,
     /// its modules' paths, the root's empty
     pub modules: Vec<Vec<String>>,
     /// each module's names: module, name, unique, and how visible it is
