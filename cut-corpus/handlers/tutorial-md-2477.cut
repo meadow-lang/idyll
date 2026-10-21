@@ -4,6 +4,17 @@ answer str
 
 data idyll:Prelude/DigitFuel { Spent; More(ptr) }
 
+native {
+  idyll:Prelude/Console.putErr = Console.writeError
+  idyll:Prelude/Process.exit = Process.exit
+}
+
+effect idyll:Prelude/Console { putStr(str) -> unit; putErr(str) -> unit; readLine(unit) -> ptr }
+
+effect idyll:Prelude/Process { exit(i64) -> unit; currentPid(unit) -> i64; argv(unit) -> ptr; getEnv(str) -> ptr; setEnv(str, str) -> unit; removeEnv(str) -> unit; isTerminal(i64) -> bool }
+
+effect idyll:Prelude/Abort { abort(str) -> any }
+
 val idyll:Prelude/digitFuel : ptr =
   <idyll:Prelude/DigitFuel.Spent | μ̃ v_20: ptr.
     <idyll:Prelude/DigitFuel.More(v_20) | μ̃ v_19: ptr.
@@ -65,8 +76,12 @@ def idyll:Prelude/showInt (n_52: i64; k_53: ptr) =
       idyll:Prelude/negativeDigits(idyll:Prelude/digitFuel, n_52; μ̃ v_58: str.
         prim concatStrings(["-", v_58]; k_53))))
 
-def idyll:Main/id <'a_65 = d_a_64> (d_a_64: desc, x_66: 'a_65; k_67: ptr) =
-  <x_66 | k_67>
+def idyll:Main/half (n_62: i64; k_63: ptr) =
+  prim mod(n_62, 2; μ̃ v_67: i64.
+    prim eq(v_67, 0; μ̃ v__64: bool.
+      prim if(v__64; μ̃ u_65: unit.
+        perform idyll:Prelude/Abort.abort("odd"; k_63), μ̃ u_66: unit.
+        prim div(n_62, 2; k_63))))
 
 def idyll:Prelude/negativeDigits (fuel_68: ptr, n_69: i64; k_70: ptr) =
   <fuel_68 | case {
@@ -87,7 +102,23 @@ def idyll:Prelude/negativeDigits (fuel_68: ptr, n_69: i64; k_70: ptr) =
   }>
 
 def idyll:Main/"#entry" (; k_82: ptr) =
-  idyll:Main/id(desc(bool), true; μ̃ answer_83: bool.
-    prim if(answer_83; μ̃ u_84: unit.
-      <"False" | k_82>, μ̃ u_85: unit.
-      <"True" | k_82>))
+  handle {
+    idyll:Prelude/Abort.abort(message_93: str; r_95: ptr, k_96: ptr) =>
+      prim concatStrings([message_93, "\n"]; μ̃ line_94: str.
+        perform idyll:Prelude/Console.putErr(line_94; μ̃ u_97: unit.
+          perform idyll:Prelude/Process.exit(1; μ̃ u_98: unit.
+            <u_98 | k_96>)));
+    return(x_99: i64; k_100: ptr) =>
+      <x_99 | k_100>
+  } in μ b_84.
+    handle {
+      idyll:Prelude/Abort.abort(m_85: str; r_86: ptr, k_87: ptr) =>
+        perform idyll:Prelude/Console.putErr(m_85; μ̃ u_88: unit.
+          <0 | k_87>);
+      return(x_89: i64; k_90: ptr) =>
+        <x_89 | k_90>
+    } in μ b_92.
+      idyll:Main/half(7; b_92)
+    ; b_84
+  ; μ̃ answer_83: i64.
+    idyll:Prelude/showInt(answer_83; k_82)

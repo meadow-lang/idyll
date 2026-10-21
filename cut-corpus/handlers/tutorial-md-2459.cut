@@ -5,15 +5,10 @@ answer str
 data idyll:Prelude/DigitFuel { Spent; More(ptr) }
 
 native {
-  idyll:Prelude/Console.putErr = Console.writeError
-  idyll:Prelude/Process.exit = Process.exit
+  idyll:Prelude/Random.intBetween = Random.intBetween
 }
 
-effect idyll:Prelude/Console { putStr(str) -> unit; putErr(str) -> unit; readLine(unit) -> ptr }
-
-effect idyll:Prelude/Process { exit(i64) -> unit; currentPid(unit) -> i64; argv(unit) -> ptr; getEnv(str) -> ptr; setEnv(str, str) -> unit; removeEnv(str) -> unit; isTerminal(i64) -> bool }
-
-effect idyll:Prelude/Abort { abort(str) -> any }
+effect idyll:Prelude/Random { nextInt(unit) -> i64; intBetween(i64, i64) -> i64; nextSeed(unit) -> i64 }
 
 val idyll:Prelude/digitFuel : ptr =
   <idyll:Prelude/DigitFuel.Spent | μ̃ v_20: ptr.
@@ -76,49 +71,42 @@ def idyll:Prelude/showInt (n_52: i64; k_53: ptr) =
       idyll:Prelude/negativeDigits(idyll:Prelude/digitFuel, n_52; μ̃ v_58: str.
         prim concatStrings(["-", v_58]; k_53))))
 
-def idyll:Main/half (n_62: i64; k_63: ptr) =
-  prim mod(n_62, 2; μ̃ v_67: i64.
-    prim eq(v_67, 0; μ̃ v__64: bool.
-      prim if(v__64; μ̃ u_65: unit.
-        perform idyll:Prelude/Abort.abort("odd"; k_63), μ̃ u_66: unit.
-        prim div(n_62, 2; k_63))))
-
-def idyll:Prelude/negativeDigits (fuel_68: ptr, n_69: i64; k_70: ptr) =
-  <fuel_68 | case {
+def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) =
+  <fuel_61 | case {
     idyll:Prelude/DigitFuel.Spent =>
-      <"" | k_70>;
-    idyll:Prelude/DigitFuel.More(fuel_71: ptr) =>
-      prim sub(0, 10; μ̃ v_81: i64.
-        prim lt(v_81, n_69; μ̃ v__72: bool.
-          prim if(v__72; μ̃ u_79: unit.
-            prim div(n_69, 10; μ̃ v_77: i64.
-              idyll:Prelude/negativeDigits(fuel_71, v_77; μ̃ v_73: str.
-                prim mod(n_69, 10; μ̃ v_76: i64.
-                  prim sub(0, v_76; μ̃ v_75: i64.
-                    idyll:Prelude/digitString(v_75; μ̃ v_74: str.
-                      prim concatStrings([v_73, v_74]; k_70)))))), μ̃ u_80: unit.
-            prim sub(0, n_69; μ̃ v_78: i64.
-              idyll:Prelude/digitString(v_78; k_70)))))
+      <"" | k_63>;
+    idyll:Prelude/DigitFuel.More(fuel_64: ptr) =>
+      prim sub(0, 10; μ̃ v_74: i64.
+        prim lt(v_74, n_62; μ̃ v__65: bool.
+          prim if(v__65; μ̃ u_72: unit.
+            prim div(n_62, 10; μ̃ v_70: i64.
+              idyll:Prelude/negativeDigits(fuel_64, v_70; μ̃ v_66: str.
+                prim mod(n_62, 10; μ̃ v_69: i64.
+                  prim sub(0, v_69; μ̃ v_68: i64.
+                    idyll:Prelude/digitString(v_68; μ̃ v_67: str.
+                      prim concatStrings([v_66, v_67]; k_63)))))), μ̃ u_73: unit.
+            prim sub(0, n_62; μ̃ v_71: i64.
+              idyll:Prelude/digitString(v_71; k_63)))))
   }>
 
-def idyll:Main/"#entry" (; k_82: ptr) =
+def idyll:Main/dice (x_75: unit; k_76: ptr) =
+  perform idyll:Prelude/Random.intBetween(1, 7; k_76)
+
+def idyll:Main/"#entry" (; k_77: ptr) =
   handle {
-    idyll:Prelude/Abort.abort(message_93: str; r_95: ptr, k_96: ptr) =>
-      prim concatStrings([message_93, "\n"]; μ̃ line_94: str.
-        perform idyll:Prelude/Console.putErr(line_94; μ̃ u_97: unit.
-          perform idyll:Prelude/Process.exit(1; μ̃ u_98: unit.
-            <u_98 | k_96>)));
-    return(x_99: i64; k_100: ptr) =>
-      <x_99 | k_100>
-  } in μ b_84.
-    handle {
-      idyll:Prelude/Abort.abort(m_85: str; r_86: ptr, k_87: ptr) =>
-        perform idyll:Prelude/Console.putErr(m_85; μ̃ u_88: unit.
-          <0 | k_87>);
-      return(x_89: i64; k_90: ptr) =>
-        <x_89 | k_90>
-    } in μ b_92.
-      idyll:Main/half(7; b_92)
-    ; b_84
-  ; μ̃ answer_83: i64.
-    idyll:Prelude/showInt(answer_83; k_82)
+    idyll:Prelude/Random.nextInt(v__79: unit; r_80: ptr, k_81: ptr) =>
+      <r_80 | resume(4; k_81)>;
+    idyll:Prelude/Random.intBetween(lo_82: i64, hi_83: i64; r_84: ptr, k_85: ptr) =>
+      prim add(lo_82, hi_83; μ̃ v_87: i64.
+        prim div(v_87, 2; μ̃ v_86: i64.
+          <r_84 | resume(v_86; k_85)>));
+    idyll:Prelude/Random.nextSeed(v__88: unit; r_89: ptr, k_90: ptr) =>
+      <r_89 | resume(0; k_90)>;
+    return(x_91: i64; k_92: ptr) =>
+      <x_91 | k_92>
+  } in μ b_94.
+    idyll:Main/dice(unit; μ̃ v_95: i64.
+      idyll:Main/dice(unit; μ̃ v_96: i64.
+        prim add(v_95, v_96; b_94)))
+  ; μ̃ answer_78: i64.
+    idyll:Prelude/showInt(answer_78; k_77)

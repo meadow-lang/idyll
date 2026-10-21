@@ -1,6 +1,9 @@
--- | half : Int -> Int ! Abort
--- | half n = if n % 2 == 0 then n / 2 else abort "odd"
--- | handle half 7 with
--- |   abort m k -> let u = putErr m in 0
-answer: 0
+-- | dice : () -> Int ! Random
+-- | dice () = intBetween 1 7
+-- | handle dice () + dice () with
+-- |   nextInt _ k -> k 4
+-- |   intBetween lo hi k -> k ((lo + hi) / 2)
+-- |   nextSeed _ k -> k 0
+answer: 8
 exit: 0
+nondeterministic

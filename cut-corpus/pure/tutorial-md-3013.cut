@@ -1,14 +1,8 @@
 cut 0
 entry idyll:Main/"#entry"
-answer str
+answer none
 
 data idyll:Prelude/DigitFuel { Spent; More(ptr) }
-
-native {
-  idyll:Prelude/Random.intBetween = Random.intBetween
-}
-
-effect idyll:Prelude/Random { nextInt(unit) -> i64; intBetween(i64, i64) -> i64; nextSeed(unit) -> i64 }
 
 val idyll:Prelude/digitFuel : ptr =
   <idyll:Prelude/DigitFuel.Spent | μ̃ v_20: ptr.
@@ -89,24 +83,12 @@ def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) =
               idyll:Prelude/digitString(v_71; k_63)))))
   }>
 
-def idyll:Main/dice (x_75: unit; k_76: ptr) =
-  perform idyll:Prelude/Random.intBetween(1, 7; k_76)
-
-def idyll:Main/"#entry" (; k_77: ptr) =
-  handle {
-    idyll:Prelude/Random.nextInt(v__79: unit; r_80: ptr, k_81: ptr) =>
-      <r_80 | resume(4; k_81)>;
-    idyll:Prelude/Random.intBetween(lo_82: i64, hi_83: i64; r_84: ptr, k_85: ptr) =>
-      prim add(lo_82, hi_83; μ̃ v_87: i64.
-        prim div(v_87, 2; μ̃ v_86: i64.
-          <r_84 | resume(v_86; k_85)>));
-    idyll:Prelude/Random.nextSeed(v__88: unit; r_89: ptr, k_90: ptr) =>
-      <r_89 | resume(0; k_90)>;
-    return(x_91: i64; k_92: ptr) =>
-      <x_91 | k_92>
-  } in μ b_94.
-    idyll:Main/dice(unit; μ̃ v_95: i64.
-      idyll:Main/dice(unit; μ̃ v_96: i64.
-        prim add(v_95, v_96; b_94)))
-  ; μ̃ answer_78: i64.
-    idyll:Prelude/showInt(answer_78; k_77)
+def idyll:Main/"#entry" (; k_75: ptr) =
+  <cocase {
+    apply(b_77: ptr; k_78: ptr) =>
+      <b_77 | case {
+        #tuple(x_80: i64) =>
+          <x_80 | μ̃ x_79: i64.
+            prim add(x_79, x_79; k_78)>
+      }>
+  } | k_75>
