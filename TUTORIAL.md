@@ -2818,7 +2818,7 @@ use Std.Num.Fin.Fin.*
 20 : Int
 > zip (Cons 1 Nil) (Cons 2 (Cons 3 Nil))
 Error: type mismatch
-   │ ╰── expected Vec (S Z) ?8, but this has type Vec (S (S Z)) Int
+   │ ╰── expected Vec (S Z) ?0, but this has type Vec (S (S Z)) Int
 Error: unsolved metavariable
 ```
 
@@ -3303,7 +3303,7 @@ Error: unsolved metavariable
    │    ╰───── could not infer the type of the binder x
    │ Help: add a type annotation to pin it down
 
-: (x : ?6) -> ?6
+: (x : ?0) -> ?0
 ```
 
 There is no automatic generalisation: `\x -> x` doesn't become the

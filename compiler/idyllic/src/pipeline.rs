@@ -255,6 +255,36 @@ use List.*
 use Maybe.*
 use Result.*
 
+trait Add (a : Type) where
+  (+) : a -> a -> a
+
+trait Sub (a : Type) where
+  (-) : a -> a -> a
+
+trait Mul (a : Type) where
+  (*) : a -> a -> a
+
+trait Divide (a : Type) where
+  (/) : a -> a -> a
+
+trait Rem (a : Type) where
+  (%) : a -> a -> a
+
+instance Add Int where
+  (+) = intAdd
+
+instance Sub Int where
+  (-) = intSub
+
+instance Mul Int where
+  (*) = intMul
+
+instance Divide Int where
+  (/) = intDiv
+
+instance Rem Int where
+  (%) = intMod
+
 @native
 Array : Type -> Type
 
@@ -961,7 +991,7 @@ pub(crate) fn finish(
         printed,
         errors,
         ran_main,
-        body_type: checked.body_type.as_ref().map(|ty| ty.to_string()),
+        body_type: checked.body_type.as_ref().map(|ty| idyllic_typecheck::number_metas(&mut Default::default(), &ty.to_string())),
         decls,
         hir,
         checked: Some(checked),

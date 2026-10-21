@@ -238,7 +238,7 @@ impl Checker {
                 head = f;
             }
             args.reverse();
-            let (method, _) = unique_at(ctx, head, base, d)?;
+            let (method, written) = unique_at(ctx, head, base, d)?;
             let &(_, field, params) = self.methods.get(&method)?;
             let mut dict = args.get(params)?;
             while let Core::Runtime(_, inner) = &**dict {
@@ -246,7 +246,12 @@ impl Checker {
             }
             let (instance, _) = unique_at(ctx, dict, base, d)?;
             let given = self.instance_fields.get(&instance)?.get(field)?.as_ref()?;
-            let given = named_at(ctx, given, base, d)?;
+            // (shown as the method it was called as: `* n 2`)
+            let given = match &*named_at(ctx, given, base, d)? {
+                Core::Var(i, _) => Rc::new(Core::Var(*i, written)),
+                Core::Opaque(u, _) => Rc::new(Core::Opaque(*u, written)),
+                _ => named_at(ctx, given, base, d)?,
+            };
             Some(args[params + 1..].iter().fold(given, |f, a| Rc::new(Core::App(f, self.specialize_at(ctx, a, base, d)))))
         })
     }

@@ -54,13 +54,22 @@ fn constant_grade(g: Grade) -> ElabGrade {
     (Core::grade(g), Poly::constant(g).into_value())
 }
 
-/// `a + b` or `a * b`, with the operator resolved to the primitive (so not
-/// to a user's own `+`).  The other primitives mean nothing on grades.
-fn arithmetic(t: &hir::Term) -> Option<(Prim, &hir::Term, &hir::Term)> {
+/// `a + b` or `a * b`, with the operator resolved to the primitive, or to
+/// the prelude's trait's method that is the operator (so not to a user's
+/// own `+`): `methods` are the traits' methods.  The other primitives mean
+/// nothing on grades.
+fn arithmetic<'t>(t: &'t hir::Term, methods: &std::collections::HashMap<usize, (usize, usize, usize)>) -> Option<(Prim, &'t hir::Term, &'t hir::Term)> {
     let TermKind::App(f, b) = &t.kind else { return None };
     let TermKind::App(op, a) = &f.kind else { return None };
     let TermKind::Var(op) = &op.kind else { return None };
-    match Prim::from_unique(op.unique?)? {
+    let u = op.unique?;
+    let prim = match Prim::from_unique(u) {
+        Some(p) => p,
+        None if methods.contains_key(&u) && op.text == "+" => Prim::IntAdd,
+        None if methods.contains_key(&u) && op.text == "*" => Prim::IntMul,
+        None => return None,
+    };
+    match prim {
         p @ (Prim::IntAdd | Prim::IntMul) => Some((p, a, b)),
         Prim::IntSub | Prim::IntDiv | Prim::IntMod | Prim::IntLt | Prim::IntEq | Prim::StrAppend => None,
     }
@@ -1132,6 +1141,14 @@ impl Checker {
                         // an auto argument after the last one given is
                         // found now: what it is for is all there
                         let (core, ty) = self.insert_autos(ctx, nid, core, ty);
+                        // and one waiting for its type may have it now, as
+                        // Lean synthesizes an application's instances once
+                        // its arguments are elaborated: so that `2 + 2` in a
+                        // type computes, rather than waiting for the end of
+                        // the definition
+                        if !self.deferred_autos.is_empty() {
+                            self.settle_autos(false);
+                        }
                         (core, ty, usage)
                     }
                 }
@@ -1547,8 +1564,8 @@ impl Checker {
                     (Rc::new(Core::Error), Usage::unknown())
                 }
             },
-            (TermKind::App(..), Value::LitTy(Builtin::Grade)) if arithmetic(t).is_some() => {
-                let (op, a, b) = arithmetic(t).expect("guarded");
+            (TermKind::App(..), Value::LitTy(Builtin::Grade)) if arithmetic(t, &self.methods).is_some() => {
+                let (op, a, b) = arithmetic(t, &self.methods).expect("guarded");
                 let (a_c, _) = self.check_grade(ctx, a);
                 let (b_c, _) = self.check_grade(ctx, b);
                 let core = match op {

@@ -487,9 +487,47 @@ fn times(used: &Core) -> String {
     }
 }
 
+/// What is shown of a metavariable is its number in what is shown: `?0`,
+/// `?1`, ... in the order they first appear in `text`, `seen` holding those
+/// numbered so far. (The checker's own numbers count every metavariable the
+/// prelude made too, which says nothing to the reader.)
+pub fn number_metas(seen: &mut HashMap<String, usize>, text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        out.push(c);
+        if c != '?' {
+            continue;
+        }
+        let mut end = i + 1;
+        while let Some(&(j, d)) = chars.peek() {
+            if !d.is_ascii_digit() {
+                break;
+            }
+            end = j + 1;
+            chars.next();
+        }
+        if end > i + 1 {
+            let next = seen.len();
+            let n = *seen.entry(text[i + 1..end].to_string()).or_insert(next);
+            out.push_str(&n.to_string());
+        }
+    }
+    out
+}
+
 impl TypeError {
     pub fn to_diagnostic(&self, spans: &SpanTable) -> Diagnostic {
-        self.notes.iter().fold(self.diagnostic(spans), |d, note| d.help(note.clone()))
+        let mut d = self.notes.iter().fold(self.diagnostic(spans), |d, note| d.help(note.clone()));
+        let mut seen = HashMap::new();
+        d.message = number_metas(&mut seen, &d.message);
+        for l in &mut d.labels {
+            l.message = number_metas(&mut seen, &l.message);
+        }
+        for h in &mut d.help {
+            *h = number_metas(&mut seen, h);
+        }
+        d
     }
 
     fn diagnostic(&self, spans: &SpanTable) -> Diagnostic {
@@ -533,7 +571,9 @@ impl TypeError {
                     ))
             }
             TypeErrorKind::NoInstance { wanted, deep } => {
-                let d = Diagnostic::error(format!("nothing in scope gives a {wanted}")).label(here, "an auto argument is wanted here");
+                let wanted = wanted.to_string();
+                let article = if wanted.starts_with(['A', 'E', 'I', 'O', 'U']) { "an" } else { "a" };
+                let d = Diagnostic::error(format!("nothing in scope gives {article} {wanted}")).label(here, "an auto argument is wanted here");
                 if *deep {
                     d.help("the search went round too many hints that want auto arguments of their own")
                 } else {

@@ -445,7 +445,15 @@ fun specializeAt (methods : HashMap Int (Int, Int, Int)) (fields : HashMap Int [
                             M.andThen
                               (\kept ->
                                 M.map
-                                  (\given -> V.foldl (\f a -> Core.App f (specializeAt methods fields ctx a base d)) given (V.drop args (params + 1)))
+                                  (\given0 ->
+                                    -- (shown as the method it was called as: `* n 2`)
+                                    let given =
+                                      match given0 with
+                                      | Core.Var i _ -> Core.Var i (snd mx)
+                                      | Core.Opaque u _ -> Core.Opaque u (snd mx)
+                                      | other -> other
+                                    in
+                                    V.foldl (\f a -> Core.App f (specializeAt methods fields ctx a base d)) given (V.drop args (params + 1)))
                                   (namedAt ctx kept base d))
                               (M.andThen (\fs -> M.andThen (\x -> x) (V.get fs field)) (Hm.lookup (fst ix) fields)))
                           (uniqueAt ctx (stripRuntime dict) base d))

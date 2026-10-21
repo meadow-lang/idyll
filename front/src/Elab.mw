@@ -56,6 +56,7 @@ use Idyll.Termination (checkTermination, arity)
 use Std.Collections.Vector as V
 use Std.Sort as Srt
 use Std.Collections.HashMap as Hm
+use Std.Collections.HashMap (HashMap)
 use Std.String as S
 use Std.Maybe as M
 use Std.Maybe.Maybe.*
@@ -99,17 +100,25 @@ fun isFlex (v : Value) : Bool = match v with | Value.Flex _ _ -> True | _ -> Fal
 
 -- `a + b` or `a * b`, the operator the primitive: where a grade is wanted,
 -- that is grade arithmetic.
-fun arithmetic (h : HirArena) (t : HirExpr) : Maybe (Prim, HirExpr, HirExpr) =
+-- (or to the prelude's trait's method that is the operator: `methods` are
+-- the traits' methods)
+fun arithmetic (h : HirArena) (methods : HashMap Int (Int, Int, Int)) (t : HirExpr) : Maybe (Prim, HirExpr, HirExpr) =
   match (h, t) with
   | HirExprApp f b ->
       (match (h, f) with
        | HirExprApp op a ->
            (match (h, op) with
             | HirExprVar x ->
-                (match primOf (V.getOr (0 - 1) (hirIdentUniques h x) 0) with
+                let u = V.getOr (0 - 1) (hirIdentUniques h x) 0 in
+                let method = Hm.member u methods in
+                (match primOf u with
                  | Just Prim.IntAdd -> Just (Prim.IntAdd, a, b)
                  | Just Prim.IntMul -> Just (Prim.IntMul, a, b)
-                 | _ -> None)
+                 | Just _ -> None
+                 | None ->
+                     if method and hirIdentText h x == "+" then Just (Prim.IntAdd, a, b)
+                     else if method and hirIdentText h x == "*" then Just (Prim.IntMul, a, b)
+                     else None)
             | _ -> None)
        | _ -> None)
   | _ -> None
@@ -338,6 +347,11 @@ fun autosAfter (tc : Tc) (ctx : Ctx) (r : (Core, Value, Usage)) : (Core, Value, 
   match r with
   | (core, ty, usage) ->
       let (c2, t2) = insertAutos tc ctx core ty in
+      -- and one waiting for its type may have it now, as Lean synthesizes an
+      -- application's instances once its arguments are elaborated: so that
+      -- `2 + 2` in a type computes, rather than waiting for the end of the
+      -- definition
+      let w = if V.isEmpty (getRef tc.deferredAutos) then False else A.settleAutos tc False in
       (c2, t2, usage)
 
 -- --- usage against grades ----------------------------------------------------------
@@ -1046,7 +1060,7 @@ pass! {
            again
            (\(c : Cx) -> inferApp c.tc c.ctx func arg)
            (\(c : Cx) g ->
-             match (force c.tc g, arithmetic src node) with
+             match (force c.tc g, arithmetic src (getRef c.tc.methods) node) with
              | (Value.LitTy Builtin.Grade, Just (op, a, b)) ->
                  (let (aC, _) = checkGrade c.tc c.ctx a in
                   let (bC, _) = checkGrade c.tc c.ctx b in
