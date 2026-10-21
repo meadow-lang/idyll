@@ -84,6 +84,9 @@ pub struct CompiledPackage {
     pub symbols: Vec<(usize, String, String)>,
     /// what its metavariables were solved with, which its code may mention
     pub meta_solutions: Vec<Option<Rc<Core>>>,
+    /// its definitions offered to the search for an auto argument
+    #[serde(default)]
+    pub hints: Vec<usize>,
 }
 
 impl Checker {
@@ -231,6 +234,11 @@ impl Checker {
             main: false,
             symbols: Vec::new(),
             meta_solutions,
+            hints: {
+                let mut hints: Vec<usize> = self.hints.iter().copied().filter(|u| own_set.contains(u)).collect();
+                hints.sort_unstable();
+                hints
+            },
         }
     }
 }

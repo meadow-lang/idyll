@@ -85,14 +85,53 @@ def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) =
               idyll:Prelude/digitString(v_71; k_63)))))
   }>
 
-def idyll:Main/head <'a_76 = d_a_75> (d_a_75: desc, v_77: ptr; k_78: ptr) =
-  <v_77 | case {
-    idyll:Main/Vec.Cons(x_79: 'a_76, xs_80: ptr) =>
-      <x_79 | k_78>
+def idyll:Main/"#show Vec Z Int" (x_95: ptr; k_96: ptr) =
+  <x_95 | case {
+    idyll:Main/Vec.Nil =>
+      <"Nil" | k_96>
   }>
 
-def idyll:Main/"#entry" (; k_81: ptr) =
-  <idyll:Main/Vec.Nil | μ̃ v_87: ptr.
-    <idyll:Main/Vec.Cons(7, v_87) | μ̃ v_86: ptr.
-      idyll:Main/head(desc(i64), v_86; μ̃ answer_82: i64.
-        idyll:Prelude/showInt(answer_82; k_81))>>
+def idyll:Main/"#show Vec (S Z) Int" (x_89: ptr; k_90: ptr) =
+  <x_89 | case {
+    idyll:Main/Vec.Cons(f_91: i64, f_92: ptr) =>
+      idyll:Prelude/showInt(f_91; μ̃ s_93: str.
+        idyll:Main/"#show Vec Z Int"(f_92; μ̃ s_94: str.
+          prim concatStrings(["Cons", " ", s_93, " ", s_94]; k_90)))
+  }>
+
+def idyll:Main/"#atom Vec (S Z) Int" (x_97: ptr; k_98: ptr) =
+  <x_97 | case {
+    idyll:Main/Vec.Cons(f_99: i64, f_100: ptr) =>
+      idyll:Main/"#show Vec (S Z) Int"(x_97; μ̃ s_101: str.
+        prim concatStrings(["(", s_101, ")"]; k_98))
+  }>
+
+def idyll:Main/"#show Vec (S (S Z)) Int" (x_83: ptr; k_84: ptr) =
+  <x_83 | case {
+    idyll:Main/Vec.Cons(f_85: i64, f_86: ptr) =>
+      idyll:Prelude/showInt(f_85; μ̃ s_87: str.
+        idyll:Main/"#atom Vec (S Z) Int"(f_86; μ̃ s_88: str.
+          prim concatStrings(["Cons", " ", s_87, " ", s_88]; k_84)))
+  }>
+
+def idyll:Main/"#atom Vec (S (S Z)) Int" (x_102: ptr; k_103: ptr) =
+  <x_102 | case {
+    idyll:Main/Vec.Cons(f_104: i64, f_105: ptr) =>
+      idyll:Main/"#show Vec (S (S Z)) Int"(x_102; μ̃ s_106: str.
+        prim concatStrings(["(", s_106, ")"]; k_103))
+  }>
+
+def idyll:Main/"#show Vec (S (S (S Z))) Int" (x_77: ptr; k_78: ptr) =
+  <x_77 | case {
+    idyll:Main/Vec.Cons(f_79: i64, f_80: ptr) =>
+      idyll:Prelude/showInt(f_79; μ̃ s_81: str.
+        idyll:Main/"#atom Vec (S (S Z)) Int"(f_80; μ̃ s_82: str.
+          prim concatStrings(["Cons", " ", s_81, " ", s_82]; k_78)))
+  }>
+
+def idyll:Main/"#entry" (; k_75: ptr) =
+  <idyll:Main/Vec.Nil | μ̃ v_109: ptr.
+    <idyll:Main/Vec.Cons(3, v_109) | μ̃ v_108: ptr.
+      <idyll:Main/Vec.Cons(2, v_108) | μ̃ v_107: ptr.
+        <idyll:Main/Vec.Cons(1, v_107) | μ̃ answer_76: ptr.
+          idyll:Main/"#show Vec (S (S (S Z))) Int"(answer_76; k_75)>>>>

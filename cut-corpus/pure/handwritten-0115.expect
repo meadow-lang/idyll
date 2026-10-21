@@ -1,0 +1,21 @@
+-- | -- auto arguments: a record searched for among the hints and the auto binders in scope
+-- | record Describe (a : Type) = { describe : a -> String }
+-- | 
+-- | @hint
+-- | describeInt : Describe Int
+-- | describeInt = Describe { describe = \(n : Int) -> showInt n }
+-- | 
+-- | @hint
+-- | describeList : {a : Type} -> Describe a => Describe (List a)
+-- | describeList = Describe { describe = \(xs : List a) -> "[" ++ items xs ++ "]" }
+-- | 
+-- | say : {a : Type} -> {auto d : Describe a} -> a -> String
+-- | say x = d.describe x
+-- | 
+-- | items : {a : Type} -> Describe a => List a -> String
+-- | items Nil = ""
+-- | items (x :: xs) = say x ++ ";" ++ items xs
+-- | 
+-- | (say 1, say (2 :: 3 :: Nil), let xs = Nil in say (4 :: xs))
+answer: ("1", "[2;3;]", "[4;]")
+exit: 0

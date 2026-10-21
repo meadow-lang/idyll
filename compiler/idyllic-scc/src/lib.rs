@@ -27,7 +27,11 @@ use std::collections::{HashMap, HashSet};
 pub fn scc_module(m: Module) -> Module {
     // (each top-level group apart: the prelude's definitions all come before
     // the program's)
-    let groups = m.groups.into_iter().flat_map(|g| scc_groups(vec![g])).collect();
+    // (and the hints before what may want them, which is everything that
+    // they do not need themselves: a search for an auto argument finds only
+    // what has been checked)
+    let hints = m.hints.clone();
+    let groups = m.groups.into_iter().flat_map(|g| scc_groups_with(vec![g], &hints)).collect();
     let datas = order_datas(m.datas);
     Module { groups, datas, body: m.body.map(scc_term), ..m }
 }
@@ -75,12 +79,16 @@ fn order_datas(datas: Vec<DataDecl>) -> Vec<DataDecl> {
 /// renamer's conservative recursive group in place, and a plain nested
 /// `let x = 1` is then wrongly told it needs a signature.)
 fn scc_groups(groups: Vec<BindGroup>) -> Vec<BindGroup> {
+    scc_groups_with(groups, &HashSet::new())
+}
+
+fn scc_groups_with(groups: Vec<BindGroup>, hints: &HashSet<usize>) -> Vec<BindGroup> {
     let binds = groups
         .into_iter()
         .flat_map(BindGroup::into_binds)
         .map(|b| Bind { ty: b.ty.map(scc_term), rhs: scc_term(b.rhs), ..b })
         .collect();
-    scc_binds(binds)
+    scc_binds_with(binds, hints)
 }
 
 /// Rewrite every `let` in a term so its groups are dependency-ordered SCCs,
@@ -153,6 +161,12 @@ fn scc_grades(g: GradeAnn) -> GradeAnn {
 /// uses, components come out dependencies-first — the order type checking
 /// wants.  Members of a component keep their source order.
 pub fn scc_binds(binds: Vec<Bind>) -> Vec<BindGroup> {
+    scc_binds_with(binds, &HashSet::new())
+}
+
+/// The same, with each of `hints` before every binding it does not itself
+/// lead to.
+fn scc_binds_with(binds: Vec<Bind>, hints: &HashSet<usize>) -> Vec<BindGroup> {
     let index_of: HashMap<usize, usize> = binds
         .iter()
         .enumerate()
@@ -169,6 +183,7 @@ pub fn scc_binds(binds: Vec<Bind>) -> Vec<BindGroup> {
             deps
         })
         .collect();
+    let edges = before_hints(&binds, edges, hints);
 
     let mut tarjan = Tarjan::new(binds.len());
     for v in 0..binds.len() {
@@ -203,6 +218,40 @@ pub fn scc_binds(binds: Vec<Bind>) -> Vec<BindGroup> {
             }
         })
         .collect()
+}
+
+/// `edges`, and an edge from each binding to each hint among `binds` that
+/// does not lead back to it: that the hint is checked first.
+fn before_hints(binds: &[Bind], mut edges: Vec<Vec<usize>>, hints: &HashSet<usize>) -> Vec<Vec<usize>> {
+    let hinted: Vec<usize> = (0..binds.len()).filter(|&i| binds[i].name.unique.is_some_and(|u| hints.contains(&u))).collect();
+    if hinted.is_empty() {
+        return edges;
+    }
+    // what each hint leads to, by the edges as they were
+    let reach = |from: usize| {
+        let mut seen = vec![false; binds.len()];
+        let mut todo = vec![from];
+        while let Some(v) = todo.pop() {
+            if !std::mem::replace(&mut seen[v], true) {
+                todo.extend(edges[v].iter().copied());
+            }
+        }
+        seen
+    };
+    let reached: Vec<(usize, Vec<bool>)> = hinted.iter().map(|&h| (h, reach(h))).collect();
+    for (h, leads) in reached {
+        for (b, out) in edges.iter_mut().enumerate() {
+            // (hints among themselves only by what they use: one hint wanting
+            // another, where neither uses the other, would tie them together)
+            if b != h && !leads[b] && !out.contains(&h) && !hinted.contains(&b) {
+                out.push(h);
+            }
+        }
+    }
+    for out in &mut edges {
+        out.sort_unstable();
+    }
+    edges
 }
 
 struct Tarjan {

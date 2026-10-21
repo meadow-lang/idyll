@@ -403,12 +403,30 @@ use Maybe.*"),
         text: &[
             "An argument in braces is implicit: it is worked out from the",
             "others, so it isn't written at the call. Implicit arguments are",
-            "erased unless they say otherwise.",
+            "erased unless they say otherwise. To say one yourself, write it",
+            "in braces at the call: `id {Int} 3`.",
         ],
         examples: &[
             ok("id : {a : Type} -> a -> a\nid x = x"),
             ok("id 3"),
             ok("id \"implicitly a String\""),
+            ok("id {Int} 3"),
+        ],
+    },
+    Step {
+        title: "Auto arguments",
+        section: Section::Dependent,
+        text: &[
+            "`{auto d : t}` is an argument found by searching for something of",
+            "type `t`: the auto binders in scope, then the definitions marked",
+            "`@hint`. `t => ..` is one with no name. A record of functions,",
+            "found by its type, is what traits will be made of.",
+        ],
+        examples: &[
+            ok("record Describe (a : Type) = { describe : (x : [] a) -> String }"),
+            ok("@hint\ndescribeInt : Describe Int\ndescribeInt = Describe { describe = showInt }"),
+            ok("say : {a : Type} -> {auto d : Describe a} -> (x : [] a) -> String\nsay x = d.describe x"),
+            ok("say 42"),
         ],
     },
     Step {

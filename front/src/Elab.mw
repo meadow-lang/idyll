@@ -1165,6 +1165,8 @@ fun inferPi (tc : Tc) (ctx : Ctx) (mx : Maybe Ident) (icit : Icit) (ann : Maybe 
   let spine = getRef tc.spineHere in
   let h = hirOf tc in
   let name = match mx with | Just x -> H.textOf x | None -> "_" in
+  -- (an auto argument is found by search, which this checker has not yet)
+  let wAuto = if icit == Icit.Auto then T.cannot tc "auto arguments" else () in
   let default = if icit == Icit.Implicit then G.zero else defaultGrade tc in
   let (gs, its) = binderGrades tc ctx ann default in
   -- a parameter of a definition that says no grade, in a module that is

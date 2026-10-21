@@ -101,6 +101,7 @@
 //!
 //! * There is no syntax for giving an implicit argument explicitly.
 
+mod auto;
 pub mod core;
 pub mod grade;
 mod elab;
@@ -311,6 +312,13 @@ pub enum TypeErrorKind {
     /// an implicit argument given by hand, `f {a}`, to something whose type
     /// has no implicit binder next
     NoImplicitArgument(Rc<Core>),
+    /// nothing in scope, no auto binder and no hint, gives an auto argument
+    /// of this type; `deep` when the search went too deep looking
+    NoInstance { wanted: Rc<Core>, deep: bool },
+    /// more than one hint gives it
+    AmbiguousInstance { wanted: Rc<Core>, candidates: Vec<String> },
+    /// what an auto argument is to be was never known well enough to look
+    UnknownInstance(Rc<Core>),
     /// no meaning of an overloaded name fits where it is used: its
     /// spelling, the type wanted there if one was, and each meaning
     NoMeaning { name: String, wanted: Option<Rc<Core>>, candidates: Vec<String> },
@@ -515,6 +523,22 @@ impl TypeError {
                         candidates.join("\n  ")
                     ))
             }
+            TypeErrorKind::NoInstance { wanted, deep } => {
+                let d = Diagnostic::error(format!("nothing in scope gives a {wanted}")).label(here, "an auto argument is wanted here");
+                if *deep {
+                    d.help("the search went round too many hints that want auto arguments of their own")
+                } else {
+                    d.help("an auto binder, {auto d : ..} or .. =>, or a definition marked @hint, of that type would")
+                }
+            }
+            TypeErrorKind::AmbiguousInstance { wanted, candidates } => {
+                Diagnostic::error(format!("more than one hint gives a {wanted}"))
+                    .label(here, "an auto argument is wanted here")
+                    .help(format!("the hints that do:\n  {}", candidates.join("\n  ")))
+            }
+            TypeErrorKind::UnknownInstance(wanted) => Diagnostic::error("cannot tell what to look for")
+                .label(here, format!("an auto argument of type {wanted} is wanted here, and what it is is never worked out"))
+                .help("say more of the type, with an annotation"),
             TypeErrorKind::NoImplicitArgument(ty) => Diagnostic::error("no implicit argument is taken here")
                 .label(here, format!("given by hand, but what it is given to has type {ty}"))
                 .help("`f {a}` gives `f` the implicit argument its type binds next, as `{a : Type} -> ..`"),
@@ -776,6 +800,9 @@ struct Binder {
     /// How often it may be used, where that is known: matching takes a
     /// value apart into fields of the same grade.
     grade: Option<Rc<Value>>,
+    /// Whether it is an auto binder, which a search for an auto argument
+    /// may find (see [`auto`]).
+    auto: bool,
 }
 
 /// How a name is referred to.
@@ -859,7 +886,7 @@ impl Ctx {
         let mut next = self.clone();
         next.lvl = self.lvl + 1;
         next.env = self.env.push(value);
-        next.binders.push(Binder { info, name: hint.to_string(), ty, key: unique, grade: None });
+        next.binders.push(Binder { info, name: hint.to_string(), ty, key: unique, grade: None, auto: false });
         if let Some(u) = unique {
             next.names.insert(u, Entry::Local(self.lvl));
         }
@@ -886,6 +913,14 @@ impl Ctx {
     fn graded(mut self, grade: &Rc<Value>) -> Ctx {
         if let Some(b) = self.binders.last_mut() {
             b.grade = Some(grade.clone());
+        }
+        self
+    }
+
+    /// The last binder, as an auto binder: what a search may find.
+    fn auto_bound(mut self) -> Ctx {
+        if let Some(b) = self.binders.last_mut() {
+            b.auto = true;
         }
         self
     }
@@ -1061,6 +1096,12 @@ pub struct Checker {
     /// where each type and constructor is from, by unique: its package, for
     /// a message about two of one name
     homes: HashMap<usize, String>,
+    /// The definitions offered to the search for an auto argument, this
+    /// package's and those it depends on, with their names for messages;
+    /// and the searches waiting for their types (see [`auto`]).
+    hints: HashSet<usize>,
+    hint_names: HashMap<usize, String>,
+    deferred_autos: Vec<auto::DeferredAuto>,
 }
 
 /// A parameter's grade being worked out: how many variables its meta is
@@ -1264,7 +1305,27 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         written_as: HashMap::new(),
         origin: HashMap::new(),
         homes: HashMap::new(),
+        hints: m.hints.clone(),
+        hint_names: HashMap::new(),
+        deferred_autos: Vec::new(),
     };
+    for b in m.groups.iter().flat_map(hir::BindGroup::binds) {
+        if let Some(u) = b.name.unique.filter(|u| m.hints.contains(u)) {
+            let name = match m.qualifiers.get(&u) {
+                Some(q) => format!("{q}.{}", b.name.text),
+                None => b.name.text.clone(),
+            };
+            tc.hint_names.insert(u, name);
+        }
+    }
+    for p in deps {
+        tc.hints.extend(p.hints.iter().copied());
+        for (u, package, path) in &p.symbols {
+            if p.hints.contains(u) {
+                tc.hint_names.insert(*u, format!("{path}, from `{package}`"));
+            }
+        }
+    }
     // (a package is known by its name and version: `Shapes@0.1.0`)
     let this = match &m.version {
         Some(v) => format!("`{}@{v}`", m.package),

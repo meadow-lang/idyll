@@ -825,6 +825,48 @@ still worked out.
 (1, True) : (Int, Bool)
 ```
 
+### Auto arguments
+
+An *auto* argument, `{auto d : t}`, is implicit too, but it is not worked
+out from the types around it: it is *found*, by searching for something of
+type `t`, as Idris finds them. `t => ..` is one with no name. The search
+looks first at the auto binders in scope, innermost first, and then at the
+*hints*: the definitions marked `@hint`. This is what traits will be made
+of, a record of functions found by its type:
+
+```
+record Describe (a : Type) = { describe : a -> String }
+
+@hint
+describeInt : Describe Int
+describeInt = Describe { describe = \(n : Int) -> showInt n }
+
+@hint
+describeList : {a : Type} -> Describe a => Describe (List a)
+describeList = Describe { describe = \(xs : List a) -> "[" ++ items xs ++ "]" }
+
+say : {a : Type} -> {auto d : Describe a} -> a -> String
+say x = d.describe x
+
+items : {a : Type} -> Describe a => List a -> String
+items Nil = ""
+items (x :: xs) = say x ++ ";" ++ items xs
+
+say (1 :: 2 :: Nil)          -- "[1;2;]"
+```
+
+`say (1 :: 2 :: Nil)` wants a `Describe (List Int)`: `describeList` gives
+one if it is given a `Describe Int`, which `describeInt` is. Inside
+`items`, `say x` finds `items`' own auto binder. A hint may come anywhere
+in the module: hints are checked before what may want them.
+
+What is searched for has to be known first, so a search waits until the
+rest of the definition has said what its type is: in `let xs = Nil in say
+(4 :: xs)`, it is `4` that says the list holds `Int`s. Nothing that gives
+one, more than one hint that does, or a type that is never known well
+enough to look, is an error. An auto argument is used at run time, so its
+grade is `[]` unless it says otherwise.
+
 The result type can depend on an argument in more interesting ways. Here
 `b` is a *function* from values to types, so the type of `f y` depends on
 the value `y`:

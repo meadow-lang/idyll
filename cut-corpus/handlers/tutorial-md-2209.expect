@@ -1,0 +1,14 @@
+-- | effect Ask where
+-- |   ask : () -> Int
+-- | effect Log where
+-- |   log : Int -> ()
+-- | addAsk : Int -> Int ! Ask
+-- | addAsk n = n + ask ()
+-- | logged : Int -> Int ! Log
+-- | logged n = let u = log n in n
+-- | compose : (f : b -> c ! e) -> (g : a -> b ! e) -> (x : a) -> c ! e
+-- | compose f g x = f (g x)
+-- | both n = compose logged addAsk n
+-- | handle (handle both 1 with { ask _ k -> k 10 }) with { log _ k -> k () }
+answer: 11
+exit: 0

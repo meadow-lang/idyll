@@ -139,7 +139,9 @@ impl Checker {
     /// what still has several meanings then is ambiguous.
     pub(super) fn settle_deferred(&mut self) {
         loop {
-            let mut progress = false;
+            // (a search for an auto argument may wait on an overloaded name,
+            // and the other way round)
+            let mut progress = self.settle_autos(false);
             for d in std::mem::take(&mut self.deferred) {
                 let fits = self.fitting(&d.ctx, &d.term, d.head, Some(&d.ty));
                 match fits[..] {
@@ -157,10 +159,11 @@ impl Checker {
                     _ => self.deferred.push(d),
                 }
             }
-            if !progress || self.deferred.is_empty() {
+            if !progress || (self.deferred.is_empty() && self.deferred_autos.is_empty()) {
                 break;
             }
         }
+        self.settle_autos(true);
         for d in std::mem::take(&mut self.deferred) {
             let fits = self.fitting(&d.ctx, &d.term, d.head, Some(&d.ty));
             let wanted = self.shown_wanted(&d.ctx, &d.ty);
@@ -221,6 +224,9 @@ impl Checker {
         }
         core.rewrite(0, &|c, d| match c {
             Core::Meta(m) => self.chosen.get(m).map(|(chosen, at)| {
+                // what it stands for may hold placeholders in turn: a hint's
+                // own auto arguments
+                let chosen = &self.resolve(chosen, *at);
                 // made at level `at`, and used at `base + d`
                 let by = (base + d) as isize - *at as isize;
                 if by == 0 {

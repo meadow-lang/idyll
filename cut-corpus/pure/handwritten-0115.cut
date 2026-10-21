@@ -1,0 +1,229 @@
+cut 0
+entry idyll:Main/"#entry"
+answer str
+
+data idyll:Prelude/List <'a0> { Nil; "::"('a0, ptr) }
+
+data idyll:Prelude/Pair <'a0, 'a1> { Pair('a0, 'a1) }
+
+data idyll:Prelude/DigitFuel { Spent; More(ptr) }
+
+data idyll:Main/Describe { Describe(ptr) }
+
+roles {
+  nil = idyll:Prelude/List.Nil
+  cons = idyll:Prelude/List."::"
+}
+
+val idyll:Prelude/digitFuel : ptr =
+  <idyll:Prelude/DigitFuel.Spent | μ̃ v_20: ptr.
+    <idyll:Prelude/DigitFuel.More(v_20) | μ̃ v_19: ptr.
+      <idyll:Prelude/DigitFuel.More(v_19) | μ̃ v_18: ptr.
+        <idyll:Prelude/DigitFuel.More(v_18) | μ̃ v_17: ptr.
+          <idyll:Prelude/DigitFuel.More(v_17) | μ̃ v_16: ptr.
+            <idyll:Prelude/DigitFuel.More(v_16) | μ̃ v_15: ptr.
+              <idyll:Prelude/DigitFuel.More(v_15) | μ̃ v_14: ptr.
+                <idyll:Prelude/DigitFuel.More(v_14) | μ̃ v_13: ptr.
+                  <idyll:Prelude/DigitFuel.More(v_13) | μ̃ v_12: ptr.
+                    <idyll:Prelude/DigitFuel.More(v_12) | μ̃ v_11: ptr.
+                      <idyll:Prelude/DigitFuel.More(v_11) | μ̃ v_10: ptr.
+                        <idyll:Prelude/DigitFuel.More(v_10) | μ̃ v_9: ptr.
+                          <idyll:Prelude/DigitFuel.More(v_9) | μ̃ v_8: ptr.
+                            <idyll:Prelude/DigitFuel.More(v_8) | μ̃ v_7: ptr.
+                              <idyll:Prelude/DigitFuel.More(v_7) | μ̃ v_6: ptr.
+                                <idyll:Prelude/DigitFuel.More(v_6) | μ̃ v_5: ptr.
+                                  <idyll:Prelude/DigitFuel.More(v_5) | μ̃ v_4: ptr.
+                                    <idyll:Prelude/DigitFuel.More(v_4) | μ̃ v_3: ptr.
+                                      <idyll:Prelude/DigitFuel.More(v_3) | μ̃ v_2: ptr.
+                                        <idyll:Prelude/DigitFuel.More(v_2) | μ̃ v_1: ptr.
+                                          <idyll:Prelude/DigitFuel.More(v_1) | halt>>>>>>>>>>>>>>>>>>>>>
+
+val idyll:Main/describeInt : ptr =
+  <idyll:Main/Describe.Describe(cocase {
+    apply(n_61: i64; k_62: ptr) =>
+      idyll:Prelude/showInt(n_61; k_62)
+  }) | halt>
+
+def idyll:Prelude/digitString (d_22: i64; k_23: ptr) =
+  prim eq(d_22, 0; μ̃ v__24: bool.
+    prim if(v__24; μ̃ u_49: unit.
+      prim eq(d_22, 1; μ̃ v__25: bool.
+        prim if(v__25; μ̃ u_47: unit.
+          prim eq(d_22, 2; μ̃ v__26: bool.
+            prim if(v__26; μ̃ u_45: unit.
+              prim eq(d_22, 3; μ̃ v__27: bool.
+                prim if(v__27; μ̃ u_43: unit.
+                  prim eq(d_22, 4; μ̃ v__28: bool.
+                    prim if(v__28; μ̃ u_41: unit.
+                      prim eq(d_22, 5; μ̃ v__29: bool.
+                        prim if(v__29; μ̃ u_39: unit.
+                          prim eq(d_22, 6; μ̃ v__30: bool.
+                            prim if(v__30; μ̃ u_37: unit.
+                              prim eq(d_22, 7; μ̃ v__31: bool.
+                                prim if(v__31; μ̃ u_35: unit.
+                                  prim eq(d_22, 8; μ̃ v__32: bool.
+                                    prim if(v__32; μ̃ u_33: unit.
+                                      <"9" | k_23>, μ̃ u_34: unit.
+                                      <"8" | k_23>)), μ̃ u_36: unit.
+                                  <"7" | k_23>)), μ̃ u_38: unit.
+                              <"6" | k_23>)), μ̃ u_40: unit.
+                          <"5" | k_23>)), μ̃ u_42: unit.
+                      <"4" | k_23>)), μ̃ u_44: unit.
+                  <"3" | k_23>)), μ̃ u_46: unit.
+              <"2" | k_23>)), μ̃ u_48: unit.
+          <"1" | k_23>)), μ̃ u_50: unit.
+      <"0" | k_23>))
+
+def idyll:Prelude/showInt (n_52: i64; k_53: ptr) =
+  prim lt(n_52, 0; μ̃ v__54: bool.
+    prim if(v__54; μ̃ u_59: unit.
+      prim sub(0, n_52; μ̃ v_57: i64.
+        idyll:Prelude/negativeDigits(idyll:Prelude/digitFuel, v_57; k_53)), μ̃ u_60: unit.
+      idyll:Prelude/negativeDigits(idyll:Prelude/digitFuel, n_52; μ̃ v_58: str.
+        prim concatStrings(["-", v_58]; k_53))))
+
+def idyll:Main/say <'a_68 = d_a_67> (d_a_67: desc, d_69: ptr, x_70: 'a_68; k_71: ptr) =
+  idyll:Main/Describe.describe(d_a_67, d_69; μ̃ r_75: ptr.
+    <r_75 | apply(x_70; k_71)>)
+
+def idyll:Main/describeList <'a_80 = d_a_79> (d_a_79: desc, v__81: ptr; k_82: ptr) =
+  <idyll:Main/Describe.Describe(cocase {
+    apply(xs_83: ptr; k_84: ptr) =>
+      idyll:Main/items(d_a_79, v__81, xs_83; μ̃ v_86: str.
+        prim concatStrings([v_86, "]"]; μ̃ v_85: str.
+          prim concatStrings(["[", v_85]; k_84)))
+  }) | k_82>
+
+def idyll:Prelude/negativeDigits (fuel_91: ptr, n_92: i64; k_93: ptr) =
+  <fuel_91 | case {
+    idyll:Prelude/DigitFuel.Spent =>
+      <"" | k_93>;
+    idyll:Prelude/DigitFuel.More(fuel_94: ptr) =>
+      prim sub(0, 10; μ̃ v_104: i64.
+        prim lt(v_104, n_92; μ̃ v__95: bool.
+          prim if(v__95; μ̃ u_102: unit.
+            prim div(n_92, 10; μ̃ v_100: i64.
+              idyll:Prelude/negativeDigits(fuel_94, v_100; μ̃ v_96: str.
+                prim mod(n_92, 10; μ̃ v_99: i64.
+                  prim sub(0, v_99; μ̃ v_98: i64.
+                    idyll:Prelude/digitString(v_98; μ̃ v_97: str.
+                      prim concatStrings([v_96, v_97]; k_93)))))), μ̃ u_103: unit.
+            prim sub(0, n_92; μ̃ v_101: i64.
+              idyll:Prelude/digitString(v_101; k_93)))))
+  }>
+
+def idyll:Main/Describe.describe <'a_106 = d_a_105> (d_a_105: desc, self_107: ptr; k_108: ptr) =
+  <self_107 | case {
+    idyll:Main/Describe.Describe(describe_109: ptr) =>
+      <describe_109 | k_108>
+  }>
+
+def idyll:Main/items <'a_111 = d_a_110> (d_a_110: desc, v__112: ptr, x_113: ptr; k_114: ptr) =
+  <x_113 | case {
+    idyll:Prelude/List.Nil =>
+      <"" | k_114>;
+    idyll:Prelude/List."::"(x_115: 'a_111, xs_116: ptr) =>
+      idyll:Main/say(d_a_110, v__112, x_115; μ̃ v_117: str.
+        idyll:Main/items(d_a_110, v__112, xs_116; μ̃ v_119: str.
+          prim concatStrings([";", v_119]; μ̃ v_118: str.
+            prim concatStrings([v_117, v_118]; k_114))))
+  }>
+
+def idyll:Main/"#escape" (s_132: str; k_134: ptr) =
+  prim stringByteLength(s_132; μ̃ n_133: i64.
+    idyll:Main/"#escape".go(s_132, 0, 0, n_133, ""; k_134))
+
+def idyll:Main/"#escape".go (s_135: str, start_136: i64, i_137: i64, n_138: i64, acc_139: str; k_140: ptr) =
+  prim eq(i_137, n_138; μ̃ u_150: unit.
+    prim stringByteAt(s_135, i_137; μ̃ b_141: i64.
+      idyll:Main/"#escape".byte(b_141; μ̃ e_142: str.
+        prim add(i_137, 1; μ̃ j_144: i64.
+          prim stringByteLength(e_142; μ̃ len_143: i64.
+            prim eq(len_143, 0; μ̃ u_148: unit.
+              prim stringSlice(s_135, start_136, i_137; μ̃ run_145: str.
+                prim concatStrings([acc_139, run_145, e_142]; μ̃ acc_146: str.
+                  idyll:Main/"#escape".go(s_135, j_144, j_144, n_138, acc_146; k_140))), μ̃ u_149: unit.
+              idyll:Main/"#escape".go(s_135, start_136, j_144, n_138, acc_139; k_140)))))), μ̃ u_151: unit.
+    prim stringSlice(s_135, start_136, n_138; μ̃ run_147: str.
+      prim concatStrings([acc_139, run_147]; k_140)))
+
+def idyll:Main/"#escape".byte (b_152: i64; k_153: ptr) =
+  prim eq(b_152, 34; μ̃ u_176: unit.
+    prim eq(b_152, 92; μ̃ u_174: unit.
+      prim eq(b_152, 10; μ̃ u_172: unit.
+        prim eq(b_152, 9; μ̃ u_170: unit.
+          prim eq(b_152, 13; μ̃ u_168: unit.
+            prim eq(b_152, 0; μ̃ u_166: unit.
+              prim eq(b_152, 127; μ̃ u_164: unit.
+                prim lt(b_152, 32; μ̃ u_162: unit.
+                  <"" | k_153>, μ̃ u_163: unit.
+                  prim div(b_152, 16; μ̃ hi_154: i64.
+                    prim mod(b_152, 16; μ̃ lo_155: i64.
+                      prim add(hi_154, 1; μ̃ hi_156: i64.
+                        prim add(lo_155, 1; μ̃ lo_157: i64.
+                          prim stringSlice("0123456789abcdef", hi_154, hi_156; μ̃ d_158: str.
+                            prim stringSlice("0123456789abcdef", lo_155, lo_157; μ̃ d_159: str.
+                              prim eq(hi_154, 0; μ̃ u_160: unit.
+                                prim concatStrings(["\\u{", d_158, d_159, "}"]; k_153), μ̃ u_161: unit.
+                                prim concatStrings(["\\u{", d_159, "}"]; k_153))))))))), μ̃ u_165: unit.
+                prim div(b_152, 16; μ̃ hi_154: i64.
+                  prim mod(b_152, 16; μ̃ lo_155: i64.
+                    prim add(hi_154, 1; μ̃ hi_156: i64.
+                      prim add(lo_155, 1; μ̃ lo_157: i64.
+                        prim stringSlice("0123456789abcdef", hi_154, hi_156; μ̃ d_158: str.
+                          prim stringSlice("0123456789abcdef", lo_155, lo_157; μ̃ d_159: str.
+                            prim eq(hi_154, 0; μ̃ u_160: unit.
+                              prim concatStrings(["\\u{", d_158, d_159, "}"]; k_153), μ̃ u_161: unit.
+                              prim concatStrings(["\\u{", d_159, "}"]; k_153))))))))), μ̃ u_167: unit.
+              <"\\0" | k_153>), μ̃ u_169: unit.
+            <"\\r" | k_153>), μ̃ u_171: unit.
+          <"\\t" | k_153>), μ̃ u_173: unit.
+        <"\\n" | k_153>), μ̃ u_175: unit.
+      <"\\\\" | k_153>), μ̃ u_177: unit.
+    <"\\\"" | k_153>)
+
+def idyll:Main/"#items (String, String)" (x_126: ptr; k_127: ptr) =
+  <x_126 | case {
+    idyll:Prelude/Pair.Pair(f_128: str, f_129: str) =>
+      idyll:Main/"#escape"(f_128; μ̃ e_179: str.
+        prim concatStrings(["\"", e_179, "\""]; μ̃ s_130: str.
+          idyll:Main/"#escape"(f_129; μ̃ e_178: str.
+            prim concatStrings(["\"", e_178, "\""]; μ̃ s_131: str.
+              prim concatStrings([s_130, ", ", s_131]; k_127)))))
+  }>
+
+def idyll:Main/"#show (String, String)" (x_180: ptr; k_181: ptr) =
+  idyll:Main/"#items (String, String)"(x_180; μ̃ s_182: str.
+    prim concatStrings(["(", s_182, ")"]; k_181))
+
+def idyll:Main/"#items (String, String, String)" (x_122: ptr; k_123: ptr) =
+  <x_122 | case {
+    idyll:Prelude/Pair.Pair(f_124: str, f_125: ptr) =>
+      idyll:Main/"#escape"(f_124; μ̃ e_185: str.
+        prim concatStrings(["\"", e_185, "\""]; μ̃ s_183: str.
+          idyll:Main/"#items (String, String)"(f_125; μ̃ s_184: str.
+            prim concatStrings([s_183, ", ", s_184]; k_123))))
+  }>
+
+def idyll:Main/"#show (String, String, String)" (x_186: ptr; k_187: ptr) =
+  idyll:Main/"#items (String, String, String)"(x_186; μ̃ s_188: str.
+    prim concatStrings(["(", s_188, ")"]; k_187))
+
+def idyll:Main/"#entry" (; k_120: ptr) =
+  idyll:Main/say(desc(i64), idyll:Main/describeInt, 1; μ̃ v_189: str.
+    idyll:Main/describeList(desc(i64), idyll:Main/describeInt; μ̃ v_199: ptr.
+      <idyll:Prelude/List.Nil | μ̃ v_202: ptr.
+        <idyll:Prelude/List."::"(3, v_202) | μ̃ v_201: ptr.
+          <idyll:Prelude/List."::"(2, v_201) | μ̃ v_200: ptr.
+            idyll:Main/say(desc(ptr), v_199, v_200; μ̃ v_191: str.
+              <cocase {
+                apply(a_197: desc; k_198: ptr) =>
+                  <idyll:Prelude/List.Nil(a_197) | k_198>
+              } | μ̃ xs_193: ptr.
+                idyll:Main/describeList(desc(i64), idyll:Main/describeInt; μ̃ v_194: ptr.
+                  <xs_193 | apply(desc(i64); μ̃ v_196: ptr.
+                    <idyll:Prelude/List."::"(4, v_196) | μ̃ v_195: ptr.
+                      idyll:Main/say(desc(ptr), v_194, v_195; μ̃ v_192: str.
+                        <idyll:Prelude/Pair.Pair(v_191, v_192) | μ̃ v_190: ptr.
+                          <idyll:Prelude/Pair.Pair(v_189, v_190) | μ̃ answer_121: ptr.
+                            idyll:Main/"#show (String, String, String)"(answer_121; k_120)>>)>)>)>)>>>))

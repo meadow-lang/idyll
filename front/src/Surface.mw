@@ -59,6 +59,7 @@ use Std.Result.Result.*
       decls : [Decl],
       shown : [Shown],
       terminating : [Name],
+      hints : [Name],
       linear : Bool,
       body : Maybe Expr,
       modules : [Module]
@@ -177,10 +178,11 @@ record Attrs = {
   vis : Maybe Visibility,
   native : Bool,
   terminating : Bool,
+  hint : Bool,
   linear : Bool
 }
 
-def noAttrs = Attrs { seq = None, vis = None, native = False, terminating = False, linear = False }
+def noAttrs = Attrs { seq = None, vis = None, native = False, terminating = False, hint = False, linear = False }
 
 -- What the passes carry down the tree: a record's earlier fields, which a
 -- later one's type reads off `self` -- each field's name, and the record's
@@ -500,6 +502,9 @@ fun opFrom out (cx : Cx) (op : IdyllOp) (skip : Int) =
            let binders = V.concatMap (\d -> match d with | (names, icit, annot) -> V.map (\x -> (x, icit, annot)) names) doms in
            pis out cx m binders result
        | None -> newSurfaceExprPi out m None Icit.Explicit None (chainOf out cx op skip) (result cx))
+  -- `C a => b`: an auto binder with no name
+  | Just (IdyllOpTail.Constraint k) ->
+      newSurfaceExprPi out m None Icit.Auto None (chainOf out cx op skip) (comp out cx m (idyllConstraintResult k) (idyllConstraintEff k))
   | None -> chainOf out cx op skip
 
 -- `(x y : a) -> b`, a `Pi` for each name, each seeing the ones before it.
@@ -547,7 +552,13 @@ fun domain (a : IdyllAtom) : Maybe ([Syn], Icit, IdyllAnnot) =
         (M.andThen (\t -> annotatedNames t False) (only (idyllParenItems q)))
   | IdyllAtom.Braced b if M.isNone (idyllBracedRest b) ->
       M.map
-        (\na -> match na with | (ns, an) -> (ns, Icit.Implicit, an))
+        (\na ->
+          match na with
+          -- `{auto d : Show a}`, found by search (but `{auto : t}` is a binder
+          -- named `auto`, as the Rust parser reads it)
+          | (ns, an) ->
+              if V.len ns > 1 and M.map R.text (V.head ns) == Just "auto" then (V.drop ns 1, Icit.Auto, an)
+              else (ns, Icit.Implicit, an))
         (M.andThen (\t -> annotatedNames t False) (only (idyllBracedItems b)))
   | _ -> None
 
@@ -1488,7 +1499,7 @@ fun useDecl out (cx : Cx) (d : IdyllUseDecl) =
 
 -- --- attributes ------------------------------------------------------------------------
 
-data Attribute = Seq String String | Vis Visibility | Native | Terminating | Linear
+data Attribute = Seq String String | Vis Visibility | Native | Terminating | Hint | Linear
 
 fun attribute (line : IdyllAttrLine) =
   let name = textOf (idyllAttrLineName line) in
@@ -1509,6 +1520,7 @@ fun attribute (line : IdyllAttrLine) =
   | ("pub", 2, Just ("super", None), _) -> Just (Attribute.Vis Visibility.Super)
   | ("native", 0, _, _) -> Just Attribute.Native
   | ("terminating", 0, _, _) -> Just Attribute.Terminating
+  | ("hint", 0, _, _) -> Just Attribute.Hint
   | ("linear", 0, _, _) -> Just Attribute.Linear
   | _ ->
       let u = bad (syntaxIdyllAttrLine line) "not an attribute: @${name}" in
@@ -1526,6 +1538,7 @@ fun attrsOf (at : Syn) (lines : [IdyllAttrLine]) : Attrs ! { Report | e } =
       | Just Attribute.Native -> if acc.native then let u = twice () in acc else { acc | native = True }
       | Just Attribute.Terminating ->
           if acc.terminating then let u = twice () in acc else { acc | terminating = True }
+      | Just Attribute.Hint -> if acc.hint then let u = twice () in acc else { acc | hint = True }
       | Just Attribute.Linear -> { acc | linear = True }
       | None -> acc)
     noAttrs
@@ -1547,7 +1560,7 @@ fun itemOf out (it : IdyllItem) =
     | Just (IdyllItemBody.Line l) ->
         (match lineItem out cx l with
          -- an upper-case signature with an attribute on it
-         | Item.Expr e if (M.isSome a.vis or a.terminating) and not a.native ->
+         | Item.Expr e if (M.isSome a.vis or a.terminating or a.hint) and not a.native ->
              (match upperSig out (metaOf at) e with
               | Just d -> Item.Decl d
               | None -> Item.Expr e)
@@ -1567,6 +1580,13 @@ fun itemOf out (it : IdyllItem) =
       match item with
       | Item.Decl d -> if kindSurfaceDecl out d == SurfaceDeclKind.Sig then () else bad at "@terminating goes on a definition's signature, f : a"
       | _ -> bad at "@terminating goes on a definition's signature, f : a"
+    else ()
+  in
+  let u4 =
+    if a.hint then
+      match item with
+      | Item.Decl d -> if kindSurfaceDecl out d == SurfaceDeclKind.Sig then () else bad at "@hint goes on a definition's signature, f : a"
+      | _ -> bad at "@hint goes on a definition's signature, f : a"
     else ()
   in
   let u3 =
@@ -1592,6 +1612,7 @@ record Parts = {
   decls : [SurfaceDecl],
   shown : [SurfaceShown],
   terminating : [SurfaceName],
+  hints : [SurfaceName],
   linear : Bool,
   body : Maybe SurfaceExpr,
   modules : [SurfaceModule]
@@ -1646,6 +1667,7 @@ fun fileOf out (root : Syn) (raw : [IdyllEntry]) (nested : Bool) =
                         p |
                         shown = (match a.vis with | Just v -> V.pushBack p.shown (newSurfaceShown out im (declared out d) v) | None -> p.shown),
                         terminating = if a.terminating then V.pushBack p.terminating (declared out d) else p.terminating,
+                        hints = if a.hint then V.pushBack p.hints (declared out d) else p.hints,
                         decls = V.pushBack p.decls d
                       }
                   | Item.Use u -> { p | uses = V.pushBack p.uses u }
@@ -1663,10 +1685,10 @@ fun fileOf out (root : Syn) (raw : [IdyllEntry]) (nested : Bool) =
                              in
                              p)
                   | Item.Nothing -> p)))
-      (Parts { uses = [], datas = [], effects = [], decls = [], shown = [], terminating = [], linear = False, body = None, modules = [] })
+      (Parts { uses = [], datas = [], effects = [], decls = [], shown = [], terminating = [], hints = [], linear = False, body = None, modules = [] })
       (V.range 0 n)
   in
-  newSurfaceFile out m parts.uses parts.datas parts.effects parts.decls parts.shown parts.terminating parts.linear parts.body parts.modules
+  newSurfaceFile out m parts.uses parts.datas parts.effects parts.decls parts.shown parts.terminating parts.hints parts.linear parts.body parts.modules
 
 -- --- writing a program out ---------------------------------------------------------
 
@@ -1711,7 +1733,7 @@ fun exprText (a : SurfaceArena) (e : SurfaceExpr) : String =
   | SurfaceExprVar x -> nameIn a x
   | SurfaceExprLit l -> literal l
   | SurfaceExprPi x icit g dom cod ->
-      sx ["pi", opt (nameIn a) x, (match icit with | Icit.Explicit -> "e" | Icit.Implicit -> "i"), opt (gradeText a) g, go dom, go cod]
+      sx ["pi", opt (nameIn a) x, (match icit with | Icit.Explicit -> "e" | Icit.Implicit -> "i" | Icit.Auto -> "a"), opt (gradeText a) g, go dom, go cod]
   | SurfaceExprLam p body -> sx ["lam", paramIn a p, go body]
   | SurfaceExprApp f x -> sx ["app", go f, go x]
   | SurfaceExprImplicitApp f x -> sx ["iapp", go f, go x]
@@ -1828,6 +1850,7 @@ fun fileText (a : SurfaceArena) (f : SurfaceFile) : String =
        V.map (declText a) (surfaceFileDecls a f),
        V.map (\v -> sx ["vis", nameIn a (surfaceShownName a v), visibilityText (surfaceShownVis a v)]) (surfaceFileShown a f),
        V.map (\x -> sx ["terminating", nameIn a x]) (surfaceFileTerminating a f),
+       V.map (\x -> sx ["hint", nameIn a x]) (surfaceFileHints a f),
        (match surfaceFileBody a f with | Just e -> [sx ["body", exprText a e]] | None -> []),
        V.concatMap
          (\mm ->

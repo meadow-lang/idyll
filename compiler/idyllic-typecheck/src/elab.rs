@@ -339,7 +339,7 @@ impl Checker {
     /// Something supplied `grade` times.  Zero times means it is never looked
     /// at, and the backend is told not to compute it: this is where erasure
     /// stops being a promise and becomes a fact.
-    fn argument(&self, grade: &Rc<Value>, arg: Rc<Core>) -> Rc<Core> {
+    pub(super) fn argument(&self, grade: &Rc<Value>, arg: Rc<Core>) -> Rc<Core> {
         match self.constant(grade) {
             Some(g) if g.is_zero() => Rc::new(Core::Runtime(Note::Erased, arg)),
             _ => arg,
@@ -360,9 +360,14 @@ impl Checker {
     pub(super) fn insert(&mut self, ctx: &Ctx, node: NodeId, mut core: Rc<Core>, mut ty: VTy) -> (Rc<Core>, VTy) {
         loop {
             ty = self.force(ty);
-            let Value::Pi { name, icit: Icit::Implicit, grade, dom, cod, .. } = &*ty else { return (core, ty) };
-            let desc = MetaOrigin::Inferred(format!("the implicit argument {name}"));
-            let arg = self.fresh_meta_with(ctx, node, desc, Some(dom.clone()));
+            let Value::Pi { name, icit: icit @ (Icit::Implicit | Icit::Auto), grade, dom, cod, .. } = &*ty else { return (core, ty) };
+            // an auto argument is found by search; an implicit one, worked out
+            let arg = if *icit == Icit::Auto {
+                self.auto_argument(ctx, node, dom.clone())
+            } else {
+                let desc = MetaOrigin::Inferred(format!("the implicit argument {name}"));
+                self.fresh_meta_with(ctx, node, desc, Some(dom.clone()))
+            };
             let arg_v = self.eval(&ctx.env, &arg);
             core = Rc::new(Core::App(core, self.argument(grade, arg)));
             ty = self.split_comp(self.apply(cod, arg_v)).0;
@@ -680,11 +685,13 @@ impl Checker {
     fn check_against_sig(&mut self, ctx: &Ctx, rhs: &hir::Term, sig: &hir::Term, vsig: VTy) -> (Rc<Core>, Usage) {
         let vsig = self.force(vsig);
         if let (
-            TermKind::Pi(Some(x), Icit::Implicit, _, _, sig_cod),
-            Value::Pi { name, icit: Icit::Implicit, grade, dom, cod, .. },
+            TermKind::Pi(Some(x), sig_icit @ (Icit::Implicit | Icit::Auto), _, _, sig_cod),
+            Value::Pi { name, icit: Icit::Implicit | Icit::Auto, grade, dom, cod, .. },
         ) = (&sig.kind, &*vsig)
         {
             let ctx2 = ctx.bind(Some(x), name, dom.clone()).graded(grade);
+            // an auto binder is what a search inside may find
+            let ctx2 = if *sig_icit == Icit::Auto { ctx2.auto_bound() } else { ctx2 };
             let (cod_v, allowed) = self.split_comp(self.apply(cod, vvar(ctx.lvl, name.clone())));
             let (body, mut usage) = self.check_against_sig(&ctx2, rhs, sig_cod, cod_v);
             self.close_effects(&ctx2, rhs.id, &mut usage, allowed);
@@ -1101,7 +1108,13 @@ impl Checker {
             // keeps the hierarchy from collapsing into `Type : Type`.
             TermKind::Pi(mx, icit, ann, dom, cod) => {
                 let name = mx.as_ref().map_or("_", |x| x.text.as_str()).to_string();
-                let default = if *icit == Icit::Implicit { Grade::ZERO } else { self.default_grade() };
+                // an implicit argument is erased; an auto one is a value,
+                // used as often as wanted
+                let default = match icit {
+                    Icit::Implicit => Grade::ZERO,
+                    Icit::Auto => Grade::DEFAULT,
+                    Icit::Explicit => self.default_grade(),
+                };
                 let ((grade, _), (in_type, in_type_v)) = self.binder_grades(ctx, ann.as_ref(), default);
                 // a parameter of a definition that says no grade, in a module
                 // that is not linear: its grade is worked out from the body
@@ -1381,7 +1394,7 @@ impl Checker {
         }
         // headed by a name with several meanings: the one that fits (once
         // an implicit function wanted has bound its argument)
-        if !matches!(&*expected, Value::Pi { icit: Icit::Implicit, .. }) {
+        if !matches!(&*expected, Value::Pi { icit: Icit::Implicit | Icit::Auto, .. }) {
             if let Some((core, _, usage)) = self.overloaded(ctx, t, Some(&expected)) {
                 return (core, usage);
             }
@@ -1390,8 +1403,10 @@ impl Checker {
             // An implicit function is wanted, and the surface language has no
             // implicit lambda to be one: bind the argument here.  It has no
             // name in the term, so it cannot be used, only inferred.
-            (_, Value::Pi { name, icit: Icit::Implicit, grade, dom, cod, .. }) => {
+            (_, Value::Pi { name, icit: icit @ (Icit::Implicit | Icit::Auto), grade, dom, cod, .. }) => {
                 let ctx2 = ctx.bind(None, name, dom.clone()).graded(grade);
+                // an auto binder is what a search inside may find
+                let ctx2 = if *icit == Icit::Auto { ctx2.auto_bound() } else { ctx2 };
                 let (cod_v, allowed) = self.split_comp(self.apply(cod, vvar(ctx.lvl, name.clone())));
                 let (body_c, mut usage) = self.check(&ctx2, t, cod_v);
                 self.close_effects(&ctx2, nid, &mut usage, allowed);

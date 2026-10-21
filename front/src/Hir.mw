@@ -16,7 +16,8 @@ use Std.Maybe.Maybe.*
 
 -- Whether an argument is written, or left for the checker to work out.
 @derive(PartialEq)
-@pub data Icit = Explicit | Implicit
+-- `Auto`: `{auto d : t}`, or `t => ..`, found by search
+@pub data Icit = Explicit | Implicit | Auto
 
 @derive(PartialEq)
 @pub data Literal = Unit | Int Int | Bool Bool | Str String | Char Char

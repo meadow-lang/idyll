@@ -2,14 +2,11 @@ cut 0
 entry idyll:Main/"#entry"
 answer str
 
-data idyll:Prelude/List <'a0> { Nil; "::"('a0, ptr) }
-
 data idyll:Prelude/DigitFuel { Spent; More(ptr) }
 
-roles {
-  nil = idyll:Prelude/List.Nil
-  cons = idyll:Prelude/List."::"
-}
+effect idyll:Main/Ask { ask(unit) -> i64 }
+
+effect idyll:Main/Log { log(i64) -> unit }
 
 val idyll:Prelude/digitFuel : ptr =
   <idyll:Prelude/DigitFuel.Spent | μ̃ v_20: ptr.
@@ -72,44 +69,61 @@ def idyll:Prelude/showInt (n_52: i64; k_53: ptr) =
       idyll:Prelude/negativeDigits(idyll:Prelude/digitFuel, n_52; μ̃ v_58: str.
         prim concatStrings(["-", v_58]; k_53))))
 
-def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) =
-  <fuel_61 | case {
+def idyll:Main/addAsk (n_62: i64; k_63: ptr) =
+  perform idyll:Main/Ask.ask(unit; μ̃ v_64: i64.
+    prim add(n_62, v_64; k_63))
+
+def idyll:Main/logged (n_66: i64; k_67: ptr) =
+  perform idyll:Main/Log.log(n_66; μ̃ u_68: unit.
+    <n_66 | k_67>)
+
+def idyll:Main/compose <'b_79 = d_b_78, 'c_81 = d_c_80, 'a_84 = d_a_83; e_82: Effect> (d_b_78: desc, d_c_80: desc, d_a_83: desc, f_85: ptr, g_86: ptr, x_87: 'a_84; k_88: ptr) =
+  <g_86 | apply(x_87; μ̃ v_89: 'b_79.
+    <f_85 | apply(v_89; k_88)>)>
+
+def idyll:Main/both (n_91: i64; k_92: ptr) =
+  <cocase {
+    apply(a_97: i64; k_98: ptr) =>
+      idyll:Main/logged(a_97; k_98)
+  } | μ̃ v_93: ptr.
+    <cocase {
+      apply(a_95: i64; k_96: ptr) =>
+        idyll:Main/addAsk(a_95; k_96)
+    } | μ̃ v_94: ptr.
+      idyll:Main/compose(desc(i64), desc(i64), desc(i64), v_93, v_94, n_91; k_92)>>
+
+def idyll:Prelude/negativeDigits (fuel_99: ptr, n_100: i64; k_101: ptr) =
+  <fuel_99 | case {
     idyll:Prelude/DigitFuel.Spent =>
-      <"" | k_63>;
-    idyll:Prelude/DigitFuel.More(fuel_64: ptr) =>
-      prim sub(0, 10; μ̃ v_74: i64.
-        prim lt(v_74, n_62; μ̃ v__65: bool.
-          prim if(v__65; μ̃ u_72: unit.
-            prim div(n_62, 10; μ̃ v_70: i64.
-              idyll:Prelude/negativeDigits(fuel_64, v_70; μ̃ v_66: str.
-                prim mod(n_62, 10; μ̃ v_69: i64.
-                  prim sub(0, v_69; μ̃ v_68: i64.
-                    idyll:Prelude/digitString(v_68; μ̃ v_67: str.
-                      prim concatStrings([v_66, v_67]; k_63)))))), μ̃ u_73: unit.
-            prim sub(0, n_62; μ̃ v_71: i64.
-              idyll:Prelude/digitString(v_71; k_63)))))
+      <"" | k_101>;
+    idyll:Prelude/DigitFuel.More(fuel_102: ptr) =>
+      prim sub(0, 10; μ̃ v_112: i64.
+        prim lt(v_112, n_100; μ̃ v__103: bool.
+          prim if(v__103; μ̃ u_110: unit.
+            prim div(n_100, 10; μ̃ v_108: i64.
+              idyll:Prelude/negativeDigits(fuel_102, v_108; μ̃ v_104: str.
+                prim mod(n_100, 10; μ̃ v_107: i64.
+                  prim sub(0, v_107; μ̃ v_106: i64.
+                    idyll:Prelude/digitString(v_106; μ̃ v_105: str.
+                      prim concatStrings([v_104, v_105]; k_101)))))), μ̃ u_111: unit.
+            prim sub(0, n_100; μ̃ v_109: i64.
+              idyll:Prelude/digitString(v_109; k_101)))))
   }>
 
-def idyll:Main/foldr <'a_76 = d_a_75, 'b_78 = d_b_77> (d_a_75: desc, d_b_77: desc, f_79: ptr, z_80: 'b_78, xs_81: ptr; k_82: ptr) =
-  <xs_81 | case {
-    idyll:Prelude/List.Nil =>
-      <z_80 | k_82>;
-    idyll:Prelude/List."::"(x_83: 'a_76, xs_84: ptr) =>
-      <f_79 | apply(x_83; μ̃ g_85: ptr.
-        idyll:Main/foldr(d_a_75, d_b_77, f_79, z_80, xs_84; μ̃ v_86: 'b_78.
-          <g_85 | apply(v_86; k_82)>))>
-  }>
-
-def idyll:Main/"#entry" (; k_94: ptr) =
-  <idyll:Prelude/List.Nil | μ̃ v_103: ptr.
-    <idyll:Prelude/List."::"(3, v_103) | μ̃ v_102: ptr.
-      <idyll:Prelude/List."::"(2, v_102) | μ̃ v_101: ptr.
-        <idyll:Prelude/List."::"(1, v_101) | μ̃ v_100: ptr.
-          idyll:Main/foldr(desc(i64), desc(i64), cocase {
-            apply(x_96: i64; k_97: ptr) =>
-              <cocase {
-                apply(acc_98: i64; k_99: ptr) =>
-                  prim add(x_96, acc_98; k_99)
-              } | k_97>
-          }, 0, v_100; μ̃ answer_95: i64.
-            idyll:Prelude/showInt(answer_95; k_94))>>>>
+def idyll:Main/"#entry" (; k_113: ptr) =
+  handle {
+    idyll:Main/Log.log(v__115: i64; r_116: ptr, k_117: ptr) =>
+      <r_116 | resume(unit; k_117)>;
+    return(x_118: i64; k_119: ptr) =>
+      <x_118 | k_119>
+  } in μ b_121.
+    handle {
+      idyll:Main/Ask.ask(v__122: unit; r_123: ptr, k_124: ptr) =>
+        <r_123 | resume(10; k_124)>;
+      return(x_125: i64; k_126: ptr) =>
+        <x_125 | k_126>
+    } in μ b_128.
+      idyll:Main/both(1; b_128)
+    ; b_121
+  ; μ̃ answer_114: i64.
+    idyll:Prelude/showInt(answer_114; k_113)

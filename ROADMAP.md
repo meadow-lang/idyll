@@ -507,13 +507,26 @@ from what `idyll.lock` pinned.
     `{ x : Int | r } -> T`. A named implicit argument will be written as
     Lean writes it, `f (a := Int)`, so that braces holding `=` are always a
     record.
-- [ ] **Auto-implicit binders**, `{auto x : t}`, filled by searching the auto
+- [x] **Auto-implicit binders**, `{auto x : t}`, filled by searching the auto
   binders in scope and the registered hints. Because this works for any
   type, proof search (`{auto p : LTE n m}`) comes with it, as in Idris.
+  Done 2026-10-20 in the Rust compiler (`idyllic-typecheck/src/auto.rs`,
+  `compiler/idyllic/tests/auto.rs`): `{auto d : t}`, and `t => ..` for one
+  with no name; `@hint` on a signature offers a definition to the search.
+  An auto argument is inserted where an implicit one would be: the auto
+  binders in scope are tried innermost first, then the hints, each as a
+  trial on a copy of the checker, a candidate's implicit arguments made
+  metas and its own auto arguments searched for in turn (16 deep). The
+  innermost auto binder that fits is taken; of the hints exactly one must
+  fit. A search whose type still has a meta waits behind a placeholder
+  until the definition has been checked, and is reported if it never
+  becomes known. Hints are checked before everything that does not lead to
+  them (scc), and a package's hints are in its interface. front/ reads,
+  renames and dumps all of it; its checker says it cannot search yet.
 - [ ] **Traits as sugar**: a trait is a record, a constraint is an
   auto-implicit binder, an instance is a hint. Superclasses are fields;
   methods can have defaults.
-- [ ] **Grades on auto binders**: default `[]`, since a dictionary is used at
+- [~] **Grades on auto binders**: default `[]`, since a dictionary is used at
   run time (plain braced implicits default to `0`). `{auto p : [0] LTE n m}`
   is an erased proof, and so must be total.
 - [ ] **Instances.** Unnamed instances are the canonical set: used by search,

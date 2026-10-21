@@ -1,6 +1,6 @@
--- | all : {a : Type} -> {r : Grade} -> (p : [] ((x : [r] a) -> Bool)) -> (xs : [(0..1) * r] List a) -> Bool
--- | all p Nil = True
--- | all p (x :: xs) = if p x then all p xs else False
--- | all (\x -> 0 < x) #[1, 2, 3]
-answer: True
+-- | foldr : {a b : Type} -> {r : Grade} -> (f : [] ((x : [r] a) -> (acc : [1] b) -> b)) -> (z : [1] b) -> (xs : [r] List a) -> b
+-- | foldr f z Nil = z
+-- | foldr f z (x :: xs) = f x (foldr f z xs)
+-- | foldr (\x acc -> x + acc) 0 #[1, 2, 3]
+answer: 6
 exit: 0

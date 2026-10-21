@@ -17,6 +17,9 @@ pub type LEffect = Spanned<EffectDecl>;
 pub enum Icit {
     Explicit,
     Implicit,
+    /// `{auto d : t}`, or `t => ..`: an implicit argument found by searching
+    /// the auto binders in scope and the hints, rather than by unification
+    Auto,
 }
 
 /// The grades on a binder, `(x : [s] a)` or `(x : (s, r) a)`: `subject` is
@@ -214,6 +217,8 @@ pub struct Program {
     /// the definitions `@terminating` says end, though the checker cannot
     /// see why
     pub terminating: Vec<Ident>,
+    /// the definitions `@hint` offers to the search for an auto argument
+    pub hints: Vec<Ident>,
     /// `@linear`: an unannotated binder here is linear, `[1]`, rather than
     /// unrestricted, `[]`
     pub linear: bool,

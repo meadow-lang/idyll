@@ -294,6 +294,8 @@ pub struct Module {
     /// the definitions `@terminating` vouches for: they need not say
     /// `! Div`, though the checker cannot see that they end
     pub terminating: std::collections::HashSet<usize>,
+    /// the definitions `@hint` offers to the search for an auto argument
+    pub hints: std::collections::HashSet<usize>,
     /// Every name with more than one meaning in scope where it is written,
     /// by the node it was written at (a [`TermKind::Var`]'s term, or a
     /// [`PatKind::Con`]'s pattern): what it may mean, the first of which

@@ -170,9 +170,11 @@ use Idyll.Layout (Token, foldToken)
 
     -- a chain of operators, then perhaps an annotation or an arrow
     Op = chain:Chain tail:OpTail?
-    OpTail = Annot | Arrow
+    OpTail = Annot | Arrow | Constraint
     Annot = ":" ty:Term
     Arrow = "->" result:Term eff:Effects?
+    -- `C a => b`: an auto binder with no name
+    Constraint = "=>" result:Term eff:Effects?
     Chain = first:App links:Link*
     Link = op:("op" | "conop") operand:App
     App = atoms:(Atom Atom*)

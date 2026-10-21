@@ -230,6 +230,8 @@ each at the place it was made from:
 - `f {a}`, an argument in braces after the function's first atom, as an
   implicit argument given by hand (`ImplicitApp`, in `Hir` too), which the
   checker gives the next implicit binder of `f`'s type;
+- `{auto d : t}` and `t => ..`, auto binders (`Icit.Auto`), and `@hint` on a
+  signature; the checker says it cannot search for an auto argument yet;
 - `module M where` and its block, a `File` of its own among the file's
   `modules`, which the renamer lifts out into the module `M` under the
   file's, as the Rust renamer does;

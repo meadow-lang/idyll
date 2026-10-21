@@ -69,6 +69,7 @@ record Rn = {
   fields : Ref (HashMap Int [(String, Int)]),
   effectOps : Ref (HashMap Int [(String, Int)]),
   terminating : Ref [Int],
+  hints : Ref [Int],
   -- whether the module is linear: an unannotated binder is `[1]`
   linear : Ref Bool,
   -- whether what is being renamed is a type
@@ -122,6 +123,7 @@ fun new () =
     fields = newRef Hm.empty,
     effectOps = newRef Hm.empty,
     terminating = newRef [],
+    hints = newRef [],
     linear = newRef False,
     inType = newRef False,
     base = newRef [],
@@ -891,6 +893,7 @@ record Program = {
   uses : [Use],
   visibility : [(String, Visibility)],
   terminating : [String],
+  hints : [String],
   linear : Bool,
   body : Maybe SurfaceExpr
 }
@@ -952,6 +955,7 @@ fun twice (r : Rn) (modules : [([String], SurfaceProgram)]) =
         (surfaceFileUses a f),
     visibility = V.map (\v -> (text (surfaceShownName a v), surfaceShownVis a v)) (surfaceFileShown a f),
     terminating = V.map text (surfaceFileTerminating a f),
+    hints = V.map text (surfaceFileHints a f),
     linear = surfaceFileLinear a f,
     body = surfaceFileBody a f
   }
@@ -1181,7 +1185,7 @@ fun renameMatch src out (r : Rn) (m : Meta) (dfn : Def) ty =
 -- The binders a signature quantifies over, in front of it: the implicit
 -- `Pi`s it starts with.
 fun quantified out (t : HirExpr) =
-  if kindHirExpr out t != HirExprKind.Pi or hirExprPiIcit out t != Icit.Implicit then []
+  if kindHirExpr out t != HirExprKind.Pi or (hirExprPiIcit out t != Icit.Implicit and hirExprPiIcit out t != Icit.Auto) then []
   else
     match hirExprPiName out t with
     | Just x -> V.append [(hirIdentText out x, hirIdentUniques out x)] (quantified out (hirExprPiCod out t))
@@ -1295,6 +1299,14 @@ fun bindProgram (r : Rn) (prog : Program) (decls : [SurfaceDecl]) : Bound ! { Mu
       ()
       defs
   in
+  let w2b =
+    V.foldl
+      (\acc (d : Def) ->
+        if V.elem (H.textOf d.name) prog.hints then setRef r.hints (V.pushBack (getRef r.hints) (H.uniqueOf d.name))
+        else acc)
+      ()
+      defs
+  in
   Bound { datas = prog.datas, dataNames, effectNames, defs, natives }
 
 -- What a program says, its names bound and its `use`s taken.
@@ -1359,6 +1371,8 @@ data Done = Done [HirData] [HirEffect] [HirNative] [HirBind] (Maybe HirExpr) (Ma
   -- before is the builtins' and the prelude's
   first : Int,
   terminating : [Int],
+  -- the definitions `@hint` offers to the search for an auto argument
+  hints : [Int],
   linearBody : Bool,
   -- the module each top-level name of a module other than a package's root
   -- is in (`Collections.List` for `map`), as written before it from outside
@@ -1513,6 +1527,7 @@ fun renamePackageAt out (r : Rn) (pkg : Int) (first : Int) (progs : [Program]) (
                  main,
                  first,
                  terminating = getRef r.terminating,
+                 hints = getRef r.hints,
                  linearBody,
                  qualifiers = getRef r.qualifiers,
                  ranges = V.pushBack (V.map snd depParts) (first, getRef r.next, name)
@@ -1555,7 +1570,7 @@ fun termText (a : HirArena) (t : HirExpr) : String =
   | HirExprVar x -> id x
   | HirExprLit l -> H.literal l
   | HirExprPi x icit g dom cod ->
-      sx ["pi", opt id x, (match icit with | Icit.Explicit -> "e" | Icit.Implicit -> "i"), opt (gradeText a) g, go dom, go cod]
+      sx ["pi", opt id x, (match icit with | Icit.Explicit -> "e" | Icit.Implicit -> "i" | Icit.Auto -> "a"), opt (gradeText a) g, go dom, go cod]
   | HirExprLam x g ty body -> sx ["lam", id x, opt (gradeText a) g, opt go ty, go body]
   | HirExprApp f x -> sx ["app", go f, go x]
   | HirExprImplicitApp f x -> sx ["iapp", go f, go x]
@@ -1601,8 +1616,9 @@ fun patternText (a : HirArena) (p : HirPattern) : String =
 
 fun uniqueIn (a : HirArena) (x : HirIdent) : Int = V.getOr (0 - 1) (hirIdentUniques a x) 0
 
--- A binding; `terminating`, if it is one `@terminating` vouches for.
-fun bindText (a : HirArena) (terminating : [Int]) (b : HirBind) : String =
+-- A binding; `terminating`, if it is one `@terminating` vouches for, and
+-- `hint`, if `@hint` offers it.
+fun bindText (a : HirArena) (terminating : [Int]) (hints : [Int]) (b : HirBind) : String =
   let x = hirBindName a b in
   sx [
     "bind",
@@ -1610,13 +1626,14 @@ fun bindText (a : HirArena) (terminating : [Int]) (b : HirBind) : String =
     opt (termText a) (hirBindTy a b),
     termText a (hirBindRhs a b),
     flag "linear" (hirBindLinear a b),
-    flag "terminating" (V.elem (uniqueIn a x) terminating)
+    flag "terminating" (V.elem (uniqueIn a x) terminating),
+    flag "hint" (V.elem (uniqueIn a x) hints)
   ]
 
 fun groupText (a : HirArena) (g : HirGroup) : String =
   match (a, g) with
-  | HirGroupNonRec b -> sx ["nonrec", bindText a [] b]
-  | HirGroupRec bs -> sx (V.append ["rec"] (V.map (bindText a []) bs))
+  | HirGroupNonRec b -> sx ["nonrec", bindText a [] [] b]
+  | HirGroupRec bs -> sx (V.append ["rec"] (V.map (bindText a [] []) bs))
 
 fun typeParamText (a : HirArena) (p : HirTypeParam) : String =
   sx [identText a (hirTypeParamName a p), opt (termText a) (hirTypeParamKindSig a p)]
@@ -1662,7 +1679,7 @@ fun effectText (a : HirArena) (e : HirEffect) : String =
        V.map
          (\n -> sx ["native", identText a (hirNativeName a n), termText a (hirNativeTy a n)])
          (V.filter (\n -> own (hirNativeName a n)) (hirModuleNatives a root)),
-       V.map (bindText a r.terminating) (V.filter (\b -> own (hirBindName a b)) binds),
+       V.map (bindText a r.terminating r.hints) (V.filter (\b -> own (hirBindName a b)) binds),
        (match hirModuleBody a root with | Just e -> [sx ["body", termText a e]] | None -> []),
        (match r.main with | Just u -> [sx ["main", "main@" ++ show u]] | None -> []),
        [sx ["linear", if r.linearBody then "true" else "false"]]

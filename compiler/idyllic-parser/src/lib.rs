@@ -122,18 +122,23 @@ enum Attribute {
     Terminating,
     /// `@linear`, at the top of a module: its unannotated binders are linear
     Linear,
+    /// `@hint`, on a signature: the definition is offered to the search for
+    /// an auto argument
+    Hint,
 }
 
 /// The item with its attributes, or what is wrong with them.
-/// An item, how visible it is, whether `@terminating` is on it, and whether
-/// `@linear` came before it (which is the module's, not the item's).
-type Attributed = (Item, Option<Visibility>, bool, bool);
+/// An item, how visible it is, whether `@terminating` is on it, whether
+/// `@linear` came before it (which is the module's, not the item's), and
+/// whether `@hint` is on it.
+type Attributed = (Item, Option<Visibility>, bool, bool, bool);
 
 fn attributed(attrs: Vec<(Attribute, Span)>, item: Item) -> Result<Attributed, (Span, String)> {
     let mut seq = None;
     let mut vis = None;
     let mut native = None;
     let mut terminating = None;
+    let mut hint = None;
     let mut linear = false;
     for (attr, at) in attrs {
         match attr {
@@ -141,6 +146,7 @@ fn attributed(attrs: Vec<(Attribute, Span)>, item: Item) -> Result<Attributed, (
             Attribute::Vis(v) if vis.is_none() => vis = Some(v),
             Attribute::Native if native.is_none() => native = Some(at),
             Attribute::Terminating if terminating.is_none() => terminating = Some(at),
+            Attribute::Hint if hint.is_none() => hint = Some(at),
             Attribute::Linear => linear = true,
             _ => return Err((at, "this attribute is given twice".into())),
         }
@@ -149,7 +155,7 @@ fn attributed(attrs: Vec<(Attribute, Span)>, item: Item) -> Result<Attributed, (
     let item = match (native, item) {
         // an upper-case signature, which reads as an annotated expression
         // (see `signature_of`), with an attribute on it
-        (None, Item::Expr(e)) if vis.is_some() || terminating.is_some() => match signature_of(e) {
+        (None, Item::Expr(e)) if vis.is_some() || terminating.is_some() || hint.is_some() => match signature_of(e) {
             Ok(sig) => Item::Decl(sig),
             Err(e) => Item::Expr(e),
         },
@@ -168,6 +174,11 @@ fn attributed(attrs: Vec<(Attribute, Span)>, item: Item) -> Result<Attributed, (
     if let Some(at) = terminating {
         if !matches!(item, Item::Decl(Spanned { node: Decl::Sig(..), .. })) {
             return Err((at, "@terminating goes on a definition's signature, f : a".into()));
+        }
+    }
+    if let Some(at) = hint {
+        if !matches!(item, Item::Decl(Spanned { node: Decl::Sig(..), .. })) {
+            return Err((at, "@hint goes on a definition's signature, f : a".into()));
         }
     }
     let item = match item {
@@ -199,7 +210,7 @@ fn attributed(attrs: Vec<(Attribute, Span)>, item: Item) -> Result<Attributed, (
     if seq.is_some() {
         return Err((Span::at(0), "@seq goes on a data type".into()));
     }
-    Ok((item, vis, terminating.is_some(), linear))
+    Ok((item, vis, terminating.is_some(), linear, hint.is_some()))
 }
 
 /// `Name : a`, read as an annotated expression, as the signature it is when
@@ -252,12 +263,13 @@ fn build(items: Vec<Attributed>, nested: bool) -> Result<Program, Vec<Diagnostic
         uses: Vec::new(),
         visibility: Vec::new(),
         terminating: Vec::new(),
+        hints: Vec::new(),
         linear: false,
         body: None,
         modules: Vec::new(),
     };
     let mut items = items.into_iter().peekable();
-    while let Some((item, vis, terminating, linear)) = items.next() {
+    while let Some((item, vis, terminating, linear, hint)) = items.next() {
         program.linear |= linear;
         // the name a definition's visibility is for
         let defined = |d: &LDecl| match &d.node {
@@ -282,11 +294,14 @@ fn build(items: Vec<Attributed>, nested: bool) -> Result<Program, Vec<Diagnostic
                 if terminating {
                     program.terminating.push(defined(&d));
                 }
+                if hint {
+                    program.hints.push(defined(&d));
+                }
                 program.decls.push(d);
             }
             Item::Use(u) => program.uses.push(u),
             Item::Module(name, inner) => {
-                if vis.is_some() || terminating || linear {
+                if vis.is_some() || terminating || linear || hint {
                     return Err(vec![Diagnostic::error("parse error")
                         .label(name.span, "a module takes no attribute: what is in it does")]);
                 }
@@ -324,8 +339,9 @@ where
     let native = just(Token::At).ignore_then(select! { Token::LowerIdent(s) if s == "native" => () }).to(Attribute::Native);
     let terminating =
         just(Token::At).ignore_then(select! { Token::LowerIdent(s) if s == "terminating" => () }).to(Attribute::Terminating);
+    let hint = just(Token::At).ignore_then(select! { Token::LowerIdent(s) if s == "hint" => () }).to(Attribute::Hint);
     let linear = just(Token::At).ignore_then(select! { Token::LowerIdent(s) if s == "linear" => () }).to(Attribute::Linear);
-    let attribute = choice((seq_attribute().map(Attribute::Seq), visibility().map(Attribute::Vis), native, terminating, linear))
+    let attribute = choice((seq_attribute().map(Attribute::Seq), visibility().map(Attribute::Vis), native, terminating, hint, linear))
         .map_with(|a, e| (a, span_of(e.span())))
         .then_ignore(semi.clone().or_not());
     let item = recursive(|item| {
@@ -362,7 +378,7 @@ where
                 let at = if at == Span::at(0) { span_of(e.span()) } else { at };
                 emitter.emit(Rich::custom(SimpleSpan::from(at.range()), why));
                 // (reported; what is left is nothing)
-                (Item::Decl(Spanned::new(Decl::Sig(Spanned::new("_".into(), at), Spanned::new(Term::Hole, at)), at)), None, false, false)
+                (Item::Decl(Spanned::new(Decl::Sig(Spanned::new("_".into(), at), Spanned::new(Term::Hole, at)), at)), None, false, false, false)
             }
         })
     });
@@ -1308,8 +1324,11 @@ where
             .collect::<Vec<Ident>>()
             .then(annotation(term.clone()))
             .boxed();
+        let auto = select! { Token::LowerIdent(s) if s == "auto" => () };
         let domain = choice((
             names_and_type.clone().delimited_by(just(Token::LParen), just(Token::RParen)).map(|d| (d, Icit::Explicit)),
+            // `{auto d : Show a}`, found by search
+            auto.ignore_then(names_and_type.clone()).delimited_by(just(Token::LBrace), just(Token::RBrace)).map(|d| (d, Icit::Auto)),
             names_and_type.delimited_by(just(Token::LBrace), just(Token::RBrace)).map(|d| (d, Icit::Implicit)),
         ))
         .map_with(|((names, (g, ty)), icit), e| (params(names, g, Some(ty), span_of(e.span())), icit));
@@ -1330,13 +1349,15 @@ where
                 })
             });
 
+        // `a -> b`; and `C a => b`, a constraint, which is an auto binder
+        // with no name: `{auto _ : C a} -> b`
         let arrow = ann
-            .then(just(Token::RArrow).ignore_then(comp(term.clone())).or_not())
+            .then(choice((just(Token::RArrow).to(Icit::Explicit), just(Token::RFatArrow).to(Icit::Auto))).then(comp(term.clone())).or_not())
             .map(|(lhs, rhs)| match rhs {
                 None => lhs,
-                Some(rhs) => {
+                Some((icit, rhs)) => {
                     let span = lhs.span.merge(rhs.span);
-                    Spanned::new(Term::Pi(None, Icit::Explicit, None, Box::new(lhs), Box::new(rhs)), span)
+                    Spanned::new(Term::Pi(None, icit, None, Box::new(lhs), Box::new(rhs)), span)
                 }
             });
 

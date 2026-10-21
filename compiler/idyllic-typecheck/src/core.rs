@@ -464,6 +464,20 @@ impl fmt::Display for Core {
                     write!(f, "}} -> ")?;
                     go(cod, 0, f)
                 }),
+                // an auto binder with no name is a constraint, `C a => b`
+                Core::Pi { name, icit: Icit::Auto, grade, dom, cod, .. } if name == "_" && grade.is_grade(Grade::DEFAULT) => {
+                    paren(prec > 0, f, |f| {
+                        go(dom, 1, f)?;
+                        write!(f, " => ")?;
+                        go(cod, 0, f)
+                    })
+                }
+                Core::Pi { name, icit: Icit::Auto, grade, in_type, dom, cod } => paren(prec > 0, f, |f| {
+                    write!(f, "{{auto ")?;
+                    binder(name, (grade, in_type), Grade::DEFAULT, dom, f)?;
+                    write!(f, "}} -> ")?;
+                    go(cod, 0, f)
+                }),
                 // an anonymous, default-graded binder is just an arrow
                 Core::Pi { name, grade, in_type, dom, cod, .. }
                     if name == "_"

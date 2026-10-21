@@ -326,7 +326,12 @@ mod h {
             TermKind::Pi(x, icit, g, dom, cod) => sx([
                 "pi".into(),
                 opt(x, ident),
-                if *icit == Icit::Explicit { "e" } else { "i" }.into(),
+                match icit {
+                    Icit::Explicit => "e",
+                    Icit::Implicit => "i",
+                    Icit::Auto => "a",
+                }
+                .into(),
                 opt(g, grade),
                 term(dom),
                 term(cod),
@@ -382,16 +387,25 @@ mod h {
         }
     }
 
-    fn bind(b: &Bind, terminating: &std::collections::HashSet<usize>) -> String {
+    fn bind(b: &Bind, terminating: &std::collections::HashSet<usize>, hints: &std::collections::HashSet<usize>) -> String {
         let vouched = b.name.unique.is_some_and(|u| terminating.contains(&u));
-        sx(["bind".into(), ident(&b.name), opt(&b.ty, term), term(&b.rhs), flag("linear", b.linear), flag("terminating", vouched)])
+        let hinted = b.name.unique.is_some_and(|u| hints.contains(&u));
+        sx([
+            "bind".into(),
+            ident(&b.name),
+            opt(&b.ty, term),
+            term(&b.rhs),
+            flag("linear", b.linear),
+            flag("terminating", vouched),
+            flag("hint", hinted),
+        ])
     }
 
     fn group(g: &BindGroup) -> String {
         let none = Default::default();
         match g {
-            BindGroup::NonRec(b) => sx(["nonrec".into(), bind(b, &none)]),
-            BindGroup::Rec(bs) => with(["rec"], bs.iter().map(|b| bind(b, &none)).collect()),
+            BindGroup::NonRec(b) => sx(["nonrec".into(), bind(b, &none, &none)]),
+            BindGroup::Rec(bs) => with(["rec"], bs.iter().map(|b| bind(b, &none, &none)).collect()),
         }
     }
 
@@ -430,7 +444,7 @@ mod h {
         lines.extend(m.effects.iter().filter(|e| own(&e.name)).map(effect));
         lines.extend(m.natives.iter().filter(|n| own(&n.name)).map(|n| sx(["native".into(), ident(&n.name), term(&n.ty)])));
         let binds = m.groups.iter().flat_map(|g| g.binds());
-        lines.extend(binds.filter(|b| own(&b.name)).map(|b| bind(b, &m.terminating)));
+        lines.extend(binds.filter(|b| own(&b.name)).map(|b| bind(b, &m.terminating, &m.hints)));
         lines.extend(m.body.iter().map(|e| sx(["body".into(), term(e)])));
         lines.extend(m.main.iter().map(|u| sx(["main".to_string(), format!("main@{u}")])));
         lines.push(sx(["linear", if m.linear_body { "true" } else { "false" }]));
@@ -526,7 +540,12 @@ mod w {
             Term::Pi(x, icit, g, dom, cod) => sx([
                 "pi".into(),
                 opt(x, |x| x.node.clone()),
-                if *icit == Icit::Explicit { "e" } else { "i" }.into(),
+                match icit {
+                    Icit::Explicit => "e",
+                    Icit::Implicit => "i",
+                    Icit::Auto => "a",
+                }
+                .into(),
                 opt(g, grade),
                 term(dom),
                 term(cod),
@@ -655,6 +674,7 @@ mod w {
         lines.extend(p.decls.iter().map(decl));
         lines.extend(p.visibility.iter().map(|(x, v)| sx(["vis".into(), x.node.clone(), visibility(*v)])));
         lines.extend(p.terminating.iter().map(|x| sx(["terminating".into(), x.node.clone()])));
+        lines.extend(p.hints.iter().map(|x| sx(["hint".into(), x.node.clone()])));
         lines.extend(p.body.iter().map(|e| sx(["body".into(), term(e)])));
         // a module inside the file, its own program indented under it
         for (name, inner) in &p.modules {

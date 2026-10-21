@@ -187,6 +187,8 @@ struct Renamer {
     fields: HashMap<usize, Vec<(String, usize)>>,
     /// the definitions marked `@terminating`
     terminating: std::collections::HashSet<usize>,
+    /// the definitions marked `@hint`
+    hints: std::collections::HashSet<usize>,
     /// whether the package's modules are all linear (`--linear`)
     linear_package: bool,
     /// whether the module being renamed is: its unannotated binders get
@@ -410,6 +412,7 @@ pub fn rename_package(
         names: names_given,
         uniques: (first, r.next_unique),
         terminating: r.terminating,
+        hints: r.hints,
         overloads: r.overloads,
         version: None,
         linear_body: linear || modules.first().is_some_and(|m| m.program.linear),
@@ -477,6 +480,7 @@ impl Renamer {
             twins: HashMap::new(),
             fields: HashMap::new(),
             terminating: Default::default(),
+            hints: Default::default(),
             linear_package: false,
             linear: false,
             in_type: false,
@@ -551,6 +555,9 @@ impl Renamer {
         for (_, name, _) in &defs {
             if let (Some(u), true) = (name.unique, prog.terminating.iter().any(|x| x.node == name.text)) {
                 self.terminating.insert(u);
+            }
+            if let (Some(u), true) = (name.unique, prog.hints.iter().any(|x| x.node == name.text)) {
+                self.hints.insert(u);
             }
         }
         Bound { datas, data_names, effect_names, defs, natives }
@@ -1811,7 +1818,7 @@ impl Renamer {
     /// ScopedTypeVariables).
     fn scope_quantified(&mut self, ty: Option<&hir::Term>) {
         let mut quantified = ty;
-        while let Some(hir::Term { id, kind: hir::TermKind::Pi(Some(x), Icit::Implicit, _, _, cod) }) = quantified {
+        while let Some(hir::Term { id, kind: hir::TermKind::Pi(Some(x), Icit::Implicit | Icit::Auto, _, _, cod) }) = quantified {
             if let Some(u) = x.unique {
                 let span = self.spans.get(*id).unwrap_or(Span::at(0));
                 self.scopes.last_mut().expect("scope stack is never empty").insert(x.text.clone(), (u, span));
