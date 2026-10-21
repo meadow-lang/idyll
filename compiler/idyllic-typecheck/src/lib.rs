@@ -308,6 +308,9 @@ pub enum TypeErrorKind {
     UnknownVariable(String),
     /// a metavariable that unification never pinned down
     UnsolvedMeta(String),
+    /// an implicit argument given by hand, `f {a}`, to something whose type
+    /// has no implicit binder next
+    NoImplicitArgument(Rc<Core>),
     /// no meaning of an overloaded name fits where it is used: its
     /// spelling, the type wanted there if one was, and each meaning
     NoMeaning { name: String, wanted: Option<Rc<Core>>, candidates: Vec<String> },
@@ -512,6 +515,9 @@ impl TypeError {
                         candidates.join("\n  ")
                     ))
             }
+            TypeErrorKind::NoImplicitArgument(ty) => Diagnostic::error("no implicit argument is taken here")
+                .label(here, format!("given by hand, but what it is given to has type {ty}"))
+                .help("`f {a}` gives `f` the implicit argument its type binds next, as `{a : Type} -> ..`"),
             TypeErrorKind::UnsolvedMeta(desc) => Diagnostic::error("unsolved metavariable")
                 .label(here, format!("could not infer {desc}"))
                 .help("add a type annotation to pin it down"),

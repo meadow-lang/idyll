@@ -608,6 +608,7 @@ fun theRecordWith (r : Rn) (wanted : [String]) : Maybe (String, [String]) ! { Mu
   Expr + Pi { name : Maybe Ident, icit : Icit, grade : Maybe Grade, dom : Expr, cod : Expr }
   Expr + Lam { name : Ident, grade : Maybe Grade, ty : Maybe Expr, body : Expr }
   Expr + App { func : Expr, arg : Expr }
+  Expr + ImplicitApp { func : Expr, arg : Expr }
   Expr + Ann { expr : Expr, ty : Expr }
   Expr + Hole {}
   Expr + Box { expr : Expr }
@@ -751,6 +752,8 @@ pass! {
         (if name == "otherwise" and not (known r name) then Lit { lit = Literal.Bool True }
          else Var { ident = idNode out here (useName r name) })
     | Ann { expr, later ty } -> Ann { expr, ty = asType r (\u -> ty r) }
+    -- what is given is most often a type, and read as one
+    | ImplicitApp { func, later arg } -> ImplicitApp { func, arg = asType r (\u -> arg r) }
     -- a row's entries name effects (see `rowEntry`)
     | Eff { ty, raw row } ->
         Eff { ty, row = if kindSurfaceExpr src row == SurfaceExprKind.Row then resolveExpr src out r row else rowEntry src out r row }
@@ -1215,6 +1218,7 @@ fun freeVars (a : SurfaceArena) (t : SurfaceExpr) (bound : [String]) known (out 
       let o2 = match surfaceParamTy a p with | Just tt -> go tt o1 | None -> o1 in
       under (Just (text (surfaceParamName a p))) body o2
   | SurfaceExprApp f x -> go x (go f out)
+  | SurfaceExprImplicitApp f x -> go x (go f out)
   | SurfaceExprAnn f x -> go x (go f out)
   | SurfaceExprRange f x -> go x (go f out)
   | SurfaceExprEff f x -> go x (go f out)
@@ -1554,6 +1558,7 @@ fun termText (a : HirArena) (t : HirExpr) : String =
       sx ["pi", opt id x, (match icit with | Icit.Explicit -> "e" | Icit.Implicit -> "i"), opt (gradeText a) g, go dom, go cod]
   | HirExprLam x g ty body -> sx ["lam", id x, opt (gradeText a) g, opt go ty, go body]
   | HirExprApp f x -> sx ["app", go f, go x]
+  | HirExprImplicitApp f x -> sx ["iapp", go f, go x]
   | HirExprAnn x ty -> sx ["ann", go x, go ty]
   | HirExprHole -> "_"
   | HirExprBox x -> sx ["box", go x]

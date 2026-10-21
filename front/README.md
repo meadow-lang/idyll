@@ -227,6 +227,9 @@ each at the place it was made from:
 - a record as its data type and one projection per field. A field's type
   reads the fields before it off `self`, through the pass's context;
 - an effect alias as a definition;
+- `f {a}`, an argument in braces after the function's first atom, as an
+  implicit argument given by hand (`ImplicitApp`, in `Hir` too), which the
+  checker gives the next implicit binder of `f`'s type;
 - `module M where` and its block, a `File` of its own among the file's
   `modules`, which the renamer lifts out into the module `M` under the
   file's, as the Rust renamer does;

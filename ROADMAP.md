@@ -523,8 +523,12 @@ from what `idyll.lock` pinned.
   define an unnamed `Show Int`. Named instances are not searched, have no
   coherence requirement, may live anywhere, and are used only as
   `f @{name}`: they are the escape hatch for exactly the orphan case.
-- [ ] **Giving implicit arguments by hand**: `f {Int}` for an ordinary
-  implicit and `f @{name}` for an auto one.
+- [~] **Giving implicit arguments by hand**: `f {Int}` for an ordinary
+  implicit and `f @{name}` for an auto one. `f {Int}` is done
+  (2026-10-20), in front/ too: the argument in braces is the one the
+  next implicit binder of `f`'s type takes, and what is not given is
+  worked out (`compiler/idyllic/tests/decls.rs`). `f @{name}` comes
+  with auto binders.
 - [ ] **Instance-sensitive collections take the instance in their type**, so
   a `Map` built with the default `Ord` and used with a named one fails to
   unify instead of silently breaking its invariants.

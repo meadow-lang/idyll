@@ -90,6 +90,7 @@ pub fn scc_term(t: Term) -> Term {
     let kind = match t.kind {
         k @ (Type | Hole | Omitted | Inf | Lit(_) | Var(_) | SeqNil) => k,
         App(f, a) => App(Box::new(scc_term(*f)), Box::new(scc_term(*a))),
+        ImplicitApp(f, a) => ImplicitApp(Box::new(scc_term(*f)), Box::new(scc_term(*a))),
         SeqCons(h, t) => SeqCons(Box::new(scc_term(*h)), Box::new(scc_term(*t))),
         ArrayLit(items) => ArrayLit(items.into_iter().map(scc_term).collect()),
         Ann(e, a) => Ann(Box::new(scc_term(*e)), Box::new(scc_term(*a))),
@@ -280,7 +281,7 @@ pub fn free_uniques(t: &Term) -> HashSet<usize> {
                     out.insert(u);
                 }
             }
-            App(f, a) | Ann(f, a) | Range(f, a) | Eff(f, a) | SeqCons(f, a) => {
+            App(f, a) | ImplicitApp(f, a) | Ann(f, a) | Range(f, a) | Eff(f, a) | SeqCons(f, a) => {
                 go(f, out);
                 go(a, out);
             }

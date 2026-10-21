@@ -113,6 +113,8 @@ use Std.Result.Result.*
   Expr + Pi { name : Maybe Name, icit : Icit, grade : Maybe Grade, dom : Expr, cod : Expr }
   Expr + Lam { param : Param, body : Expr }
   Expr + App { func : Expr, arg : Expr }
+  -- `f {a}`: an implicit argument given by hand
+  Expr + ImplicitApp { func : Expr, arg : Expr }
   Expr + Ann { expr : Expr, ty : Expr }
   Expr + Hole {}
   Expr + Box { expr : Expr }
@@ -660,22 +662,31 @@ fun grouped out (at : Syn) xs (ops : [String]) (lo : Int) (hi : Int) (level : In
 -- `f (x.y)`.
 fun appTerm out (cx : Cx) (a : IdyllApp) (skip : Int) =
   let m = metaOf (syntaxIdyllApp a) in
+  -- each argument, and whether it is an implicit one given by hand, `{Int}`
   let terms =
     V.foldl
       (\acc atom ->
         match atom with
         | IdyllAtom.DotA d ->
             (match V.last acc with
-             | Just e -> V.pushBack (V.popBack acc) (newSurfaceExprProj out (metaOf (syntaxIdyllDotA d)) e (fieldName out d))
+             | Just (e, imp) -> V.pushBack (V.popBack acc) (newSurfaceExprProj out (metaOf (syntaxIdyllDotA d)) e (fieldName out d), imp)
              | None ->
                  let u = bad (syntaxIdyllDotA d) "a field of nothing" in
                  acc)
-        | _ -> V.pushBack acc (lowerSurfaceAtom () out cx (syntaxIdyllAtom atom)))
+        | IdyllAtom.Braced b if not (V.isEmpty acc) and M.isNone (idyllBracedRest b) and V.len (idyllBracedItems b) == 1 ->
+            (match only (idyllBracedItems b) with
+             | Just t -> V.pushBack acc (lowerSurfaceTerm () out (plain cx) (syntaxIdyllTerm t), True)
+             | None -> acc)
+        | _ -> V.pushBack acc (lowerSurfaceAtom () out cx (syntaxIdyllAtom atom), False))
       []
       (V.drop (idyllAppAtoms a) skip)
   in
   match V.head terms with
-  | Just f -> V.foldl (\acc x -> app out m acc x) f (V.drop terms 1)
+  | Just (f, _) ->
+      V.foldl
+        (\acc xi -> match xi with | (x, imp) -> if imp then newSurfaceExprImplicitApp out m acc x else app out m acc x)
+        f
+        (V.drop terms 1)
   | None -> hole out m
 
 fun fieldName out (dot : IdyllDotA) =
@@ -1703,6 +1714,7 @@ fun exprText (a : SurfaceArena) (e : SurfaceExpr) : String =
       sx ["pi", opt (nameIn a) x, (match icit with | Icit.Explicit -> "e" | Icit.Implicit -> "i"), opt (gradeText a) g, go dom, go cod]
   | SurfaceExprLam p body -> sx ["lam", paramIn a p, go body]
   | SurfaceExprApp f x -> sx ["app", go f, go x]
+  | SurfaceExprImplicitApp f x -> sx ["iapp", go f, go x]
   | SurfaceExprAnn x ty -> sx ["ann", go x, go ty]
   | SurfaceExprHole -> "_"
   | SurfaceExprBox x -> sx ["box", go x]

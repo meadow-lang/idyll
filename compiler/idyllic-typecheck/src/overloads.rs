@@ -44,7 +44,7 @@ impl Checker {
     /// it heads one whose meaning has not been chosen.
     fn overloaded_head(&self, t: &hir::Term) -> Option<NodeId> {
         let mut t = t;
-        while let TermKind::App(f, _) = &t.kind {
+        while let TermKind::App(f, _) | TermKind::ImplicitApp(f, _) = &t.kind {
             t = f;
         }
         let TermKind::Var(_) = &t.kind else { return None };
@@ -298,7 +298,7 @@ impl Checker {
 
     fn overloaded_name(&self, t: &hir::Term) -> String {
         let mut t = t;
-        while let TermKind::App(f, _) = &t.kind {
+        while let TermKind::App(f, _) | TermKind::ImplicitApp(f, _) = &t.kind {
             t = f;
         }
         match &t.kind {

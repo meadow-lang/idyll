@@ -814,6 +814,17 @@ Error: unsolved metavariable
    │ ╰── could not infer the implicit argument a
 ```
 
+Then say it yourself: an argument in braces is the implicit one the
+function's type binds next, as Agda writes it. Those you leave out are
+still worked out.
+
+```
+> let phantom : {a : Type} -> Int -> Int = \n -> n in phantom {Bool} 1
+1 : Int
+> let pair : {a b : Type} -> a -> b -> (a, b) = \x y -> (x, y) in pair {Int} 1 True
+(1, True) : (Int, Bool)
+```
+
 The result type can depend on an argument in more interesting ways. Here
 `b` is a *function* from values to types, so the type of `f y` depends on
 the value `y`:

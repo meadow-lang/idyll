@@ -53,6 +53,8 @@ pub enum TermKind {
     /// annotation, body.
     Lam(Ident, Option<GradeAnn>, Option<Box<Term>>, Box<Term>),
     App(Box<Term>, Box<Term>),
+    /// `f {a}`: an implicit argument given by hand.
+    ImplicitApp(Box<Term>, Box<Term>),
     /// `e : a`.
     Ann(Box<Term>, Box<Term>),
     /// `_`: becomes a fresh metavariable during type checking.

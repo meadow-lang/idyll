@@ -190,6 +190,7 @@ fun uniqueOf (a : HirArena) (x : HirIdent) : Int = V.getOr (0 - 1) (hirIdentUniq
   match (a, t) with
   | HirExprVar x -> uniquesInto a x s
   | HirExprApp f x -> go x (go f s)
+  | HirExprImplicitApp f x -> go x (go f s)
   | HirExprAnn f x -> go x (go f s)
   | HirExprRange f x -> go x (go f s)
   | HirExprEff f x -> go x (go f s)

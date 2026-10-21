@@ -47,6 +47,9 @@ pub enum Term {
     Lam(Box<LParam>, Box<LTerm>),
     /// Application, `f a`.
     App(Box<LTerm>, Box<LTerm>),
+    /// An implicit argument given by hand, `f {Int}`: the next implicit
+    /// binder of `f`'s type is given this, rather than worked out.
+    ImplicitApp(Box<LTerm>, Box<LTerm>),
     /// Type annotation, `e : a`.
     Ann(Box<LTerm>, Box<LTerm>),
     /// An explicit hole, `_`: elaborates to a fresh metavariable.

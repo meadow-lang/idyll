@@ -2,6 +2,8 @@ cut 0
 entry idyll:Main/"#entry"
 answer str
 
+data idyll:Prelude/Pair <'a0, 'a1> { Pair('a0, 'a1) }
+
 data idyll:Prelude/DigitFuel { Spent; More(ptr) }
 
 val idyll:Prelude/digitFuel : ptr =
@@ -26,9 +28,6 @@ val idyll:Prelude/digitFuel : ptr =
                                       <idyll:Prelude/DigitFuel.More(v_3) | μ̃ v_2: ptr.
                                         <idyll:Prelude/DigitFuel.More(v_2) | μ̃ v_1: ptr.
                                           <idyll:Prelude/DigitFuel.More(v_1) | halt>>>>>>>>>>>>>>>>>>>>>
-
-val idyll:Main/y : i64 =
-  <2 | halt>
 
 def idyll:Prelude/digitString (d_22: i64; k_23: ptr) =
   prim eq(d_22, 0; μ̃ v__24: bool.
@@ -68,24 +67,42 @@ def idyll:Prelude/showInt (n_52: i64; k_53: ptr) =
       idyll:Prelude/negativeDigits(idyll:Prelude/digitFuel, n_52; μ̃ v_58: str.
         prim concatStrings(["-", v_58]; k_53))))
 
-def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) =
-  <fuel_61 | case {
+def idyll:Main/pair <'a_68 = d_a_67, 'b_70 = d_b_69> (d_a_67: desc, d_b_69: desc, x_71: 'a_68, y_72: 'b_70; k_73: ptr) =
+  <idyll:Prelude/Pair.Pair(x_71, y_72) | k_73>
+
+def idyll:Prelude/negativeDigits (fuel_74: ptr, n_75: i64; k_76: ptr) =
+  <fuel_74 | case {
     idyll:Prelude/DigitFuel.Spent =>
-      <"" | k_63>;
-    idyll:Prelude/DigitFuel.More(fuel_64: ptr) =>
-      prim sub(0, 10; μ̃ v_74: i64.
-        prim lt(v_74, n_62; μ̃ v__65: bool.
-          prim if(v__65; μ̃ u_72: unit.
-            prim div(n_62, 10; μ̃ v_70: i64.
-              idyll:Prelude/negativeDigits(fuel_64, v_70; μ̃ v_66: str.
-                prim mod(n_62, 10; μ̃ v_69: i64.
-                  prim sub(0, v_69; μ̃ v_68: i64.
-                    idyll:Prelude/digitString(v_68; μ̃ v_67: str.
-                      prim concatStrings([v_66, v_67]; k_63)))))), μ̃ u_73: unit.
-            prim sub(0, n_62; μ̃ v_71: i64.
-              idyll:Prelude/digitString(v_71; k_63)))))
+      <"" | k_76>;
+    idyll:Prelude/DigitFuel.More(fuel_77: ptr) =>
+      prim sub(0, 10; μ̃ v_87: i64.
+        prim lt(v_87, n_75; μ̃ v__78: bool.
+          prim if(v__78; μ̃ u_85: unit.
+            prim div(n_75, 10; μ̃ v_83: i64.
+              idyll:Prelude/negativeDigits(fuel_77, v_83; μ̃ v_79: str.
+                prim mod(n_75, 10; μ̃ v_82: i64.
+                  prim sub(0, v_82; μ̃ v_81: i64.
+                    idyll:Prelude/digitString(v_81; μ̃ v_80: str.
+                      prim concatStrings([v_79, v_80]; k_76)))))), μ̃ u_86: unit.
+            prim sub(0, n_75; μ̃ v_84: i64.
+              idyll:Prelude/digitString(v_84; k_76)))))
   }>
 
-def idyll:Main/"#entry" (; k_75: ptr) =
-  <idyll:Main/y | μ̃ answer_76: i64.
-    idyll:Prelude/showInt(answer_76; k_75)>
+def idyll:Main/"#items (Int, Bool)" (x_90: ptr; k_91: ptr) =
+  <x_90 | case {
+    idyll:Prelude/Pair.Pair(f_92: i64, f_93: bool) =>
+      idyll:Prelude/showInt(f_92; μ̃ s_94: str.
+        prim if(f_93; μ̃ u_96: unit.
+          <"False" | μ̃ s_95: str.
+            prim concatStrings([s_94, ", ", s_95]; k_91)>, μ̃ u_97: unit.
+          <"True" | μ̃ s_95: str.
+            prim concatStrings([s_94, ", ", s_95]; k_91)>))
+  }>
+
+def idyll:Main/"#show (Int, Bool)" (x_98: ptr; k_99: ptr) =
+  idyll:Main/"#items (Int, Bool)"(x_98; μ̃ s_100: str.
+    prim concatStrings(["(", s_100, ")"]; k_99))
+
+def idyll:Main/"#entry" (; k_88: ptr) =
+  idyll:Main/pair(desc(i64), desc(bool), 1, true; μ̃ answer_89: ptr.
+    idyll:Main/"#show (Int, Bool)"(answer_89; k_88))

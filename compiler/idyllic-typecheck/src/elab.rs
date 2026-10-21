@@ -1080,6 +1080,20 @@ impl Checker {
                     _ => self.apply_to(ctx, f.id, (f_c, f_ty, f_usage), a),
                 }
             }
+            // `f {a}`: `f`'s next implicit argument is `a`, rather than one
+            // worked out
+            TermKind::ImplicitApp(f, a) => {
+                let (f_c, f_ty, f_usage) = self.infer(ctx, f);
+                match &*self.force(f_ty.clone()) {
+                    Value::Pi { icit: Icit::Implicit, .. } => self.apply_to(ctx, f.id, (f_c, f_ty, f_usage), a),
+                    Value::Error => err(),
+                    _ => {
+                        let ty = self.quote(ctx.lvl, f_ty);
+                        self.error(a.id, TypeErrorKind::NoImplicitArgument(ty));
+                        err()
+                    }
+                }
+            }
             // Forming a function type uses what its domain and codomain use,
             // and the codomain must use the binder as its second grade says.
             // It lives in the larger of their two universes: a function type

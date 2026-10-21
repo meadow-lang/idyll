@@ -526,3 +526,12 @@ use Shapes.Shape.*
 use Shapes.Units (unit)
 
 (area (Circle 2), area (Square 3), unit, Shapes.Units.unit)
+%%%
+-- implicit arguments given by hand: the next implicit binder's, in braces
+pair : {a b : Type} -> a -> b -> (a, b)
+pair x y = (x, y)
+
+phantom : {a : Type} -> Int -> Int
+phantom n = n
+
+(pair {Int} 1 True, pair {Bool} {String} False "s", phantom {Bool} 3)

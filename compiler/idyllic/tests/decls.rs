@@ -245,6 +245,25 @@ fn an_implicit_argument_nothing_determines_is_reported() {
 }
 
 #[test]
+fn an_implicit_argument_may_be_given_by_hand() {
+    // `f {a}` gives the implicit argument the type binds next; what is not
+    // given is worked out as ever
+    let pair = "pair : {a b : Type} -> a -> b -> (a, b)\npair x y = (x, y)\n\n";
+    ok(&format!("{pair}pair {{Int}} 1 True\n"), &["pair : {a : Type} -> {b : Type} -> (_ : [1] a) -> (_ : [1] b) -> (a, b)"], Some("(Int, Bool)"));
+    ok(&format!("{pair}pair {{Int}} {{String}} 1 \"s\"\n"), &["pair : {a : Type} -> {b : Type} -> (_ : [1] a) -> (_ : [1] b) -> (a, b)"], Some("(Int, String)"));
+    // and it is what the argument is checked against
+    rejects(&format!("{pair}pair {{Int}} True 1\n"), &["type mismatch: expected Int, but this has type Bool"]);
+    // which says what nothing else could
+    let phantom = "phantom : {a : Type} -> Int -> Int\nphantom n = n\n\n";
+    ok(&format!("{phantom}phantom {{Bool}} 1\n"), &["phantom : {a : Type} -> (_ : [1] Int) -> Int"], Some("Int"));
+    // to something that takes none next, it is an error
+    rejects(
+        "f : Int -> Int\nf x = x\n\nf {Int} 3\n",
+        &["no implicit argument is taken here: given by hand, but what it is given to has type (_ : [1] Int) -> Int"],
+    );
+}
+
+#[test]
 fn grade_polymorphic_declarations() {
     ok(
         "@linear\n\napp : {a b : Type} -> {r : Grade} -> (a [r] -> b) -> a [r] -> b\napp f [x] = f [x]\n\n\

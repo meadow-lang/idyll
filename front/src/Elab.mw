@@ -968,6 +968,10 @@ pass! {
                   let (bC, _) = checkGrade c.tc c.ctx b in
                   ((if op == Prim.IntAdd then Core.GradeAdd aC bC else Core.GradeMul aC bC), g, U.none ()))
              | _ -> fallback c again g))
+    -- `f {a}`: `f`'s next implicit argument is `a`, rather than one worked out
+    | ImplicitApp { raw func, raw arg } ->
+        (let again = \(c : Cx) -> elabExpr src out c node in
+         mode cx again (\(c : Cx) -> inferImplicitApp c.tc c.ctx func arg) (byInference again))
     | Ann { raw expr, raw ty } ->
         (let again = \(c : Cx) -> elabExpr src out c node in
          mode
@@ -1286,6 +1290,15 @@ fun unsupported (tc : Tc) (what : String) : (Core, Value, Usage) ! { Mut | e } =
 
 -- `f a`; `Type n`, `Type` applied to a level (`Type [r]` is the
 -- modality); `() [r]`, the unit type, since that is what can be boxed.
+fun inferImplicitApp (tc : Tc) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value, Usage) ! { Mut | e } =
+  let (fC, fTy, fU) = infer tc ctx f in
+  match force tc fTy with
+  | Value.Pi _ Icit.Implicit _ _ _ _ -> applyTo tc ctx fC fTy fU a
+  | Value.Error -> failed ()
+  | _ ->
+      let w = T.error tc "NoImplicitArgument" in
+      failed ()
+
 fun inferApp (tc : Tc) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value, Usage) ! { Mut | e } =
   let h = hirOf tc in
   let argIsBox = kindHirExpr h a == HirExprKind.Box in

@@ -1208,11 +1208,17 @@ where
                 Spanned::new(Term::Proj(Box::new(e), f), span)
             })
             .boxed();
+        // an argument, or an implicit one given by hand, `{Int}`
+        let argument = choice((
+            atom.clone().map(|a| (a, false)),
+            term.clone().delimited_by(just(Token::LBrace), just(Token::RBrace)).map(|a| (a, true)),
+        ));
         let app = atom
             .clone()
-            .foldl(atom.repeated(), |f: LTerm, a: LTerm| {
+            .foldl(argument.repeated(), |f: LTerm, (a, implicit): (LTerm, bool)| {
                 let span = f.span.merge(a.span);
-                Spanned::new(Term::App(Box::new(f), Box::new(a)), span)
+                let applied = if implicit { Term::ImplicitApp(Box::new(f), Box::new(a)) } else { Term::App(Box::new(f), Box::new(a)) };
+                Spanned::new(applied, span)
             })
             .boxed();
 

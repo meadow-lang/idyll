@@ -1257,6 +1257,12 @@ impl Renamer {
                 let a = self.rename_term(a);
                 self.node(sp, H::App(Box::new(f), Box::new(a)))
             }
+            // what is given is most often a type, and read as one
+            A::ImplicitApp(f, a) => {
+                let f = self.rename_term(f);
+                let a = self.as_type(|r| r.rename_term(a));
+                self.node(sp, H::ImplicitApp(Box::new(f), Box::new(a)))
+            }
             A::Ann(e, a) => {
                 let e = self.rename_term(e);
                 let a = self.as_type(|r| r.rename_term(a));
@@ -1874,7 +1880,7 @@ fn free_variables(t: &LTerm, bound: &mut Vec<String>, known: &dyn Fn(&str) -> bo
             }
             under(Some(&p.node.name.node), body, bound, out);
         }
-        A::App(f, a) | A::Ann(f, a) | A::Range(f, a) | A::Eff(f, a) => {
+        A::App(f, a) | A::ImplicitApp(f, a) | A::Ann(f, a) | A::Range(f, a) | A::Eff(f, a) => {
             free_variables(f, bound, known, out);
             free_variables(a, bound, known, out);
         }
