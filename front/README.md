@@ -70,9 +70,9 @@ parts it imports and the packages its package depends on give
 (`Compiled.compiledOf`, an `Interface.Compiled`: `CompiledPackage` as Meadow
 data, `Reflect` so the build keeps it); a package's interface is its parts'
 made one (`Link.merged`), with every package it reaches. Each part names its
-things from a room of its own (for now, a hash of its first module's path,
-the clash `assembleUnit` reports; with Lingua's `partUnitPaths`, its place
-among the package's modules).
+things from a room of its own: its first module's place among the package's
+sources (Lingua's `partUnitPaths`, sorted), so no two parts compiled at once
+share a unique.
 
 `front_builds_and_runs_a_package_with_a_dependency` and
 `front_runs_every_example_itself` hold it to that.

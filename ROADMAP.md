@@ -1137,9 +1137,9 @@ do yet `(unsupported)`, and the tests count those apart.
   lowers and runs alike against it. Left: git dependencies and the lockfile
   (Lingua is to have them as `Lingua.Resolve`, once Chris says so),
   profiles and options as `make!` has them, error messages drawn where
-  they are (the checker's errors are kinds only), and each part's room of
-  uniques from its place (Lingua's `partUnitPaths`, coming) rather than a
-  hash.
+  they are (the checker's errors are kinds only). (Lingua e15e7f9, Cut
+  071b64b: a part's room of uniques is its first module's place among the
+  package's sources, `partUnitPaths`.)
 - [ ] front/'s own REPL, once Cut moves its Lingua pin (Lingua 833e1a5, for
   LineEditor 0.2.2).
 - [ ] CI, with MeadowBoot's prerelease for the `meadow` it needs.

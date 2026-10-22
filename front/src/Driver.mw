@@ -17,7 +17,7 @@
 
 use Lingua (cli!, make!)
 use Lingua.Make (Given, Linking, Part, unitDir, unitSources, unitImports, linkRoot, linkUnits, linkOut, linkDir)
-use Lingua.Make (partDir, partSources, partImports, partUnitImports)
+use Lingua.Make (partDir, partSources, partImports, partUnitImports, partUnitPaths)
 use Lingua.Diagnostic (renderAll)
 use Idyll.Surface (SurfaceProgram)
 use Idyll.Surface as Surface
@@ -257,7 +257,7 @@ fun namesFrom (text : String) (path : String) (from : Int) (ok : String -> Bool)
 -- How many uniques each module of a package has room for: a part names its
 -- things from the slot of its first module (by path), so that parts
 -- compiled at once never share one.
-def slot = 4096
+def slot = 65536
 
 -- Where a package names its things from: past every package it is
 -- checked against, on a boundary, so that a dependency growing within its
@@ -267,11 +267,6 @@ fun baseAfter (deps : [Built]) : Int =
   let chunk = 1048576 in
   ((high + chunk - 1) / chunk) * chunk
 
--- Which room of a package a part whose first module is at `path` names its
--- things in: a hash of the path, among a million rooms, so that two parts
--- share one only by a rare chance, which `assembleUnit` reports.
-fun roomOf (path : String) : Int =
-  V.foldl (\h i -> (h * 31 + toInt (stringByteAt path i)) % 1048573) 7 (V.range 0 (stringByteLength path))
 
 -- Whether names given say how visible anything is.
 fun visibleIn (names : PackageNames) : Bool =
@@ -293,10 +288,13 @@ fun compileScc (x : Part Interface PartOut) : Result String PartOut ! { Mut, Fs 
     let packages = V.foldl (\acc i -> union acc (packagesOf (snd i))) [] (partUnitImports x) in
     let direct = V.concatMap (\i -> match V.last (packagesOf (snd i)) with | Just b -> [(builtName b, builtNames b)] | None -> []) (partUnitImports x) in
     let siblings = V.foldl (\acc p -> union acc (partClosure (snd p))) [] (partImports x) in
-    -- where it names its things: the room its first module's path hashes
-    -- to (a part may not list the package's other sources, to count them)
-    let lead = M.unwrapOr "" (V.head (sortOn (\p -> p) (V.map fst own))) in
-    let first = baseAfter packages + slot * roomOf lead in
+    -- where it names its things: the room of its first module among the
+    -- package's sources (which make! gives sorted, so the room is the same
+    -- from one build to the next while no source comes or goes)
+    let mine = V.map fst (V.filter (\s -> S.endsWith ".idl" (fst s)) (partSources x)) in
+    let unitPaths = partUnitPaths x in
+    let index = V.foldl (\acc i -> if V.elem (V.getOr "" unitPaths i) mine and (acc < 0 or i < acc) then i else acc) (0 - 1) (V.range 0 (V.len unitPaths)) in
+    let first = baseAfter packages + slot * (if index < 0 then 0 else index) in
     let root = V.any (\m -> fst m == "") own in
     -- whether the package says how visible things are: as far as this part
     -- and the parts it imports show
@@ -327,7 +325,7 @@ fun assembleUnit (u : Given Interface) (parts : [PartOut]) : Result String Inter
   let own = V.concatMap (\p -> match V.last (partClosure p) with | Just b -> [b] | None -> []) parts in
   let ranges = sortOn (\r -> fst r) (V.map (\b -> let c = builtCompiled b in (c.low, c.high)) own) in
   let clash = V.any (\i -> snd (V.getOr (0, 0) ranges i) > fst (V.getOr (0, 0) ranges (i + 1))) (V.range 0 (V.len ranges - 1)) in
-  if clash then Err "${name}: two parts' modules hash to one room of names; rename one of the modules"
+  if clash then Err "${name}: a part has more names than its room holds, ${show slot}"
   else
     let whole = merged (V.map builtCompiled own) in
     Ok (Interface.Interface (V.pushBack packages (Built.Built (plainName name) (mergedNames (V.map builtNames own)) whole)) own)
