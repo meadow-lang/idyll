@@ -36,7 +36,7 @@ use Idyll.Hir as Hir
 use Std.String as S
 use Std.Maybe as M
 use Idyll.Scc (sccModule)
-use Idyll.Check (checkModule, checked, Checked)
+use Idyll.Check (checkModule, checkModuleWith, checked, checkedAgainst, Checked)
 use Idyll.Compiled (compiledOf)
 use Idyll.Interface
 use Std.Sort (sortOn)
@@ -122,7 +122,13 @@ fun main () =
                      (match (V.get args 3, V.get args 4) with
                       | (Just "--std", Just dir) ->
                           (match packageModules dir with
-                           | Ok std -> V.foldl (\u f -> each f (typedWith prelude (Just std))) () (V.drop args 5)
+                           | Ok std ->
+                               -- (Std compiled once, as the Rust compiler
+                               -- compiles it, and every program checked
+                               -- against that)
+                               (match compiledPackage prelude "Std" std [] with
+                                | Ok (names, compiled) -> V.foldl (\u f -> each f (typedAgainst prelude names compiled)) () (V.drop args 5)
+                                | Err why -> writeError "Std: ${why}\n")
                            | Err why -> writeError "Std: ${why}\n")
                       | _ -> V.foldl (\u f -> each f (typed prelude)) () (V.drop args 3))
                  | Err _ -> writeError "the prelude does not parse\n")
@@ -239,6 +245,34 @@ fun renamed prelude (text : String) : String ! { Mut | e } =
 -- A program checked after the prelude, as `Check` writes it; `(error)` if
 -- it does not parse or rename.
 fun typed prelude (text : String) : String ! { Mut | e } = typedWith prelude None text
+
+-- A package checked whole against the compiled packages it depends on
+-- (each a name, what it gives, and what it compiled to) and compiled: what
+-- it gives, and what it compiled to; or what is wrong.
+fun compiledPackage prelude (name : String) (modules : [([String], SurfaceProgram)]) (deps : [(String, Rename.PackageNames, Compiled)]) =
+  let programs = V.map (\m -> Rename.programOf (snd m)) modules in
+  let vis = V.any (\p -> Rename.mentionsVisibility p) programs in
+  let first = V.foldl (\acc d -> match d with | (_, _, (c : Compiled)) -> if c.high > acc then c.high else acc) 0 deps in
+  match Rename.renamePackageWith name modules prelude (V.map (\d -> match d with | (n, ns, _) -> (n, ns)) deps) [] first True vis with
+  | (m, names, problems) ->
+      if not (V.isEmpty problems) then Err (S.join "; " problems)
+      else
+        let grouped = sccModule m in
+        let c = checkedAgainst grouped False (V.map (\d -> match d with | (_, _, cp) -> cp) deps) in
+        let errors = getRef c.tc.errors in
+        if not (V.isEmpty errors) then Err (S.join ", " errors) else Ok (names, compiledOf c grouped names)
+
+-- A program checked against Std compiled, if it names Std, as the test
+-- compares it.
+fun typedAgainst prelude (names : Rename.PackageNames) (std : Compiled) (text : String) : String ! { Mut | e } =
+  match Surface.parsed text with
+  | Err _ -> "(error)"
+  | Ok prog ->
+      if not (S.contains "Std" text) then typed prelude text
+      else
+        let vis = Rename.mentionsVisibility (Rename.programOf prog) in
+        (match Rename.renamePackageWith "Main" [([], prog)] prelude [("Std", names)] [] std.high True vis with
+         | (m, _, problems) -> if V.isEmpty problems then checkModuleWith (sccModule m) [std] else "(error)")
 
 -- The same, with the standard library's modules given: a program that
 -- names `Std` is the root of a package that depends on it.

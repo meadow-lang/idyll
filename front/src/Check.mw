@@ -29,6 +29,9 @@ use Idyll.Overloads as O
 use Std.St (runSt)
 use Idyll.Decl (initial, declareNatives, declareEffects, declareDatas, declareOps)
 use Idyll.Hir (Ident)
+use Idyll.Interface
+use Idyll.Elab (declareConstant)
+use Idyll.Value as Va2
 use Idyll.Rename
 use Std.Collections.HashMap as Hm
 use Std.Collections.HashMap (HashMap)
@@ -82,6 +85,14 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
   let c = checked m in
   dump c.tc m c.bodyType
 
+-- The same, against the compiled packages it depends on.
+@pub fun checkModuleWith (m : Renamed) (deps : [Compiled]) : String ! { Mut | e } =
+  let c = checkedAgainst m False deps in
+  dump c.tc m c.bodyType
+
+-- `checked`, against the compiled packages it depends on.
+@pub fun checkedAgainst (m : Renamed) (entry : Bool) (deps : [Compiled]) : Checked ! { Mut | e } = runSt (\() -> checkedWith m entry deps)
+
 -- All of it in one `runSt`, whose state the pass's tables are (`Elaborated`).
 @pub fun checked (m : Renamed) : Checked ! { Mut | e } = runSt (\() -> checkedIn m)
 
@@ -90,7 +101,11 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
 -- The same; with `entry`, a module with a `main` and no expression of its
 -- own runs `main ()`, as a package built to run does (`check_module`'s
 -- `entry`), and its answer, `()`, is not shown.
-@pub fun checkedAt (m : Renamed) (entry : Bool) =
+@pub fun checkedAt (m : Renamed) (entry : Bool) = checkedWith m entry []
+
+-- The same, against the compiled packages it depends on (`deps`, each
+-- after those it depends on): `check_module` with its `deps`.
+@pub fun checkedWith (m : Renamed) (entry : Bool) (deps : [Compiled]) =
   let h = hirArena m.hir in
   let root = hirRoot m.hir in
   let datas = hirModuleDatas h root in
@@ -109,7 +124,8 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
   let wd = setRef tc.traits (V.concatMap (\d -> if hirDataIsTrait h d then [uniqueOf h (hirDataName h d)] else []) datas) in
   let listOf = V.find (\d -> hirIdentText h (hirDataName h d) == "List" and uniqueOf h (hirDataName h d) < m.first) datas in
   let w0b = match listOf with | Just d -> setRef tc.list (uniqueOf h (hirDataName h d)) | None -> () in
-  let ctx0 = initial tc in
+  -- what the packages it depends on give
+  let ctx0 = importAll tc (initial tc) deps in
   -- native types first, which the data types and effects may mention; and
   -- native operations last, as their types may mention those
   let ctx1 = declareNatives tc ctx0 natives True in
@@ -190,6 +206,47 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
     answer = body,
     ranMain
   }
+
+-- Declare what the packages depended on give: each constant with its
+-- type, a transparent one with its value, a recursive one with its case
+-- tree, and everything known about their data types, effects and natives,
+-- hints, traits and instances (`Checker::import`).
+fun importAll (tc : Tc) (ctx : Ctx) (deps : [Compiled]) : Ctx ! { Mut | e } =
+  V.foldl
+    (\c (p : Compiled) ->
+      let c2 =
+        V.foldl
+          (\cc k ->
+            match k with
+            | Constant.Constant u name ty value unfold ->
+                let t = eval tc (Va.emptyEnv ()) ty in
+                let cc2 = declareConstant tc cc (Ident.Ident [u] name) t in
+                let w1 = match value with | Just v -> setRef tc.globals (Hm.insert u (eval tc (Va.emptyEnv ()) v) (getRef tc.globals)) | None -> () in
+                let w2 =
+                  match unfold with
+                  | Just (Unfold.Unfold arity body) -> setRef tc.transparent (Hm.insert u (Va.emptyEnv (), arity, body) (getRef tc.transparent))
+                  | None -> ()
+                in
+                cc2)
+          c
+          p.constants
+      in
+      let into = \table pairs -> setRef table (V.foldl (\m kv -> Hm.insert (fst kv) (snd kv) m) (getRef table) pairs) in
+      let w3 = into tc.ctors (V.map (\e -> match e with | CtorEntry.CtorEntry u i -> (u, i)) p.ctors) in
+      let w4 = into tc.datas (V.map (\e -> match e with | DataEntry.DataEntry u cs -> (u, cs)) p.datas) in
+      let w5 = into tc.positive (V.map (\e -> match e with | Positive.Positive u ps -> (u, ps)) p.positive) in
+      let w6 = into tc.seqs (V.map (\e -> match e with | SeqEntry.SeqEntry u n cs -> (u, (n, cs))) p.seqs) in
+      let w7 = into tc.effects (V.map (\e -> match e with | EffectEntry.EffectEntry u i -> (u, i)) p.effects) in
+      let w8 = into tc.ops (V.map (\e -> match e with | OpEntry.OpEntry u i -> (u, i)) p.ops) in
+      let w9 = into tc.nativeInfo (V.map (\e -> match e with | NativeEntry.NativeEntry u n params _ -> (u, (n, params))) p.natives) in
+      let w10 = into tc.natives (V.map (\e -> match e with | NativeEntry.NativeEntry u _ _ t -> (u, t)) p.natives) in
+      let w11 = setRef tc.nativeNames (V.foldl (\m e -> match e with | NativeEntry.NativeEntry u n _ _ -> Hm.insert n u m) (getRef tc.nativeNames) p.natives) in
+      let w12 = setRef tc.hints (V.append (getRef tc.hints) p.hints) in
+      let w13 = setRef tc.traits (V.append (getRef tc.traits) p.traits) in
+      let w14 = into tc.instanceFields (V.map (\f -> match f with | Fields.Fields u fs -> (u, fs)) p.instanceFields) in
+      c2)
+    ctx
+    deps
 
 -- Every name declared, by unique: its package (the prelude's, or `Main`,
 -- which a lone module is) and its path there.

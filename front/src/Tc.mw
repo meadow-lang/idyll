@@ -77,6 +77,9 @@ use Std.Maybe.Maybe.*
   -- the type of every constant (a data type, a constructor, a recursive
   -- definition), by its unique
   constants : Ref (HashMap Int Value),
+  -- the values of other packages' definitions that the types may see, by
+  -- unique: what such a constant is (`Compiled`)
+  globals : Ref (HashMap Int Value),
   -- what is wrong, a line each, for now
   problems : Ref [String],
   -- the row variables made to keep a solved row open for more, each with
@@ -185,6 +188,7 @@ use Std.Maybe.Maybe.*
     elab = newRef (\cx t -> (Core.Error, Value.Error, U.unknown ())),
     metas = newRef [],
     constants = newRef Hm.empty,
+    globals = newRef Hm.empty,
     problems = newRef [],
     opened = newRef [],
     prunes = newRef [],
@@ -238,6 +242,7 @@ use Std.Maybe.Maybe.*
     elab = newRef (getRef tc.elab),
     metas = newRef (getRef tc.metas),
     constants = newRef (getRef tc.constants),
+    globals = newRef (getRef tc.globals),
     problems = newRef (getRef tc.problems),
     opened = newRef (getRef tc.opened),
     prunes = newRef (getRef tc.prunes),
@@ -288,6 +293,7 @@ use Std.Maybe.Maybe.*
   let w1 = setRef tc.elab (getRef saved.elab) in
   let w2 = setRef tc.metas (getRef saved.metas) in
   let w3 = setRef tc.constants (getRef saved.constants) in
+  let wGlobals = setRef tc.globals (getRef saved.globals) in
   let w4 = setRef tc.problems (getRef saved.problems) in
   let w5 = setRef tc.opened (getRef saved.opened) in
   let w6 = setRef tc.prunes (getRef saved.prunes) in

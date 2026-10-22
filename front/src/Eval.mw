@@ -154,7 +154,8 @@ fun stuck (head : Value) (elim : Elim) : Value =
   | Core.Prim p -> Value.Prim p []
   | Core.Error -> Value.Error
   | Core.Var i _ -> M.unwrapOr Value.Error (Va.envGet env i)
-  | Core.Opaque u n -> Value.Opaque u n []
+  -- another package's definition the types may see is what it is
+  | Core.Opaque u n -> (match Hm.lookup u (getRef tc.globals) with | Just v -> v | None -> Value.Opaque u n [])
   | Core.Meta m ->
       (match T.meta tc m with
        | Just (Meta.Solved sol _) -> sol
