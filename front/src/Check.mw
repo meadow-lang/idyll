@@ -73,7 +73,11 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
   top : Ctx,
   lets : [Maybe (String, Core)],
   answer : Maybe (Core, Core),
-  ranMain : Bool
+  ranMain : Bool,
+  -- the prelude's own top-level `let`s and their uniques, which every
+  -- package has the same: what a linked program starts with (`Link`)
+  preludeLets : [(String, Core)],
+  preludeTop : [Int]
 }
 
 -- The module checked, and written as the differential test compares it:
@@ -204,7 +208,9 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
     top = ctx,
     lets,
     answer = body,
-    ranMain
+    ranMain,
+    preludeLets = V.concatMap (\gw -> match gw with | (g, Just w) -> if inPrelude g then [w] else [] | _ -> []) (V.zip groups lets),
+    preludeTop = V.filter (\u -> u < m.first) toplevel
   }
 
 -- Declare what the packages depended on give: each constant with its

@@ -45,7 +45,11 @@ use Idyll.CutAst as A
 use Idyll.Num as N
 use Cut as C
 use Cut (CutBuilder, CutProd, CutCons, CutStmt, CutConsKind, kindCutCons)
-use Idyll.Check (checkedIn, checkedAt)
+use Idyll.Check (checkedIn, checkedAt, checkedWith)
+use Idyll.Compiled (compiledOf)
+use Idyll.Link (linked)
+use Idyll.Interface (Compiled)
+use Idyll.Rename (PackageNames)
 use Idyll.Rename (Renamed)
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
@@ -289,6 +293,20 @@ fun writeProgram (l : L s) (entry : Maybe Sym) (answer : Bool) (datas : [CData])
     else if not (V.isEmpty (getRef c.tc.errors)) then "(error)"
     else
       match lowerIn c package with
+      | Ok text -> text
+      | Err whys -> "(not lowered: " ++ S.join "; " whys ++ ")")
+
+-- The same, for a package checked against the compiled packages it depends
+-- on (`deps`, each after those it depends on) and linked with them (see
+-- `Link`); `names` is what its renaming says it gives.
+@pub fun cutTextLinked (m : Renamed) (names : PackageNames) (package : String) (entry : Bool) (deps : [Compiled]) : String ! { Mut | e } =
+  runSt (\() ->
+    let c = checkedWith m entry deps in
+    if not (V.isEmpty (getRef c.tc.unsupported)) then "(unsupported)"
+    else if not (V.isEmpty (getRef c.tc.errors)) then "(error)"
+    else
+      let own = compiledOf c m names in
+      match lowerIn (linked c own deps) package with
       | Ok text -> text
       | Err whys -> "(not lowered: " ++ S.join "; " whys ++ ")")
 

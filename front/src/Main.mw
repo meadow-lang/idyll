@@ -36,8 +36,10 @@ use Idyll.Hir as Hir
 use Std.String as S
 use Std.Maybe as M
 use Idyll.Scc (sccModule)
-use Idyll.Check (checkModule, checkModuleWith, checked, checkedAgainst, Checked)
+use Idyll.Check (checkModule, checkModuleWith, checked, checkedAgainst, checkedWith, Checked)
 use Idyll.Compiled (compiledOf)
+use Idyll.Link (linked)
+use Std.St (runSt)
 use Idyll.Interface
 use Std.Sort (sortOn)
 use Idyll.Typer as Ty
@@ -88,7 +90,10 @@ fun main () =
                      (match (V.get args 3, V.get args 4) with
                       | (Just "--std", Just dir) ->
                           (match packageModules dir with
-                           | Ok std -> V.foldl (\u f -> each f (cutWith prelude (Just std))) () (V.drop args 5)
+                           | Ok std ->
+                               (match compiledPackage prelude "Std" std [] with
+                                | Ok (names, compiled) -> V.foldl (\u f -> each f (cutAgainst prelude names compiled)) () (V.drop args 5)
+                                | Err why -> writeError "Std: ${why}\n")
                            | Err why -> writeError "Std: ${why}\n")
                       | _ -> V.foldl (\u f -> each f (cutOf prelude)) () (V.drop args 3))
                  | Err _ -> writeError "the prelude does not parse\n")
@@ -104,7 +109,10 @@ fun main () =
                      (match (V.get args 3, V.get args 4) with
                       | (Just "--std", Just dir) ->
                           (match packageModules dir with
-                           | Ok std -> V.foldl (\u f -> each f (ranWith prelude (Just std))) () (V.drop args 5)
+                           | Ok std ->
+                               (match compiledPackage prelude "Std" std [] with
+                                | Ok (names, compiled) -> V.foldl (\u f -> each f (ranAgainst prelude names compiled)) () (V.drop args 5)
+                                | Err why -> writeError "Std: ${why}\n")
                            | Err why -> writeError "Std: ${why}\n")
                       | _ -> V.foldl (\u f -> each f (ran prelude)) () (V.drop args 3))
                  | Err _ -> writeError "the prelude does not parse\n")
@@ -262,6 +270,18 @@ fun compiledPackage prelude (name : String) (modules : [([String], SurfaceProgra
         let errors = getRef c.tc.errors in
         if not (V.isEmpty errors) then Err (S.join ", " errors) else Ok (names, compiledOf c grouped names)
 
+-- A program's Cut: checked against Std compiled, if it names Std, and
+-- linked with it.
+fun cutAgainst prelude (names : Rename.PackageNames) (std : Compiled) (text : String) : String ! { Mut | e } =
+  match Surface.parsed text with
+  | Err _ -> "(error)"
+  | Ok prog ->
+      if not (S.contains "Std" text) then cutOf prelude text
+      else
+        let vis = Rename.mentionsVisibility (Rename.programOf prog) in
+        (match Rename.renamePackageWith "Main" [([], prog)] prelude [("Std", names)] [] std.high True vis with
+         | (m, own, problems) -> if V.isEmpty problems then Lo.cutTextLinked (sccModule m) own "Main" False [std] else "(error)")
+
 -- A program checked against Std compiled, if it names Std, as the test
 -- compares it.
 fun typedAgainst prelude (names : Rename.PackageNames) (std : Compiled) (text : String) : String ! { Mut | e } =
@@ -409,6 +429,30 @@ fun ranWith prelude std (text : String) : String ! { Mut | e } =
                  match p.body with
                  | None -> "(no expression)"
                  | Just term -> runCore p term)))
+
+-- A program run on the CEK machine: checked against Std compiled, if it
+-- names Std, and linked with it.
+fun ranAgainst prelude (names : Rename.PackageNames) (std : Compiled) (text : String) : String ! { Mut | e } =
+  match Surface.parsed text with
+  | Err _ -> "(error)"
+  | Ok prog ->
+      if not (S.contains "Std" text) then ran prelude text
+      else
+        let vis = Rename.mentionsVisibility (Rename.programOf prog) in
+        (match Rename.renamePackageWith "Main" [([], prog)] prelude [("Std", names)] [] std.high True vis with
+         | (m, own, problems) ->
+             if not (V.isEmpty problems) then "(error)"
+             else
+               let grouped = sccModule m in
+               runSt (\() ->
+                 let c = checkedWith grouped False [std] in
+                 if not (V.isEmpty (getRef c.tc.unsupported)) then "(unsupported)"
+                 else if not (V.isEmpty (getRef c.tc.errors)) then "(error)"
+                 else
+                   let p = Cek.programOf (linked c (compiledOf c grouped own) [std]) in
+                   match p.body with
+                   | None -> "(no expression)"
+                   | Just term -> runCore p term))
 
 fun runCore p term : String ! { Mut | e } =
   let w = W.captured () in
