@@ -2615,9 +2615,17 @@ does a single file, which is a package of one module (see
 
 ### Modules are namespaces
 
-A package is checked as a whole, so its modules may mention each other,
-even one that mentions them back. But each module is a namespace of its
-own: a sibling's names arrive through a `use`, never for free.
+A package's modules may mention each other, even one that mentions them
+back. But each module is a namespace of its own: a sibling's names arrive
+through a `use`, never for free.
+
+Modules that import each other, in a circle or not, are checked together,
+as one *part* of the package (a strongly connected component of its
+imports); the parts are checked one after another, each against the ones
+it imports, so a build that finds a part's modules and what it imports
+unchanged reads it back rather than checking it again. An instance of a
+trait is found wherever its module is imported, directly or through
+others.
 
 ```
 -- src/Syntax.idl

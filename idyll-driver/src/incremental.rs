@@ -84,6 +84,54 @@ impl Cache {
     }
 }
 
+/// The parts of one package (see `idyllic::parts`) kept beside it, a file
+/// each, `<package>.part-<which>.ipk`: what lets a build of a package whose
+/// sources changed check only the parts the change reaches.
+pub struct Parts<'a> {
+    pub cache: &'a Cache,
+    /// the package, as [`Cache::load`] knows it
+    pub ident: String,
+    /// see [`parts_salt`]
+    pub salt: u64,
+}
+
+impl idyllic::pipeline::PartStore for Parts<'_> {
+    fn salt(&self) -> u64 {
+        self.salt
+    }
+
+    fn load(&self, id: &str, key: u64) -> Option<CompiledPackage> {
+        read(&self.part_file(id), key)
+    }
+
+    fn store(&self, id: &str, key: u64, part: &CompiledPackage) {
+        write(&self.part_file(id), part, key);
+    }
+}
+
+impl Parts<'_> {
+    fn part_file(&self, id: &str) -> PathBuf {
+        let mut h = hasher();
+        text(&mut h, id);
+        self.cache.dir.join(format!("{}.part-{:016x}.ipk", self.ident, h.finish()))
+    }
+}
+
+/// What a package's parts are compiled from besides their own modules: the
+/// compiler, where the package starts naming things, its name, and its
+/// dependencies' fingerprints.
+pub fn parts_salt(package: &Package, deps: &[u64], floor: usize) -> u64 {
+    let mut h = hasher();
+    h.write_u64(compiler());
+    h.write_usize(floor);
+    text(&mut h, &package.name);
+    for (d, name) in deps.iter().zip(&package.dep_names) {
+        h.write_u64(*d);
+        text(&mut h, name);
+    }
+    h.finish()
+}
+
 /// Remove from `dir` what an earlier build of the compiler wrote: a package
 /// from before this binary existed was written by another one, and is never
 /// read again -- its fingerprint names that compiler (see [`compiler`]).

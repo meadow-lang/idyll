@@ -323,7 +323,18 @@ fn compile_graph(graph: &PackageGraph, opts: &Options, cache: Option<&Cache>) ->
                     .zip(&pkg.dep_names)
                     .map(|(&d, alias)| (alias.as_str(), packages[d].as_ref().expect("topological order")))
                     .collect();
-                let deps = Deps { all: &all, direct: &direct, first_unique: floor };
+                // its parts compiled before, whose inputs did not change
+                let parts = cache.map(|cache| incremental::Parts {
+                    cache,
+                    ident: idents[pid].clone(),
+                    salt: incremental::parts_salt(pkg, &dep_prints, floor),
+                });
+                let deps = Deps {
+                    all: &all,
+                    direct: &direct,
+                    first_unique: floor,
+                    parts: parts.as_ref().map(|p| p as &dyn pipeline::PartStore),
+                };
                 // Every package is compiled as a program, its `main` to be
                 // run, whether or not it is the one asked for: what a
                 // dependent links is only its definitions, and one compiled

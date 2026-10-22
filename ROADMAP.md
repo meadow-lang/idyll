@@ -470,6 +470,23 @@ examples need strings to take apart first (`Std.Yield` is the generators).
   Cut, through `meadow cut --emit`: the Cut inlined, its AxCut, and Silo's
   LLVM IR (`compiler/idyllic/src/inspect.rs`).
 
+- [x] **A package is checked a module SCC at a time** (Chris, 2026-10-21:
+  packages are the unit of the build, a batch compiler inside, parallel and
+  incremental at module SCCs, mutually recursive modules allowed). Done
+  2026-10-21 in Rust: `idyllic::parts` makes the graph of which module
+  names which (a `use`, a qualified name, with or without the package's
+  name; the package's name alone is the root), its SCCs are the parts, the
+  root's last with whatever reaches it. Each part is renamed
+  (`rename_part`, the earlier parts' names its own modules') and checked in
+  one batch against the parts it imports as against packages, and
+  `packages::merge` makes them one `CompiledPackage`. The driver keeps each
+  part beside its package (`incremental::Parts`, `<pkg>.part-<id>.ipk`)
+  under a fingerprint of its modules and the parts it imports, so an edit
+  checks only the parts it reaches. An instance is seen where its module is
+  imported. Not yet: the parts of one package on several threads (the
+  checker's `Rc`s keep a part to one thread; front/'s build, on Lingua's
+  `make!` parts, compiles them in parallel).
+
 *Done when:* a workspace with a git dependency builds, a second build reuses
 what it can, and the lockfile pins the dependency. **Met:** a second build
 of an unchanged workspace compiles nothing, and `--offline --locked` builds

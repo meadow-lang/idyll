@@ -88,3 +88,55 @@ fn what_a_module_keeps_to_itself_stays_there() {
     ]);
     assert!(out.has_errors(), "a private name was taken from another part");
 }
+
+/// Parts kept in memory, counting what is read back and what stored.
+#[derive(Default)]
+struct Kept {
+    parts: std::cell::RefCell<std::collections::HashMap<String, (u64, idyllic::pipeline::CompiledPackage)>>,
+    read: std::cell::Cell<usize>,
+    stored: std::cell::Cell<usize>,
+}
+
+impl idyllic::pipeline::PartStore for Kept {
+    fn salt(&self) -> u64 {
+        7
+    }
+
+    fn load(&self, id: &str, key: u64) -> Option<idyllic::pipeline::CompiledPackage> {
+        let found = self.parts.borrow().get(id).filter(|(k, _)| *k == key).map(|(_, p)| p.clone());
+        if found.is_some() {
+            self.read.set(self.read.get() + 1);
+        }
+        found
+    }
+
+    fn store(&self, id: &str, key: u64, part: &idyllic::pipeline::CompiledPackage) {
+        self.stored.set(self.stored.get() + 1);
+        self.parts.borrow_mut().insert(id.to_string(), (key, part.clone()));
+    }
+}
+
+#[test]
+fn a_part_whose_inputs_did_not_change_is_read_back() {
+    let kept = Kept::default();
+    let run = |modules: &[(&str, &str)]| {
+        let deps = Deps { parts: Some(&kept), ..Deps::default() };
+        let out = pipeline::run_package_with(&package(modules), deps, &OPTIONS, Vec::new());
+        assert!(out.diagnostics.is_empty(), "{:#?}", diags(&out));
+        out.printed
+    };
+    let root = "use Even (even)\nuse Words (word)\n\nmain : () -> () ! {Console, Div}\nmain u = putStrLn \"${even 4} ${word}\"\n";
+    let words = |w: &str| format!("@pub\nword : String\nword = \"{w}\"\n");
+    let first = run(&[("", root), ("Even", EVEN), ("Odd", ODD), ("Words", &words("one"))]);
+    assert_eq!(first, "True one\n");
+    // the two parts that are not the root's are kept
+    assert_eq!((kept.read.get(), kept.stored.get()), (0, 2));
+    // `Words` changed: `Even` and `Odd` are read back, `Words` checked again
+    let second = run(&[("", root), ("Even", EVEN), ("Odd", ODD), ("Words", &words("two"))]);
+    assert_eq!(second, "True two\n");
+    assert_eq!((kept.read.get(), kept.stored.get()), (1, 3));
+    // nothing changed: both are read back
+    let third = run(&[("", root), ("Even", EVEN), ("Odd", ODD), ("Words", &words("two"))]);
+    assert_eq!(third, "True two\n");
+    assert_eq!((kept.read.get(), kept.stored.get()), (3, 3));
+}

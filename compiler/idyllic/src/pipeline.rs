@@ -94,6 +94,25 @@ pub struct Deps<'a> {
     pub all: &'a [&'a CompiledPackage],
     pub direct: &'a [(&'a str, &'a CompiledPackage)],
     pub first_unique: usize,
+    /// where the package's parts compiled before are kept, if anywhere: a
+    /// part whose inputs have not changed is read back rather than checked
+    /// again (see [`PartStore`])
+    pub parts: Option<&'a dyn PartStore>,
+}
+
+/// Where a build keeps the parts of a package (see [`crate::parts`]) it
+/// compiled, for the next build to read back the ones whose inputs it
+/// finds unchanged. A part is known by its modules' paths (`id`), and kept
+/// with a fingerprint of everything it was compiled from (`key`): its
+/// modules, the parts it imports, where it starts naming things, and
+/// [`PartStore::salt`]. Only a part that compiled with no diagnostic is
+/// kept. The root's part is always compiled, since the program is its.
+pub trait PartStore {
+    /// what the parts are compiled from outside the package: the compiler
+    /// and the packages it depends on
+    fn salt(&self) -> u64;
+    fn load(&self, id: &str, key: u64) -> Option<CompiledPackage>;
+    fn store(&self, id: &str, key: u64, part: &CompiledPackage);
 }
 
 
@@ -542,7 +561,7 @@ pub(crate) fn with_std<R>(package: &str, deps: Deps<'_>, f: impl FnOnce(Deps<'_>
     let std_package = stdlib::compiled();
     let all: Vec<&CompiledPackage> = std::iter::once(&*std_package).chain(deps.all.iter().copied()).collect();
     let direct: Vec<(&str, &CompiledPackage)> = std::iter::once((NAME, &*std_package)).chain(deps.direct.iter().copied()).collect();
-    f(Deps { all: &all, direct: &direct, first_unique: deps.first_unique.max(std_package.uniques.end) })
+    f(Deps { all: &all, direct: &direct, first_unique: deps.first_unique.max(std_package.uniques.end), parts: deps.parts })
 }
 
 /// The packages a checked program is to be linked with: all of `deps`,
@@ -669,6 +688,36 @@ pub(crate) fn front(package: &PackageSource, deps: Deps<'_>, opts: &Options, ent
     Ok(Front { diagnostics, sources, module, spans: renamed.spans, checked, decls, declarations, parted: false })
 }
 
+/// What a part is known by, its modules' paths, and a fingerprint of what it
+/// is compiled from (see [`PartStore`]): `imported` are the keys of the
+/// parts before it, of which it imports those its [`crate::parts::Part`]
+/// says.
+fn part_key(package: &PackageSource, part: &crate::parts::Part, first: usize, visibility: bool, imported: &[u64], salt: u64) -> (String, u64) {
+    use std::hash::Hasher;
+    let mut h = std::hash::DefaultHasher::new();
+    let text = |h: &mut std::hash::DefaultHasher, s: &str| {
+        h.write_usize(s.len());
+        h.write(s.as_bytes());
+    };
+    h.write_u64(salt);
+    text(&mut h, &package.name);
+    text(&mut h, package.version.as_deref().unwrap_or(""));
+    h.write_u8(u8::from(package.linear) | u8::from(visibility) << 1);
+    h.write_usize(first);
+    let mut paths = Vec::new();
+    for &i in &part.modules {
+        let m = &package.modules[i];
+        paths.push(m.path.join("."));
+        text(&mut h, &m.path.join("."));
+        text(&mut h, &m.file);
+        text(&mut h, &m.text);
+    }
+    for &j in &part.imports {
+        h.write_u64(imported[j]);
+    }
+    (paths.join("+"), h.finish())
+}
+
 /// Where each part of a package starts naming its things: on a boundary of
 /// this many uniques after the part before it, so that a part that grows
 /// moves the parts after it only once it passes one.
@@ -699,13 +748,24 @@ fn parted(
     let mut failed = None;
     let mut next = deps.first_unique.max(idyllic_builtins::FIRST_USER_UNIQUE);
     let mut last = None;
+    let mut keys: Vec<u64> = Vec::new();
     for part in parts {
         // a part that imports one that did not check is not checked
         let imported: Option<Vec<&CompiledPackage>> = part.imports.iter().map(|&j| compiled[j].as_ref()).collect();
         let Some(imported) = imported else {
             compiled.push(None);
+            keys.push(0);
             continue;
         };
+        // one compiled before from just these inputs is read back
+        let (id, key) = part_key(package, part, next, visibility_mentioned, &keys, deps.parts.map_or(0, |s| s.salt()));
+        keys.push(key);
+        let kept = if part.root { None } else { deps.parts.and_then(|s| s.load(&id, key)) };
+        if let Some(kept) = kept {
+            next = kept.uniques.end.div_ceil(PART_CHUNK) * PART_CHUNK;
+            compiled.push(Some(kept));
+            continue;
+        }
         let modules: Vec<rename::ModuleSource<'_>> =
             part.modules.iter().map(|&i| rename::ModuleSource { path: package.modules[i].path.clone(), program: &asts[i] }).collect();
         let siblings: Vec<&idyllic_hir::PackageNames> = imported.iter().map(|p| &p.names).collect();
@@ -723,6 +783,9 @@ fn parted(
         // parts together, below)
         decls.extend(checked.decl_types.iter().map(|(id, x, ty)| (renamed.spans.get(*id).map_or(usize::MAX, |s| s.start), x.clone(), ty.to_string())));
         let wrong = said.iter().any(Diagnostic::is_error);
+        if let (true, Some(store), Some(cp)) = (said.is_empty() && !part.root, deps.parts, &checked.compiled) {
+            store.store(&id, key, cp);
+        }
         diagnostics.extend(said);
         compiled.push(if wrong { None } else { checked.compiled.clone() });
         if wrong {

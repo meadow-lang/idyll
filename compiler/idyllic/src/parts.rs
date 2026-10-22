@@ -42,8 +42,18 @@ pub struct Part {
 pub fn parts(package: &str, paths: &[Vec<String>], texts: &[&str]) -> Vec<Part> {
     let n = paths.len();
     let names = |j: usize| [paths[j].join("."), format!("{package}.{}", paths[j].join("."))];
+    let modules: Vec<String> = paths.iter().filter(|p| !p.is_empty()).map(|p| p.join(".")).collect();
     let edges: Vec<Vec<usize>> = (0..n)
-        .map(|i| (0..n).filter(|&j| j != i && !paths[j].is_empty() && names(j).iter().any(|p| imports(texts[i], p))).collect())
+        .map(|i| {
+            (0..n)
+                .filter(|&j| j != i)
+                .filter(|&j| match paths[j].is_empty() {
+                    // the root, by the package's name alone
+                    true => names_root(texts[i], package, &modules),
+                    false => names(j).iter().any(|p| imports(texts[i], p)),
+                })
+                .collect()
+        })
         .collect();
     let mut comps = tarjan(&edges);
     // the root's part takes in every part that reaches it
@@ -103,6 +113,32 @@ pub fn clash(paths: &[Vec<String>], programs: &[idyllic_ast::Program]) -> bool {
     all.sort();
     all.dedup();
     all.len() != n
+}
+
+/// Whether `text` names the root module, by the package's name alone: not
+/// as the start of another module's path, `App.Syntax`.
+fn names_root(text: &str, package: &str, modules: &[String]) -> bool {
+    let mut from = 0;
+    while let Some(at) = text[from..].find(package) {
+        let start = from + at;
+        let rest = &text[start + package.len()..];
+        let after = rest.bytes().next();
+        let follows = matches!(after, None | Some(b'.' | b' ' | b'\n' | b'\r' | b'(' | b'\t'));
+        let named = after == Some(b'.') || text[..start].trim_end().ends_with("use");
+        if follows && named && (start == 0 || !is_word(text.as_bytes()[start - 1])) {
+            let under = rest.strip_prefix('.').map(|r| r.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.')).next().unwrap_or(""));
+            let another = under.is_some_and(|u| modules.iter().any(|m| u == m || u.starts_with(&format!("{m}."))));
+            if !another {
+                return true;
+            }
+        }
+        from = start + package.len();
+    }
+    false
+}
+
+fn is_word(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'\'' || b == b'.'
 }
 
 /// Whether `text` names the module at `path`: a `use` of it or of something
@@ -209,12 +245,24 @@ mod tests {
     }
 
     #[test]
+    fn a_module_that_names_the_root_is_in_its_part() {
+        let paths = [p(""), p("Syntax"), p("Child")];
+        let texts = ["use Child\n", "x = 1\n", "use App.Syntax\nuse App (shared)\n"];
+        let ps = parts("App", &paths, &texts);
+        assert_eq!(ps.iter().map(|p| p.modules.clone()).collect::<Vec<_>>(), [vec![1], vec![0, 2]]);
+        // `App.Syntax` alone is the module, not the root
+        let texts = ["use Child\n", "x = 1\n", "use App.Syntax\n"];
+        assert_eq!(parts("App", &paths, &texts).len(), 3);
+    }
+
+    #[test]
     fn the_parts_come_before_the_root() {
         let paths = [p(""), p("A"), p("B")];
         let texts = ["use A\n", "x = Main.y\n", "Collections.List.map\n"];
         let ps = parts("Main", &paths, &texts);
         // `A` names no module `Main` here: the root has no path to name
-        assert_eq!(ps.iter().map(|p| p.modules.clone()).collect::<Vec<_>>(), [vec![1], vec![2], vec![0]]);
+        // and `A` names the root, `Main.y`, so it is in the root's part
+        assert_eq!(ps.iter().map(|p| p.modules.clone()).collect::<Vec<_>>(), [vec![2], vec![0, 1]]);
     }
 
     #[test]
