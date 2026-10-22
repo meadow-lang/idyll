@@ -557,19 +557,18 @@ pub(crate) fn to_link<'a>(checked: &typecheck::TypeCheckResult, deps: &[&'a Comp
 }
 
 fn build_with(package: &PackageSource, deps: Deps<'_>, opts: &Options, entry: bool, stage: Stage) -> Output {
-    let Front { diagnostics, sources, module, spans, mut checked, decls } = match front(package, deps, opts, entry) {
+    let Front { diagnostics, sources, module, mut checked, decls, mut declarations, parted, .. } = match front(package, deps, opts, entry) {
         Ok(front) => front,
         Err(unread) => return unread,
     };
     let hir = opts.debug.then(|| format!("{module:#?}"));
-    let mut declarations = declarations(&checked, &spans, &sources);
     declarations.extend(deps.direct.iter().flat_map(|(name, p)| exported(name, p)));
 
     // a program that uses other packages is put together with them
     let checks = !diagnostics.iter().any(Diagnostic::is_error);
     if !matches!(stage, Stage::Check) && checks && checked.program.is_some() {
         let linking = to_link(&checked, deps.all);
-        if !linking.is_empty() {
+        if !linking.is_empty() || parted {
             typecheck::packages::link(&mut checked, &linking);
         }
     }
@@ -587,6 +586,11 @@ pub(crate) struct Front {
     pub checked: typecheck::TypeCheckResult,
     /// the program's own definitions and their types, as written
     pub decls: Vec<(String, String)>,
+    /// what it declares, for the finder and the like
+    pub declarations: Vec<Declaration>,
+    /// whether it was compiled in several parts, which a program is then
+    /// linked from even when it depends on nothing
+    pub parted: bool,
 }
 
 /// Read, rename and check a package; or, if it cannot be read, what there
@@ -623,6 +627,14 @@ pub(crate) fn front(package: &PackageSource, deps: Deps<'_>, opts: &Options, ent
     let Some(prelude) = read(&mut sources, "<prelude>", PRELUDE, &mut diagnostics) else {
         panic!("the prelude does not parse: {diagnostics:#?}")
     };
+    let paths: Vec<Vec<String>> = package.modules.iter().map(|m| m.path.clone()).collect();
+    let texts: Vec<&str> = package.modules.iter().map(|m| m.text.as_str()).collect();
+    let parts = crate::parts::parts(&package.name, &paths, &texts);
+    // (a module written inside a file whose path another module has is
+    // the renamer's to report, which it can only with both in one part)
+    if parts.len() > 1 && !crate::parts::clash(&paths, &asts) {
+        return Ok(parted(package, deps, &asts, &prelude, &parts, entry, diagnostics, sources));
+    }
     let modules: Vec<rename::ModuleSource<'_>> = package
         .modules
         .iter()
@@ -653,7 +665,87 @@ pub(crate) fn front(package: &PackageSource, deps: Deps<'_>, opts: &Options, ent
         decls.sort_by_key(|(id, ..)| renamed.spans.get(*id).map(|s| s.start));
         decls.into_iter().map(|(_, x, ty)| (x.clone(), ty.to_string())).collect()
     };
-    Ok(Front { diagnostics, sources, module, spans: renamed.spans, checked, decls })
+    let declarations = declarations(&checked, &renamed.spans, &sources);
+    Ok(Front { diagnostics, sources, module, spans: renamed.spans, checked, decls, declarations, parted: false })
+}
+
+/// Where each part of a package starts naming its things: on a boundary of
+/// this many uniques after the part before it, so that a part that grows
+/// moves the parts after it only once it passes one.
+const PART_CHUNK: usize = 1 << 12;
+
+/// A package of several parts (see [`crate::parts`]), compiled a part at a
+/// time, each against the packages it depends on and its own parts that it
+/// imports: the root's part checked last, its result the package's, with
+/// the parts made one compiled package. A part that does not check stops
+/// the parts that import it, and its result is the package's.
+#[allow(clippy::too_many_arguments)]
+fn parted(
+    package: &PackageSource,
+    deps: Deps<'_>,
+    asts: &[idyllic_ast::Program],
+    prelude: &idyllic_ast::Program,
+    parts: &[crate::parts::Part],
+    entry: bool,
+    mut diagnostics: Vec<Diagnostic>,
+    sources: SourceMap,
+) -> Front {
+    let programs: Vec<&idyllic_ast::Program> = asts.iter().collect();
+    let visibility_mentioned = rename::package_mentions_visibility(&programs);
+    let direct: Vec<(&str, &idyllic_hir::PackageNames)> = deps.direct.iter().map(|(n, p)| (*n, &p.names)).collect();
+    let mut compiled: Vec<Option<CompiledPackage>> = Vec::new();
+    let mut declared = Vec::new();
+    let mut decls: Vec<(usize, String, String)> = Vec::new();
+    let mut failed = None;
+    let mut next = deps.first_unique.max(idyllic_builtins::FIRST_USER_UNIQUE);
+    let mut last = None;
+    for part in parts {
+        // a part that imports one that did not check is not checked
+        let imported: Option<Vec<&CompiledPackage>> = part.imports.iter().map(|&j| compiled[j].as_ref()).collect();
+        let Some(imported) = imported else {
+            compiled.push(None);
+            continue;
+        };
+        let modules: Vec<rename::ModuleSource<'_>> =
+            part.modules.iter().map(|&i| rename::ModuleSource { path: package.modules[i].path.clone(), program: &asts[i] }).collect();
+        let siblings: Vec<&idyllic_hir::PackageNames> = imported.iter().map(|p| &p.names).collect();
+        let at = rename::PartOf { siblings: &siblings, root: part.root, visibility_mentioned };
+        let mut renamed = rename::rename_part(&package.name, &modules, prelude, &direct, next, package.linear, at);
+        renamed.module.version = package.version.clone();
+        let mut said: Vec<Diagnostic> = renamed.errors.iter().map(rename::RenameError::to_diagnostic).collect();
+        let module = scc::scc_module(renamed.module);
+        let all: Vec<&CompiledPackage> = deps.all.iter().copied().chain(imported.iter().copied()).collect();
+        let checked = typecheck::check_module(&module, renamed.spans.len(), entry && part.root, &all);
+        said.extend(checked.errors.iter().map(|e| e.to_diagnostic(&renamed.spans)));
+        next = module.uniques.1.div_ceil(PART_CHUNK) * PART_CHUNK;
+        declared.extend(declarations(&checked, &renamed.spans, &sources));
+        // (where in the sources each is: the order they were written, all
+        // parts together, below)
+        decls.extend(checked.decl_types.iter().map(|(id, x, ty)| (renamed.spans.get(*id).map_or(usize::MAX, |s| s.start), x.clone(), ty.to_string())));
+        let wrong = said.iter().any(Diagnostic::is_error);
+        diagnostics.extend(said);
+        compiled.push(if wrong { None } else { checked.compiled.clone() });
+        if wrong {
+            if failed.is_none() {
+                failed = Some((module, renamed.spans, checked));
+            }
+        } else if part.root {
+            last = Some((module, renamed.spans, checked));
+        }
+    }
+    let ((module, spans, mut checked), whole) = match (failed, last) {
+        (Some(f), _) => (f, false),
+        (None, Some(root)) => (root, true),
+        (None, None) => unreachable!("the root's part is checked once every part before it is"),
+    };
+    if whole {
+        // the package, whole: what is stored, imported and linked
+        let parts = compiled.into_iter().map(|c| c.expect("every part checked")).collect();
+        checked.compiled = Some(typecheck::packages::merge(parts));
+    }
+    decls.sort_by_key(|(at, ..)| *at);
+    let decls = decls.into_iter().map(|(_, x, ty)| (x, ty)).collect();
+    Front { diagnostics, sources, module, spans, checked, decls, declarations: declared, parted: true }
 }
 
 /// What [`Output::declarations`] lists, from the checker's catalog.

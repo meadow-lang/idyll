@@ -432,6 +432,9 @@ impl Checker {
     /// that unify with its.
     pub(super) fn check_instances(&mut self, ctx: &Ctx, m: &hir::Module) {
         let own = |u: usize| (m.uniques.0..m.uniques.1).contains(&u);
+        // the package's, for the orphan rule: its earlier parts' too
+        let parts = self.kin.clone();
+        let kin = |u: usize| own(u) || parts.iter().any(|r| r.contains(&u));
         let mut instances: Vec<(usize, NodeId, usize)> = Vec::new();
         let mut hints: Vec<usize> = self.hints.iter().copied().collect();
         hints.sort_unstable();
@@ -446,7 +449,7 @@ impl Checker {
                 continue;
             }
             let node = node_of.get(&u).copied().unwrap_or(NodeId(0));
-            if !own(trait_u) && !head.is_some_and(own) {
+            if !kin(trait_u) && !head.is_some_and(kin) {
                 let instance = self.quote(ctx.lvl, ty.clone());
                 let trait_name = self.homes.get(&trait_u).map_or_else(|| "its trait".to_string(), |h| format!("the trait, from {h},"));
                 self.error(node, TypeErrorKind::OrphanInstance { instance, trait_name });

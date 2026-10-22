@@ -351,7 +351,14 @@ impl Checker {
                     _ => continue,
                 };
                 self.written_as.insert(*u, written);
-                let module = if module.is_empty() { package.clone() } else { format!("{package}.{}", module.join(".")) };
+                // (an earlier part of this package's is one of its modules)
+                let module = if module.is_empty() {
+                    package.clone()
+                } else if p.name == m.package {
+                    module.join(".")
+                } else {
+                    format!("{package}.{}", module.join("."))
+                };
                 self.origin.insert(*u, format!("`{module}`"));
             }
         }

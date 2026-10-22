@@ -1163,6 +1163,9 @@ pub struct Checker {
     /// where each type and constructor is from, by unique: its package, for
     /// a message about two of one name
     homes: HashMap<usize, String>,
+    /// the uniques of this package's earlier parts (see `idyllic::parts`),
+    /// which are its own as much as the module's are
+    kin: Vec<std::ops::Range<usize>>,
     /// The definitions offered to the search for an auto argument, this
     /// package's and those it depends on, with their names for messages;
     /// and the searches waiting for their types (see [`auto`]).
@@ -1383,6 +1386,7 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         written_as: HashMap::new(),
         origin: HashMap::new(),
         homes: HashMap::new(),
+        kin: deps.iter().filter(|p| p.name == m.package).map(|p| p.uniques.clone()).collect(),
         hints: m.hints.clone(),
         hint_names: HashMap::new(),
         deferred_autos: Vec::new(),

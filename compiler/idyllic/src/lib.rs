@@ -12,5 +12,6 @@
 
 pub mod inspect;
 pub mod meadow;
+pub mod parts;
 pub mod pipeline;
 pub mod stdlib;

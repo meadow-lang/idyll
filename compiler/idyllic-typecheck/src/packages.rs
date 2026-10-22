@@ -372,6 +372,75 @@ pub fn link(root: &mut TypeCheckResult, deps: &[&CompiledPackage]) {
     root.ran_main = own.main;
 }
 
+/// A package compiled a part at a time (see `idyllic::parts`), as one
+/// package: what its dependents import and what a program is linked from.
+/// Each part's code is moved to the slots after those of the parts before
+/// it, and its metavariables, numbered by its own checker, are solved
+/// away. The root's part, whose body is the package's, is the last.
+pub fn merge(parts: Vec<CompiledPackage>) -> CompiledPackage {
+    let mut parts = parts.into_iter();
+    let Some(first) = parts.next() else { panic!("a package has a part") };
+    let mut out = solved(first);
+    for p in parts {
+        let offset = out.base + out.lets.len();
+        let moved = |l: Lvl| if l < p.base { l } else { l - p.base + offset };
+        let relocate = |at: Lvl, core: &Rc<Core>| -> Rc<Core> {
+            let placed = moved(at);
+            zonk(&p, core).rewrite(0, &|c, d| match c {
+                Core::Var(i, n) if *i >= d => {
+                    let level = at - 1 - (i - d);
+                    Some(Rc::new(Core::Var(placed + d - 1 - moved(level), n.clone())))
+                }
+                _ => None,
+            })
+        };
+        let lets: Vec<_> = p.lets.iter().enumerate().map(|(k, (u, name, rhs))| (*u, name.clone(), relocate(p.base + k, rhs))).collect();
+        let rec_defs: Vec<_> = p.rec_defs.iter().map(|d| RecDef { lvl: moved(d.lvl), core: relocate(d.lvl, &d.core), ..d.clone() }).collect();
+        let body = p.body.as_ref().map(|(b, ty)| (relocate(p.base + p.lets.len(), b), zonk(&p, ty)));
+        let instance_fields: Vec<_> =
+            p.instance_fields.iter().map(|(u, fs)| (*u, fs.iter().map(|f| f.as_ref().map(|c| zonk(&p, c))).collect())).collect();
+        let names = &p.names;
+        out.names.modules.extend(names.modules.iter().cloned());
+        out.names.exports.extend(names.exports.iter().cloned());
+        out.names.types.extend(names.types.iter().cloned());
+        out.names.effect_ops.extend(names.effect_ops.iter().cloned());
+        out.names.fields.extend(names.fields.iter().cloned());
+        out.names.defaults.extend(names.defaults.iter().cloned());
+        out.names.supers.extend(names.supers.iter().cloned());
+        out.names.methods.extend(names.methods.iter().cloned());
+        out.uniques = out.uniques.start.min(p.uniques.start)..out.uniques.end.max(p.uniques.end);
+        out.constants.extend(p.constants.iter().cloned());
+        out.ctors.extend(p.ctors.iter().cloned());
+        out.datas.extend(p.datas.iter().cloned());
+        out.positive_params.extend(p.positive_params.iter().cloned());
+        out.seqs.extend(p.seqs.iter().cloned());
+        out.effects.extend(p.effects.iter().cloned());
+        out.ops.extend(p.ops.iter().cloned());
+        out.natives.extend(p.natives.iter().cloned());
+        out.lets.extend(lets);
+        out.rec_defs.extend(rec_defs);
+        out.body = body;
+        out.main = p.main;
+        out.symbols.extend(p.symbols.iter().cloned());
+        out.hints.extend(p.hints.iter().copied());
+        out.traits.extend(p.traits.iter().copied());
+        out.instance_fields.extend(instance_fields);
+    }
+    out.symbols.sort();
+    out
+}
+
+/// A package with its metavariables solved away, in its code and in its
+/// instances' fields.
+fn solved(mut p: CompiledPackage) -> CompiledPackage {
+    p.lets = p.lets.iter().map(|(u, n, rhs)| (*u, n.clone(), zonk(&p, rhs))).collect();
+    p.rec_defs = p.rec_defs.iter().map(|d| RecDef { core: zonk(&p, &d.core), ..d.clone() }).collect();
+    p.body = p.body.as_ref().map(|(b, ty)| (zonk(&p, b), zonk(&p, ty)));
+    p.instance_fields = p.instance_fields.iter().map(|(u, fs)| (*u, fs.iter().map(|f| f.as_ref().map(|c| zonk(&p, c))).collect())).collect();
+    p.meta_solutions = Vec::new();
+    p
+}
+
 /// A term with every metavariable in it replaced by its solution.
 fn zonk(p: &CompiledPackage, core: &Rc<Core>) -> Rc<Core> {
     core.rewrite(0, &|c, _| match c {

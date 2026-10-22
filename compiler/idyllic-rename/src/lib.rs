@@ -283,6 +283,45 @@ pub fn rename_package(
     first_unique: usize,
     linear: bool,
 ) -> RenameResult {
+    let programs: Vec<&ast::Program> = modules.iter().map(|m| m.program).collect();
+    let part = PartOf { siblings: &[], root: true, visibility_mentioned: package_mentions_visibility(&programs) };
+    rename_part(package, modules, prelude, deps, first_unique, linear, part)
+}
+
+/// Where the modules being renamed are in their package, when they are one
+/// part of it (see `idyllic::parts`) rather than all of it.
+pub struct PartOf<'a> {
+    /// what the package's earlier parts that these modules import give:
+    /// their modules are this package's, reached by their paths, with all
+    /// the package may see of them
+    pub siblings: &'a [&'a hir::PackageNames],
+    /// whether the first module is the package's root, whose trailing
+    /// expression is the body and whose `main` is run
+    pub root: bool,
+    /// whether any module of the whole package says how visible something
+    /// in it is (see [`package_mentions_visibility`])
+    pub visibility_mentioned: bool,
+}
+
+/// Whether any of a package's modules, or a module written inside one,
+/// says how visible something is: until one does, everything is visible
+/// to the whole package.
+pub fn package_mentions_visibility(programs: &[&ast::Program]) -> bool {
+    programs.iter().any(|p| mentions_visibility(p) || p.modules.iter().any(|(_, inner)| package_mentions_visibility(&[inner])))
+}
+
+/// Rename one part of a package: [`rename_package`], with the names of the
+/// parts before it.
+#[allow(clippy::too_many_arguments)]
+pub fn rename_part(
+    package: &str,
+    modules: &[ModuleSource<'_>],
+    prelude: &ast::Program,
+    deps: &[(&str, &hir::PackageNames)],
+    first_unique: usize,
+    linear: bool,
+    part: PartOf<'_>,
+) -> RenameResult {
     // a module written inside a file is a module of the package's like any
     // other, under the one it is written in
     let mut errors = Vec::new();
@@ -305,8 +344,16 @@ pub fn rename_package(
     let n = r.scopes.len();
     let names = r.scopes[n - 2..].iter().flatten().map(|(x, &(u, _))| (x.clone(), u)).collect();
     r.base = std::mem::take(&mut r.scopes);
-    r.visibility_mentioned = modules.iter().any(|m| mentions_visibility(m.program));
+    r.visibility_mentioned = part.visibility_mentioned;
     r.modules = modules.iter().map(|m| ModuleState { path: m.path.clone(), ..ModuleState::default() }).collect();
+    // the package's earlier parts: modules of its own, renamed already
+    for names in part.siblings {
+        for path in &names.modules {
+            let exports = names.exports.iter().filter(|(m, ..)| m == path).map(|(_, x, u, vis)| (x.clone(), (*u, *vis))).collect();
+            r.modules.push(ModuleState { package: 0, path: path.clone(), exports, ..ModuleState::default() });
+        }
+        r.take_names(names);
+    }
     // what the packages depended on give
     for (i, (name, names)) in deps.iter().enumerate() {
         r.deps.push(name.to_string());
@@ -319,16 +366,7 @@ pub fn rename_package(
                 .collect();
             r.modules.push(ModuleState { package: i + 1, path: path.clone(), exports, ..ModuleState::default() });
         }
-        for (u, ty, ctors) in &names.types {
-            r.ctors.insert(*u, ctors.clone());
-            r.type_names.insert(*u, ty.clone());
-            r.note_twin(*u);
-        }
-        r.effect_ops.extend(names.effect_ops.iter().cloned());
-        r.fields.extend(names.fields.iter().cloned());
-        r.defaults.extend(names.defaults.iter().cloned());
-        r.supers.extend(names.supers.iter().cloned());
-        r.methods.extend(names.methods.iter().cloned());
+        r.take_names(names);
     }
     r.next_unique = r.next_unique.max(first_unique);
     let first = r.next_unique;
@@ -336,8 +374,8 @@ pub fn rename_package(
         .iter()
         .enumerate()
         .map(|(i, m)| match (&m.program.decls[..], m.program.body.as_ref()) {
-            ([], Some(Spanned { node: ast::Term::Let(decls, body), .. })) if i == 0 => (&decls[..], Some(&**body)),
-            (decls, body) => (decls, body.filter(|_| i == 0)),
+            ([], Some(Spanned { node: ast::Term::Let(decls, body), .. })) if i == 0 && part.root => (&decls[..], Some(&**body)),
+            (decls, body) => (decls, body.filter(|_| i == 0 && part.root)),
         })
         .collect();
     // 1. every module's names, so that any module can mention any other's
@@ -377,7 +415,7 @@ pub fn rename_package(
         effects.extend(e);
         natives.extend(n);
         binds.extend(bs);
-        if i == 0 {
+        if i == 0 && part.root {
             body = parts[0].1.map(|b| r.rename_term(b));
             main = r.scopes.last().and_then(|own| own.get("main")).map(|&(u, _)| u);
         }
@@ -391,7 +429,7 @@ pub fn rename_package(
         exports: r
             .modules
             .iter()
-            .filter(|m| m.package == 0)
+            .take(modules.len())
             .flat_map(|m| m.exports.iter().map(|(x, &(u, vis))| (m.path.clone(), x.clone(), u, vis)))
             .collect(),
         types: datas
@@ -702,6 +740,21 @@ impl Renamer {
         self.modules.iter().any(inside).then(|| Target::Namespace(package, path.iter().map(|s| s.to_string()).collect()))
     }
 
+    /// What another package, or an earlier part of this one, says of its
+    /// types, effects, records and traits.
+    fn take_names(&mut self, names: &hir::PackageNames) {
+        for (u, ty, ctors) in &names.types {
+            self.ctors.insert(*u, ctors.clone());
+            self.type_names.insert(*u, ty.clone());
+            self.note_twin(*u);
+        }
+        self.effect_ops.extend(names.effect_ops.iter().cloned());
+        self.fields.extend(names.fields.iter().cloned());
+        self.defaults.extend(names.defaults.iter().cloned());
+        self.supers.extend(names.supers.iter().cloned());
+        self.methods.extend(names.methods.iter().cloned());
+    }
+
     /// May the current module see something of module `owner`'s, that is
     /// this visible?  Its own, and its descendants', always; its parent's
     /// subtree, with `@pub(super)`; the package, with `@pub(pkg)` or `@pub`.
@@ -747,7 +800,11 @@ impl Renamer {
                 _ => Target::Name(u),
             }
         } else if first == self.package && !self.modules.is_empty() {
-            Target::Module(0)
+            // the root module, or in a part without it, what is under it
+            match self.module_at(0, &[]) {
+                Some(m) => Target::Module(m),
+                None => Target::Namespace(0, Vec::new()),
+            }
         } else if let Some(t) = self.under_root(0, &[first]) {
             t
         } else if let Some(m) = self.deps.iter().position(|d| d == first).and_then(|i| self.module_at(i + 1, &[])) {
