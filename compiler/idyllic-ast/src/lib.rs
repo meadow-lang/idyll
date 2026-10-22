@@ -288,6 +288,14 @@ pub enum Lit {
     Str(String),
     /// A Unicode scalar value, `'a'`.
     Char(char),
+    /// A number with a point in it, `1.5`, as its IEEE-754 bits: a `Float`.
+    Float(u64),
+    /// The same, at `Float32`.
+    Float32(u32),
+    /// An integer at a sized type, `5` where an `Int8` is wanted: its bits
+    /// (see `idyllic_builtins::num`). The parser makes only `Int`s; the type
+    /// checker reads one at the type wanted.
+    Word(idyllic_builtins::Width, u64),
 }
 
 /// A character as Idyll writes one: in single quotes, escaped as a string
@@ -313,6 +321,9 @@ impl std::fmt::Display for Lit {
             Lit::Bool(false) => write!(f, "False"),
             Lit::Str(s) => write!(f, "{s:?}"),
             Lit::Char(c) => f.write_str(&show_char(*c)),
+            Lit::Float(x) => f.write_str(&idyllic_builtins::num::fmt_float(f64::from_bits(*x))),
+            Lit::Float32(x) => f.write_str(&idyllic_builtins::num::fmt_float32(f32::from_bits(*x))),
+            Lit::Word(w, b) => write!(f, "{}", w.value(*b)),
         }
     }
 }

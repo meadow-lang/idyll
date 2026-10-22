@@ -25,9 +25,19 @@ fn binders(src: &str) -> Vec<(String, Rep)> {
     // the scope at each level the top-level `let`s reach, which is where
     // the recursive definitions are
     let mut scopes = vec![scope.clone()];
-    walk(&mut tc.typer, &scope, &program, &mut out, &mut scopes);
-    out.drain(..prelude.min(out.len()));
+    // the prelude's top-level `let`s, walked past without a look at them
+    let (mut s, mut c) = (scope, program);
+    while s.len() < prelude {
+        let Core::Let(x, rhs, body) = &*c.clone() else { break };
+        s = tc.typer.define(&s, x, rhs);
+        scopes.push(s.clone());
+        c = body.clone();
+    }
+    walk(&mut tc.typer, &s, &c, &mut out, &mut scopes);
     for d in tc.rec_defs.clone() {
+        if d.lvl < prelude {
+            continue;
+        }
         let Some(s) = scopes.iter().find(|s| s.len() == d.lvl).cloned() else { continue };
         walk(&mut tc.typer, &s, &d.core, &mut out, &mut Vec::new());
     }

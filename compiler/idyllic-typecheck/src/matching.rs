@@ -428,8 +428,15 @@ impl Checker {
                     return Step::Failed;
                 }
                 PatKind::Lit(lit) => {
-                    let want = Rc::new(Value::LitTy(super::core::lit_builtin(lit)));
                     let ty = self.target_type(ctx, &target);
+                    // a number is read at the type of what it is matched
+                    // against, as it is anywhere else (see `literals`)
+                    let read = match &*self.force(ty.clone()) {
+                        Value::LitTy(b) if super::literals::reads_as(lit, *b) => self.read_number(pat.id, lit, *b),
+                        _ => lit.clone(),
+                    };
+                    let lit = &read;
+                    let want = Rc::new(Value::LitTy(super::core::lit_builtin(lit)));
                     if !self.unify(ctx.lvl, ty.clone(), want.clone()) {
                         let (expected, actual) = (self.quote(ctx.lvl, ty), self.quote(ctx.lvl, want));
                         self.error(pat.id, TypeErrorKind::Mismatch { expected, actual });
@@ -708,8 +715,16 @@ impl Checker {
                     },
                     _ => (scrutinee, lit.clone()),
                 };
+                // a sized integer or a float by its type's own equality
+                let eq = match super::core::lit_builtin(&lit).number() {
+                    Some(n @ (idyllic_builtins::NumTy::Word(_) | idyllic_builtins::NumTy::Float | idyllic_builtins::NumTy::Float32)) => {
+                        let native = idyllic_builtins::Native::Num(idyllic_builtins::NumOp::Eq, n);
+                        self.native_unique(native).map(|u| Rc::new(Core::Opaque(u, native.name().into())))
+                    }
+                    _ => None,
+                };
                 let test = Rc::new(Core::App(
-                    Rc::new(Core::App(Rc::new(Core::Prim(Prim::IntEq)), scrutinee)),
+                    Rc::new(Core::App(eq.unwrap_or_else(|| Rc::new(Core::Prim(Prim::IntEq))), scrutinee)),
                     Rc::new(Core::Lit(against)),
                 ));
                 let is = Rc::new(Value::Lit(lit.clone()));
@@ -941,7 +956,7 @@ impl Checker {
     fn wants_literal(&self, ctx: &Ctx, p: &Problem<'_>, k: Lvl, lit: &Lit) -> bool {
         p.constraints
             .iter()
-            .any(|(pat, target)| matches!(&peel(pat).kind, PatKind::Lit(l) if l == lit) && self.targets_slot(ctx, target, k))
+            .any(|(pat, target)| matches!(&peel(pat).kind, PatKind::Lit(l) if super::literals::same_number(l, lit)) && self.targets_slot(ctx, target, k))
     }
 
     /// For `impossible`: a variable of a type none of whose constructors

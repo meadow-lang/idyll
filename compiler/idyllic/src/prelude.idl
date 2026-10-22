@@ -226,6 +226,622 @@ charCode : Char -> Int
 @native
 charFromCode : Int -> Char
 
+-- Sized integers and floats, as Meadow has them: each wraps at its width,
+-- or is an IEEE float, and its operations are natives (one for each type:
+-- `int8Add`) that the instances below are made of. A number literal is read
+-- at the type wanted, an `Int` or a `Float` if nothing says which. Mixing
+-- two types is a type error: a conversion says which is meant, `toInt x`,
+-- `toFloat n`, `toInt8 n`, `floor f`. A conversion to a sized integer keeps
+-- the low bits.
+
+Int64 : Type
+Int64 = Int
+
+Float64 : Type
+Float64 = Float
+
+-- An integer type: what its conversions go through.
+trait Integer (a : Type) where
+  toInt : a -> Int
+  toFloat : a -> Float
+
+-- A float type.
+trait Floating (a : Type) where
+  toFloat64 : a -> Float
+  toFloat32 : a -> Float32
+  floor : a -> Int
+
+instance Integer Int where
+  toInt n = n
+  toFloat = intToFloat
+
+@native
+intToFloat : Int -> Float
+
+@native
+int8Add : Int8 -> Int8 -> Int8
+
+@native
+int8Sub : Int8 -> Int8 -> Int8
+
+@native
+int8Mul : Int8 -> Int8 -> Int8
+
+@native
+int8Div : Int8 -> Int8 -> Int8
+
+@native
+int8Mod : Int8 -> Int8 -> Int8
+
+@native
+int8Eq : (x : [] Int8) -> (y : [] Int8) -> Bool
+
+@native
+int8Lt : (x : [] Int8) -> (y : [] Int8) -> Bool
+
+@native
+int8Show : (x : [] Int8) -> String
+
+@native
+int8ToInt : Int8 -> Int
+
+@native
+int8FromInt : Int -> Int8
+
+@native
+int8ToFloat : Int8 -> Float
+
+instance Add Int8 where
+  (+) = int8Add
+
+instance Sub Int8 where
+  (-) = int8Sub
+
+instance Mul Int8 where
+  (*) = int8Mul
+
+instance Divide Int8 where
+  (/) = int8Div
+
+instance Rem Int8 where
+  (%) = int8Mod
+
+instance PartialEq Int8 where
+  (==) = int8Eq
+
+instance PartialOrd Int8 where
+  (<) = int8Lt
+
+instance Display Int8 where
+  display = int8Show
+
+instance Debug Int8 where
+  debug = int8Show
+
+instance Integer Int8 where
+  toInt = int8ToInt
+  toFloat = int8ToFloat
+
+toInt64 : {a : Type} -> Integer a => a -> Int64
+toInt64 x = toInt x
+
+toInt8 : {a : Type} -> Integer a => a -> Int8
+toInt8 x = int8FromInt (toInt x)
+
+@native
+int16Add : Int16 -> Int16 -> Int16
+
+@native
+int16Sub : Int16 -> Int16 -> Int16
+
+@native
+int16Mul : Int16 -> Int16 -> Int16
+
+@native
+int16Div : Int16 -> Int16 -> Int16
+
+@native
+int16Mod : Int16 -> Int16 -> Int16
+
+@native
+int16Eq : (x : [] Int16) -> (y : [] Int16) -> Bool
+
+@native
+int16Lt : (x : [] Int16) -> (y : [] Int16) -> Bool
+
+@native
+int16Show : (x : [] Int16) -> String
+
+@native
+int16ToInt : Int16 -> Int
+
+@native
+int16FromInt : Int -> Int16
+
+@native
+int16ToFloat : Int16 -> Float
+
+instance Add Int16 where
+  (+) = int16Add
+
+instance Sub Int16 where
+  (-) = int16Sub
+
+instance Mul Int16 where
+  (*) = int16Mul
+
+instance Divide Int16 where
+  (/) = int16Div
+
+instance Rem Int16 where
+  (%) = int16Mod
+
+instance PartialEq Int16 where
+  (==) = int16Eq
+
+instance PartialOrd Int16 where
+  (<) = int16Lt
+
+instance Display Int16 where
+  display = int16Show
+
+instance Debug Int16 where
+  debug = int16Show
+
+instance Integer Int16 where
+  toInt = int16ToInt
+  toFloat = int16ToFloat
+
+toInt16 : {a : Type} -> Integer a => a -> Int16
+toInt16 x = int16FromInt (toInt x)
+
+@native
+int32Add : Int32 -> Int32 -> Int32
+
+@native
+int32Sub : Int32 -> Int32 -> Int32
+
+@native
+int32Mul : Int32 -> Int32 -> Int32
+
+@native
+int32Div : Int32 -> Int32 -> Int32
+
+@native
+int32Mod : Int32 -> Int32 -> Int32
+
+@native
+int32Eq : (x : [] Int32) -> (y : [] Int32) -> Bool
+
+@native
+int32Lt : (x : [] Int32) -> (y : [] Int32) -> Bool
+
+@native
+int32Show : (x : [] Int32) -> String
+
+@native
+int32ToInt : Int32 -> Int
+
+@native
+int32FromInt : Int -> Int32
+
+@native
+int32ToFloat : Int32 -> Float
+
+instance Add Int32 where
+  (+) = int32Add
+
+instance Sub Int32 where
+  (-) = int32Sub
+
+instance Mul Int32 where
+  (*) = int32Mul
+
+instance Divide Int32 where
+  (/) = int32Div
+
+instance Rem Int32 where
+  (%) = int32Mod
+
+instance PartialEq Int32 where
+  (==) = int32Eq
+
+instance PartialOrd Int32 where
+  (<) = int32Lt
+
+instance Display Int32 where
+  display = int32Show
+
+instance Debug Int32 where
+  debug = int32Show
+
+instance Integer Int32 where
+  toInt = int32ToInt
+  toFloat = int32ToFloat
+
+toInt32 : {a : Type} -> Integer a => a -> Int32
+toInt32 x = int32FromInt (toInt x)
+
+@native
+uint8Add : UInt8 -> UInt8 -> UInt8
+
+@native
+uint8Sub : UInt8 -> UInt8 -> UInt8
+
+@native
+uint8Mul : UInt8 -> UInt8 -> UInt8
+
+@native
+uint8Div : UInt8 -> UInt8 -> UInt8
+
+@native
+uint8Mod : UInt8 -> UInt8 -> UInt8
+
+@native
+uint8Eq : (x : [] UInt8) -> (y : [] UInt8) -> Bool
+
+@native
+uint8Lt : (x : [] UInt8) -> (y : [] UInt8) -> Bool
+
+@native
+uint8Show : (x : [] UInt8) -> String
+
+@native
+uint8ToInt : UInt8 -> Int
+
+@native
+uint8FromInt : Int -> UInt8
+
+@native
+uint8ToFloat : UInt8 -> Float
+
+instance Add UInt8 where
+  (+) = uint8Add
+
+instance Sub UInt8 where
+  (-) = uint8Sub
+
+instance Mul UInt8 where
+  (*) = uint8Mul
+
+instance Divide UInt8 where
+  (/) = uint8Div
+
+instance Rem UInt8 where
+  (%) = uint8Mod
+
+instance PartialEq UInt8 where
+  (==) = uint8Eq
+
+instance PartialOrd UInt8 where
+  (<) = uint8Lt
+
+instance Display UInt8 where
+  display = uint8Show
+
+instance Debug UInt8 where
+  debug = uint8Show
+
+instance Integer UInt8 where
+  toInt = uint8ToInt
+  toFloat = uint8ToFloat
+
+toUInt8 : {a : Type} -> Integer a => a -> UInt8
+toUInt8 x = uint8FromInt (toInt x)
+
+@native
+uint16Add : UInt16 -> UInt16 -> UInt16
+
+@native
+uint16Sub : UInt16 -> UInt16 -> UInt16
+
+@native
+uint16Mul : UInt16 -> UInt16 -> UInt16
+
+@native
+uint16Div : UInt16 -> UInt16 -> UInt16
+
+@native
+uint16Mod : UInt16 -> UInt16 -> UInt16
+
+@native
+uint16Eq : (x : [] UInt16) -> (y : [] UInt16) -> Bool
+
+@native
+uint16Lt : (x : [] UInt16) -> (y : [] UInt16) -> Bool
+
+@native
+uint16Show : (x : [] UInt16) -> String
+
+@native
+uint16ToInt : UInt16 -> Int
+
+@native
+uint16FromInt : Int -> UInt16
+
+@native
+uint16ToFloat : UInt16 -> Float
+
+instance Add UInt16 where
+  (+) = uint16Add
+
+instance Sub UInt16 where
+  (-) = uint16Sub
+
+instance Mul UInt16 where
+  (*) = uint16Mul
+
+instance Divide UInt16 where
+  (/) = uint16Div
+
+instance Rem UInt16 where
+  (%) = uint16Mod
+
+instance PartialEq UInt16 where
+  (==) = uint16Eq
+
+instance PartialOrd UInt16 where
+  (<) = uint16Lt
+
+instance Display UInt16 where
+  display = uint16Show
+
+instance Debug UInt16 where
+  debug = uint16Show
+
+instance Integer UInt16 where
+  toInt = uint16ToInt
+  toFloat = uint16ToFloat
+
+toUInt16 : {a : Type} -> Integer a => a -> UInt16
+toUInt16 x = uint16FromInt (toInt x)
+
+@native
+uint32Add : UInt32 -> UInt32 -> UInt32
+
+@native
+uint32Sub : UInt32 -> UInt32 -> UInt32
+
+@native
+uint32Mul : UInt32 -> UInt32 -> UInt32
+
+@native
+uint32Div : UInt32 -> UInt32 -> UInt32
+
+@native
+uint32Mod : UInt32 -> UInt32 -> UInt32
+
+@native
+uint32Eq : (x : [] UInt32) -> (y : [] UInt32) -> Bool
+
+@native
+uint32Lt : (x : [] UInt32) -> (y : [] UInt32) -> Bool
+
+@native
+uint32Show : (x : [] UInt32) -> String
+
+@native
+uint32ToInt : UInt32 -> Int
+
+@native
+uint32FromInt : Int -> UInt32
+
+@native
+uint32ToFloat : UInt32 -> Float
+
+instance Add UInt32 where
+  (+) = uint32Add
+
+instance Sub UInt32 where
+  (-) = uint32Sub
+
+instance Mul UInt32 where
+  (*) = uint32Mul
+
+instance Divide UInt32 where
+  (/) = uint32Div
+
+instance Rem UInt32 where
+  (%) = uint32Mod
+
+instance PartialEq UInt32 where
+  (==) = uint32Eq
+
+instance PartialOrd UInt32 where
+  (<) = uint32Lt
+
+instance Display UInt32 where
+  display = uint32Show
+
+instance Debug UInt32 where
+  debug = uint32Show
+
+instance Integer UInt32 where
+  toInt = uint32ToInt
+  toFloat = uint32ToFloat
+
+toUInt32 : {a : Type} -> Integer a => a -> UInt32
+toUInt32 x = uint32FromInt (toInt x)
+
+@native
+uint64Add : UInt64 -> UInt64 -> UInt64
+
+@native
+uint64Sub : UInt64 -> UInt64 -> UInt64
+
+@native
+uint64Mul : UInt64 -> UInt64 -> UInt64
+
+@native
+uint64Div : UInt64 -> UInt64 -> UInt64
+
+@native
+uint64Mod : UInt64 -> UInt64 -> UInt64
+
+@native
+uint64Eq : (x : [] UInt64) -> (y : [] UInt64) -> Bool
+
+@native
+uint64Lt : (x : [] UInt64) -> (y : [] UInt64) -> Bool
+
+@native
+uint64Show : (x : [] UInt64) -> String
+
+@native
+uint64ToInt : UInt64 -> Int
+
+@native
+uint64FromInt : Int -> UInt64
+
+@native
+uint64ToFloat : UInt64 -> Float
+
+instance Add UInt64 where
+  (+) = uint64Add
+
+instance Sub UInt64 where
+  (-) = uint64Sub
+
+instance Mul UInt64 where
+  (*) = uint64Mul
+
+instance Divide UInt64 where
+  (/) = uint64Div
+
+instance Rem UInt64 where
+  (%) = uint64Mod
+
+instance PartialEq UInt64 where
+  (==) = uint64Eq
+
+instance PartialOrd UInt64 where
+  (<) = uint64Lt
+
+instance Display UInt64 where
+  display = uint64Show
+
+instance Debug UInt64 where
+  debug = uint64Show
+
+instance Integer UInt64 where
+  toInt = uint64ToInt
+  toFloat = uint64ToFloat
+
+toUInt64 : {a : Type} -> Integer a => a -> UInt64
+toUInt64 x = uint64FromInt (toInt x)
+
+@native
+floatAdd : Float -> Float -> Float
+
+@native
+floatSub : Float -> Float -> Float
+
+@native
+floatMul : Float -> Float -> Float
+
+@native
+floatDiv : Float -> Float -> Float
+
+@native
+floatEq : (x : [] Float) -> (y : [] Float) -> Bool
+
+@native
+floatLt : (x : [] Float) -> (y : [] Float) -> Bool
+
+@native
+floatShow : (x : [] Float) -> String
+
+instance Add Float where
+  (+) = floatAdd
+
+instance Sub Float where
+  (-) = floatSub
+
+instance Mul Float where
+  (*) = floatMul
+
+instance Divide Float where
+  (/) = floatDiv
+
+instance PartialEq Float where
+  (==) = floatEq
+
+instance PartialOrd Float where
+  (<) = floatLt
+
+instance Display Float where
+  display = floatShow
+
+instance Debug Float where
+  debug = floatShow
+
+@native
+float32Add : Float32 -> Float32 -> Float32
+
+@native
+float32Sub : Float32 -> Float32 -> Float32
+
+@native
+float32Mul : Float32 -> Float32 -> Float32
+
+@native
+float32Div : Float32 -> Float32 -> Float32
+
+@native
+float32Eq : (x : [] Float32) -> (y : [] Float32) -> Bool
+
+@native
+float32Lt : (x : [] Float32) -> (y : [] Float32) -> Bool
+
+@native
+float32Show : (x : [] Float32) -> String
+
+instance Add Float32 where
+  (+) = float32Add
+
+instance Sub Float32 where
+  (-) = float32Sub
+
+instance Mul Float32 where
+  (*) = float32Mul
+
+instance Divide Float32 where
+  (/) = float32Div
+
+instance PartialEq Float32 where
+  (==) = float32Eq
+
+instance PartialOrd Float32 where
+  (<) = float32Lt
+
+instance Display Float32 where
+  display = float32Show
+
+instance Debug Float32 where
+  debug = float32Show
+
+@native
+floatToFloat32 : Float -> Float32
+
+@native
+floatFloor : Float -> Int
+
+@native
+float32ToFloat : Float32 -> Float
+
+@native
+float32Floor : Float32 -> Int
+
+instance Floating Float where
+  toFloat64 x = x
+  toFloat32 = floatToFloat32
+  floor = floatFloor
+
+instance Floating Float32 where
+  toFloat64 = float32ToFloat
+  toFloat32 x = x
+  floor = float32Floor
+
 effect Console where
   putStr : String -> ()
   putErr : String -> ()

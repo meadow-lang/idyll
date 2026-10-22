@@ -361,6 +361,21 @@ fun intLit (s : Syn) =
       let u = bad s "${text} does not fit in an Int, which is 64 bits" in
       0
 
+-- A number: an `Int`, or with a point in it a `Float`.
+fun numberLit (s : Syn) =
+  let tok = M.andThen idyllNumberValue (asIdyllNumber s) in
+  if isKind TokenFloat tok then Literal.Float (floatText (textOf tok)) else Literal.Int (intLit s)
+
+-- `1.5`, as the nearest `Float`: its digits as one integer, divided by the
+-- power of ten its fraction is, which is that, rounded once, for every
+-- literal of fifteen digits or fewer (as Rust's `parse` gives it for any).
+fun floatText (text : String) : Float =
+  let point = M.unwrapOr 0 (S.indexOf "." text) in
+  let digits = stringSlice text 0 point ++ stringSlice text (point + 1) (stringByteLength text) in
+  let whole = V.foldl (\acc i -> acc * 10 + (toInt (stringByteAt digits i) - 48)) 0 (V.range 0 (stringByteLength digits)) in
+  let places = stringByteLength text - point - 1 in
+  toFloat whole /. V.foldl (\acc i -> acc *. 10.0) 1.0 (V.range 0 places)
+
 -- A string literal's text, its escapes resolved as the Rust lexer resolves
 -- them.
 fun strLit (s : Syn) =
@@ -457,7 +472,7 @@ pass! {
          if R.kindOf name == TokenUpperIdent and x == "True" then Expr.Lit { lit = Literal.Bool True }
          else if R.kindOf name == TokenUpperIdent and x == "False" then Expr.Lit { lit = Literal.Bool False }
          else var out cx here x)
-    | Number {} -> Expr.Lit { lit = Literal.Int (intLit node) }
+    | Number {} -> Expr.Lit { lit = numberLit node }
     | StrLit {} -> Expr.Lit { lit = Literal.Str (strLit node) }
     | CharLit {} -> Expr.Lit { lit = Literal.Char (charLit node) }
     | Hole {} -> Hole {}
@@ -1053,7 +1068,7 @@ pass! {
          else if k == TokenUpperIdent and x == "True" then Pat.Lit { lit = Literal.Bool True }
          else if k == TokenUpperIdent and x == "False" then Pat.Lit { lit = Literal.Bool False }
          else Con { name = nameOf out name, args = [] })
-    | Number {} -> Pat.Lit { lit = Literal.Int (intLit node) }
+    | Number {} -> Pat.Lit { lit = numberLit node }
     | StrLit {} -> Pat.Lit { lit = Literal.Str (strLit node) }
     | CharLit {} -> Pat.Lit { lit = Literal.Char (charLit node) }
     | Hole {} -> Wild {}

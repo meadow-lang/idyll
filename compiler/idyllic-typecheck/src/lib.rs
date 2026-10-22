@@ -107,6 +107,7 @@ pub mod grade;
 mod elab;
 mod eval;
 pub mod handlers;
+mod literals;
 mod matching;
 pub mod natives;
 mod overloads;
@@ -352,6 +353,8 @@ pub enum TypeErrorKind {
     UncheckedInTypeGrade(String),
     /// a grade literal that does not fit in a machine word
     GradeTooLarge,
+    /// an integer literal that does not fit in the sized type it is read at
+    NumberTooLarge { number: String, ty: String },
     /// `lo..hi` with `lo > hi`
     EmptyRange { lo: Grade, hi: Grade },
     /// `let [x] = e` where `e` is not a box
@@ -655,6 +658,8 @@ impl TypeError {
                     .label(here, format!("the type of this function is inferred, so nothing holds it to {name}'s second grade"))
                     .help("give the function a signature")
             }
+            TypeErrorKind::NumberTooLarge { number, ty } => Diagnostic::error(format!("{number} does not fit in an {ty}"))
+                .label(here, format!("an {ty} is from {}", number_range(ty))),
             TypeErrorKind::GradeTooLarge => {
                 Diagnostic::error("grade is too large").label(here, "grades are counts that fit a machine word")
             }
@@ -1164,6 +1169,8 @@ pub struct Checker {
     hints: HashSet<usize>,
     hint_names: HashMap<usize, String>,
     deferred_autos: Vec<auto::DeferredAuto>,
+    /// the number literals waiting for their types (see [`literals`])
+    deferred_literals: Vec<literals::DeferredLiteral>,
     /// the traits' records, this package's and those it depends on
     traits: HashSet<usize>,
     /// each trait's superclass projections, by its record type
@@ -1379,6 +1386,7 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         hints: m.hints.clone(),
         hint_names: HashMap::new(),
         deferred_autos: Vec::new(),
+        deferred_literals: Vec::new(),
         traits: m.datas.iter().filter(|d| d.is_trait).filter_map(|d| d.name.unique).collect(),
         supers: m.supers.clone(),
         methods: m.methods.clone(),
@@ -1602,7 +1610,13 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
     let ops = tc.ops.clone();
     let node_types = std::mem::take(&mut tc.node_types);
     let metas = tc.metas.clone();
-    let errors = std::mem::take(&mut tc.errors);
+    let mut errors = std::mem::take(&mut tc.errors);
+    for e in &mut errors {
+        if let TypeErrorKind::Mismatch { expected, actual } = &mut e.kind {
+            *expected = tc.solved_in(expected);
+            *actual = tc.solved_in(actual);
+        }
+    }
     TypeCheckResult {
         body_type,
         compiled,
@@ -1628,6 +1642,30 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
 }
 
 impl Checker {
+    /// A type an error shows, with what its metas came to since it was
+    /// reported: a number literal's type, say, which is known only once its
+    /// definition is done (see [`literals`]). A meta whose answer mentions
+    /// a variable is left as it is.
+    fn solved_in(&self, ty: &Rc<Core>) -> Rc<Core> {
+        ty.rewrite(0, &|c, _| match c {
+            Core::Meta(m) => match &self.metas[*m] {
+                MetaEntry::Solved(v, _) => {
+                    let answer = self.quote(0, v.clone());
+                    let open = std::cell::Cell::new(false);
+                    answer.rewrite(0, &|c, d| {
+                        if matches!(c, Core::Var(i, _) if *i >= d) {
+                            open.set(true);
+                        }
+                        None
+                    });
+                    (!open.get()).then(|| self.solved_in(&answer))
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+    }
+
     fn error(&mut self, node: NodeId, kind: TypeErrorKind) {
         let notes = self.homes_of(&kind);
         self.errors.push(TypeError { node, kind, notes });
@@ -1800,5 +1838,13 @@ impl Checker {
         for (node, desc) in unsolved {
             self.error(node, TypeErrorKind::UnsolvedMeta(desc));
         }
+    }
+}
+
+/// The values a sized integer type has, `-128 to 127`.
+fn number_range(ty: &str) -> String {
+    match idyllic_builtins::Width::ALL.into_iter().find(|w| w.name() == ty) {
+        Some(w) => format!("{} to {}", w.value(if w.signed() { 1 << (w.bits() - 1) } else { 0 }), w.value(if w.signed() { (1u64 << (w.bits() - 1)) - 1 } else { u64::MAX })),
+        None => "what it holds".to_string(),
     }
 }

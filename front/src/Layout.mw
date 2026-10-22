@@ -79,6 +79,7 @@ use Std.Result.Result.*
   | Octal String
   | Hexadecimal String
   | Decimal String
+  | Float String
   | Str String
   | Char String
   | QualUpper String
@@ -148,6 +149,7 @@ use Std.Result.Result.*
   | Raw.Octal s -> Just (Token.Octal s)
   | Raw.Hexadecimal s -> Just (Token.Hexadecimal s)
   | Raw.Decimal s -> Just (Token.Decimal s)
+  | Raw.Float s -> Just (Token.Float s)
   | Raw.Str s -> Just (Token.Str s)
   | Raw.Char s -> Just (Token.Char s)
   | Raw.QualUpper s -> Just (Token.QualUpper s)
@@ -208,6 +210,7 @@ use Std.Result.Result.*
   | Token.Octal s -> s
   | Token.Hexadecimal s -> s
   | Token.Decimal s -> s
+  | Token.Float s -> s
   | Token.Str s -> s
   | Token.Char s -> s
   | Token.QualUpper s -> s

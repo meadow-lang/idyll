@@ -53,6 +53,9 @@ impl Lower<'_> {
     fn flat_rep(&mut self, s: &Scope, ty: &Rc<Value>) -> Rep {
         match self.typer.rep(s, ty) {
             typer::Rep::I64 => Rep::I64,
+            typer::Rep::Word(w) => Rep::Word(w),
+            typer::Rep::F64 => Rep::F64,
+            typer::Rep::F32 => Rep::F32,
             typer::Rep::Bool => Rep::Bool,
             typer::Rep::Unit | typer::Rep::Erased => Rep::Unit,
             typer::Rep::Str => Rep::Str,
@@ -76,6 +79,7 @@ impl Lower<'_> {
                 Statement::Prim("if".into(), vec![x], vec![branch(f, "False", k.clone()), branch(t, "True", k)])
             }
             Shown::Unit => Statement::Cut(text("()"), k),
+            Shown::Number => Statement::Prim("display".into(), vec![x], vec![k]),
             // in single quotes, escaped as a one-character string is, but
             // for `'`, and `"`, which needs no escape here (`show_char`)
             Shown::Char => {

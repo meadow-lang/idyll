@@ -159,7 +159,7 @@ impl Checker {
                     _ => self.deferred.push(d),
                 }
             }
-            if !progress || (self.deferred.is_empty() && self.deferred_autos.is_empty()) {
+            if !progress || (self.deferred.is_empty() && self.deferred_autos.is_empty() && self.deferred_literals.is_empty()) {
                 break;
             }
         }

@@ -18,6 +18,7 @@
 use Idyll.Hir (Icit, Literal)
 use Idyll.Core (Core, Builtin, Prim)
 use Idyll.Core as C
+use Idyll.Num as N
 use Idyll.Value (Value, Elim)
 use Idyll.Value as Va
 use Idyll.Grade (Grade)
@@ -413,7 +414,10 @@ fun native (name : String) : Maybe (Bool, Int) =
       ("charsToString", False, 1), ("charCode", False, 1), ("charFromCode", False, 1)
     ]
   in
-  M.map (\t -> match t with | (_, ty, n) -> (ty, n)) (V.find (\t -> match t with | (x, _, _) -> x == name) table)
+  match V.find (\t -> match t with | (x, _, _) -> x == name) table with
+  | Just (_, ty, n) -> Just (ty, n)
+  -- an operation on numbers of one type (see `Num`)
+  | None -> M.map (\p -> (False, N.arity (fst p))) (N.ofName name)
 
 -- The natives of one kind: the types, or the operations. A name that is
 -- no native is reported with the operations.

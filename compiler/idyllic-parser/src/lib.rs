@@ -617,6 +617,7 @@ where
     choice((
         int,
         select! {
+            Token::Float(x) => Lit::Float(x),
             Token::Str(s) => Lit::Str(s),
             Token::Char(c) => Lit::Char(c),
             Token::UpperIdent(s) if s == "True" => Lit::Bool(true),

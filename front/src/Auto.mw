@@ -35,6 +35,7 @@ use Idyll.Ctx (Ctx, Entry)
 use Idyll.Ctx as X
 use Idyll.Hir (Ident)
 use Idyll.Elab (insertImplicit, argument, freshMetaWith)
+use Idyll.Literals as L
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
 use Std.Collections.HashMap (HashMap)
@@ -91,6 +92,9 @@ fun known (tc : Tc) (ctx : Ctx) (ty : Value) : Bool ! { Mut | e } =
 -- The searches that waited for their types, tried again; with `last`, what
 -- still cannot be told is an error. Whether any was settled.
 @pub fun settleAutos (tc : Tc) (last : Bool) : Bool ! { Mut | e } =
+  -- (a literal's type may be what a search waits for, and the default is
+  -- taken before the search is given up on)
+  let read = L.settleLiterals tc last in
   let waiting = getRef tc.deferredAutos in
   let w = setRef tc.deferredAutos [] in
   V.foldl
@@ -115,14 +119,14 @@ fun known (tc : Tc) (ctx : Ctx) (ty : Value) : Bool ! { Mut | e } =
             in
             let w4 = choose tc m ctx found in
             True)
-    False
+    read
     waiting
 
 -- What is put off, settled once a definition has been checked: round until
 -- nothing changes, then what still cannot be told is reported.
 @pub fun settle (tc : Tc) : () ! { Mut | e } =
   let progress = settleAutos tc False in
-  if progress and not (V.isEmpty (getRef tc.deferredAutos)) then settle tc
+  if progress and not (V.isEmpty (getRef tc.deferredAutos) and V.isEmpty (getRef tc.deferredLiterals)) then settle tc
   else
     let w = settleAutos tc True in
     ()
@@ -209,7 +213,7 @@ fun searchHints (tc : Tc) (ctx : Ctx) (wanted : Value) (depth : Int) : Result St
 
 -- A builtin type as a key a head is compared by.
 fun builtinKey (b : Builtin) : Int =
-  let names = ["Unit", "Int", "Bool", "String", "Grade", "Effect", "Div", "Char"] in
+  let names = V.map C.builtinName C.builtins in
   let name = C.builtinName b in
   0 - 1000 - V.foldl (\acc i -> if V.getOr "" names i == name then i else acc) 99 (V.range 0 (V.len names))
 

@@ -1,0 +1,17 @@
+-- | -- a literal pattern at a sized integer and at a float, and a sum that wraps
+-- | name : UInt8 -> String
+-- | name 0 = "zero"
+-- | name 255 = "max"
+-- | name n = "${n}"
+-- | 
+-- | sign : Float -> Int
+-- | sign 0.0 = 0
+-- | sign x = if x < 0.0 then 0 - 1 else 1
+-- | 
+-- | total : List Int8 -> Int8
+-- | total Nil = 0
+-- | total (x :: xs) = x + total xs
+-- | 
+-- | (name 0, name 255, name 7, sign 0.0, sign (0.0 - 3.5), total (100 :: 27 :: 1 :: Nil))
+answer: ("zero", "max", "7", 0, -1, -128)
+exit: 0

@@ -6,7 +6,10 @@
 //! same uniques, which is what lets the two passes agree without threading a
 //! table between them.
 
+pub mod num;
 pub mod strings;
+
+pub use num::{NumOp, NumTy, Width};
 
 /// The primitive constants: closed types of sort `Type`, and `Div`, the one
 /// effect that is built in.
@@ -27,10 +30,22 @@ pub enum Builtin {
     Div,
     /// A character: a Unicode scalar value, `'a'`.
     Char,
+    /// The sized integers, wrapping at their width (see [`num`]).
+    Int8,
+    Int16,
+    Int32,
+    UInt8,
+    UInt16,
+    UInt32,
+    UInt64,
+    /// An IEEE double, `1.5`.
+    Float,
+    /// An IEEE single.
+    Float32,
 }
 
 impl Builtin {
-    pub const ALL: [Builtin; 8] = [
+    pub const ALL: [Builtin; 17] = [
         Builtin::Unit,
         Builtin::Int,
         Builtin::Bool,
@@ -39,6 +54,15 @@ impl Builtin {
         Builtin::Effect,
         Builtin::Div,
         Builtin::Char,
+        Builtin::Int8,
+        Builtin::Int16,
+        Builtin::Int32,
+        Builtin::UInt8,
+        Builtin::UInt16,
+        Builtin::UInt32,
+        Builtin::UInt64,
+        Builtin::Float,
+        Builtin::Float32,
     ];
 
     /// How many there are; primitives take the uniques after these.
@@ -54,7 +78,39 @@ impl Builtin {
             Builtin::Effect => "Effect",
             Builtin::Div => "Div",
             Builtin::Char => "Char",
+            Builtin::Float => "Float",
+            Builtin::Float32 => "Float32",
+            b => b.width().expect("a sized integer").name(),
         }
+    }
+
+    /// The width of a sized integer type.
+    pub fn width(self) -> Option<Width> {
+        Some(match self {
+            Builtin::Int8 => Width::I8,
+            Builtin::Int16 => Width::I16,
+            Builtin::Int32 => Width::I32,
+            Builtin::UInt8 => Width::U8,
+            Builtin::UInt16 => Width::U16,
+            Builtin::UInt32 => Width::U32,
+            Builtin::UInt64 => Width::U64,
+            _ => return None,
+        })
+    }
+
+    /// The number type it is, if it is one.
+    pub fn number(self) -> Option<NumTy> {
+        match self {
+            Builtin::Int => Some(NumTy::Int),
+            Builtin::Float => Some(NumTy::Float),
+            Builtin::Float32 => Some(NumTy::Float32),
+            b => b.width().map(NumTy::Word),
+        }
+    }
+
+    /// The builtin type a number type is.
+    pub fn of_number(n: NumTy) -> Builtin {
+        Builtin::ALL.into_iter().find(|b| b.number() == Some(n)).expect("every number type is a builtin")
     }
 
     /// The name unique reserved for this builtin.
@@ -269,10 +325,15 @@ pub enum Native {
     /// `Int -> Char`: the character of a code point (one that is no
     /// character, no Unicode scalar value, is an error at run time)
     CharFromCode,
+    /// An operation on numbers of one type, `int8Add : Int8 -> Int8 ->
+    /// Int8`: what the prelude's instances for the sized integers and
+    /// the floats are made of (see [`num`]).
+    Num(NumOp, NumTy),
 }
 
 impl Native {
-    pub const ALL: [Native; 27] = [
+    /// The natives with a name of their own, which are not [`Native::Num`].
+    pub const NAMED: [Native; 27] = [
         Native::Array,
         Native::ArrayLen,
         Native::ArrayGet,
@@ -302,9 +363,16 @@ impl Native {
         Native::CharFromCode,
     ];
 
+    /// Every native there is.
+    pub fn all() -> impl Iterator<Item = Native> {
+        let nums = NumTy::all().flat_map(|t| NumOp::ALL.into_iter().filter(move |o| o.at(t)).map(move |o| Native::Num(o, t)));
+        Native::NAMED.into_iter().chain(nums)
+    }
+
     /// The name it is declared by.
     pub fn name(self) -> &'static str {
         match self {
+            Native::Num(op, ty) => num_name(op, ty),
             Native::Array => "Array",
             Native::ArrayLen => "arrayLen",
             Native::ArrayGet => "arrayGet",
@@ -336,7 +404,7 @@ impl Native {
     }
 
     pub fn from_name(name: &str) -> Option<Native> {
-        Native::ALL.into_iter().find(|n| n.name() == name)
+        Native::all().find(|n| n.name() == name)
     }
 
     /// A type constructor, rather than an operation: erased at run time.
@@ -347,6 +415,7 @@ impl Native {
     /// How many arguments it takes at run time (after its erased ones).
     pub fn arity(self) -> usize {
         match self {
+            Native::Num(op, _) => op.arity(),
             Native::Array | Native::MArray => 0,
             Native::ArrayLen
             | Native::ArrayPop
@@ -375,4 +444,13 @@ impl Native {
             | Native::StringIndexOf => 3,
         }
     }
+}
+
+/// A numeric native's name, made once.
+fn num_name(op: NumOp, ty: NumTy) -> &'static str {
+    use std::collections::HashMap;
+    use std::sync::{LazyLock, Mutex};
+    static NAMES: LazyLock<Mutex<HashMap<(NumOp, NumTy), &'static str>>> = LazyLock::new(Default::default);
+    let mut names = NAMES.lock().expect("never poisoned");
+    names.entry((op, ty)).or_insert_with(|| Box::leak(op.name(ty).into_boxed_str()))
 }

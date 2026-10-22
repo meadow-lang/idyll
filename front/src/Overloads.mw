@@ -124,7 +124,7 @@ fun elaborateAs (tc : Tc) (ctx : Ctx) (t : HirExpr) (head : Int) (u : Int) (want
       autos
       waiting
   in
-  if progress and not (V.isEmpty (getRef tc.deferred) and V.isEmpty (getRef tc.deferredAutos)) then settle tc
+  if progress and not (V.isEmpty (getRef tc.deferred) and V.isEmpty (getRef tc.deferredAutos) and V.isEmpty (getRef tc.deferredLiterals)) then settle tc
   else
     let w4 = A.settleAutos tc True in
     let rest = getRef tc.deferred in

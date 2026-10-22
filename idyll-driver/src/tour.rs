@@ -153,6 +153,18 @@ pub const STEPS: &[Step] = &[
         examples: &[ok("charCode 'A'"), ok("stringToChars \"héllo\""), ok("stringSlice \"hello\" 1 3")],
     },
     Step {
+        title: "Sized numbers and floats",
+        section: Section::Basics,
+        text: &[
+            "Besides `Int` there are `Int8` .. `Int32` and `UInt8` .. `UInt64`,",
+            "which wrap at their width, and `Float` and `Float32`. A literal",
+            "is read at the type wanted: an `Int`, or with a point a `Float`,",
+            "if nothing says. Types never mix; `toInt`, `toFloat`, `toInt8`",
+            "and `floor` convert.",
+        ],
+        examples: &[ok("(127 : Int8) + 1"), ok("1.5 * 2.0"), ok("toUInt8 300"), ok("floor 2.75")],
+    },
+    Step {
         title: "Functions",
         section: Section::Basics,
         text: &[

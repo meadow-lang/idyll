@@ -12,6 +12,7 @@ use Idyll.Usage as U
 use Std.St (runSt)
 use Idyll.Value (Value, Env, Poly)
 use Idyll.Core (Core)
+use Idyll.Hir (Literal)
 use Idyll.Ctx (Ctx)
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
@@ -162,6 +163,9 @@ use Std.Maybe.Maybe.*
   -- the searches waiting for their types to be known: the placeholder, the
   -- context, and the type wanted
   deferredAutos : Ref [(Int, Ctx, Value)],
+  -- the number literals waiting for their types (`Literals`): the
+  -- placeholder, the context, the type wanted, and the literal
+  deferredLiterals : Ref [(Int, Ctx, Value, Literal)],
   -- the meaning chosen for an overloaded name, by the node it was written
   -- at; the terms put off because more than one still fitted (the
   -- placeholder, the name's node, the term, its context, and what it is to
@@ -215,6 +219,7 @@ use Std.Maybe.Maybe.*
     placeholders = newRef [],
     chosen = newRef Hm.empty,
     deferredAutos = newRef [],
+    deferredLiterals = newRef [],
     forced = newRef Hm.empty,
     deferred = newRef [],
     patternChoice = newRef Hm.empty
@@ -267,6 +272,7 @@ use Std.Maybe.Maybe.*
     placeholders = newRef (getRef tc.placeholders),
     chosen = newRef (getRef tc.chosen),
     deferredAutos = newRef (getRef tc.deferredAutos),
+    deferredLiterals = newRef (getRef tc.deferredLiterals),
     forced = newRef (getRef tc.forced),
     deferred = newRef (getRef tc.deferred),
     patternChoice = newRef (getRef tc.patternChoice)
@@ -316,6 +322,7 @@ use Std.Maybe.Maybe.*
   let w39 = setRef tc.placeholders (getRef saved.placeholders) in
   let w40 = setRef tc.chosen (getRef saved.chosen) in
   let w41 = setRef tc.deferredAutos (getRef saved.deferredAutos) in
+  let w41b = setRef tc.deferredLiterals (getRef saved.deferredLiterals) in
   let w42 = setRef tc.forced (getRef saved.forced) in
   let w43 = setRef tc.deferred (getRef saved.deferred) in
   let w44 = setRef tc.patternChoice (getRef saved.patternChoice) in

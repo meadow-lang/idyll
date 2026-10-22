@@ -279,7 +279,7 @@ means `(f 1) + (g 2)`.
 3 : Int
 > \(n : Int) -> n + 1
 : (n : Int) -> Int
-> 1 + True
+> \(n : Int) -> n + True
 Error: type mismatch
    │ ╰── expected Int, but this has type Bool
 ```
@@ -314,6 +314,63 @@ applied, so `f (n + 1)` and `f (1 + n)` are different types:
 Error: type mismatch
    │ ╰── expected f (1 + n), but this has type f (n + 1)
 ```
+
+### Sized integers and floats
+
+As in Meadow, there are integers of other sizes, which wrap at their
+width: `Int8`, `Int16`, `Int32`, and unsigned `UInt8`, `UInt16`,
+`UInt32` and `UInt64` (`Int64` is another name for `Int`). A number with a
+point in it, `1.5`, is a `Float`, an IEEE double, or a `Float32`, a
+single (`Float64` is `Float`). A literal is read at the type wanted, so
+`200` is a `UInt8` where one is wanted; with nothing to say which, an
+integer is an `Int` and a number with a point a `Float`.
+
+```
+> (200 : UInt8)
+200 : UInt8
+> (127 : Int8) + 1
+-128 : Int8
+> 1.5 * 2.0
+3.0 : Float
+> (0.5 : Float32) + 0.25
+0.75 : Float32
+```
+
+What is wanted can come after the literal: in `1 + x`, the `1` waits for
+`x` to say what `+` is at.
+
+```
+> \(x : Int8) -> 1 + x
+: (x : Int8) -> Int8
+```
+
+`+`, `-`, `*` and `/` work on each (`%` on the integers), and so do the
+comparisons; division of an integer rounds toward zero, and dividing one
+by zero stops the program, as an `Int`'s does. (Meadow writes a float's
+arithmetic `+.`; here `+` is a trait's method, and a float has an
+instance of it.) Two types never mix: a conversion says which is meant.
+`toInt` and `toFloat` take any integer, `toInt8` … `toUInt64` (and
+`toInt64`) any integer too, keeping the low bits of what they narrow;
+`toFloat64` and `toFloat32` take a float, and `floor` rounds one down to
+an `Int`.
+
+```
+> (1 : Int8) + (2 : Int16)
+Error: type mismatch
+   │ ╰── expected Int8, but this has type Int16
+> toInt8 300
+44 : Int8
+> toUInt8 (0 - 1)
+255 : UInt8
+> floor (0.0 - 2.5)
+-3 : Int
+> (300 : Int8)
+Error: 300 does not fit in an Int8
+   │ ╰── an Int8 is from -128 to 127
+```
+
+A float is shown with a fraction, always, `2.0`; that is Meadow's text for
+one, the same in the REPL and on every runtime.
 
 ### Strings
 

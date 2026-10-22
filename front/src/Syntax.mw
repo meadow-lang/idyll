@@ -78,6 +78,7 @@ use Idyll.Layout (Token, foldToken)
     "octal" = Octal _,
     "hexadecimal" = Hexadecimal _,
     "decimal" = Decimal _,
+    "float" = Float _,
     "string" = Str _,
     "char" = Char _,
     "qual_upper" = QualUpper _,
@@ -198,7 +199,7 @@ use Idyll.Layout (Token, foldToken)
     -- `x@p`, a pattern's, is a name with a pattern after it
     Name = name:("lower" | "upper" | "qual_upper" | "qual_lower") asTail:AsTail?
     AsTail = "@" pat:Atom
-    Number = value:("decimal" | "hexadecimal" | "octal" | "binary")
+    Number = value:("decimal" | "hexadecimal" | "octal" | "binary" | "float")
     StrLit = "string"
     CharLit = "char"
     Hole = "_"

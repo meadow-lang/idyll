@@ -29,6 +29,11 @@ use std::rc::Rc;
 pub enum Rep {
     /// a 64-bit integer, untagged: `Int`
     I64,
+    /// a sized integer, at its width
+    Word(idyllic_builtins::Width),
+    /// a `Float`, and a `Float32`
+    F64,
+    F32,
     Bool,
     Unit,
     /// an immutable string
@@ -57,6 +62,8 @@ pub enum Shown {
     Str,
     /// `'a'`, from its code point
     Char,
+    /// a sized integer or a float, as Meadow's `display` writes it
+    Number,
     /// a box, `[v]`, of what is inside
     Box(Rc<Value>),
     /// an array, `#[a; b]`, of these
@@ -176,6 +183,9 @@ impl Typer {
             Value::LitTy(Builtin::Unit) => Rep::Unit,
             Value::LitTy(Builtin::Str) => Rep::Str,
             Value::LitTy(Builtin::Char) => Rep::Char,
+            Value::LitTy(Builtin::Float) => Rep::F64,
+            Value::LitTy(Builtin::Float32) => Rep::F32,
+            Value::LitTy(b) if b.width().is_some() => Rep::Word(b.width().expect("guarded")),
             Value::LitTy(_) | Value::Type(_) | Value::Row(_) => Rep::Erased,
             Value::Pi { .. } | Value::BoxTy(..) => Rep::Ptr,
             Value::Comp(a, _) => self.rep(s, a),
@@ -359,6 +369,7 @@ impl Typer {
             Value::LitTy(Builtin::Unit) => Shown::Unit,
             Value::LitTy(Builtin::Str) => Shown::Str,
             Value::LitTy(Builtin::Char) => Shown::Char,
+            Value::LitTy(b) if b.number().is_some() => Shown::Number,
             Value::BoxTy(_, a) => Shown::Box(a.clone()),
             Value::Opaque(u, _, sp) if self.chk.natives.get(u).is_some_and(|n| n.native == Native::Array) => {
                 match sp.as_slice() {

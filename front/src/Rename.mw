@@ -41,6 +41,7 @@ use Idyll.Hir (Icit, Literal, Visibility)
 use Std.St (runSt)
 use Idyll.Hir (Ident)
 use Idyll.Hir as H
+use Idyll.Core as C
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
 use Std.Collections.HashMap (HashMap)
@@ -117,7 +118,7 @@ def package = "Main"
 -- The builtins and the primitive operations, as `idyllic-builtins` reserves
 -- them: the uniques below the program's.
 def builtins : [String] =
-  ["Unit", "Int", "Bool", "String", "Grade", "Effect", "Div", "Char", "+", "*", "-", "<", "==", "/", "%", "++"]
+  V.append (V.map C.builtinName C.builtins) ["+", "*", "-", "<", "==", "/", "%", "++"]
 
 -- The primitives' other names, each with its operator's: what an instance
 -- of a trait whose method the operator is gives.

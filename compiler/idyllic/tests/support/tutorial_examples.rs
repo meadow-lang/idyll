@@ -30,7 +30,9 @@ fn value_report(line: &str) -> Option<(&str, &str)> {
     // array, and goes on to a ` : `.
     let starts_a_value = line
         .starts_with(|c: char| c.is_ascii_digit() || c.is_ascii_uppercase() || c == '"' || c == '\'' || c == '[' || c == '(')
-        || line.starts_with("#[") && line.contains(';');
+        || line.starts_with("#[") && line.contains(';')
+        // a negative number, `-128 : Int8`
+        || line.strip_prefix('-').is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()));
     // a string may contain " : " itself; its report ends at the last quote
     let at = if line.starts_with('"') { line.rfind("\" : ")? + 1 } else { line.find(" : ")? };
     starts_a_value.then(|| (&line[..at], &line[at + 3..]))

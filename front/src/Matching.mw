@@ -35,6 +35,8 @@
 use Idyll.Hir (Icit, Literal)
 use Idyll.Core (Core, Builtin, Prim, Note, Head, CaseAlt)
 use Idyll.Overloads as O
+use Idyll.Literals as L
+use Idyll.Num as N
 use Idyll.Core as C
 use Idyll.Value (Value, Elim, Env, Closure, Poly)
 use Idyll.Value as Va
@@ -374,9 +376,12 @@ fun simplify (tc : Tc) (ctx : Ctx) (p : Problem) : (Step, Problem) ! { Mut | e }
             | HirPatternLit (Literal.Str _) ->
                 let w = T.error tc "StringPattern" in
                 (Step.Failed, p)
-            | HirPatternLit lit ->
-                let want = Value.LitTy (C.literalBuiltin lit) in
+            | HirPatternLit written ->
                 let ty = targetType ctx target in
+                -- a number is read at the type of what it is matched
+                -- against, as it is anywhere else (see `Literals`)
+                let lit = match force tc ty with | Value.LitTy b if L.readsAs written b -> L.readNumber tc written b | _ -> written in
+                let want = Value.LitTy (C.literalBuiltin lit) in
                 if not (unify tc ctx.lvl ty want) then
                   let w = T.error tc "Mismatch" in
                   (Step.Failed, p)
@@ -612,7 +617,16 @@ fun split (tc : Tc) (m : Matcher) (ctx : Ctx) (problems : [Problem]) (goal : Val
         | (Literal.Char c, Just (u, _)) -> (Core.App (Core.Opaque u "charCode") scrutinee, Literal.Int (charCode c))
         | _ -> (scrutinee, lit)
       in
-      let test = match tested with | (s, against) -> Core.App (Core.App (Core.Prim Prim.IntEq) s) (Core.Lit against) in
+      -- a sized integer or a float by its type's own equality
+      let eqOf =
+        match C.literalBuiltin lit with
+        | Builtin.Number t ->
+            let name = N.nativeName "Eq" t in
+            M.map (\kv -> Core.Opaque (fst kv) name) (V.find (\kv -> match kv with | (_, (n, _)) -> n == name) (Hm.toVec (getRef tc.nativeInfo)))
+        | _ -> None
+      in
+      let eq = M.unwrapOr (Core.Prim Prim.IntEq) eqOf in
+      let test = match tested with | (s, against) -> Core.App (Core.App eq s) (Core.Lit against) in
       let (yes, yesU) =
         match unifyIndices tc ctx [(X.value ctx k, Value.Lit lit)] with
         | Unified.Refined ctx2 sigma -> tree tc m ctx2 (resubstProblems tc ctx.lvl sigma problems) (refineGoal tc ctx.lvl sigma goal)
@@ -807,7 +821,7 @@ fun wantsLiteral (tc : Tc) (ctx : Ctx) (p : Problem) (k : Int) (lit : Literal) :
           match ct with
           | (pat, target) ->
               (match (hir, peel hir pat) with
-               | HirPatternLit l -> l == lit and targetsSlot tc ctx target k
+               | HirPatternLit l -> L.sameNumber l lit and targetsSlot tc ctx target k
                | _ -> False))
         cs
 

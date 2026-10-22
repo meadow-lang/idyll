@@ -233,6 +233,9 @@ pub fn lit_builtin(l: &Lit) -> Builtin {
         Lit::Bool(_) => Builtin::Bool,
         Lit::Str(_) => Builtin::Str,
         Lit::Char(_) => Builtin::Char,
+        Lit::Float(_) => Builtin::Float,
+        Lit::Float32(_) => Builtin::Float32,
+        Lit::Word(w, _) => Builtin::ALL.into_iter().find(|b| b.width() == Some(*w)).expect("every width is a builtin"),
     }
 }
 

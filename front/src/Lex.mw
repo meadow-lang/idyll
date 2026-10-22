@@ -67,6 +67,8 @@ use Std.String as S
   | @regex("0o[0-7]+") Octal String
   | @regex("0x[0-9A-Fa-f]+") Hexadecimal String
   | @regex("[1-9][0-9]*|0") Decimal String
+  -- digits on both sides of the point, so that `0..1` is a range
+  | @regex("[0-9]+\\.[0-9]+") Float String
   | @regex("\"([^\"\\\\\n\r]|\\\\[^\n\r])*\"") Str String
   -- one character, as Rust's `'([^'\\\n\r\x0c]|\\[^\n\r\x0c])'` has it: a
   -- Meadow regex matches bytes, so a character is spelled out in UTF-8's bytes

@@ -568,7 +568,7 @@ from what `idyll.lock` pinned.
 - [ ] **Instance-sensitive collections take the instance in their type**, so
   a `Map` built with the default `Ord` and used with a named one fails to
   unify instead of silently breaking its invariants.
-- [ ] **Integer types, floating point, `Show`/`Eq`/`Ord`, and string
+- [x] **Integer types, floating point, `Show`/`Eq`/`Ord`, and string
   interpolation**, which all wait on traits. `Display` and `Debug` (Meadow's
   `Show`), and interpolation, done 2026-10-21 in both compilers: the
   prelude's two traits, with instances for its own types; `"a ${e} b"`
@@ -596,7 +596,24 @@ from what `idyll.lock` pinned.
   `compare` a default from `<`, with `min`, `max` and `clamp`; `Int`,
   `Char` and `String` are `Ord`, and Std's `Nat` has `PartialEq`,
   `PartialOrd` and `Ord` of its own (`equal`, `lessThan`, `compare`).
-  Left: integer types and floats.
+  Integer types and floats done 2026-10-21 in both compilers, as Meadow's:
+  `Int8` to `UInt64` (`Int64` is `Int`), `Float` (`Float64`) and
+  `Float32`, builtins after `Char`. A number literal is read at the type
+  wanted (`Lit::Word`, `Lit::Float32`), an `Int` or a `Float` if nothing
+  says, and one checked against a type still unknown waits behind a
+  placeholder as an auto argument does (`literals.rs`, front/'s
+  `Literals`), so `1 + x` at `Int8` checks; a literal too big for its
+  type is an error. Each type's operations are natives, one a type
+  (`int8Add`, `floatLt`, `uint64FromInt`: `Native::Num`), each Meadow's
+  primitive (`add` at the width, `addF`, `toUInt64`, `display`), and the
+  prelude's instances of `Add` .. `Rem`, `PartialEq`, `PartialOrd`,
+  `Display` and `Debug` are made of them; `Integer` (`toInt`, `toFloat`)
+  and `Floating` (`toFloat64`, `toFloat32`, `floor`) are traits, and
+  `toInt8` .. `toUInt64` and `toInt64` go through `toInt`. Cut writes a
+  sized or `Float32` literal as an `Int` or `Float` converted; a number
+  is shown by the runtime's `display`. The reference interpreter computes
+  as `meadow_rt::num` (`idyllic_builtins::num`; front/'s `Num`). Meadow's
+  `+.` is not here: `+` is a trait's method, which a float has.
 - [x] **Arithmetic is a trait, so it works on `Nat` in types** (Chris,
   2026-10-16). `+`, `*` and the rest become a trait's methods: `Int`'s
   instance is the primitives, and `Nat`'s is `plus` and `times`. This is

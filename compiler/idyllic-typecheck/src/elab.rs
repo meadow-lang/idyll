@@ -23,6 +23,7 @@ use super::core::{lit_builtin, Core, Level, Lvl, MetaVar, Note};
 use super::value::{vvar, Closure, Elim, Poly, VTy, Value};
 use super::positivity::{DataShape, Field};
 use super::matching::mentions;
+use super::literals;
 use super::{BinderInfo, Checker, CtorInfo, Ctx, HoleInfo, MetaEntry, MetaOrigin, MetaTy, RecDef, TypeErrorKind, Usage};
 use idyllic_ast::{Icit, Lit};
 use idyllic_builtins::{Builtin, Prim};
@@ -1146,7 +1147,7 @@ impl Checker {
                         // its arguments are elaborated: so that `2 + 2` in a
                         // type computes, rather than waiting for the end of
                         // the definition
-                        if !self.deferred_autos.is_empty() {
+                        if !self.deferred_autos.is_empty() || !self.deferred_literals.is_empty() {
                             self.settle_autos(false);
                         }
                         (core, ty, usage)
@@ -1557,6 +1558,14 @@ impl Checker {
             // Nothing else is overloaded: a grade *variable* is an ordinary
             // variable, and gets here by the fallback.
             (TermKind::Lit(Lit::Unit), Value::Type(_)) => (Rc::new(Core::LitTy(Builtin::Unit)), Usage::none()),
+            // a number is read at the type wanted (see `literals`)
+            (TermKind::Lit(l), Value::LitTy(b)) if literals::reads_as(l, *b) => {
+                (Rc::new(Core::Lit(self.read_number(nid, l, *b))), Usage::none())
+            }
+            // (a meta under binders is applied to them, `?a y`)
+            (TermKind::Lit(l @ (Lit::Int(_) | Lit::Float(_))), Value::Flex(..)) => {
+                (self.defer_literal(ctx, nid, l, expected.clone()), Usage::none())
+            }
             (TermKind::Lit(Lit::Int(n)), Value::LitTy(Builtin::Grade)) => match u64::try_from(*n) {
                 Ok(n) => (Core::grade(Grade::exact(n)), Usage::none()),
                 Err(_) => {

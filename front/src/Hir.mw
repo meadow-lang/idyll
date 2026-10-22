@@ -20,7 +20,12 @@ use Std.Maybe.Maybe.*
 @pub data Icit = Explicit | Implicit | Auto
 
 @derive(PartialEq)
-@pub data Literal = Unit | Int Int | Bool Bool | Str String | Char Char
+-- A number with a point in it is a `Float`, or a `Float32` once read at
+-- one; an integer read at a sized type is a `Word`, by its type's name, of
+-- the number it stands for (a `UInt64` past `Int`'s as the `Int` with its
+-- bits). The parser makes only `Int`s and `Float`s; the checker reads one at
+-- the type wanted (see `Literals`).
+@pub data Literal = Unit | Int Int | Bool Bool | Str String | Char Char | Float Float | Float32 Float32 | Word String Int
 
 -- How far a declaration is seen: its module, the module above, its
 -- package, or anywhere.
@@ -128,6 +133,12 @@ fun hex (n : Int) : String =
   | Literal.Bool b -> if b then "(lit True)" else "(lit False)"
   | Literal.Str s -> "(lit ${quoted s})"
   | Literal.Char c -> "(lit ${showChar c})"
+  | Literal.Float x -> "(lit ${display x})"
+  | Literal.Float32 x -> "(lit ${display x})"
+  | Literal.Word w n -> "(lit ${wordText w n})"
+
+-- A sized integer's value, as text: a `UInt64` read as one.
+@pub fun wordText (w : String) (n : Int) : String = if w == "UInt64" then display (toUInt64 n) else show n
 
 fun sx (parts : [String]) : String = "(" ++ S.join " " parts ++ ")"
 

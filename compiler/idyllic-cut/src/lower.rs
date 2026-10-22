@@ -32,7 +32,7 @@ mod show;
 
 use super::*;
 use idyllic_ast::Lit;
-use idyllic_builtins::{Builtin, Native, Prim};
+use idyllic_builtins::{Builtin, Native, NumOp, NumTy, Prim};
 use idyllic_typecheck::natives::NativeInfo;
 use idyllic_typecheck::core::{Core, Head, Note};
 use idyllic_typecheck::grade::Grade;
@@ -419,6 +419,9 @@ impl Lower<'_> {
     fn rep(&self, env: &Env, r: typer::Rep) -> Rep {
         match r {
             typer::Rep::I64 => Rep::I64,
+            typer::Rep::Word(w) => Rep::Word(w),
+            typer::Rep::F64 => Rep::F64,
+            typer::Rep::F32 => Rep::F32,
             typer::Rep::Bool => Rep::Bool,
             typer::Rep::Unit | typer::Rep::Erased => Rep::Unit,
             typer::Rep::Str => Rep::Str,
@@ -753,6 +756,7 @@ impl Lower<'_> {
                 Slot::Def(..) | Slot::Prim(_) => return None,
             },
             Core::Lit(Lit::Int(n)) => Producer::Int(*n),
+            Core::Lit(Lit::Float(x)) => Producer::Float(f64::from_bits(*x)),
             Core::Lit(Lit::Str(s)) => Producer::Str(s.clone()),
             Core::Lit(Lit::Char(c)) => Producer::Char(*c),
             Core::Lit(Lit::Bool(b)) => Producer::Bool(*b),
@@ -790,6 +794,18 @@ impl Lower<'_> {
     /// constructor, an operation, a top-level function, or a value applied
     /// one argument at a time.
     fn application(&mut self, env: &Env, c: &Rc<Core>, k: Consumer) -> Statement {
+        // Cut writes no literal of a sized integer or a `Float32`: an `Int`
+        // or a `Float`, converted
+        match &**c {
+            Core::Lit(Lit::Word(w, b)) => {
+                let op = NumOp::FromInt.prim(NumTy::Word(*w));
+                return Statement::Prim(op, vec![Producer::Int(w.value(*b) as i64)], vec![k]);
+            }
+            Core::Lit(Lit::Float32(x)) => {
+                return Statement::Prim("toFloat32".into(), vec![Producer::Float(f32::from_bits(*x).into())], vec![k]);
+            }
+            _ => {}
+        }
         let mut args = Vec::new();
         let mut head = c.clone();
         while let Core::App(f, a) = &*head {
@@ -1016,7 +1032,25 @@ impl Lower<'_> {
         if let Some((symbol, params)) = self.native_helper(n) {
             return self.call(env, whole, symbol, &params, args, k);
         }
-        let reps: &[Rep] = match n {
+        let reps: Vec<Rep> = match n {
+            Native::Num(op, ty) => vec![Rep::number(op.takes(ty)); op.arity()],
+            _ => self.native_reps(n).to_vec(),
+        };
+        if reps.is_empty() && n.arity() > 0 {
+            self.errors.push(format!("{} is not lowered yet", n.name()));
+            return Statement::Error(n.name().to_string());
+        }
+        let params: Vec<Param> = (0..info.params).map(|_| Param::Skip).chain(reps.iter().cloned().map(Param::Value)).collect();
+        let op = match n {
+            Native::Num(op, ty) => op.prim(ty),
+            _ => n.name().to_string(),
+        };
+        self.native_prim(env, whole, info, args, k, params, op)
+    }
+
+    /// What a native that is the runtime's primitive of its name takes.
+    fn native_reps(&self, n: Native) -> &'static [Rep] {
+        match n {
             Native::ArrayLen | Native::ArrayPop => &[Rep::Ptr],
             Native::ArrayGet => &[Rep::Ptr, Rep::I64],
             Native::ArrayGetOr => &[Rep::Any, Rep::Ptr, Rep::I64],
@@ -1032,13 +1066,16 @@ impl Lower<'_> {
             Native::CharsToString => &[Rep::Ptr],
             Native::CharCode => &[Rep::Char],
             Native::CharFromCode => &[Rep::I64],
-            _ => {
-                self.errors.push(format!("{} is not lowered yet", n.name()));
-                return Statement::Error(n.name().to_string());
-            }
-        };
-        let params: Vec<Param> = (0..info.params).map(|_| Param::Skip).chain(reps.iter().cloned().map(Param::Value)).collect();
-        let op = n.name().to_string();
+            _ => &[],
+        }
+    }
+
+    /// The rest of [`Self::native`]: a native that is the runtime's
+    /// primitive `op`, taking values of `reps`.
+    #[allow(clippy::too_many_arguments)]
+    fn native_prim(&mut self, env: &Env, whole: &Rc<Core>, info: NativeInfo, args: &[Rc<Core>], k: Consumer, params: Vec<Param>, op: String) -> Statement {
+        let n = info.native;
+        let all = info.params + n.arity();
         if args.len() < all {
             return self.partial(env, whole, Head2::Prim(op), &params[..args.len()], args, k);
         }
@@ -1277,6 +1314,9 @@ impl Lower<'_> {
                             Rep::Var(a)
                         }
                         typer::Rep::I64 => Rep::I64,
+                        typer::Rep::Word(w) => Rep::Word(w),
+                        typer::Rep::F64 => Rep::F64,
+                        typer::Rep::F32 => Rep::F32,
                         typer::Rep::Bool => Rep::Bool,
                         typer::Rep::Unit | typer::Rep::Erased => Rep::Unit,
                         typer::Rep::Str => Rep::Str,
@@ -1312,6 +1352,9 @@ impl Lower<'_> {
                 let (params, result) = self.typer.op_shape(u).unwrap_or((Vec::new(), typer::Rep::Any));
                 let conv = |r: typer::Rep| match r {
                     typer::Rep::I64 => Rep::I64,
+                    typer::Rep::Word(w) => Rep::Word(w),
+                    typer::Rep::F64 => Rep::F64,
+                    typer::Rep::F32 => Rep::F32,
                     typer::Rep::Bool => Rep::Bool,
                     typer::Rep::Unit | typer::Rep::Erased => Rep::Unit,
                     typer::Rep::Str => Rep::Str,

@@ -2,7 +2,14 @@ cut 0
 entry idyll:Main/"#entry"
 answer str
 
+data idyll:Prelude/List <'a0> { Nil; "::"('a0, ptr) }
+
 data idyll:Prelude/DigitFuel { Spent; More(ptr) }
+
+roles {
+  nil = idyll:Prelude/List.Nil
+  cons = idyll:Prelude/List."::"
+}
 
 val idyll:Prelude/digitFuel : ptr =
   <idyll:Prelude/DigitFuel.Spent | μ̃ v_20: ptr.
@@ -65,30 +72,41 @@ def idyll:Prelude/showInt (n_52: i64; k_53: ptr) =
       idyll:Prelude/negativeDigits(idyll:Prelude/digitFuel, n_52; μ̃ v_58: str.
         prim concatStrings(["-", v_58]; k_53))))
 
-def idyll:Main/sumTo (xs_62: ptr; k_63: ptr) =
-  prim arrayLen(xs_62; μ̃ v_64: i64.
-    prim arrayGet(xs_62, 0; μ̃ v_65: i64.
-      prim add(v_64, v_65; k_63)))
-
-def idyll:Prelude/negativeDigits (fuel_66: ptr, n_67: i64; k_68: ptr) =
-  <fuel_66 | case {
+def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) =
+  <fuel_61 | case {
     idyll:Prelude/DigitFuel.Spent =>
-      <"" | k_68>;
-    idyll:Prelude/DigitFuel.More(fuel_69: ptr) =>
-      prim sub(0, 10; μ̃ v_79: i64.
-        prim lt(v_79, n_67; μ̃ v__70: bool.
-          prim if(v__70; μ̃ u_77: unit.
-            prim div(n_67, 10; μ̃ v_75: i64.
-              idyll:Prelude/negativeDigits(fuel_69, v_75; μ̃ v_71: str.
-                prim mod(n_67, 10; μ̃ v_74: i64.
-                  prim sub(0, v_74; μ̃ v_73: i64.
-                    idyll:Prelude/digitString(v_73; μ̃ v_72: str.
-                      prim concatStrings([v_71, v_72]; k_68)))))), μ̃ u_78: unit.
-            prim sub(0, n_67; μ̃ v_76: i64.
-              idyll:Prelude/digitString(v_76; k_68)))))
+      <"" | k_63>;
+    idyll:Prelude/DigitFuel.More(fuel_64: ptr) =>
+      prim sub(0, 10; μ̃ v_74: i64.
+        prim lt(v_74, n_62; μ̃ v__65: bool.
+          prim if(v__65; μ̃ u_72: unit.
+            prim div(n_62, 10; μ̃ v_70: i64.
+              idyll:Prelude/negativeDigits(fuel_64, v_70; μ̃ v_66: str.
+                prim mod(n_62, 10; μ̃ v_69: i64.
+                  prim sub(0, v_69; μ̃ v_68: i64.
+                    idyll:Prelude/digitString(v_68; μ̃ v_67: str.
+                      prim concatStrings([v_66, v_67]; k_63)))))), μ̃ u_73: unit.
+            prim sub(0, n_62; μ̃ v_71: i64.
+              idyll:Prelude/digitString(v_71; k_63)))))
   }>
 
-def idyll:Main/"#entry" (; k_80: ptr) =
-  <[40, 2] | μ̃ v_82: ptr.
-    idyll:Main/sumTo(v_82; μ̃ answer_81: i64.
-      idyll:Prelude/showInt(answer_81; k_80))>
+def idyll:Main/second (x_75: ptr; k_76: ptr) =
+  <x_75 | case {
+    idyll:Prelude/List.Nil =>
+      <0 | k_76>;
+    idyll:Prelude/List."::"(x_77: i64, x_78: ptr) =>
+      <x_78 | case {
+        idyll:Prelude/List.Nil =>
+          <0 | k_76>;
+        idyll:Prelude/List."::"(y_79: i64, x_80: ptr) =>
+          <y_79 | k_76>
+      }>
+  }>
+
+def idyll:Main/"#entry" (; k_81: ptr) =
+  <idyll:Prelude/List.Nil | μ̃ v_87: ptr.
+    <idyll:Prelude/List."::"(3, v_87) | μ̃ v_86: ptr.
+      <idyll:Prelude/List."::"(2, v_86) | μ̃ v_85: ptr.
+        <idyll:Prelude/List."::"(1, v_85) | μ̃ v_84: ptr.
+          idyll:Main/second(v_84; μ̃ answer_82: i64.
+            idyll:Prelude/showInt(answer_82; k_81))>>>>

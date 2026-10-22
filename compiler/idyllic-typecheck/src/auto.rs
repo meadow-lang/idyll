@@ -70,7 +70,9 @@ impl Checker {
     /// The searches that waited for their types, tried again; with `last`,
     /// what still cannot be told is reported. Whether any was settled.
     pub(super) fn settle_autos(&mut self, last: bool) -> bool {
-        let mut progress = false;
+        // (a literal's type may be what a search waits for, and the default
+        // is taken before the search is given up on)
+        let mut progress = self.settle_literals(last);
         for d in std::mem::take(&mut self.deferred_autos) {
             if !self.known(&d.ctx, &d.wanted) && !last {
                 self.deferred_autos.push(d);
@@ -279,6 +281,7 @@ impl Checker {
             joins: self.joins.len(),
             deferred: self.deferred.len(),
             deferred_autos: self.deferred_autos.len(),
+            deferred_literals: self.deferred_literals.len(),
         }
     }
 
@@ -291,6 +294,7 @@ impl Checker {
         self.joins.truncate(mark.joins);
         self.deferred.truncate(mark.deferred);
         self.deferred_autos.truncate(mark.deferred_autos);
+        self.deferred_literals.truncate(mark.deferred_literals);
         self.chosen.retain(|m, _| *m < mark.metas);
         self.placeholders.retain(|m| *m < mark.metas);
         self.inferred.retain(|m, _| *m < mark.metas);
@@ -550,6 +554,7 @@ struct Mark {
     joins: usize,
     deferred: usize,
     deferred_autos: usize,
+    deferred_literals: usize,
 }
 
 /// Whether a hint whose type comes to `hint` could give what comes to

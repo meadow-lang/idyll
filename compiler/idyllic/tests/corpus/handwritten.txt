@@ -658,3 +658,40 @@ use Std.Cmp (Ord, compare, min, max)
 use Std.Num.Nat (Nat, fromInt, toInt)
 
 (compare 1 2, compare "b" "a", min 3 9, max "a" "b", toInt (max (fromInt 2) (fromInt 5)), fromInt 1 < fromInt 2)
+%%%
+-- sized integers: a literal read at the type wanted, wrapping at the width, and division toward zero
+x : Int8
+x = 100
+
+big : UInt64
+big = toUInt64 (0 - 1)
+
+(x + 27 + 1, 1 + x, (0 : UInt8) - 1, (200 : UInt8) * 2, (0 - 7 : Int16) / 2, (0 - 7 : Int16) % 2, (70000 : Int32) * 70000, big, big / 2, big > 1)
+%%%
+-- floats: a point makes a Float, unless a Float32 is wanted; floor, and their text always with a fraction
+half : Float32
+half = 0.5
+
+area : Float -> Float
+area r = 3.25 * r * r
+
+(1.5 + 2.25, half * 3.0, area 2.0, 1.0 / 4.0, 2.5 < 2.0, floor (0.0 - 2.5), "${0.1 + 0.2} ${half:?}", 2.0 == 2.0)
+%%%
+-- conversions between number types, each keeping the low bits of what it narrows
+(toInt8 300, toUInt8 (0 - 1), toInt (toInt8 200), toFloat 3, toFloat32 (toFloat 7), toFloat64 (1.5 : Float32), toInt64 (5 : Int16), toUInt16 (toInt8 (0 - 1)), toFloat (toUInt64 (0 - 1)))
+%%%
+-- a literal pattern at a sized integer and at a float, and a sum that wraps
+name : UInt8 -> String
+name 0 = "zero"
+name 255 = "max"
+name n = "${n}"
+
+sign : Float -> Int
+sign 0.0 = 0
+sign x = if x < 0.0 then 0 - 1 else 1
+
+total : List Int8 -> Int8
+total Nil = 0
+total (x :: xs) = x + total xs
+
+(name 0, name 255, name 7, sign 0.0, sign (0.0 - 3.5), total (100 :: 27 :: 1 :: Nil))

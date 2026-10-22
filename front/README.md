@@ -166,6 +166,11 @@ Where nothing matches, Scythe's `lexRaw` stops. The Rust lexer goes on, so
 `lexed` here does too: what the machine read before it gave up (at least one
 character) is an error token, and lexing goes on after it.
 
+A number with a point is a `Float` token, with digits on both sides, so
+`0..1` is still a range; the surface reads its value as its digits divided
+by the power of ten its fraction is, one rounding, which is the nearest
+`Float` for any literal of fifteen digits or fewer.
+
 A Scythe regex matches bytes, where a `logos` one matches characters. Where
 that matters, a character literal, `'é'`, which is one character but two
 bytes, the regex spells a character out in UTF-8's byte classes, as
@@ -605,6 +610,17 @@ its type for nothing; with nothing expected it is a `List`. The same form
 is a pattern. `#[a; b]` is an array: the native `arrayFromList` applied to
 the list of its elements.
 
+**Number literals** (`Literals.mw`, `literals.rs`). A literal is read at
+the type wanted: `5` is an `Int8` where an `Int8` is (`Literal.Word`), `1.5`
+a `Float32` where a `Float32` is, and too big for its type is an error
+(`NumberTooLarge`). Checked against a type still to be worked out (a
+metavariable, perhaps applied to the binders it is under), it waits behind
+a placeholder, as an auto argument does, and is read when `Auto.settleAutos`
+runs: after an application, so `1 + x` at `Int8` checks, or at the end of
+its definition, where an unknown type is taken to be `Int` or `Float`. A
+literal pattern is read at the type of what it is matched against, and a
+sized or float one compared with its type's `Eq` native.
+
 **Not in yet**: packages (a module's `use` of another package, which the
 renamer does not do yet either), and choosing by type among the names
 several `use`s bring in. No program of the corpus needs either.
@@ -623,6 +639,13 @@ of its own:
 - **`Value.mw`** (`value.rs`): values, closures, and stuck terms as a head
   and its spine; grade polynomials (so `r + r` and `2 * r` are one
   polynomial), and effect rows as sorted sets.
+- **`Num.mw`** (`idyllic_builtins::num`): the sized integers and floats:
+  each type's natives by name (`int8Add`, `floatLt`, `uint64FromInt`),
+  which of Meadow's primitives each is (`add`, `addF`, `toUInt64`,
+  `display`), what each takes and gives, and what each computes, for the
+  CEK machine: a sized integer is an `Int` wrapped to its width (`wrap`),
+  a `UInt64` past `Int`'s largest the `Int` with its bits, read with
+  Meadow's own `UInt64`.
 - **`Tc.mw`**: the checker's state: the metacontext (each metavariable
   unsolved or solved, with where it came from and its type), the errors,
   the holes, the kept questions, and the tables of what is declared.
@@ -663,7 +686,8 @@ What running Core means, rule by rule:
 - a recursive definition is a constant, its body evaluated again in the
   context it was defined in;
 - a solved metavariable stands for its solution;
-- integers are 64 bits and wrap.
+- integers are 64 bits and wrap; a sized integer wraps at its width, and a
+  float is Meadow's (`Num.apply`).
 
 `handle` pushes a handler frame. Performing an operation looks down the
 stack for the nearest handler of it, and the frames above it, the handler

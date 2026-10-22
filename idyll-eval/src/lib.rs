@@ -65,6 +65,7 @@
 //! nothing to show.
 
 use idyllic_ast::Lit;
+use idyllic_builtins::num::{self, Number};
 use idyllic_builtins::{strings, Builtin, IntResult, Native, Prim};
 use idyllic_typecheck::core::{CaseAlt, Core, Head, Note, OpClause};
 use idyllic_typecheck::handlers::OpInfo;
@@ -83,6 +84,8 @@ use std::rc::Rc;
 #[derive(Clone, Debug)]
 pub enum Value {
     Int(i64),
+    /// A sized integer or a float (an `Int` is [`Value::Int`]).
+    Num(Number),
     Str(Rc<str>),
     /// A character, a Unicode scalar value.
     Char(char),
@@ -221,7 +224,7 @@ impl Value {
             Value::Box(inner) => out.push(Garbage::Value(std::mem::replace(inner, hollow()))),
             Value::Closure { env, .. } => out.extend(env.0.take().map(Garbage::Cell)),
             // (a resumption's frames are few, and dropped the ordinary way)
-            Value::Int(_) | Value::Str(_) | Value::Char(_) | Value::Bool(_) | Value::Unit | Value::Erased | Value::Resumption(_) => {}
+            Value::Int(_) | Value::Num(_) | Value::Str(_) | Value::Char(_) | Value::Bool(_) | Value::Unit | Value::Erased | Value::Resumption(_) => {}
         }
     }
 }
@@ -423,6 +426,9 @@ impl Program<'_> {
             }
             Core::Lit(lit) => value(match lit {
                 Lit::Int(n) => Value::Int(*n),
+                Lit::Word(w, b) => Value::Num(Number::Word(*w, *b)),
+                Lit::Float(x) => Value::Num(Number::Float(f64::from_bits(*x))),
+                Lit::Float32(x) => Value::Num(Number::Float32(f32::from_bits(*x))),
                 Lit::Str(s) => Value::Str(s.as_str().into()),
                 Lit::Char(c) => Value::Char(*c),
                 Lit::Bool(b) => Value::Bool(*b),
@@ -701,6 +707,22 @@ fn native(n: Native, args: &[Rc<Value>]) -> Result<Value, EvalError> {
     // `Pair [a] b`: how a native gives back two things, the first boxed
     let pair = |a: Rc<Value>, b: Rc<Value>| Value::Con { name: "Pair".into(), tag: 0, fields: vec![Rc::new(Value::Box(a)), b] };
     Ok(match n {
+        Native::Num(op, ty) => {
+            let numbers = args
+                .iter()
+                .map(|a| match &**a {
+                    Value::Int(n) => Ok(Number::Int(*n)),
+                    Value::Num(n) => Ok(*n),
+                    _ => stuck(format!("{} is given something that is not a number", n.name())),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            match num::apply(op, ty, &numbers).map_err(EvalError::Stopped)? {
+                num::Answer::Num(Number::Int(n)) => Value::Int(n),
+                num::Answer::Num(n) => Value::Num(n),
+                num::Answer::Bool(b) => Value::Bool(b),
+                num::Answer::Text(s) => Value::Str(s.into()),
+            }
+        }
         Native::Array | Native::MArray => Value::Erased,
         Native::ArrayLen => Value::Int(array(&args[0])?.len() as i64),
         Native::ArrayGet => {
@@ -829,6 +851,7 @@ pub fn show(v: &Value) -> Option<String> {
     let atom = |s: String| if s.contains(' ') && !s.starts_with(['[', '"', '#', '(']) { format!("({s})") } else { s };
     match v {
         Value::Int(n) => Some(n.to_string()),
+        Value::Num(n) => Some(n.to_string()),
         Value::Str(s) => Some(format!("{:?}", &**s)),
         Value::Char(c) => Some(idyllic_ast::show_char(*c)),
         Value::Bool(true) => Some("True".into()),

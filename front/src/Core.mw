@@ -23,11 +23,17 @@ use Std.Maybe.Maybe.*
 
 -- The primitive types, as `idyllic-builtins` reserves them.
 @derive(PartialEq)
-@pub data Builtin = Unit | Int | Bool | Str | Grade | Effect | Div | Char
+-- `Number`: a sized integer or a float, by its name (`Int8`, `Float`).
+@pub data Builtin = Unit | Int | Bool | Str | Grade | Effect | Div | Char | Number String
 
 -- Every builtin, at the unique `idyllic-builtins` reserves for it: its
 -- place here. The primitive operations take the uniques after these.
-@pub def builtins : [Builtin] = [Builtin.Unit, Builtin.Int, Builtin.Bool, Builtin.Str, Builtin.Grade, Builtin.Effect, Builtin.Div, Builtin.Char]
+@pub def builtins : [Builtin] = V.append [Builtin.Unit, Builtin.Int, Builtin.Bool, Builtin.Str, Builtin.Grade, Builtin.Effect, Builtin.Div, Builtin.Char] (V.map (\n -> Builtin.Number n) numberTypes)
+
+-- The sized integers, then the floats, in `idyllic-builtins`' order.
+@pub def numberTypes : [String] = ["Int8", "Int16", "Int32", "UInt8", "UInt16", "UInt32", "UInt64", "Float", "Float32"]
+
+@pub fun isFloatType (n : String) : Bool = n == "Float" or n == "Float32"
 
 @pub fun builtinName (b : Builtin) : String =
   match b with
@@ -39,6 +45,7 @@ use Std.Maybe.Maybe.*
   | Builtin.Effect -> "Effect"
   | Builtin.Div -> "Div"
   | Builtin.Char -> "Char"
+  | Builtin.Number n -> n
 
 -- The primitive operations.
 @derive(PartialEq)
@@ -77,6 +84,9 @@ use Std.Maybe.Maybe.*
   | Literal.Bool _ -> Builtin.Bool
   | Literal.Str _ -> Builtin.Str
   | Literal.Char _ -> Builtin.Char
+  | Literal.Float _ -> Builtin.Number "Float"
+  | Literal.Float32 _ -> Builtin.Number "Float32"
+  | Literal.Word w _ -> Builtin.Number w
 
 -- --- Core --------------------------------------------------------------------
 
@@ -204,6 +214,9 @@ fun isGrade (c : Core) (g : Grade) : Bool =
   | Literal.Bool b -> if b then "True" else "False"
   | Literal.Str s -> H.debugString s
   | Literal.Char c -> H.showChar c
+  | Literal.Float x -> display x
+  | Literal.Float32 x -> display x
+  | Literal.Word w n -> H.wordText w n
 
 fun hex (n : Int) : String =
   let digit = \d -> stringSlice "0123456789abcdef" d (d + 1) in

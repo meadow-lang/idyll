@@ -36,7 +36,8 @@ use Std.Maybe.Maybe.*
 -- How a value is represented at run time, as the checker sees it: what a
 -- type variable bound at a level stands for, and nothing at all for a type.
 @derive(PartialEq)
-@pub data TRep = I64 | Bool | Unit | Str | Char | Ptr | Var Int | Any | Erased
+-- `Number`: a sized integer or a float, by its type's name
+@pub data TRep = I64 | Bool | Unit | Str | Char | Number String | Ptr | Var Int | Any | Erased
 
 -- What a value of a type looks like written out, as the REPL shows one.
 @pub data Shown
@@ -45,6 +46,8 @@ use Std.Maybe.Maybe.*
   | Unit
   | Str
   | Char
+  -- a sized integer or a float, as Meadow's `display` writes it
+  | Number
   | Box Value
   | Array Value
   -- data: the type written out, and each constructor that can make a
@@ -87,6 +90,7 @@ fun isUniverse (tc : Tc) (v : Value) : Bool ! { Mut | e } = match force tc v wit
   | Value.LitTy Builtin.Unit -> TRep.Unit
   | Value.LitTy Builtin.Str -> TRep.Str
   | Value.LitTy Builtin.Char -> TRep.Char
+  | Value.LitTy (Builtin.Number n) -> TRep.Number n
   | Value.LitTy _ -> TRep.Erased
   | Value.Type _ -> TRep.Erased
   | Value.Row _ -> TRep.Erased
@@ -224,6 +228,7 @@ fun opFrom (tc : Tc) (erased : Int) (arity : Int) (s : Ctx) (i : Int) (ty : Valu
   | Value.LitTy Builtin.Unit -> Shown.Unit
   | Value.LitTy Builtin.Str -> Shown.Str
   | Value.LitTy Builtin.Char -> Shown.Char
+  | Value.LitTy (Builtin.Number _) -> Shown.Number
   | Value.BoxTy _ a -> Shown.Box a
   | Value.Opaque u _ sp ->
       (match Hm.lookup u (getRef tc.nativeInfo) with
@@ -319,17 +324,11 @@ fun altVars (tc : Tc) (params : Int) (i : Int) (vars : [String]) (inner : Ctx) (
              altVars tc params (i + 1) vars (X.bind inner None x dom) (apply tc cod (Va.vvar lvl x))
        | _ -> None)
 
--- The unique the renamer reserves for a primitive.
+-- The unique the renamer reserves for a primitive: its place after the
+-- builtins, in `idyllic-builtins`' order.
 fun primUnique (p : Prim) : Int =
-  match p with
-  | Prim.IntAdd -> 7
-  | Prim.IntMul -> 8
-  | Prim.IntSub -> 9
-  | Prim.IntLt -> 10
-  | Prim.IntEq -> 11
-  | Prim.IntDiv -> 12
-  | Prim.IntMod -> 13
-  | Prim.StrAppend -> 14
+  let order = [Prim.IntAdd, Prim.IntMul, Prim.IntSub, Prim.IntLt, Prim.IntEq, Prim.IntDiv, Prim.IntMod, Prim.StrAppend] in
+  V.len C.builtins + V.foldl (\acc i -> if V.getOr Prim.IntAdd order i == p then i else acc) 0 (V.range 0 (V.len order))
 
 -- The type of a term in a scope, if it can be worked out.
 @pub fun tyOf (tc : Tc) (ctx : Ctx) (c : Core) : Maybe Value ! { Mut | e } =

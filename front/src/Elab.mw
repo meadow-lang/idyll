@@ -50,6 +50,7 @@ use Lingua (pass!)
 use Idyll.Matching (caseOf, inferMatch, elabMatch)
 use Idyll.Handlers (handled)
 use Idyll.Auto as A
+use Idyll.Literals as L
 use Idyll.Overloads as O
 use Idyll.Sequences (checkSeq, inferSeq, arrayLiteral, arrayElement)
 use Idyll.Termination (checkTermination, arity)
@@ -351,7 +352,7 @@ fun autosAfter (tc : Tc) (ctx : Ctx) (r : (Core, Value, Usage)) : (Core, Value, 
       -- application's instances once its arguments are elaborated: so that
       -- `2 + 2` in a type computes, rather than waiting for the end of the
       -- definition
-      let w = if V.isEmpty (getRef tc.deferredAutos) then False else A.settleAutos tc False in
+      let w = if V.isEmpty (getRef tc.deferredAutos) and V.isEmpty (getRef tc.deferredLiterals) then False else A.settleAutos tc False in
       (c2, t2, usage)
 
 -- --- usage against grades ----------------------------------------------------------
@@ -1257,6 +1258,11 @@ fun variable (tc : Tc) (ctx : Ctx) (node : Int) (x0 : Ident) : (Core, Value, Usa
 fun literalAgainst (cx : Cx) (again : Cx -> (Core, Value, Usage) ! { Mut | e }) (lit : Literal) (g : Value) : (Core, Value, Usage) ! { Mut | e } =
   match (lit, g) with
   | (Literal.Unit, Value.Type _) -> (Core.LitTy Builtin.Unit, g, U.none ())
+  -- a number is read at the type wanted (see `Literals`)
+  | (_, Value.LitTy b) if L.readsAs lit b -> (Core.Lit (L.readNumber cx.tc lit b), g, U.none ())
+  -- (a metavariable under binders is applied to them, `?a y`)
+  | (Literal.Int _, Value.Flex _ _) -> (L.deferLiteral cx.tc cx.ctx lit g, g, U.none ())
+  | (Literal.Float _, Value.Flex _ _) -> (L.deferLiteral cx.tc cx.ctx lit g, g, U.none ())
   | (Literal.Int n, Value.LitTy Builtin.Grade) ->
       if n >= 0 then (C.grade (G.exact n), g, U.none ())
       else

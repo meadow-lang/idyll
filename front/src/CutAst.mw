@@ -11,12 +11,14 @@ use Std.Maybe.Maybe.*
 
 -- How a value is represented at run time: the only types Cut has.
 @derive(PartialEq)
-@pub data Rep = I64 | U8 | Bool | Char | Unit | Str | Ptr | Desc | Var String | Any
+-- `Number`: a sized integer or a float, by its Idyll type's name (`UInt8`
+-- is also what `stringByteAt` gives)
+@pub data Rep = I64 | Number String | Bool | Char | Unit | Str | Ptr | Desc | Var String | Any
 
 @pub fun repText (r : Rep) : String =
   match r with
   | Rep.I64 -> "i64"
-  | Rep.U8 -> "u8"
+  | Rep.Number n -> numberRep n
   | Rep.Char -> "char"
   | Rep.Bool -> "bool"
   | Rep.Unit -> "unit"
@@ -25,6 +27,13 @@ use Std.Maybe.Maybe.*
   | Rep.Desc -> "desc"
   | Rep.Var a -> "'" ++ a
   | Rep.Any -> "any"
+
+-- What Cut calls a number type's representation: `i8`, `u64`, `f32`.
+@pub fun numberRep (n : String) : String =
+  if n == "Float" then "f64"
+  else if n == "Float32" then "f32"
+  else if S.startsWith "U" n then "u" ++ S.drop n 4
+  else "i" ++ S.drop n 3
 
 -- A flat, globally unique name, `idyll:App/Math.double`: its language, its
 -- package, and its path, the module path then the name.

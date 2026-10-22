@@ -234,6 +234,10 @@ pub(crate) fn decimal(lex: &mut Lex) -> BigInt {
     int(lex, 0, 10)
 }
 
+pub(crate) fn float(lex: &mut Lex) -> u64 {
+    lex.slice().parse::<f64>().map_or(0, f64::to_bits)
+}
+
 /// The literal's content with the surrounding quotes stripped and escapes
 /// resolved.
 fn literal_body(lex: &mut Lex) -> String {

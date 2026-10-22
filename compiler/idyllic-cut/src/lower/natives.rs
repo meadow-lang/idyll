@@ -180,7 +180,7 @@ impl Lower<'_> {
     fn make_byte_at(&mut self, symbol: &Symbol) {
         let (k, s, i, b) = (self.name("k"), self.name("s"), self.name("i"), self.name("b"));
         let then = Consumer::MuTilde(
-            Binder { name: b.clone(), rep: Rep::U8 },
+            Binder { name: b.clone(), rep: Rep::Word(idyllic_builtins::Width::U8) },
             Box::new(Statement::Prim("toInt".into(), vec![Producer::Var(b)], vec![Consumer::Var(k.clone())])),
         );
         let body = Statement::Prim("stringByteAt".into(), vec![Producer::Var(s.clone()), Producer::Var(i.clone())], vec![then]);
