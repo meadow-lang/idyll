@@ -49,29 +49,30 @@ cd examples/hello
 
 That is `Driver.mw`: a `cli!` (Lingua's command line) over a `make!`
 (Lingua's build), each package a unit. A package's `[dependencies]` by
-`path` are units it depends on; Std is in the program (`includeStr`), and a
-package that names it has it; so is the prelude, `compiler/idyllic/src/
-prelude.idl`, the Rust compiler's own. A unit's interface is its sources and
-those of every package it reaches, since this compiler checks a package's
-dependencies alongside it, so a package is compiled again only when its own
-sources or a dependency's changed, and a dependency that changed compiles
-what depends on it. The link lowers the root package to Cut, its `main` the
-entry, into `target/link/program.cut`, and `run` hands that to `meadow cut`.
+`path` are units it depends on, and so is Std, which this program holds
+(`includeStr`) and writes out under the root's `target/std`; the prelude is
+in the program too, `compiler/idyllic/src/prelude.idl`, the Rust compiler's
+own. The link puts the program together from the compiled packages
+(`Link.linked`), lowers it to Cut, its `main` the entry, into
+`target/link/program.cut`, and `run` hands that to `meadow cut`.
 
 Inside a package the unit of work is a *part*: the modules that import each
 other, in a circle or not, as `idyllic::parts` has them in the Rust
-compiler. `make!`'s `parts` (Lingua 67ed9c3) is told each module's imports
-(`partsOf`: a `use` of a module or a name qualified with one, with or
-without the package's name, and the root by the package's name alone);
-it takes the import graph's SCCs, compiles each with `compileScc` once the
-parts it imports are done, the parts that do not import each other at once,
-and each again only when its modules or what it imports changed; then
-`assembleUnit` makes the package's interface. What is kept of the parts is
-under the unit's directory, `target/units/<unit>/parts/`. A part's
-interface is, for now, its modules and those of the parts it imports, as
-sources: until the checker can import what checking a module made, each
-part is checked with the modules it imports, so a part costs what checking
-those together does.
+compiler (`Parts.mw` is that, for compiling a package's parts in one go).
+`make!`'s `parts` is told each module's imports (`partsOf`); it takes the
+import graph's SCCs, compiles each with `compileScc` once the parts it
+imports are done, the parts that do not import each other at once, and each
+again only when its modules or what it imports changed; `assembleUnit`
+makes the package's interface. A part is renamed against the names the
+parts it imports and the packages its package depends on give
+(`Rename.renamePackageWith`), checked against what they compiled to
+(`Check.checkedWith`), and compiles to an interface of its own
+(`Compiled.compiledOf`, an `Interface.Compiled`: `CompiledPackage` as Meadow
+data, `Reflect` so the build keeps it); a package's interface is its parts'
+made one (`Link.merged`), with every package it reaches. Each part names its
+things from a room of its own (for now, a hash of its first module's path,
+the clash `assembleUnit` reports; with Lingua's `partUnitPaths`, its place
+among the package's modules).
 
 `front_builds_and_runs_a_package_with_a_dependency` and
 `front_runs_every_example_itself` hold it to that.

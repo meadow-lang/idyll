@@ -14,6 +14,7 @@ use Idyll.Core (Core)
 use Idyll.Core as C
 use Idyll.Check (Checked)
 use Idyll.Interface
+use Idyll.Rename (PackageNames)
 use Idyll.Elaborated (ElaboratedProgram, newElaboratedBuilder, freezeElaborated, moduleRow)
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
@@ -98,4 +99,122 @@ use Std.Maybe.Maybe.*
     toplevel = V.append c.preludeTop (V.concatMap (\(p : Compiled) -> V.map (\l -> match l with | TopLet.TopLet u _ _ -> u) p.lets) packages),
     symbols,
     bodyType = if own.main then None else M.map snd body
+  }
+
+-- A package compiled a part at a time, as one package (`packages::merge`):
+-- what its dependents import and a program is linked from. Each part's
+-- code is moved to the slots after those of the parts before it (`parts`
+-- in an order where each comes after those it imports), its
+-- metavariables, numbered by its own checker, are solved away, and the
+-- body, the root's part's, is under every part's definitions.
+@pub fun merged (parts : [Compiled]) : Compiled =
+  let first = M.unwrapOr (emptyCompiled "") (V.head parts) in
+  let base = first.base in
+  let (offsets, total) = V.foldl (\acc (p : Compiled) -> match acc with | (os, n) -> (V.pushBack os n, n + V.len p.lets)) ([], base) parts in
+  let relocate =
+    \(p : Compiled) offset at placedAt core ->
+      let moved = \l -> if l < p.base then l else l - p.base + offset in
+      C.transform (zonk p core) 0 (\x d ->
+        match x with
+        | Core.Var i n -> if i >= d then Just (Core.Var (placedAt + d - 1 - moved (at - 1 - (i - d))) n) else None
+        | _ -> None)
+  in
+  let placed = V.zip parts offsets in
+  let lets =
+    V.concatMap
+      (\po ->
+        match po with
+        | ((p : Compiled), off) ->
+            V.map
+              (\kl -> match kl with | (k, TopLet.TopLet u name rhs) -> TopLet.TopLet u name (relocate p off (p.base + k) (off + k) rhs))
+              (V.zip (V.range 0 (V.len p.lets)) p.lets))
+      placed
+  in
+  let recDefs =
+    V.concatMap
+      (\po ->
+        match po with
+        | ((p : Compiled), off) ->
+            V.map
+              (\d ->
+                match d with
+                | RecDef.RecDef u name l core local ->
+                    let at = if l < p.base then l else l - p.base + off in
+                    RecDef.RecDef u name at (relocate p off l at core) local)
+              p.recDefs)
+      placed
+  in
+  let body =
+    V.foldl
+      (\acc po ->
+        match po with
+        | ((p : Compiled), off) ->
+            (match p.body with
+             | Just (Body.Body core ty) -> Just (Body.Body (relocate p off (p.base + V.len p.lets) total core) (zonk p ty))
+             | None -> acc))
+      None
+      placed
+  in
+  let fields = \(p : Compiled) -> V.map (\f -> match f with | Fields.Fields u fs -> Fields.Fields u (V.map (\x -> M.map (\c -> zonk p c) x) fs)) p.instanceFields in
+  let all = \f -> V.concatMap f parts in
+  Compiled {
+    name = first.name,
+    low = V.foldl (\acc (p : Compiled) -> if p.low < acc then p.low else acc) first.low parts,
+    high = V.foldl (\acc (p : Compiled) -> if p.high > acc then p.high else acc) first.high parts,
+    names = mergedNames (V.map (\(p : Compiled) -> p.names) parts),
+    constants = all (\(p : Compiled) -> p.constants),
+    ctors = all (\(p : Compiled) -> p.ctors),
+    datas = all (\(p : Compiled) -> p.datas),
+    positive = all (\(p : Compiled) -> p.positive),
+    seqs = all (\(p : Compiled) -> p.seqs),
+    effects = all (\(p : Compiled) -> p.effects),
+    ops = all (\(p : Compiled) -> p.ops),
+    natives = all (\(p : Compiled) -> p.natives),
+    base,
+    lets,
+    recDefs,
+    body,
+    main = V.any (\(p : Compiled) -> p.main) parts,
+    symbols = all (\(p : Compiled) -> p.symbols),
+    metaSolutions = [],
+    hints = all (\(p : Compiled) -> p.hints),
+    traits = all (\(p : Compiled) -> p.traits),
+    instanceFields = all fields
+  }
+
+-- What several parts' modules give, as one package's.
+@pub fun mergedNames (ns : [PackageNames]) : PackageNames =
+  V.foldl
+    (\acc n ->
+      match (acc, n) with
+      | (PackageNames.PackageNames a1 a2 a3 a4 a5 a6 a7 a8, PackageNames.PackageNames b1 b2 b3 b4 b5 b6 b7 b8) ->
+          PackageNames.PackageNames (V.append a1 b1) (V.append a2 b2) (V.append a3 b3) (V.append a4 b4) (V.append a5 b5) (V.append a6 b6) (V.append a7 b7) (V.append a8 b8))
+    (PackageNames.PackageNames [] [] [] [] [] [] [] [])
+    ns
+
+-- A package with nothing in it.
+@pub fun emptyCompiled (name : String) : Compiled =
+  Compiled {
+    name,
+    low = 0,
+    high = 0,
+    names = PackageNames.PackageNames [] [] [] [] [] [] [] [],
+    constants = [],
+    ctors = [],
+    datas = [],
+    positive = [],
+    seqs = [],
+    effects = [],
+    ops = [],
+    natives = [],
+    base = 0,
+    lets = [],
+    recDefs = [],
+    body = None,
+    main = False,
+    symbols = [],
+    metaSolutions = [],
+    hints = [],
+    traits = [],
+    instanceFields = []
   }

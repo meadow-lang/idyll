@@ -310,6 +310,20 @@ fun writeProgram (l : L s) (entry : Maybe Sym) (answer : Bool) (datas : [CData])
       | Ok text -> text
       | Err whys -> "(not lowered: " ++ S.join "; " whys ++ ")")
 
+-- A program put together from compiled packages alone: `root`, the one
+-- whose body is run, with `deps`, those it reaches, each after those it
+-- depends on; `context` is a module of nothing but the prelude, checked
+-- against them all, which gives the program its tables and the prelude's
+-- own definitions.
+@pub fun cutTextOfPackages (context : Renamed) (root : Compiled) (deps : [Compiled]) (package : String) : String ! { Mut | e } =
+  runSt (\() ->
+    let c = checkedWith context False (V.pushBack deps root) in
+    if not (V.isEmpty (getRef c.tc.errors)) then "(error)"
+    else
+      match lowerIn (linked c root deps) package with
+      | Ok text -> text
+      | Err whys -> "(not lowered: " ++ S.join "; " whys ++ ")")
+
 -- --- small things ----------------------------------------------------------------------
 
 fun vecOf (m : Maybe a) : [a] =

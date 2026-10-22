@@ -1,0 +1,125 @@
+-- A package's parts: `compiler/idyllic/src/parts.rs`. The modules that
+-- import each other, in a circle or not, are checked together, as one part:
+-- a strongly connected component of the graph of which module names which.
+-- A module names another by a `use` of it or a name qualified with it, with
+-- or without the package's name (`Std.Bool`), and the root by the package's
+-- name alone (`use App (shared)`). The parts come each after those it
+-- imports, the root's last, with every part that reaches it in it.
+--
+-- The build (`Driver`) gives `make!` the graph and lets it find the parts;
+-- `parts` here is for compiling a package's parts in one go, as the tests
+-- compare it with the Rust compiler's.
+
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+-- One part: its modules, by their index in the package; the earlier parts
+-- it imports, directly or not; and whether it holds the root.
+@pub data Part = Part [Int] [Int] Bool
+
+@pub fun partModules (p : Part) : [Int] = match p with | Part.Part ms _ _ -> ms
+@pub fun partImports (p : Part) : [Int] = match p with | Part.Part _ is _ -> is
+@pub fun partRoot (p : Part) : Bool = match p with | Part.Part _ _ r -> r
+
+fun isWordByte (b : Int) : Bool = (b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b == 95 or b == 39 or b == 46
+
+fun byteOf (s : String) (i : Int) : Int = if i >= 0 and i < stringByteLength s then toInt (stringByteAt s i) else 0 - 1
+
+-- Whether `text` names the module at `path`: `use Odd`, `use Odd (odd)`,
+-- `Odd.odd`, `use Odd.*`, and not `Oddity` or `-- Odd numbers`.
+@pub fun names (text : String) (path : String) : Bool = namesFrom text path 0 (\rest -> True)
+
+-- Whether `text` names the root, by the package's name alone: not as the
+-- start of another module's path, `App.Syntax`.
+@pub fun namesRoot (text : String) (package : String) (modules : [String]) : Bool =
+  namesFrom text package 0 (\rest ->
+    if S.startsWith "." rest then
+      let under = M.unwrapOr "" (V.head (S.split " " (S.drop rest 1))) in
+      not (V.any (\m -> S.startsWith m under and (S.byteLength under == S.byteLength m or byteOf under (S.byteLength m) == 46)) modules)
+    else True)
+
+-- An occurrence of `path` in `text` from byte `from` that is a word of its
+-- own, followed by a `.`, or after a `use`, and that `ok` takes, given what
+-- follows it.
+fun namesFrom (text : String) (path : String) (from : Int) (ok : String -> Bool) : Bool =
+  match S.indexOfFrom path text from with
+  | None -> False
+  | Just start ->
+      let stop = start + stringByteLength path in
+      let after = byteOf text stop in
+      let before = start == 0 or not (isWordByte (byteOf text (start - 1))) in
+      let follows = after == 0 - 1 or after == 46 or after == 32 or after == 10 or after == 13 or after == 40 or after == 9 in
+      let named = after == 46 or S.endsWith "use" (S.trimEnd (stringSlice text 0 start)) in
+      if before and follows and named and ok (stringSlice text stop (stringByteLength text)) then True
+      else namesFrom text path stop ok
+
+-- Which modules each module names, by index: `paths` the modules' paths
+-- (the root's empty), `texts` what they say.
+@pub fun imports (package : String) (paths : [String]) (texts : [String]) : [[Int]] =
+  let named = V.filter (\p -> p != "") paths in
+  V.map
+    (\i ->
+      let text = V.getOr "" texts i in
+      V.filter
+        (\j ->
+          let p = V.getOr "" paths j in
+          j != i and (if p == "" then namesRoot text package named else names text p or names text "${package}.${p}"))
+        (V.range 0 (V.len paths)))
+    (V.range 0 (V.len paths))
+
+-- The strongly connected components of a graph, each after those it
+-- reaches. (Repeated reachability, which is plenty for a package's
+-- modules.)
+fun components (edges : [[Int]]) : [[Int]] =
+  let n = V.len edges in
+  let reach = V.map (\v -> reachable edges [v]) (V.range 0 n) in
+  let sameAs = \v -> V.filter (\w -> V.elem w (V.getOr [] reach v) and V.elem v (V.getOr [] reach w)) (V.range 0 n) in
+  let comps = V.foldl (\acc v -> if V.any (\c -> V.elem v c) acc then acc else V.pushBack acc (sameAs v)) [] (V.range 0 n) in
+  ordered comps edges []
+
+-- Every node reachable from `from`, itself included.
+fun reachable (edges : [[Int]]) (from : [Int]) : [Int] =
+  let next = V.foldl (\acc v -> V.foldl (\a w -> if V.elem w a then a else V.pushBack a w) acc (V.getOr [] edges v)) from from in
+  if V.len next == V.len from then from else reachable edges next
+
+-- The components, each after every one it reaches.
+fun ordered (comps : [[Int]]) (edges : [[Int]]) (done : [[Int]]) : [[Int]] =
+  if V.isEmpty comps then done
+  else
+    let placed = V.concat done in
+    let ready = \c -> V.all (\v -> V.all (\w -> V.elem w c or V.elem w placed) (V.getOr [] edges v)) c in
+    match V.find ready comps with
+    | Just c -> ordered (V.filter (\d -> d != c) comps) edges (V.pushBack done (sortOn (\x -> x) c))
+    | None -> V.append done comps
+
+-- The parts of package `package`, whose modules are at `paths` (the root's
+-- empty) and say `texts`.
+@pub fun parts (package : String) (paths : [String]) (texts : [String]) : [Part] =
+  let edges = imports package paths texts in
+  let comps = components edges in
+  let root = M.unwrapOr 0 (V.find (\i -> V.getOr "" paths i == "") (V.range 0 (V.len paths))) in
+  -- the root's part takes in every part that reaches it
+  let reaches = \v -> V.elem root (reachable edges [v]) in
+  let rest = V.filter (\c -> not (V.any reaches c)) comps in
+  let rootPart = sortOn (\x -> x) (V.concat (V.filter (\c -> V.any reaches c) comps)) in
+  let all = if V.isEmpty rootPart then rest else V.pushBack rest rootPart in
+  let partOf = \m -> M.unwrapOr 0 (V.find (\k -> V.elem m (V.getOr [] all k)) (V.range 0 (V.len all))) in
+  V.foldl
+    (\acc k ->
+      let mods = V.getOr [] all k in
+      let direct = V.foldl (\ds m -> V.foldl (\d2 j -> let p = partOf j in if p == k or V.elem p d2 then d2 else V.pushBack d2 p) ds (V.getOr [] edges m)) [] mods in
+      let every = V.foldl (\es d -> V.foldl (\e2 x -> if V.elem x e2 then e2 else V.pushBack e2 x) (if V.elem d es then es else V.pushBack es d) (match V.get acc d with | Just p -> partImports p | None -> [])) [] direct in
+      V.pushBack acc (Part.Part mods (sortOn (\x -> x) every) (V.elem root mods)))
+    []
+    (V.range 0 (V.len all))
+
+use Std.Sort (sortOn)
+
+@test fun modulesThatImportEachOtherAreOnePart () =
+  let ps = parts "Main" ["", "Even", "Odd", "Util"] ["use Even (even)\n", "use Odd (odd)\nuse Util\n", "use Even (even)\n", "x = 1\n"] in
+  let a = assertEq (V.map partModules ps) [[3], [1, 2], [0]] "the parts" in
+  assertEq (V.map partImports ps) [[], [0], [0, 1]] "what each imports"
+
+use Std.Test (assertEq)

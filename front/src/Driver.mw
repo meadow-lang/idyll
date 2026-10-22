@@ -4,12 +4,16 @@
 -- The command line is a `cli!`, and the build a `make!` over packages: a
 -- package is a unit, a directory with an `Idyll.toml` naming its
 -- `[dependencies]` (`Util = { path = "../util" }`) and a `src/` of modules.
--- A unit's interface is what its dependents need of it: here, since this
--- compiler checks a package's dependencies alongside it, their sources --
--- its own and every package it reaches, in dependency order. Std is not a
--- unit: it is in this program (`includeStr`), and a package that names it
--- has it. The link lowers the root package to Cut, its `main` the entry,
--- into `target/link/program.cut`, which `run` hands to `meadow cut`.
+-- Inside a package the unit of work is a part, the modules that import each
+-- other (see `partsOf`). A part is checked against the compiled packages
+-- its package depends on and the compiled parts it imports, never their
+-- sources, and compiles to an interface (`Compiled`) of its own; a
+-- package's interface is its parts' made one (`Link.merged`), with those of
+-- every package it reaches. Std is a unit like any other, written out from
+-- this program (`includeStr`) under the root's `target/std`, which every
+-- package depends on. The link puts the program together from the compiled
+-- packages (`Link.linked`) and lowers it to Cut, its `main` the entry, into
+-- `target/link/program.cut`, which `run` hands to `meadow cut`.
 
 use Lingua (cli!, make!)
 use Lingua.Make (Given, Linking, Part, unitDir, unitSources, unitImports, linkRoot, linkUnits, linkOut, linkDir)
@@ -17,17 +21,22 @@ use Lingua.Make (partDir, partSources, partImports, partUnitImports)
 use Lingua.Diagnostic (renderAll)
 use Idyll.Surface (SurfaceProgram)
 use Idyll.Surface as Surface
-use Idyll.Rename (renamePackage)
+use Idyll.Rename (renamePackageWith, PackageNames, Exported, namesExports)
+use Idyll.Hir (Visibility)
 use Idyll.Scc (sccModule)
-use Idyll.Check (checked)
+use Idyll.Check (checkedAgainst)
+use Idyll.Compiled (compiledOf)
+use Idyll.Interface (Compiled)
+use Idyll.Link (merged, mergedNames)
 use Idyll.Lower as Lo
 use Std.Macro (Reflect, Datum, toDatum, fromDatum)
 use Std.Collections.Vector as V
 use Std.String as S
 use Std.Maybe as M
 use Std.Path as Path
-use Std.Fs (writeString, readDir, isDir, exists, readToStringOr)
+use Std.Fs (writeString, readDir, isDir, exists, readToStringOr, createDirAll)
 use Std.Process (runInherit)
+use Std.Sort (sortOn)
 use Std.Maybe.Maybe.*
 use Std.Result.Result.*
 
@@ -58,47 +67,44 @@ make! {
     | link = linkProgram
 }
 
--- What a package gives those that depend on it: its sources and those of
--- every package it reaches, each package its name (`Util@0.1.0`) and its
--- modules, a path (`Collections.List`, the root's empty) and the text;
--- dependencies first.
+-- A package compiled, or one part of one: its name (a package's as its
+-- dependents' `use`s write it, a part's made from its modules' paths), what
+-- its modules give, and what it compiled to.
 @derive(Reflect)
-data Module = Module String String
+data Built = Built String PackageNames Compiled
 
+-- What a package gives those that depend on it: every package it reaches,
+-- each after those it depends on, itself last; and its own parts, in an
+-- order where each comes after those it imports, for the link.
 @derive(Reflect)
-data Package = Package String [Module]
+data Interface = Interface [Built] [Built]
 
+-- What a part gives the parts that import it: itself last, after every part
+-- of its package it imports, directly or not.
 @derive(Reflect)
-data Interface = Interface [Package]
+data PartOut = PartOut [Built]
 
--- What a part gives the parts that import it: its modules and those of
--- every part it imports, each a path and its text. (Sources, for now: the
--- checker cannot yet import what checking a module made, so each part is
--- checked with the modules it imports.)
-@derive(Reflect)
-data PartModules = PartModules [Module]
+fun builtName (b : Built) : String = match b with | Built.Built n _ _ -> n
+fun builtNames (b : Built) : PackageNames = match b with | Built.Built _ ns _ -> ns
+fun builtCompiled (b : Built) : Compiled = match b with | Built.Built _ _ c -> c
 
-fun modulesOf (p : PartModules) : [(String, String)] =
-  match p with
-  | PartModules.PartModules ms -> V.map (\m -> match m with | Module.Module a b -> (a, b)) ms
+fun packagesOf (i : Interface) : [Built] = match i with | Interface.Interface ps _ -> ps
+fun partsBuilt (i : Interface) : [Built] = match i with | Interface.Interface _ ps -> ps
+fun partClosure (p : PartOut) : [Built] = match p with | PartOut.PartOut bs -> bs
 
-fun packagesOf (i : Interface) : [(String, [(String, String)])] =
-  match i with
-  | Interface.Interface ps ->
-      V.map (\p -> match p with | Package.Package n ms -> (n, V.map (\m -> match m with | Module.Module a b -> (a, b)) ms)) ps
-
-fun interfaceOf (ps : [(String, [(String, String)])]) : Interface =
-  Interface.Interface (V.map (\p -> Package.Package (fst p) (V.map (\m -> Module.Module (fst m) (snd m)) (snd p))) ps)
+-- `more` after `done`, but for what `done` has already, by name.
+fun union (done : [Built]) (more : [Built]) : [Built] =
+  V.foldl (\acc b -> if V.any (\d -> builtName d == builtName b) acc then acc else V.pushBack acc b) done more
 
 -- --- the command line ---------------------------------------------------------
 
 @pub fun drive () =
   match argsTool () with
-  | Tool.Build r -> (let ok = buildUnits (here r.path) in if ok then writeOutput "${cutOf (here r.path)}\n" else exit 1)
-  | Tool.Check r -> if buildUnits (here r.path) then () else exit 1
+  | Tool.Build r -> (let ok = built (here r.path) in if ok then writeOutput "${cutOf (here r.path)}\n" else exit 1)
+  | Tool.Check r -> if built (here r.path) then () else exit 1
   | Tool.Run r ->
       let root = here r.path in
-      if not (buildUnits root) then exit 1
+      if not (built root) then exit 1
       else
         let args = if r.release then ["cut", "--runtime", "silo", cutOf root] else ["cut", cutOf root] in
         (match runInherit "meadow" args with
@@ -110,8 +116,34 @@ fun interfaceOf (ps : [(String, [(String, String)])]) : Interface =
 
 fun here (path : Maybe String) : String = M.unwrapOr "." path
 
+-- Build the package at `root`, Std written out for it first.
+fun built (root : String) : Bool ! { Fs | e } =
+  let w = writtenStd root in
+  buildUnits root
+
 -- Where the link put a package's Cut.
 fun cutOf (root : String) : String = Path.join (linkDir root) "program.cut"
+
+-- Where Std is written out for a build of the package at `root`.
+fun stdDir (root : String) : String = Path.join (Path.join root "target") "std"
+
+-- Std, as a package: its manifest and its modules, as this program holds
+-- them, under `stdDir root`.
+fun writtenStd (root : String) : () ! { Fs | e } =
+  let dir = stdDir root in
+  let made = createDirAll (Path.join dir "src") in
+  let w = writeString (Path.join dir "Idyll.toml", "[package]\nname = \"Std\"\n") in
+  V.foldl
+    (\acc m ->
+      match m with
+      | (path, text) ->
+          let file = if path == "" then "Lib.idl" else S.join "/" (S.split "." path) ++ ".idl" in
+          let full = Path.join (Path.join dir "src") file in
+          let made = createDirAll (M.unwrapOr dir (Path.parent full)) in
+          let w2 = writeString (full, text) in
+          ())
+    ()
+    stdModules
 
 -- --- what the build is told -----------------------------------------------------
 
@@ -133,17 +165,20 @@ fun idlFiles (dir : String) (prefix : [String]) : [String] ! { Fs | e } =
           else [])
         names
 
--- The packages a package depends on: the `path`s of its `[dependencies]`.
+-- The packages a package depends on: the `path`s of its `[dependencies]`,
+-- and Std, which every package but Std has.
 fun dependenciesOf (root : String) (dir : String) (manifest : String) : Result String [String] =
   let lines = S.lines manifest in
   let section = V.foldl (\acc l -> match acc with | (inDeps, found) -> (let t = S.trim l in if S.startsWith "[" t then (t == "[dependencies]", found) else if inDeps and S.contains "path" t then (inDeps, V.pushBack found t) else acc)) (False, []) lines in
-  Ok
-    (V.concatMap
+  let paths =
+    V.concatMap
       (\t ->
         match V.get (S.split "\"" (S.drop t (M.unwrapOr 0 (S.indexOf "path" t)))) 1 with
         | Just p -> [Path.join dir p]
         | None -> [])
-      (snd section))
+      (snd section)
+  in
+  Ok (if manifestField "name" manifest == Just "Std" then paths else V.pushBack paths (stdDir root))
 
 -- --- a package's parts ------------------------------------------------------------
 
@@ -219,35 +254,108 @@ fun namesFrom (text : String) (path : String) (from : Int) (ok : String -> Bool)
       if before and follows and named and ok (stringSlice text stop (stringByteLength text)) then True
       else namesFrom text path stop ok
 
--- Check a part: its modules, with those of the parts it imports and the
--- packages its package depends on. Its interface: its modules and theirs.
-fun compileScc (x : Part Interface PartModules) : Result String PartModules ! { Mut, Fs | e } =
+-- How many uniques each module of a package has room for: a part names its
+-- things from the slot of its first module (by path), so that parts
+-- compiled at once never share one.
+def slot = 4096
+
+-- Where a package names its things from: past every package it is
+-- checked against, on a boundary, so that a dependency growing within its
+-- room moves nothing after it.
+fun baseAfter (deps : [Built]) : Int =
+  let high = V.foldl (\acc b -> let c = builtCompiled b in if c.high > acc then c.high else acc) 0 deps in
+  let chunk = 1048576 in
+  ((high + chunk - 1) / chunk) * chunk
+
+-- Which room of a package a part whose first module is at `path` names its
+-- things in: a hash of the path, among a million rooms, so that two parts
+-- share one only by a rare chance, which `assembleUnit` reports.
+fun roomOf (path : String) : Int =
+  V.foldl (\h i -> (h * 31 + toInt (stringByteAt path i)) % 1048573) 7 (V.range 0 (stringByteLength path))
+
+-- Whether names given say how visible anything is.
+fun visibleIn (names : PackageNames) : Bool =
+  V.any (\e -> match e with | Exported.Exported _ _ _ vis -> vis != Visibility.Private) (namesExports names)
+
+-- A package's name as its dependents' `use`s write it: without its version.
+fun plainName (name : String) : String = V.getOr name (S.split "@" name) 0
+
+-- Check a part: its modules, against the compiled packages its package
+-- depends on and the compiled parts it imports. Its interface: what it
+-- compiled to, after those parts.
+fun compileScc (x : Part Interface PartOut) : Result String PartOut ! { Mut, Fs | e } =
   let dir = partDir x in
   let name = nameOfManifest dir (readToStringOr "" (Path.join dir "Idyll.toml")) in
-  let ownFiles = V.filter (\s -> S.endsWith ".idl" (fst s)) (partSources x) in
-  let own = V.map (\s -> (S.join "." (modulePath dir (fst s)), snd s)) ownFiles in
-  let imported = V.concatMap (\ip -> modulesOf (snd ip)) (partImports x) in
-  let all = V.foldl (\acc m -> if V.any (\n -> fst n == fst m) acc then acc else V.pushBack acc m) own imported in
-  if V.isEmpty own then Ok (PartModules.PartModules [])
+  let own = V.map (\s -> (S.join "." (modulePath dir (fst s)), snd s)) (V.filter (\s -> S.endsWith ".idl" (fst s)) (partSources x)) in
+  if V.isEmpty own then Ok (PartOut.PartOut [])
   else
-    let deps = V.foldl (\acc i -> V.foldl (\a p -> if V.any (\q -> fst q == fst p) a then a else V.pushBack a p) acc (packagesOf (snd i))) [] (partUnitImports x) in
-    match renamedWith name (rootFirst all) deps with
-    | Err why -> Err why
-    | Ok m ->
-        let c = checked (sccModule m) in
-        let errors = getRef c.tc.errors in
-        if V.isEmpty errors then Ok (PartModules.PartModules (V.map (\m2 -> Module.Module (fst m2) (snd m2)) all))
-        else Err ("${name} does not check: ${S.join ", " errors}")
+    -- the packages: every one reached, and those depended on directly by name
+    let packages = V.foldl (\acc i -> union acc (packagesOf (snd i))) [] (partUnitImports x) in
+    let direct = V.concatMap (\i -> match V.last (packagesOf (snd i)) with | Just b -> [(builtName b, builtNames b)] | None -> []) (partUnitImports x) in
+    let siblings = V.foldl (\acc p -> union acc (partClosure (snd p))) [] (partImports x) in
+    -- where it names its things: the room its first module's path hashes
+    -- to (a part may not list the package's other sources, to count them)
+    let lead = M.unwrapOr "" (V.head (sortOn (\p -> p) (V.map fst own))) in
+    let first = baseAfter packages + slot * roomOf lead in
+    let root = V.any (\m -> fst m == "") own in
+    -- whether the package says how visible things are: as far as this part
+    -- and the parts it imports show
+    let visibility = V.any (\m -> S.contains "@pub" (snd m)) own or V.any (\b -> visibleIn (builtNames b)) siblings in
+    match (Surface.parsed prelude, parsedModules (rootFirst own)) with
+    | (Err _, _) -> Err "the prelude does not parse"
+    | (_, Err why) -> Err why
+    | (Ok pre, Ok modules) ->
+        (match renamePackageWith name modules pre direct (V.map builtNames siblings) first root visibility with
+         | (m, names, problems) ->
+             if not (V.isEmpty problems) then Err (S.join "\n" problems)
+             else
+               let grouped = sccModule m in
+               let c = checkedAgainst grouped root (V.append (V.map builtCompiled packages) (V.map builtCompiled siblings)) in
+               let errors = getRef c.tc.errors in
+               if not (V.isEmpty errors) then Err ("${name} (${S.join ", " (V.map fst own)}) does not check: ${S.join ", " errors}")
+               else
+                 let compiled = compiledOf c grouped names in
+                 if compiled.high > first + slot then Err "${name}: a part has more names than its room, ${show slot}"
+                 else Ok (PartOut.PartOut (V.pushBack siblings (Built.Built (S.join "+" (V.map fst own)) names compiled))))
 
--- A package, once its parts are compiled: its sources and those of every
--- package it reaches, as a unit's interface is.
-fun assembleUnit (u : Given Interface) (parts : [PartModules]) : Result String Interface =
+-- A package, once its parts are compiled: its parts made one, after every
+-- package it reaches.
+fun assembleUnit (u : Given Interface) (parts : [PartOut]) : Result String Interface =
   let dir = unitDir u in
-  let sources = unitSources u in
-  let name = nameOf dir sources in
-  let own = rootFirst (V.concatMap (\s -> if S.endsWith ".idl" (fst s) then [(S.join "." (modulePath dir (fst s)), snd s)] else []) sources) in
-  let deps = V.foldl (\acc i -> V.foldl (\a p -> if V.any (\q -> fst q == fst p) a then a else V.pushBack a p) acc (packagesOf (snd i))) [] (unitImports u) in
-  Ok (interfaceOf (V.pushBack deps (name, own)))
+  let name = nameOf dir (unitSources u) in
+  let packages = V.foldl (\acc i -> union acc (packagesOf (snd i))) [] (unitImports u) in
+  let own = V.concatMap (\p -> match V.last (partClosure p) with | Just b -> [b] | None -> []) parts in
+  let ranges = sortOn (\r -> fst r) (V.map (\b -> let c = builtCompiled b in (c.low, c.high)) own) in
+  let clash = V.any (\i -> snd (V.getOr (0, 0) ranges i) > fst (V.getOr (0, 0) ranges (i + 1))) (V.range 0 (V.len ranges - 1)) in
+  if clash then Err "${name}: two parts' modules hash to one room of names; rename one of the modules"
+  else
+    let whole = merged (V.map builtCompiled own) in
+    Ok (Interface.Interface (V.pushBack packages (Built.Built (plainName name) (mergedNames (V.map builtNames own)) whole)) own)
+
+-- Put the program together: the root package and every package it reaches,
+-- linked, and lowered to Cut, its `main` the entry.
+fun linkProgram (l : Linking Interface) : Result String () ! { Mut, Fs | e } =
+  let root = linkRoot l in
+  match V.find (\u -> match u with | (d, _, _) -> d == root) (linkUnits l) with
+  | None -> Err "the root package was not built"
+  | Just (_, i, _) ->
+      let packages = packagesOf i in
+      (match V.last packages with
+       | None -> Err "the root package has no modules"
+       | Just own ->
+           let deps = V.take packages (V.len packages - 1) in
+           let compiled = builtCompiled own in
+           -- the program's context: the prelude, checked against them all
+           (match Surface.parsed prelude with
+            | Err _ -> Err "the prelude does not parse"
+            | Ok pre ->
+                let (empty, _, _) = renamePackageWith compiled.name [] pre [] [] compiled.high True False in
+                let text = Lo.cutTextOfPackages (sccModule empty) compiled (V.map builtCompiled deps) "Main" in
+                if S.startsWith "(" text then Err "${compiled.name} is not lowered: ${text}"
+                else
+                  match writeString (Path.join (linkOut l) "program.cut", text) with
+                  | Ok _ -> Ok ()
+                  | Err why -> Err why))
 
 -- --- compiling a package ---------------------------------------------------------
 
@@ -295,64 +403,6 @@ fun parsedModules (modules : [(String, String)]) : Result String [([String], Sur
            | (Err e, Err ds) -> Err (e ++ renderAll p text ds)))
     (Ok [])
     modules
-
--- The packages a package is checked with: those it depends on, and Std if
--- any of it names Std.
-fun withStd (packages : [(String, [(String, String)])]) : [(String, [(String, String)])] =
-  let named = V.any (\p -> V.any (\m -> S.contains "Std" (snd m)) (snd p)) packages in
-  if named then V.append [("Std", stdModules)] packages else packages
-
--- A package renamed with what it depends on: the module, or what is wrong.
-fun renamedWith (name : String) (own : [(String, String)]) (deps : [(String, [(String, String)])]) =
-  match (Surface.parsed prelude, parsedModules own) with
-  | (Err _, _) -> Err "the prelude does not parse"
-  | (_, Err why) -> Err why
-  | (Ok pre, Ok modules) ->
-      let parsedDeps = V.foldl (\acc d -> match (acc, parsedModules (snd d)) with | (Ok ds, Ok ms) -> Ok (V.pushBack ds (fst d, ms)) | (Err e, _) -> Err e | (_, Err e) -> Err e) (Ok []) (withStd (V.pushBack deps (name, own))) in
-      (match parsedDeps with
-       | Err why -> Err why
-       | Ok all ->
-           -- (a package is used by its name, its version only in its symbols)
-           let others = V.map (\d -> (V.getOr "" (S.split "@" (fst d)) 0, snd d)) (V.take all (V.len all - 1)) in
-           (match renamePackage name modules pre others with
-            | (m, problems) -> if V.isEmpty problems then Ok m else Err (S.join "\n" problems)))
-
--- Compile a package: its modules checked with those of the packages it
--- depends on; its interface, their sources and its own.
-fun compileUnit (u : Given Interface) : Result String Interface ! { Mut, Fs | e } =
-  let dir = unitDir u in
-  let sources = unitSources u in
-  let name = nameOf dir sources in
-  let own = rootFirst (V.concatMap (\s -> if S.endsWith ".idl" (fst s) then [(S.join "." (modulePath dir (fst s)), snd s)] else []) sources) in
-  let deps = V.foldl (\acc i -> V.foldl (\a p -> if V.any (\q -> fst q == fst p) a then a else V.pushBack a p) acc (packagesOf (snd i))) [] (unitImports u) in
-  match renamedWith name own deps with
-  | Err why -> Err why
-  | Ok m ->
-      let c = checked (sccModule m) in
-      let errors = getRef c.tc.errors in
-      if V.isEmpty errors then Ok (interfaceOf (V.pushBack deps (name, own)))
-      else Err ("${name} does not check: ${S.join ", " errors}")
-
--- Put the program together: the root package lowered to Cut, its `main` the
--- entry.
-fun linkProgram (l : Linking Interface) : Result String () ! { Mut, Fs | e } =
-  let root = linkRoot l in
-  match V.find (\u -> match u with | (d, _, _) -> d == root) (linkUnits l) with
-  | None -> Err "the root package was not built"
-  | Just (_, i, _) ->
-      let packages = packagesOf i in
-      (match V.last packages with
-       | None -> Err "the root package has no modules"
-       | Just (name, own) ->
-           (match renamedWith name own (V.take packages (V.len packages - 1)) with
-            | Err why -> Err why
-            | Ok m ->
-                let text = Lo.cutTextAt (sccModule m) "Main" True in
-                if S.startsWith "(" text then Err "${name} is not lowered: ${text}"
-                else
-                  match writeString (Path.join (linkOut l) "program.cut", text) with
-                  | Ok _ -> Ok ()
-                  | Err why -> Err why))
 
 -- --- what this program holds ------------------------------------------------------
 

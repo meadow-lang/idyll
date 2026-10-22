@@ -1128,12 +1128,18 @@ do yet `(unsupported)`, and the tests count those apart.
   it as the Rust driver runs it. Since 2026-10-21 a package is built a part
   at a time on Lingua's `make!` parts (Lingua 67ed9c3, Cut 8af8329): the
   module SCCs, the parts that do not import each other at once, each again
-  only when it must. Left: git dependencies and the lockfile (Lingua is
-  to have them as `Lingua.Resolve`, once Chris says so), profiles and
-  options as `make!` has them, error messages drawn where they are (the
-  checker's errors are kinds only), and real interfaces (types, not
-  sources) for packages and parts, once the checker can import a compiled
-  package.
+  only when it must. Since 2026-10-22 packages and parts are compiled
+  apart, as the Rust compiler compiles them: renamed against the names
+  what they depend on gives, checked against what it compiled to, and
+  compiled to an interface (`Compiled`, `Reflect`), the program linked from
+  them (`Link`); Std is a unit of its own. front/'s compiled Std, whole and
+  part by part, agrees with Rust's line for line, and the corpus types,
+  lowers and runs alike against it. Left: git dependencies and the lockfile
+  (Lingua is to have them as `Lingua.Resolve`, once Chris says so),
+  profiles and options as `make!` has them, error messages drawn where
+  they are (the checker's errors are kinds only), and each part's room of
+  uniques from its place (Lingua's `partUnitPaths`, coming) rather than a
+  hash.
 - [ ] front/'s own REPL, once Cut moves its Lingua pin (Lingua 833e1a5, for
   LineEditor 0.2.2).
 - [ ] CI, with MeadowBoot's prerelease for the `meadow` it needs.

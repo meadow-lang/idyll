@@ -146,6 +146,33 @@ fn the_compiled_packages_agree() {
     assert!(ours == theirs, "the compiled Std package differs: {}", first_difference(&ours, &theirs));
 }
 
+/// Std compiled a part at a time, each part against the parts it imports,
+/// and the parts made one: front/'s `parted` and the Rust compiler's Std,
+/// which is compiled so, say the same of it.
+#[test]
+fn the_compiled_parts_agree() {
+    let Ok(exe) = front() else {
+        eprintln!("no front/ to compile the Std package with");
+        return;
+    };
+    let source = idyllic::pipeline::PRELUDE;
+    let dir = std::env::temp_dir().join(format!("idyll-front-parted-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a directory");
+    std::fs::write(dir.join("_prelude.txt"), source).expect("the prelude can be written");
+    let out = std::process::Command::new(&exe)
+        .args(["parted", "--prelude", "_prelude.txt", "Std"])
+        .arg(repo().join("lib/Std/src"))
+        .current_dir(&dir)
+        .output()
+        .expect("front/ runs");
+    let _ = std::fs::remove_dir_all(&dir);
+    let text = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
+    let theirs = renumbered_by(text.strip_prefix("== Std\n").unwrap_or(&text).trim_end(), '?');
+    let ours = renumbered_by(&compiled_dump(&idyllic::stdlib::compiled()), '?');
+    eprintln!("parted: {} lines", ours.lines().count());
+    assert!(ours == theirs, "the Std package compiled in parts differs: {}", first_difference(&ours, &theirs));
+}
+
 #[test]
 fn the_std_package_agrees() {
     let Ok(exe) = front() else {
@@ -303,21 +330,22 @@ fn front_builds_and_runs_a_package_with_a_dependency() {
     std::fs::write(util.join("src/Lib.idl"), "@pub\nanswer : Int\nanswer = 42\n").unwrap();
     std::fs::write(app.join("Idyll.toml"), "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n[dependencies]\nUtil = { path = \"../util\" }\n").unwrap();
     std::fs::write(app.join("src/Main.idl"), "use Util (answer)\n\nmain : () -> () ! Eff\nmain () = putStrLn \"the answer is ${answer}\"\n").unwrap();
-    // built, both, and run
+    // built, both and Std (a unit of its own, written out under the root's
+    // target/), and run
     let (said, ok) = front_tool(&exe, &app, &["run"]);
     assert!(ok, "{said}");
-    assert!(said.contains("idyll: 2 compiled, 0 up to date") && said.contains("the answer is 42\n"), "{said}");
+    assert!(said.contains("idyll: 3 compiled, 0 up to date") && said.contains("the answer is 42\n"), "{said}");
     // nothing changed: nothing compiled, and the program is what it was
     let (said, ok) = front_tool(&exe, &app, &["run"]);
-    assert!(ok && said.contains("idyll: 0 compiled, 2 up to date") && said.contains("Fresh link") && said.contains("the answer is 42\n"), "{said}");
+    assert!(ok && said.contains("idyll: 0 compiled, 3 up to date") && said.contains("Fresh link") && said.contains("the answer is 42\n"), "{said}");
     // the dependency changed: both compiled again
     std::fs::write(util.join("src/Lib.idl"), "@pub\nanswer : Int\nanswer = 6 * 7 + 1\n").unwrap();
     let (said, ok) = front_tool(&exe, &app, &["run"]);
-    assert!(ok && said.contains("idyll: 2 compiled, 0 up to date") && said.contains("the answer is 43\n"), "{said}");
+    assert!(ok && said.contains("idyll: 2 compiled, 1 up to date") && said.contains("the answer is 43\n"), "{said}");
     // the package alone changed: only it
     std::fs::write(app.join("src/Main.idl"), "use Util (answer)\n\nmain : () -> () ! Eff\nmain () = putStrLn \"now ${answer}\"\n").unwrap();
     let (said, ok) = front_tool(&exe, &app, &["run"]);
-    assert!(ok && said.contains("idyll: 1 compiled, 1 up to date") && said.contains("now 43\n"), "{said}");
+    assert!(ok && said.contains("idyll: 1 compiled, 2 up to date") && said.contains("now 43\n"), "{said}");
     // and a package that does not check says so, and runs nothing
     std::fs::write(app.join("src/Main.idl"), "main : () -> () ! Eff\nmain () = putStrLn 5\n").unwrap();
     let (said, ok) = front_tool(&exe, &app, &["run"]);
