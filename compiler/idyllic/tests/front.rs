@@ -79,6 +79,73 @@ fn the_types_agree() {
 
 /// The standard library, checked as the package it is, by both: each of
 /// its declarations' types, and its errors (none).
+/// A compiled package as front/'s `compiled` writes one: a line for each
+/// constant (its type, whether the types may see its value, how many
+/// arguments it unfolds after), each top-level `let`, each recursive
+/// definition, each hint and each trait, sorted.
+fn compiled_dump(p: &idyllic_typecheck::packages::CompiledPackage) -> String {
+    idyllic_typecheck::core::print_linear(false);
+    let name_of = |u: usize| p.constants.iter().find(|c| c.unique == u).map_or("?".to_string(), |c| c.name.clone());
+    let mut lines: Vec<String> = Vec::new();
+    for c in &p.constants {
+        let value = if c.value.is_some() { " = .." } else { "" };
+        let unfold = c.unfold.as_ref().map(|(arity, _)| format!(" unfold {arity}")).unwrap_or_default();
+        lines.push(format!("constant {} : {}{value}{unfold}", c.name, c.ty));
+    }
+    lines.extend(p.lets.iter().map(|(_, name, _)| format!("let {name}")));
+    lines.extend(p.rec_defs.iter().map(|d| if d.local { format!("rec {} local", d.name) } else { format!("rec {}", d.name) }));
+    lines.extend(p.hints.iter().map(|&u| format!("hint {}", name_of(u))));
+    lines.extend(p.traits.iter().map(|&u| format!("trait {}", name_of(u))));
+    lines.sort();
+    lines.join("\n")
+}
+
+/// Std compiled whole, as a package its dependents are checked against:
+/// front/'s `Compiled` and the Rust compiler's `CompiledPackage` say the
+/// same of it.
+#[test]
+fn the_compiled_packages_agree() {
+    let Ok(exe) = front() else {
+        eprintln!("no front/ to compile the Std package with");
+        return;
+    };
+    let source = idyllic::pipeline::PRELUDE;
+    let prelude = program(source).expect("the prelude parses");
+    let dir = std::env::temp_dir().join(format!("idyll-front-compiled-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a directory");
+    std::fs::write(dir.join("_prelude.txt"), source).expect("the prelude can be written");
+    let out = std::process::Command::new(&exe)
+        .args(["compiled", "--prelude", "_prelude.txt", "Std"])
+        .arg(repo().join("lib/Std/src"))
+        .current_dir(&dir)
+        .output()
+        .expect("front/ runs");
+    let _ = std::fs::remove_dir_all(&dir);
+    let text = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
+    let theirs = text.strip_prefix("== Std\n").unwrap_or(&text).trim_end().to_string();
+    let programs: Vec<(Vec<String>, idyllic_ast::Program)> = idyllic::stdlib::MODULES
+        .iter()
+        .map(|(path, text)| {
+            let path = if path.is_empty() { Vec::new() } else { path.split('.').map(String::from).collect() };
+            (path, program(text).expect("a Std module parses"))
+        })
+        .collect();
+    let modules: Vec<idyllic_rename::ModuleSource<'_>> =
+        programs.iter().map(|(path, program)| idyllic_rename::ModuleSource { path: path.clone(), program }).collect();
+    let result = idyllic_rename::rename_package("Std", &modules, &prelude, &[], idyllic_builtins::FIRST_USER_UNIQUE, false);
+    let module = idyllic_scc::scc_module(result.module);
+    let checked = idyllic_typecheck::check_module(&module, result.spans.len(), false, &[]);
+    let compiled = checked.compiled.expect("Std compiles");
+    let ours = renumbered_by(&compiled_dump(&compiled), '?');
+    let theirs = renumbered_by(&theirs, '?');
+    eprintln!("compiled: {} lines", ours.lines().count());
+    if let Ok(dir) = std::env::var("IDYLL_DUMP") {
+        let _ = std::fs::write(format!("{dir}/compiled-here.txt"), &ours);
+        let _ = std::fs::write(format!("{dir}/compiled-front.txt"), &theirs);
+    }
+    assert!(ours == theirs, "the compiled Std package differs: {}", first_difference(&ours, &theirs));
+}
+
 #[test]
 fn the_std_package_agrees() {
     let Ok(exe) = front() else {

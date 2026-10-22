@@ -13,14 +13,15 @@
 -- This is the concrete algebra. Grades in a program are terms, normalised
 -- to polynomials with these as coefficients (`Value`).
 
+use Std.Macro (Reflect)
 use Std.Maybe.Maybe.*
 
 -- A natural number or infinity. Every count is below `Inf`.
-@derive(PartialEq)
+@derive(PartialEq, Reflect)
 @pub data Ext = Fin Int | Inf
 
 -- An interval of use counts, `lo..hi` with `lo <= hi`.
-@derive(PartialEq)
+@derive(PartialEq, Reflect)
 @pub data Grade = Grade Ext Ext
 
 def maxCount = 9223372036854775807

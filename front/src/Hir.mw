@@ -10,12 +10,13 @@
 --
 -- And how the dumps write a literal and a name, as the Rust side does.
 
+use Std.Macro (Reflect, Datum)
 use Std.Collections.Vector as V
 use Std.String as S
 use Std.Maybe.Maybe.*
 
 -- Whether an argument is written, or left for the checker to work out.
-@derive(PartialEq)
+@derive(PartialEq, Reflect)
 -- `Auto`: `{auto d : t}`, or `t => ..`, found by search
 @pub data Icit = Explicit | Implicit | Auto
 
@@ -27,9 +28,39 @@ use Std.Maybe.Maybe.*
 -- the type wanted (see `Literals`).
 @pub data Literal = Unit | Int Int | Bool Bool | Str String | Char Char | Float Float | Float32 Float32 | Word String Int
 
+-- Kept as Meadow's `@derive(Reflect)` would keep it, but for a `Char`,
+-- kept as its code point, and a `Float32`, as a `Float`: Meadow's
+-- `Reflect` has neither.
+impl Reflect Literal {
+  fun toDatum l =
+    match l with
+    | Literal.Unit -> Datum.Tag "Unit" []
+    | Literal.Int n -> Datum.Tag "Int" [Datum.Int n]
+    | Literal.Bool b -> Datum.Tag "Bool" [Datum.Bool b]
+    | Literal.Str s -> Datum.Tag "Str" [Datum.Str s]
+    | Literal.Char c -> Datum.Tag "Char" [Datum.Int (charCode c)]
+    | Literal.Float x -> Datum.Tag "Float" [Datum.Float x]
+    | Literal.Float32 x -> Datum.Tag "Float32" [Datum.Float (toFloat64 x)]
+    | Literal.Word w n -> Datum.Tag "Word" [Datum.Str w, Datum.Int n]
+  fun fromDatum d =
+    match d with
+    | Datum.Tag tag args ->
+        (match (tag, V.get args 0, V.get args 1) with
+         | ("Unit", _, _) -> Ok Literal.Unit
+         | ("Int", Just (Datum.Int n), _) -> Ok (Literal.Int n)
+         | ("Bool", Just (Datum.Bool b), _) -> Ok (Literal.Bool b)
+         | ("Str", Just (Datum.Str s), _) -> Ok (Literal.Str s)
+         | ("Char", Just (Datum.Int c), _) -> Ok (Literal.Char (charFromCode c))
+         | ("Float", Just (Datum.Float x), _) -> Ok (Literal.Float x)
+         | ("Float32", Just (Datum.Float x), _) -> Ok (Literal.Float32 (toFloat32 x))
+         | ("Word", Just (Datum.Str w), Just (Datum.Int n)) -> Ok (Literal.Word w n)
+         | _ -> Err "not a literal")
+    | _ -> Err "not a literal"
+}
+
 -- How far a declaration is seen: its module, the module above, its
 -- package, or anywhere.
-@derive(PartialEq)
+@derive(PartialEq, Reflect)
 @pub data Visibility = Private | Super | Package | Public
 
 @pub data Ident = Ident [Int] String

@@ -5,6 +5,7 @@
 -- means at once, which a cell of the metacontext gives: `Eval.force` looks a
 -- solution up whenever it meets a metavariable's head.
 
+use Std.Macro (Reflect)
 use Idyll.Rename (HirArena, HirExpr, freezeHir, newHirBuilder)
 use Idyll.Elab (Cx)
 use Idyll.Usage (Usage)
@@ -52,16 +53,19 @@ use Std.Maybe.Maybe.*
 -- position among the type's constructors, how many erased arguments come
 -- first (the type's parameters, then its own implicit ones), and how many
 -- fields follow.
+@derive(Reflect)
 @pub data CtorInfo = CtorInfo String Int Int Int Int
 
 -- What is known of an effect: its name, its parameters' kinds, and its
 -- operations in order.
+@derive(Reflect)
 @pub data EffectInfo = EffectInfo String [Core] [Int]
 
 -- What is known of an operation: its name, its effect's unique, its place
 -- among the effect's operations, how many erased arguments come first (the
 -- effect's parameters, then its own implicit ones), how many it takes after
 -- those, and whether a handler may resume it more than once (`@many`).
+@derive(Reflect)
 @pub data OpInfo = OpInfo String Int Int Int Int Bool
 
 @pub record Tc = {

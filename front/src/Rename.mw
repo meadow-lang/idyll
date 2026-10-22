@@ -42,6 +42,7 @@ use Std.St (runSt)
 use Idyll.Hir (Ident)
 use Idyll.Hir as H
 use Idyll.Core as C
+use Std.Macro (Reflect)
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
 use Std.Collections.HashMap (HashMap)
@@ -435,7 +436,9 @@ fun resolvePath (r : Rn) (segments : [String]) : Maybe Target ! { Mut | e } =
               | Just (Target.Module m) if m != cur and exportOf r m first == Just u -> Just (Target.Module m)
               | _ -> Just (Target.Name u))
          | None ->
-             if pkg >= 0 and first == V.getOr "" (getRef r.packageNames) pkg then Just (Target.Module (M.unwrapOr 0 (moduleAt r pkg [])))
+             -- the root, or in a part without it, what is under it
+             if pkg >= 0 and first == V.getOr "" (getRef r.packageNames) pkg then
+               Just (match moduleAt r pkg [] with | Just m -> Target.Module m | None -> Target.Namespace pkg [])
              else
                (match (if pkg >= 0 then underRoot r pkg [first] else None) with
                 | Just t -> Just t
@@ -1489,7 +1492,7 @@ fun export (r : Rn) (i : Int) (prog : Program) (b : Bound) =
       setMod r i { m | exports = V.foldl (\e xv -> match xv with | (x, vis) -> Hm.insert (H.textOf x) (H.uniqueOf x, vis) e) m.exports names }
 
 -- Whether a module says how visible anything in it is.
-fun mentionsVisibility (p : Program) : Bool =
+@pub fun mentionsVisibility (p : Program) : Bool =
   not (V.isEmpty p.visibility)
     or V.any (\(u : Use) -> u.public) p.uses
     or V.any (\d -> surfaceDataVis p.src d != Visibility.Private) p.datas
@@ -1498,6 +1501,189 @@ fun mentionsVisibility (p : Program) : Bool =
 -- What renaming a package made: its data types, effects, natives,
 -- definitions, and, for the root package, its expression and its `main`.
 data Done = Done [HirData] [HirEffect] [HirNative] [HirBind] (Maybe HirExpr) (Maybe Int)
+
+-- One name a module gives: the module's path, the name, its unique, and
+-- how visible it is.
+@derive(Reflect)
+@pub data Exported = Exported [String] String Int Visibility
+
+-- A constructor, an operation or a field: its name and unique.
+@derive(Reflect)
+@pub data Member = Member String Int
+
+-- A data type's constructors, an effect's operations or a record's fields,
+-- by the type's unique (and a data type's name).
+@derive(Reflect)
+@pub data TypeGiven = TypeGiven Int String [Member]
+
+@derive(Reflect)
+@pub data Members = Members Int [Member]
+
+-- A trait's methods with a default: the method, the default's unique, and
+-- whether the method is a function.
+@derive(Reflect)
+@pub data Default = Default String Int Bool
+
+@derive(Reflect)
+@pub data Defaults = Defaults Int [Default]
+
+-- A trait's superclass projections, by its record type.
+@derive(Reflect)
+@pub data Supers = Supers Int [Int]
+
+-- A trait's method: its unique, the trait's record, the method's field,
+-- and how many parameters the trait has.
+@derive(Reflect)
+@pub data Method = Method Int Int Int Int
+
+-- What a package's modules give: `idyllic_hir::PackageNames`. Its modules'
+-- paths; each module's names; its data types with their constructors; its
+-- effects' operations; its records' fields; each trait's methods with a
+-- default, its superclass projections, and its methods (see `Rn`).
+@derive(Reflect)
+@pub data PackageNames = PackageNames [[String]] [Exported] [TypeGiven] [Members] [Members] [Defaults] [Supers] [Method]
+
+@pub fun namesModules (n : PackageNames) : [[String]] = match n with | PackageNames.PackageNames ms _ _ _ _ _ _ _ -> ms
+@pub fun namesExports (n : PackageNames) : [Exported] = match n with | PackageNames.PackageNames _ es _ _ _ _ _ _ -> es
+@pub fun namesTypes (n : PackageNames) : [TypeGiven] = match n with | PackageNames.PackageNames _ _ ts _ _ _ _ _ -> ts
+
+fun membersOf (ms : [Member]) : [(String, Int)] = V.map (\m -> match m with | Member.Member x u -> (x, u)) ms
+
+fun asMembers (ms : [(String, Int)]) : [Member] = V.map (\m -> Member.Member (fst m) (snd m)) ms
+
+-- What another package, or an earlier part of this one, says of its types,
+-- effects, records and traits.
+fun takeNames (r : Rn) (n : PackageNames) =
+  match n with
+  | PackageNames.PackageNames _ _ types ops fields defaults supers methods ->
+      let w1 =
+        V.foldl
+          (\acc t ->
+            match t with
+            | TypeGiven.TypeGiven u name cs ->
+                let a = setRef r.ctors (Hm.insert u (membersOf cs) (getRef r.ctors)) in
+                let b = setRef r.typeNames (Hm.insert u name (getRef r.typeNames)) in
+                noteTwin r u)
+          ()
+          types
+      in
+      let w2 = V.foldl (\acc o -> match o with | Members.Members u ms -> setRef r.effectOps (Hm.insert u (membersOf ms) (getRef r.effectOps))) () ops in
+      let w3 = V.foldl (\acc f -> match f with | Members.Members u ms -> setRef r.fields (Hm.insert u (membersOf ms) (getRef r.fields))) () fields in
+      let w4 =
+        V.foldl
+          (\acc d ->
+            match d with
+            | Defaults.Defaults u ds ->
+                setRef r.defaults (Hm.insert u (V.map (\x -> match x with | Default.Default m du f -> (m, du, f)) ds) (getRef r.defaults)))
+          ()
+          defaults
+      in
+      let w5 = V.foldl (\acc s -> match s with | Supers.Supers u ps -> setRef r.supers (Hm.insert u ps (getRef r.supers))) () supers in
+      V.foldl (\acc m -> match m with | Method.Method u t f k -> setRef r.methods (Hm.insert u (t, f, k) (getRef r.methods))) () methods
+
+-- The modules `n` gives, as modules of package `pkg`.
+fun modsOf (pkg : Int) (n : PackageNames) : [Mod] =
+  V.map
+    (\path ->
+      let exports =
+        V.foldl
+          (\e x -> match x with | Exported.Exported p name u vis -> if p == path then Hm.insert name (u, vis) e else e)
+          Hm.empty
+          (namesExports n)
+      in
+      Mod { package = pkg, path, own = Hm.empty, imports = Hm.empty, aliases = Hm.empty, exports })
+    (namesModules n)
+
+-- What the first `count` modules give, those of the package being renamed,
+-- of the things it named from `first` on: `names_given` in the Rust
+-- renamer.
+fun namesGiven (r : Rn) (count : Int) (first : Int) (datas : [(Int, String)]) (effects : [Int]) : PackageNames ! { Mut | e } =
+  let mods = V.take (getRef r.modules) count in
+  let exports =
+    V.concatMap (\(m : Mod) -> V.map (\kv -> match kv with | (x, (u, vis)) -> Exported.Exported m.path x u vis) (Hm.toVec m.exports)) mods
+  in
+  let lookupIn = \table u -> Hm.lookup u (getRef table) in
+  let types = V.concatMap (\d -> match lookupIn r.ctors (fst d) with | Just cs -> [TypeGiven.TypeGiven (fst d) (snd d) (asMembers cs)] | None -> []) datas in
+  let ops = V.concatMap (\e -> match lookupIn r.effectOps e with | Just os -> [Members.Members e (asMembers os)] | None -> []) effects in
+  let fields = V.concatMap (\d -> match lookupIn r.fields (fst d) with | Just fs -> [Members.Members (fst d) (asMembers fs)] | None -> []) datas in
+  let defaults =
+    V.concatMap
+      (\d -> match lookupIn r.defaults (fst d) with | Just ds -> [Defaults.Defaults (fst d) (V.map (\x -> match x with | (m, du, f) -> Default.Default m du f) ds)] | None -> [])
+      datas
+  in
+  let supers = V.concatMap (\d -> match lookupIn r.supers (fst d) with | Just ss -> [Supers.Supers (fst d) ss] | None -> []) datas in
+  let methods = V.concatMap (\m -> match m with | (u, (t, f, k)) -> if u >= first then [Method.Method u t f k] else []) (Hm.toVec (getRef r.methods)) in
+  PackageNames.PackageNames (V.map (\(m : Mod) -> m.path) mods) exports types ops fields defaults supers methods
+
+-- Rename a package, or one part of one, after the prelude, against what
+-- the packages it depends on give (`deps`, each a name and its `Names`) and
+-- what its own earlier parts give (`siblings`): as the Rust compiler's
+-- `rename_part`. It names its own things from `firstUnique` on; `root` says
+-- whether its first module is the package's root; `visibility`, whether any
+-- module of the whole package says how visible something is. Its program
+-- holds the prelude's declarations and its own; its names are what it gives.
+@pub fun renamePackageWith
+    (name : String)
+    (modules : [([String], SurfaceProgram)])
+    (prelude : SurfaceProgram)
+    (deps : [(String, PackageNames)])
+    (siblings : [PackageNames])
+    (firstUnique : Int)
+    (root : Bool)
+    (visibility : Bool)
+    : (Renamed, PackageNames, [String]) ! { Mut | e } =
+  runSt (\() ->
+    let out = newHirBuilder () in
+    let r = new () in
+    let pre = programOf prelude in
+    let w1 = setRef r.scopes (V.append (getRef r.scopes) [Hm.empty, Hm.empty]) in
+    let w2 = setRef r.linear pre.linear in
+    let pb = bindProgram r pre pre.decls in
+    let w3 = V.foldl (\acc u -> renameUse r u) () pre.uses in
+    match renameProgram out r pre pb with
+    | (pdatas, peffects, pnatives, pbinds) ->
+        let w4 = setRef r.linear False in
+        let w5 = setRef r.base (getRef r.scopes) in
+        let own = V.map (\m -> (fst m, programOf (snd m))) (lifted modules) in
+        let w0 = twice r (lifted modules) in
+        let w6 = setRef r.packageNames (V.append [name] (V.map fst deps)) in
+        let w7 = setRef r.packageDeps (V.append [V.range 1 (V.len deps + 1)] (V.map (\d -> []) deps)) in
+        let w8 = setRef r.visibilityMentioned (V.append [visibility] (V.map (\d -> False) deps)) in
+        let ownMods = V.map (\m -> Mod { package = 0, path = fst m, own = Hm.empty, imports = Hm.empty, aliases = Hm.empty, exports = Hm.empty }) own in
+        let siblingMods = V.concatMap (\n -> modsOf 0 n) siblings in
+        let depMods = V.concatMap (\i -> match V.get deps i with | Just (_, n) -> modsOf (i + 1) n | None -> []) (V.range 0 (V.len deps)) in
+        let w9 = setRef r.modules (V.concat [ownMods, siblingMods, depMods]) in
+        let w10 = V.foldl (\acc n -> takeNames r n) () siblings in
+        let w11 = V.foldl (\acc d -> takeNames r (snd d)) () deps in
+        let w12 = if getRef r.next < firstUnique then setRef r.next firstUnique else () in
+        let first = getRef r.next in
+        (match renamePackageAt out r 0 0 (V.map snd own) root False with
+         | Done.Done datas effects natives binds body main ->
+             let groups = V.map (\bs -> newHirGroupRec out noMeta bs) (V.filter (\bs -> not (V.isEmpty bs)) [pbinds, binds]) in
+             let linearBody = match V.head own with | Just (_, (p : Program)) -> p.linear | None -> False in
+             let hirRoot = newHirModule out noMeta (V.append pdatas datas) (V.append peffects effects) (V.append pnatives natives) groups body in
+             let program = HirProgram (freezeHir out) hirRoot in
+             let a = hirArena program in
+             let uniqueOfName = \x -> V.getOr (0 - 1) (hirIdentUniques a x) 0 in
+             let ownDatas = V.map (\d -> (uniqueOfName (hirDataName a d), hirIdentText a (hirDataName a d))) datas in
+             let ownEffects = V.map (\e -> uniqueOfName (hirEffectName a e)) effects in
+             let names = namesGiven r (V.len own) first ownDatas ownEffects in
+             (
+               Renamed {
+                 hir = program,
+                 main,
+                 first,
+                 terminating = getRef r.terminating,
+                 hints = getRef r.hints,
+                 supers = getRef r.supers,
+                 methods = getRef r.methods,
+                 linearBody,
+                 qualifiers = getRef r.qualifiers,
+                 ranges = [(first, getRef r.next, name)]
+               },
+               names,
+               getRef r.problems
+             )))
 
 -- A package renamed: its program, and what is known about it beside.
 @pub record Renamed = {

@@ -63,7 +63,14 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
   -- every name the module and the prelude declare, by unique: the package
   -- it is in, and its path there (`Nat.Z`, `Console.putStr`)
   symbols : HashMap Int (String, String),
-  linear : Bool
+  linear : Bool,
+  -- what compiling the module into a package needs (`Compiled`): the
+  -- top-level context once every definition is checked, each group's
+  -- `let`, the body with its type (`main ()` too), and whether that is it
+  top : Ctx,
+  lets : [Maybe (String, Core)],
+  answer : Maybe (Core, Core),
+  ranMain : Bool
 }
 
 -- The module checked, and written as the differential test compares it:
@@ -177,7 +184,11 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
     elaborated = ElaboratedProgram (freezeElaborated out) root,
     toplevel,
     symbols = symbolsOf m,
-    linear = m.linearBody
+    linear = m.linearBody,
+    top = ctx,
+    lets,
+    answer = body,
+    ranMain
   }
 
 -- Every name declared, by unique: its package (the prelude's, or `Main`,

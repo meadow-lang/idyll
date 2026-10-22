@@ -11,6 +11,7 @@
 -- differential tests, which compare the two printers' output: so it follows
 -- `impl Display for Core` exactly, precedence by precedence.
 
+use Std.Macro (Reflect)
 use Idyll.Hir (Icit, Literal)
 use Idyll.Hir as H
 use Idyll.Grade (Grade)
@@ -22,7 +23,7 @@ use Std.Maybe.Maybe.*
 -- --- builtins ----------------------------------------------------------------
 
 -- The primitive types, as `idyllic-builtins` reserves them.
-@derive(PartialEq)
+@derive(PartialEq, Reflect)
 -- `Number`: a sized integer or a float, by its name (`Int8`, `Float`).
 @pub data Builtin = Unit | Int | Bool | Str | Grade | Effect | Div | Char | Number String
 
@@ -48,7 +49,7 @@ use Std.Maybe.Maybe.*
   | Builtin.Number n -> n
 
 -- The primitive operations.
-@derive(PartialEq)
+@derive(PartialEq, Reflect)
 @pub data Prim = IntAdd | IntMul | IntSub | IntDiv | IntMod | IntLt | IntEq | StrAppend
 
 @pub fun primName (p : Prim) : String =
@@ -92,18 +93,21 @@ use Std.Maybe.Maybe.*
 
 -- What a `case` alternative matches: a constructor, by its unique, or one of
 -- the `Bool` literals.
-@derive(PartialEq)
+@derive(PartialEq, Reflect)
 @pub data Head = Con Int | BoolLit Bool
 
 -- An alternative: what it matches, the constructor's name (for printing),
 -- the names its body binds (one a field, the last innermost), and the body.
+@derive(Reflect)
 @pub data CaseAlt = CaseAlt Head String [String] Core
 
 -- A handler's clause for an operation: the operation's unique and name, how
 -- many of its implicit arguments are erased, and its body.
+@derive(Reflect)
 @pub data OpClause = OpClause Int String Int Core
 
 -- What the elaborator knew, and erasure would otherwise forget.
+@derive(Reflect)
 @pub data Note
   -- an argument never used at run time
   = Erased
@@ -112,6 +116,7 @@ use Std.Maybe.Maybe.*
   -- a `case` its type forces, which looks at nothing
   | Forced
 
+@derive(Reflect)
 @pub data Core
   = Type Int
   | LitTy Builtin

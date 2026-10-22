@@ -37,6 +37,9 @@ use Std.String as S
 use Std.Maybe as M
 use Idyll.Scc (sccModule)
 use Idyll.Check (checkModule, checked, Checked)
+use Idyll.Compiled (compiledOf)
+use Idyll.Interface
+use Std.Sort (sortOn)
 use Idyll.Typer as Ty
 use Idyll.Lower as Lo
 use Idyll.Cek as Cek
@@ -125,6 +128,19 @@ fun main () =
                  | Err _ -> writeError "the prelude does not parse\n")
             | Err e -> writeError "could not read the prelude: ${e}\n")
        | _ -> writeError "usage: Idyll types --prelude <file> [--std <dir>] <file>...\n")
+  | Just "compiled" ->
+      (match (V.get args 1, V.get args 2, V.get args 3, V.get args 4) with
+       | (Just "--prelude", Just path, Just name, Just dir) ->
+           (match readToString path with
+            | Ok text ->
+                (match (Surface.parsed text, packageModules dir) with
+                 | (Ok prelude, Ok modules) ->
+                     let u = writeOutput "== ${name}\n" in
+                     writeOutput "${compiledDump prelude name modules}\n"
+                 | (Err _, _) -> writeError "the prelude does not parse\n"
+                 | (_, Err why) -> writeError "${name}: ${why}\n")
+            | Err e -> writeError "could not read the prelude: ${e}\n")
+       | _ -> writeError "usage: Idyll compiled --prelude <file> <name> <dir>\n")
   | Just "package" ->
       (match (V.get args 1, V.get args 2, V.get args 3, V.get args 4) with
        | (Just "--prelude", Just path, Just name, Just dir) ->
@@ -239,6 +255,42 @@ fun typedWith prelude std (text : String) : String ! { Mut | e } =
        | (m, problems) -> if V.isEmpty problems then checkModule (sccModule m) else "(error)")
 
 -- A whole package checked, its modules each a path and a program.
+-- A package checked whole and compiled, as those that depend on it see it:
+-- a line for each of its constants (its type, whether the types may see
+-- its value, how many arguments it unfolds after), its top-level `let`s,
+-- its recursive definitions, its hints and its traits, sorted. The Rust
+-- side writes its `CompiledPackage` the same way
+-- (`the_compiled_packages_agree`).
+fun compiledDump prelude (name : String) (modules : [([String], SurfaceProgram)]) : String ! { Mut | e } =
+  let programs = V.map (\m -> Rename.programOf (snd m)) modules in
+  let vis = V.any (\p -> Rename.mentionsVisibility p) programs in
+  match Rename.renamePackageWith name modules prelude [] [] 0 True vis with
+  | (m, names, problems) ->
+      if not (V.isEmpty problems) then "(error: ${S.join "; " problems})"
+      else
+        let grouped = sccModule m in
+        let c = checked grouped in
+        let errors = getRef c.tc.errors in
+        if not (V.isEmpty errors) then "(error: ${S.join ", " errors})"
+        else
+          let p = compiledOf c grouped names in
+          let nameOf = \u -> M.unwrapOr "?" (M.map (\k -> match k with | Constant.Constant _ n _ _ _ -> n) (V.find (\k -> match k with | Constant.Constant v _ _ _ _ -> v == u) p.constants)) in
+          let constants =
+            V.map
+              (\k ->
+                match k with
+                | Constant.Constant _ n ty value unfold ->
+                    let v = if M.isSome value then " = .." else "" in
+                    let f = match unfold with | Just (Unfold.Unfold arity _) -> " unfold ${show arity}" | None -> "" in
+                    "constant ${n} : ${C.shown False ty}${v}${f}")
+              p.constants
+          in
+          let lets = V.map (\l -> match l with | TopLet.TopLet _ n _ -> "let ${n}") p.lets in
+          let recs = V.map (\r -> match r with | RecDef.RecDef _ n _ _ local -> if local then "rec ${n} local" else "rec ${n}") p.recDefs in
+          let hints = V.map (\u -> "hint ${nameOf u}") p.hints in
+          let traits = V.map (\u -> "trait ${nameOf u}") p.traits in
+          S.join "\n" (sortOn (\l -> l) (V.concat [constants, lets, recs, hints, traits]))
+
 fun packageTypes prelude (name : String) (modules : [([String], SurfaceProgram)]) : String ! { Mut | e } =
   match renamePackage name modules prelude [] with
   | (m, problems) -> if V.isEmpty problems then checkModule (sccModule m) else "(error: ${S.join "; " problems})"
