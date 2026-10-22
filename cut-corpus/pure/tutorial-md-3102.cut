@@ -85,11 +85,16 @@ def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) =
 
 def idyll:Main/"#entry" (; k_75: ptr) =
   <cocase {
-    apply(b_77: ptr; k_78: ptr) =>
-      <b_77 | case {
-        #tuple(x_81: i64) =>
-          <x_81 | μ̃ x_79: i64.
-            prim add(x_79, x_79; μ̃ v_80: i64.
-              prim add(v_80, x_79; k_78))>
-      }>
+    apply(d_t_77: desc; k_79: ptr) =>
+      <cocase {
+        apply(d_80: ptr; k_81: ptr) =>
+          <d_80 | case {
+            #tuple(x_85: any) =>
+              <x_85 | μ̃ d_82: any.
+                <cocase {
+                  apply(x_83: any; k_84: ptr) =>
+                    <x_83 | k_84>
+                } | k_81>>
+          }>
+      } | k_79>
   } | k_75>

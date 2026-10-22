@@ -1125,10 +1125,15 @@ do yet `(unsupported)`, and the tests count those apart.
   prelude.idl`, that the Rust compiler includes too). A unit is compiled
   again only when its sources or a dependency's changed; the link lowers the
   root to Cut and `run` hands it to `meadow cut`. Every example runs through
-  it as the Rust driver runs it. Left: git dependencies, profiles and
+  it as the Rust driver runs it. Since 2026-10-21 a package is built a part
+  at a time on Lingua's `make!` parts (Lingua 67ed9c3, Cut 8af8329): the
+  module SCCs, the parts that do not import each other at once, each again
+  only when it must. Left: git dependencies and the lockfile (Lingua is
+  to have them as `Lingua.Resolve`, once Chris says so), profiles and
   options as `make!` has them, error messages drawn where they are (the
   checker's errors are kinds only), and real interfaces (types, not
-  sources) once the checker can import a compiled package.
+  sources) for packages and parts, once the checker can import a compiled
+  package.
 - [ ] front/'s own REPL, once Cut moves its Lingua pin (Lingua 833e1a5, for
   LineEditor 0.2.2).
 - [ ] CI, with MeadowBoot's prerelease for the `meadow` it needs.

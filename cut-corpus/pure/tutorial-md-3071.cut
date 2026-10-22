@@ -1,6 +1,6 @@
 cut 0
 entry idyll:Main/"#entry"
-answer none
+answer str
 
 data idyll:Prelude/DigitFuel { Spent; More(ptr) }
 
@@ -84,17 +84,9 @@ def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) =
   }>
 
 def idyll:Main/"#entry" (; k_75: ptr) =
-  <cocase {
-    apply(d_t_77: desc; k_79: ptr) =>
-      <cocase {
-        apply(d_80: ptr; k_81: ptr) =>
-          <d_80 | case {
-            #tuple(x_85: any) =>
-              <x_85 | μ̃ d_82: any.
-                <cocase {
-                  apply(x_83: any; k_84: ptr) =>
-                    <x_83 | k_84>
-                } | k_81>>
-          }>
-      } | k_79>
-  } | k_75>
+  <#tuple(3) | μ̃ answer_76: ptr.
+    <answer_76 | case {
+      #tuple(x_77: i64) =>
+        idyll:Prelude/showInt(x_77; μ̃ s_78: str.
+          prim concatStrings(["[", s_78, "]"]; k_75))
+    }>>

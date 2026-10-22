@@ -12,7 +12,8 @@
 -- into `target/link/program.cut`, which `run` hands to `meadow cut`.
 
 use Lingua (cli!, make!)
-use Lingua.Make (Given, Linking, unitDir, unitSources, unitImports, linkRoot, linkUnits, linkOut, linkDir)
+use Lingua.Make (Given, Linking, Part, unitDir, unitSources, unitImports, linkRoot, linkUnits, linkOut, linkDir)
+use Lingua.Make (partDir, partSources, partImports, partUnitImports)
 use Lingua.Diagnostic (renderAll)
 use Idyll.Surface (SurfaceProgram)
 use Idyll.Surface as Surface
@@ -25,7 +26,7 @@ use Std.Collections.Vector as V
 use Std.String as S
 use Std.Maybe as M
 use Std.Path as Path
-use Std.Fs (writeString, readDir, isDir, exists)
+use Std.Fs (writeString, readDir, isDir, exists, readToStringOr)
 use Std.Process (runInherit)
 use Std.Maybe.Maybe.*
 use Std.Result.Result.*
@@ -40,13 +41,20 @@ cli! {
     | check "Check a package and what it depends on" { path : Maybe String "the package (here, if left out)" }
 }
 
+-- A package is compiled a part at a time: the modules that import each
+-- other, in a circle or not, are one part, as `idyllic::parts` has them
+-- in the Rust compiler, and `make!` compiles the parts that do not import
+-- each other at once, each again only when its modules or what it imports
+-- changed (`partsOf`, `compileScc`, `assembleUnit`).
 make! {
   pub Units "idyll"
     | sources = ".idl"
     | manifest = "Idyll.toml"
-    | compile = compileUnit
     | dependencies = dependenciesOf
     | files = filesOf
+    | parts = partsOf
+    | compilePart = compileScc
+    | assemble = assembleUnit
     | link = linkProgram
 }
 
@@ -62,6 +70,17 @@ data Package = Package String [Module]
 
 @derive(Reflect)
 data Interface = Interface [Package]
+
+-- What a part gives the parts that import it: its modules and those of
+-- every part it imports, each a path and its text. (Sources, for now: the
+-- checker cannot yet import what checking a module made, so each part is
+-- checked with the modules it imports.)
+@derive(Reflect)
+data PartModules = PartModules [Module]
+
+fun modulesOf (p : PartModules) : [(String, String)] =
+  match p with
+  | PartModules.PartModules ms -> V.map (\m -> match m with | Module.Module a b -> (a, b)) ms
 
 fun packagesOf (i : Interface) : [(String, [(String, String)])] =
   match i with
@@ -126,17 +145,126 @@ fun dependenciesOf (root : String) (dir : String) (manifest : String) : Result S
         | None -> [])
       (snd section))
 
+-- --- a package's parts ------------------------------------------------------------
+
+-- Each module of a package, by its file, with the files of the others it
+-- names: by a `use` of it or a name qualified with it, with or without the
+-- package's name (`Std.Bool`), and the root by the package's name alone
+-- (`use App (shared)`), as `idyllic::parts` reads them. The manifest is a
+-- part of its own, importing nothing.
+fun partsOf (sources : [(String, String)]) : [(String, [String])] =
+  let name = packageNameIn sources in
+  let modules = V.filter (\s -> S.endsWith ".idl" (fst s)) sources in
+  let pathOf = \file -> S.join "." (modulePathIn file) in
+  let paths = V.map (\s -> pathOf (fst s)) modules in
+  let named = V.filter (\p -> p != "") paths in
+  V.map
+    (\s ->
+      let here = pathOf (fst s) in
+      let others =
+        V.filter
+          (\o ->
+            let p = pathOf (fst o) in
+            p != here
+              and (if p == "" then namesRoot (snd s) name named else names (snd s) p or names (snd s) "${name}.${p}"))
+          modules
+      in
+      (fst s, V.map fst others))
+    sources
+
+-- The package's name, from its manifest among `sources`.
+fun packageNameIn (sources : [(String, String)]) : String =
+  let manifest = M.unwrapOr "" (M.map snd (V.find (\s -> S.endsWith "Idyll.toml" (fst s)) sources)) in
+  M.unwrapOr "Main" (manifestField "name" manifest)
+
+-- A module's path from its file's, `.../src/Collections/List.idl`, the part
+-- after the last `src`; `Main.idl` or `Lib.idl` the root's, empty.
+fun modulePathIn (file : String) : [String] =
+  let segs = V.concatMap (\x -> S.split "\\" x) (S.split "/" file) in
+  let from = V.foldl (\acc i -> if V.getOr "" segs i == "src" then i + 1 else acc) 0 (V.range 0 (V.len segs)) in
+  let rel = V.drop segs from in
+  let last = M.unwrapOr "" (V.last rel) in
+  let named = V.pushBack (V.take rel (V.len rel - 1)) (S.take last (S.byteLength last - 4)) in
+  if V.len named == 1 and (V.getOr "" named 0 == "Main" or V.getOr "" named 0 == "Lib") then [] else named
+
+fun isWordByte (b : Int) : Bool = (b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b == 95 or b == 39 or b == 46
+
+fun byteOf (s : String) (i : Int) : Int = if i >= 0 and i < stringByteLength s then toInt (stringByteAt s i) else 0 - 1
+
+-- Whether `text` names the module at `path`: `use Odd`, `use Odd (odd)`,
+-- `Odd.odd`, `use Odd.*`, and not `Oddity` or `-- Odd numbers`.
+fun names (text : String) (path : String) : Bool = namesFrom text path 0 (\rest -> True)
+
+-- Whether `text` names the root, by the package's name alone: not as the
+-- start of another module's path, `App.Syntax`.
+fun namesRoot (text : String) (package : String) (modules : [String]) : Bool =
+  namesFrom text package 0 (\rest ->
+    if S.startsWith "." rest then
+      let under = M.unwrapOr "" (V.head (S.split " " (S.drop rest 1))) in
+      not (V.any (\m -> S.startsWith m under and (S.byteLength under == S.byteLength m or byteOf under (S.byteLength m) == 46)) modules)
+    else True)
+
+-- An occurrence of `path` in `text` from byte `from` that is a word of its
+-- own, followed by a `.`, or after a `use`, and that `ok` takes, given what
+-- follows it.
+fun namesFrom (text : String) (path : String) (from : Int) (ok : String -> Bool) : Bool =
+  match S.indexOfFrom path text from with
+  | None -> False
+  | Just start ->
+      let stop = start + stringByteLength path in
+      let after = byteOf text stop in
+      let before = start == 0 or not (isWordByte (byteOf text (start - 1))) in
+      let follows = after == 0 - 1 or after == 46 or after == 32 or after == 10 or after == 13 or after == 40 or after == 9 in
+      let named = after == 46 or S.endsWith "use" (S.trimEnd (stringSlice text 0 start)) in
+      if before and follows and named and ok (stringSlice text stop (stringByteLength text)) then True
+      else namesFrom text path stop ok
+
+-- Check a part: its modules, with those of the parts it imports and the
+-- packages its package depends on. Its interface: its modules and theirs.
+fun compileScc (x : Part Interface PartModules) : Result String PartModules ! { Mut, Fs | e } =
+  let dir = partDir x in
+  let name = nameOfManifest dir (readToStringOr "" (Path.join dir "Idyll.toml")) in
+  let ownFiles = V.filter (\s -> S.endsWith ".idl" (fst s)) (partSources x) in
+  let own = V.map (\s -> (S.join "." (modulePath dir (fst s)), snd s)) ownFiles in
+  let imported = V.concatMap (\ip -> modulesOf (snd ip)) (partImports x) in
+  let all = V.foldl (\acc m -> if V.any (\n -> fst n == fst m) acc then acc else V.pushBack acc m) own imported in
+  if V.isEmpty own then Ok (PartModules.PartModules [])
+  else
+    let deps = V.foldl (\acc i -> V.foldl (\a p -> if V.any (\q -> fst q == fst p) a then a else V.pushBack a p) acc (packagesOf (snd i))) [] (partUnitImports x) in
+    match renamedWith name (rootFirst all) deps with
+    | Err why -> Err why
+    | Ok m ->
+        let c = checked (sccModule m) in
+        let errors = getRef c.tc.errors in
+        if V.isEmpty errors then Ok (PartModules.PartModules (V.map (\m2 -> Module.Module (fst m2) (snd m2)) all))
+        else Err ("${name} does not check: ${S.join ", " errors}")
+
+-- A package, once its parts are compiled: its sources and those of every
+-- package it reaches, as a unit's interface is.
+fun assembleUnit (u : Given Interface) (parts : [PartModules]) : Result String Interface =
+  let dir = unitDir u in
+  let sources = unitSources u in
+  let name = nameOf dir sources in
+  let own = rootFirst (V.concatMap (\s -> if S.endsWith ".idl" (fst s) then [(S.join "." (modulePath dir (fst s)), snd s)] else []) sources) in
+  let deps = V.foldl (\acc i -> V.foldl (\a p -> if V.any (\q -> fst q == fst p) a then a else V.pushBack a p) acc (packagesOf (snd i))) [] (unitImports u) in
+  Ok (interfaceOf (V.pushBack deps (name, own)))
+
 -- --- compiling a package ---------------------------------------------------------
 
 -- A package's name, from its manifest: `Name@version`, as the Rust compiler
 -- names a package's symbols.
 fun nameOf (dir : String) (sources : [(String, String)]) : String =
-  let manifest = M.unwrapOr "" (M.map snd (V.find (\s -> S.endsWith "Idyll.toml" (fst s)) sources)) in
-  let field = \key -> V.foldl (\acc l -> match acc with | Just v -> Just v | None -> (let t = S.trim l in if S.startsWith key t and S.contains "=" t then V.get (S.split "\"" t) 1 else None)) None (S.lines manifest) in
-  let name = M.unwrapOr (M.unwrapOr dir (V.last (S.split "/" dir))) (field "name") in
-  match field "version" with
+  nameOfManifest dir (M.unwrapOr "" (M.map snd (V.find (\s -> S.endsWith "Idyll.toml" (fst s)) sources)))
+
+fun nameOfManifest (dir : String) (manifest : String) : String =
+  let name = M.unwrapOr (M.unwrapOr dir (V.last (S.split "/" dir))) (manifestField "name" manifest) in
+  match manifestField "version" manifest with
   | Just v -> "${name}@${v}"
   | None -> name
+
+-- A field of a manifest, `name = "Util"`: the first line that sets it.
+fun manifestField (key : String) (manifest : String) : Maybe String =
+  V.foldl (\acc l -> match acc with | Just v -> Just v | None -> (let t = S.trim l in if S.startsWith key t and S.contains "=" t then V.get (S.split "\"" t) 1 else None)) None (S.lines manifest)
 
 -- A source's module path, from where it is under `src/`: `src/Collections/
 -- List.idl` is `Collections.List`; `Main.idl` or `Lib.idl` the root.

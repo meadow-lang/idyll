@@ -57,6 +57,22 @@ dependencies alongside it, so a package is compiled again only when its own
 sources or a dependency's changed, and a dependency that changed compiles
 what depends on it. The link lowers the root package to Cut, its `main` the
 entry, into `target/link/program.cut`, and `run` hands that to `meadow cut`.
+
+Inside a package the unit of work is a *part*: the modules that import each
+other, in a circle or not, as `idyllic::parts` has them in the Rust
+compiler. `make!`'s `parts` (Lingua 67ed9c3) is told each module's imports
+(`partsOf`: a `use` of a module or a name qualified with one, with or
+without the package's name, and the root by the package's name alone);
+it takes the import graph's SCCs, compiles each with `compileScc` once the
+parts it imports are done, the parts that do not import each other at once,
+and each again only when its modules or what it imports changed; then
+`assembleUnit` makes the package's interface. What is kept of the parts is
+under the unit's directory, `target/units/<unit>/parts/`. A part's
+interface is, for now, its modules and those of the parts it imports, as
+sources: until the checker can import what checking a module made, each
+part is checked with the modules it imports, so a part costs what checking
+those together does.
+
 `front_builds_and_runs_a_package_with_a_dependency` and
 `front_runs_every_example_itself` hold it to that.
 
