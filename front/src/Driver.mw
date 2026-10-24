@@ -19,6 +19,7 @@ use Lingua (cli!, make!)
 use Lingua.Make (Given, Linking, Part, unitDir, unitSources, unitImports, linkRoot, linkUnits, linkOut, linkDir)
 use Lingua.Make (partDir, partSources, partImports, partUnitImports, partUnitPaths)
 use Lingua.Diagnostic (renderAll)
+use Lingua.Resolve (Dep, GitRef, reqOf)
 use Idyll.Surface (SurfaceProgram)
 use Idyll.Surface as Surface
 use Idyll.Rename (renamePackageWith, PackageNames, Exported, namesExports)
@@ -35,19 +36,27 @@ use Std.String as S
 use Std.Maybe as M
 use Std.Path as Path
 use Std.Fs (writeString, readDir, isDir, exists, readToStringOr, createDirAll)
-use Std.Process (runInherit)
+use Std.Process (runInherit, getEnv)
 use Std.Sort (sortOn)
 use Std.Maybe.Maybe.*
 use Std.Result.Result.*
 
 cli! {
   pub Tool "idyll" "Idyll, built by its compiler written in Meadow"
+    options {
+      offline : Flag "Never fetch a dependency: build from what is cached"
+      locked : Flag "Refuse a build that would change idyll.lock"
+    }
     | build "Build a package into Cut, which Meadow runs" { path : Maybe String "the package (here, if left out)" }
     | run "Build a package and run it on Meadow" {
         path : Maybe String "the package (here, if left out)"
         release : Flag "Run it as native code, built by Silo"
       }
     | check "Check a package and what it depends on" { path : Maybe String "the package (here, if left out)" }
+    | update "Move git dependencies forward to what their references name now" {
+        names : [String] "just these dependencies (every one, if none)"
+        dryRun : Flag "Say what would change, and change nothing"
+      }
 }
 
 -- A package is compiled a part at a time: the modules that import each
@@ -60,6 +69,9 @@ make! {
     | sources = ".idl"
     | manifest = "Idyll.toml"
     | dependencies = dependenciesOf
+    | lock = "idyll.lock"
+    | cache = "~/.idyll/git"
+    | cacheEnv = "IDYLL_HOME"
     | files = filesOf
     | parts = partsOf
     | compilePart = compileScc
@@ -100,11 +112,12 @@ fun union (done : [Built]) (more : [Built]) : [Built] =
 
 @pub fun drive () =
   match argsTool () with
-  | Tool.Build r -> (let ok = built (here r.path) in if ok then writeOutput "${cutOf (here r.path)}\n" else exit 1)
-  | Tool.Check r -> if built (here r.path) then () else exit 1
-  | Tool.Run r ->
+  | (every, Tool.Build r) -> (let ok = built every (here r.path) in if ok then writeOutput "${cutOf (here r.path)}\n" else exit 1)
+  | (every, Tool.Check r) -> if built every (here r.path) then () else exit 1
+  | (every, Tool.Update r) -> if updateUnits "." r.names r.dryRun then () else exit 1
+  | (every, Tool.Run r) ->
       let root = here r.path in
-      if not (built root) then exit 1
+      if not (built every root) then exit 1
       else
         let args = if r.release then ["cut", "--runtime", "silo", cutOf root] else ["cut", cutOf root] in
         (match runInherit "meadow" args with
@@ -116,21 +129,34 @@ fun union (done : [Built]) (more : [Built]) : [Built] =
 
 fun here (path : Maybe String) : String = M.unwrapOr "." path
 
--- Build the package at `root`, Std written out for it first.
-fun built (root : String) : Bool ! { Fs | e } =
-  let w = writtenStd root in
-  buildUnits root
+-- Build the package at `root`, Std written out first.
+fun built (every : ToolOptions) (root : String) : Bool ! { Fs, Process | e } =
+  let w = writtenStd () in
+  buildUnitsWith every.offline every.locked root
 
 -- Where the link put a package's Cut.
 fun cutOf (root : String) : String = Path.join (linkDir root) "program.cut"
 
--- Where Std is written out for a build of the package at `root`.
-fun stdDir (root : String) : String = Path.join (Path.join root "target") "std"
+-- Where Std is written out: under the home directory, `~/.idyll/std/<hash>`
+-- (or `$IDYLL_HOME/std/<hash>`), the hash of the Std this program holds, so
+-- that every package of every build shares it, and a dependency's path is
+-- one that holds from any unit's directory.
+fun stdDir () : String ! { Process | e } =
+  let home =
+    match getEnv "IDYLL_HOME" with
+    | Just h -> h
+    | None -> Path.join (M.unwrapOr (M.unwrapOr "." (getEnv "HOME")) (getEnv "USERPROFILE")) ".idyll"
+  in
+  Path.join (Path.join home "std") (show stdHash)
+
+-- A hash of the Std this program holds.
+def stdHash : Int =
+  V.foldl (\h m -> V.foldl (\h2 i -> (h2 * 31 + toInt (stringByteAt (snd m) i)) % 1000000007) h (V.range 0 (stringByteLength (snd m)))) 17 stdModules
 
 -- Std, as a package: its manifest and its modules, as this program holds
 -- them, under `stdDir root`.
-fun writtenStd (root : String) : () ! { Fs | e } =
-  let dir = stdDir root in
+fun writtenStd () : () ! { Fs, Process | e } =
+  let dir = stdDir () in
   let made = createDirAll (Path.join dir "src") in
   let w = writeString (Path.join dir "Idyll.toml", "[package]\nname = \"Std\"\n") in
   V.foldl
@@ -165,20 +191,59 @@ fun idlFiles (dir : String) (prefix : [String]) : [String] ! { Fs | e } =
           else [])
         names
 
--- The packages a package depends on: the `path`s of its `[dependencies]`,
--- and Std, which every package but Std has.
-fun dependenciesOf (root : String) (dir : String) (manifest : String) : Result String [String] =
+-- The packages a package depends on: each line of its `[dependencies]`,
+-- `Util = { path = "../util" }`, or by git, `Json = { git = "<url>",
+-- version = "1.2.0" }` (or `tag`, `branch`, `rev`, or none of them for the
+-- default branch), as the Rust driver reads them; and Std, which every
+-- package but Std has. Lingua's resolver fetches what is by git, takes the
+-- newest release a version allows, and keeps what it chose in `idyll.lock`.
+fun dependenciesOf (root : String) (dir : String) (manifest : String) : Result String [Dep] ! { Process | e } =
   let lines = S.lines manifest in
-  let section = V.foldl (\acc l -> match acc with | (inDeps, found) -> (let t = S.trim l in if S.startsWith "[" t then (t == "[dependencies]", found) else if inDeps and S.contains "path" t then (inDeps, V.pushBack found t) else acc)) (False, []) lines in
-  let paths =
-    V.concatMap
-      (\t ->
-        match V.get (S.split "\"" (S.drop t (M.unwrapOr 0 (S.indexOf "path" t)))) 1 with
-        | Just p -> [Path.join dir p]
-        | None -> [])
+  let section = V.foldl (\acc l -> match acc with | (inDeps, found) -> (let t = S.trim l in if S.startsWith "[" t then (t == "[dependencies]", found) else if inDeps and S.contains "=" t then (inDeps, V.pushBack found t) else acc)) (False, []) lines in
+  let deps =
+    V.foldl
+      (\acc t ->
+        match (acc, dependencyOf t) with
+        | (Err why, _) -> Err why
+        | (_, Err why) -> Err why
+        | (Ok ds, Ok d) -> Ok (V.pushBack ds d))
+      (Ok [])
       (snd section)
   in
-  Ok (if manifestField "name" manifest == Just "Std" then paths else V.pushBack paths (stdDir root))
+  match deps with
+  | Err why -> Err why
+  | Ok ds -> Ok (if manifestField "name" manifest == Just "Std" then ds else V.pushBack ds (Dep.Path (stdDir ())))
+
+-- One line of a manifest's `[dependencies]`, as a dependency.
+fun dependencyOf (line : String) : Result String Dep =
+  let name = S.trim (V.getOr "" (S.split "=" line) 0) in
+  let field = \key -> quotedAfter key line in
+  match (field "path", field "git") with
+  | (Just p, _) -> Ok (Dep.Path p)
+  | (_, Just url) ->
+      (match (field "tag", field "branch", field "rev", field "version") with
+       | (Just t, _, _, _) -> Ok (Dep.Git name url (GitRef.Tag t))
+       | (_, Just b, _, _) -> Ok (Dep.Git name url (GitRef.Branch b))
+       | (_, _, Just r, _) -> Ok (Dep.Git name url (GitRef.Rev r))
+       | (_, _, _, Just v) ->
+           (match reqOf v with
+            | Just q -> Ok (Dep.Git name url (GitRef.Release q))
+            | None -> Err "${name}: `${v}` is not a version")
+       | _ -> Ok (Dep.Git name url GitRef.Default))
+  | _ -> Err "${name}: a dependency needs a `path` or a `git`"
+
+-- The text in quotes after `key =` in `line`: `"../util"` of `path`.
+fun quotedAfter (key : String) (line : String) : Maybe String =
+  let starts = \i -> S.startsWith (key ++ " ") (S.drop line i) or S.startsWith (key ++ "=") (S.drop line i) in
+  -- (a word of its own: `tag`, not the end of `stag`)
+  let alone = \i -> i == 0 or not (isWordByte (byteOf line (i - 1))) in
+  let at = V.find (\i -> starts i and alone i) (V.range 0 (S.byteLength line)) in
+  match at with
+  | None -> None
+  | Just i ->
+      let rest = S.drop line (i + S.byteLength key) in
+      let afterEq = S.trimStart (S.drop (S.trimStart rest) 1) in
+      if S.startsWith "\"" afterEq then V.get (S.split "\"" afterEq) 1 else None
 
 -- --- a package's parts ------------------------------------------------------------
 

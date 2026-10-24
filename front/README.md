@@ -48,11 +48,20 @@ cd examples/hello
 ```
 
 That is `Driver.mw`: a `cli!` (Lingua's command line) over a `make!`
-(Lingua's build), each package a unit. A package's `[dependencies]` by
-`path` are units it depends on, and so is Std, which this program holds
-(`includeStr`) and writes out under the root's `target/std`; the prelude is
-in the program too, `compiler/idyllic/src/prelude.idl`, the Rust compiler's
-own. The link puts the program together from the compiled packages
+(Lingua's build), each package a unit. A package's `[dependencies]` are
+the units it depends on, read as the Rust driver reads them: by `path`, or
+by `git`, at a `version` (the newest release tag it allows), a `tag`, a
+`branch` or a `rev`. Lingua's resolver (`Lingua.Resolve`, the `lock`,
+`cache` and `cacheEnv` of the `make!`) fetches what is by git into
+`~/.idyll/git`, and writes what it chose to `idyll.lock` beside the
+manifest, in the Rust driver's format, so either driver reads the other's;
+a build after that needs no network. `--offline` never fetches, `--locked`
+refuses a build that would change the lock, and `Idyll update [names]
+[--dry-run]` moves dependencies forward. Std is a unit too, which this
+program holds (`includeStr`) and writes out under `~/.idyll/std/<hash>`
+(`$IDYLL_HOME` moves both), so that every package's path to it holds; the
+prelude is in the program, `compiler/idyllic/src/prelude.idl`, the Rust
+compiler's own. The link puts the program together from the compiled packages
 (`Link.linked`), lowers it to Cut, its `main` the entry, into
 `target/link/program.cut`, and `run` hands that to `meadow cut`.
 

@@ -1134,9 +1134,13 @@ do yet `(unsupported)`, and the tests count those apart.
   compiled to an interface (`Compiled`, `Reflect`), the program linked from
   them (`Link`); Std is a unit of its own. front/'s compiled Std, whole and
   part by part, agrees with Rust's line for line, and the corpus types,
-  lowers and runs alike against it. Left: git dependencies and the lockfile
-  (Lingua is to have them as `Lingua.Resolve`, once Chris says so),
-  profiles and options as `make!` has them, error messages drawn where
+  lowers and runs alike against it. Git dependencies and the lockfile done
+  2026-10-24, on Lingua's shared resolver (`Lingua.Resolve`, Chris's go-ahead
+  that day; Lingua d3b76b8, Cut 3d96fa0): `version`/`tag`/`branch`/`rev`,
+  `idyll.lock` in the Rust driver's format (the Rust driver builds `--locked`
+  from front/'s), `--offline`, `--locked`, `Idyll update [--dry-run]`; Std
+  written under `~/.idyll/std/<hash>` (`front_builds_with_a_git_dependency`).
+  Left: profiles and options as `make!` has them, workspaces, error messages drawn where
   they are (the checker's errors are kinds only). (Lingua e15e7f9, Cut
   071b64b: a part's room of uniques is its first module's place among the
   package's sources, `partUnitPaths`.)

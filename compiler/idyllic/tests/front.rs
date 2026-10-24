@@ -303,7 +303,9 @@ fn the_example_packages_build_and_run_alike() {
 /// front/'s own command line (`Idyll run`, a `cli!` over a `make!`), run
 /// in `dir`: what it printed, and whether it succeeded.
 fn front_tool(exe: &std::path::Path, dir: &std::path::Path, args: &[&str]) -> (String, bool) {
-    let out = std::process::Command::new(exe).args(args).current_dir(dir).output().expect("front/ runs");
+    // (Std, and what is fetched, in a home of the tests' own)
+    let home = std::env::temp_dir().join("idyll-front-home");
+    let out = std::process::Command::new(exe).args(args).current_dir(dir).env("IDYLL_HOME", home).output().expect("front/ runs");
     // what it printed, the build's lines first and then the program's; and,
     // if it failed, what it wrote as errors (Silo's build says what it is
     // doing there too)
@@ -350,6 +352,77 @@ fn front_builds_and_runs_a_package_with_a_dependency() {
     std::fs::write(app.join("src/Main.idl"), "main : () -> () ! Eff\nmain () = putStrLn 5\n").unwrap();
     let (said, ok) = front_tool(&exe, &app, &["run"]);
     assert!(!ok && said.contains("Failed"), "{said}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `git` in `dir`, which must succeed.
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .args(["-c", "user.email=test@example.com", "-c", "user.name=test"])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("git runs");
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// A package with a dependency by git, at a version, built by front/'s own
+/// driver on Lingua's resolver: the newest release the version allows is
+/// fetched and kept in `idyll.lock`, in the Rust driver's format; a build
+/// after that needs no network; `idyll update` moves it to a newer release.
+#[test]
+fn front_builds_with_a_git_dependency() {
+    let Ok(exe) = front() else {
+        eprintln!("no front/ to build with");
+        return;
+    };
+    if std::process::Command::new("git").arg("--version").output().is_err() {
+        eprintln!("no git to make a dependency with");
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("idyll-front-git-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (json, app, home) = (root.join("json"), root.join("app"), root.join("home"));
+    for d in [&json, &app] {
+        std::fs::create_dir_all(d.join("src")).expect("a directory");
+    }
+    // the dependency, released as v1.0.0
+    std::fs::write(json.join("Idyll.toml"), "[package]\nname = \"Json\"\nversion = \"1.0.0\"\n").unwrap();
+    std::fs::write(json.join("src/Lib.idl"), "@pub\ngreet : String\ngreet = \"one\"\n").unwrap();
+    git(&json, &["init", "-q"]);
+    git(&json, &["add", "-A"]);
+    git(&json, &["commit", "-qm", "one"]);
+    git(&json, &["tag", "v1.0.0"]);
+    let url = format!("file:///{}", json.display().to_string().replace('\\', "/").trim_start_matches('/'));
+    std::fs::write(app.join("Idyll.toml"), format!("[package]\nname = \"App\"\n\n[dependencies]\nJson = {{ git = \"{url}\", version = \"1.0.0\" }}\n")).unwrap();
+    std::fs::write(app.join("src/Main.idl"), "use Json (greet)\n\nmain : () -> () ! Eff\nmain () = putStrLn greet\n").unwrap();
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new(&exe).args(args).current_dir(&app).env("IDYLL_HOME", &home).output().expect("front/ runs");
+        let text = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n") + &String::from_utf8_lossy(&out.stderr).replace("\r\n", "\n");
+        (text, out.status.success())
+    };
+    let (said, ok) = run(&["run"]);
+    assert!(ok && said.ends_with("one\n"), "{said}");
+    let lock = std::fs::read_to_string(app.join("idyll.lock")).expect("the build writes idyll.lock");
+    assert!(lock.contains("version = 1\n") && lock.contains("name = \"Json\"") && lock.contains("version = \"1.0.0\""), "{lock}");
+    assert!(lock.contains(&format!("source = \"git+{url}?version=1.0.0\"")), "{lock}");
+    // a newer release: the lock still says the old one, and needs no network
+    std::fs::write(json.join("src/Lib.idl"), "@pub\ngreet : String\ngreet = \"two\"\n").unwrap();
+    std::fs::write(json.join("Idyll.toml"), "[package]\nname = \"Json\"\nversion = \"1.1.0\"\n").unwrap();
+    git(&json, &["commit", "-qam", "two"]);
+    git(&json, &["tag", "v1.1.0"]);
+    let (said, ok) = run(&["--offline", "--locked", "run"]);
+    assert!(ok && said.ends_with("one\n"), "{said}");
+    // a dry run says what would move, and moves nothing
+    let (said, ok) = run(&["update", "--dry-run"]);
+    assert!(ok && said.contains("Updating Json 1.0.0 -> 1.1.0"), "{said}");
+    assert_eq!(std::fs::read_to_string(app.join("idyll.lock")).unwrap(), lock);
+    // `idyll update` moves it
+    let (said, ok) = run(&["update"]);
+    assert!(ok && said.contains("Updating Json 1.0.0 -> 1.1.0"), "{said}");
+    assert!(std::fs::read_to_string(app.join("idyll.lock")).unwrap().contains("version = \"1.1.0\""));
+    let (said, ok) = run(&["run"]);
+    assert!(ok && said.ends_with("two\n"), "{said}");
     let _ = std::fs::remove_dir_all(&root);
 }
 
