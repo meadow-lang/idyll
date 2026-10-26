@@ -87,7 +87,7 @@ fun signed (w : String) : Bool = w == "Int8" or w == "Int16" or w == "Int32"
   | Number.Float x -> display x
   | Number.Float32 x -> display x
 
-fun isFinite (x : Float) : Bool = x -. x == 0.0
+fun isFinite (x : Float) : Bool = _primSubF x x == 0.0
 
 -- `op` at `t` on `args`, or the error it stops the program with.
 @pub fun apply (op : String) (t : String) (args : [Number]) : Result String Answer =
@@ -112,20 +112,20 @@ fun isFinite (x : Float) : Bool = x -. x == 0.0
         else if op == "Lt" then truth (if unsigned then toUInt64 x < toUInt64 y else x < y)
         else wrong
     | (Number.Float x, Number.Float y) if arity op == 2 ->
-        if op == "Add" then num (Number.Float (x +. y))
-        else if op == "Sub" then num (Number.Float (x -. y))
-        else if op == "Mul" then num (Number.Float (x *. y))
-        else if op == "Div" then num (Number.Float (x /. y))
+        if op == "Add" then num (Number.Float (_primAddF x y))
+        else if op == "Sub" then num (Number.Float (_primSubF x y))
+        else if op == "Mul" then num (Number.Float (_primMulF x y))
+        else if op == "Div" then num (Number.Float (_primDivF x y))
         else if op == "Eq" then truth (x == y)
-        else if op == "Lt" then truth (x <. y)
+        else if op == "Lt" then truth (_primLtF x y)
         else wrong
     | (Number.Float32 x, Number.Float32 y) if arity op == 2 ->
-        if op == "Add" then num (Number.Float32 (x +. y))
-        else if op == "Sub" then num (Number.Float32 (x -. y))
-        else if op == "Mul" then num (Number.Float32 (x *. y))
-        else if op == "Div" then num (Number.Float32 (x /. y))
+        if op == "Add" then num (Number.Float32 (_primAddF x y))
+        else if op == "Sub" then num (Number.Float32 (_primSubF x y))
+        else if op == "Mul" then num (Number.Float32 (_primMulF x y))
+        else if op == "Div" then num (Number.Float32 (_primDivF x y))
         else if op == "Eq" then truth (x == y)
-        else if op == "Lt" then truth (x <. y)
+        else if op == "Lt" then truth (_primLtF x y)
         else wrong
     | _ ->
         if arity op == 2 then wrong

@@ -374,7 +374,7 @@ fun floatText (text : String) : Float =
   let digits = stringSlice text 0 point ++ stringSlice text (point + 1) (stringByteLength text) in
   let whole = V.foldl (\acc i -> acc * 10 + (toInt (stringByteAt digits i) - 48)) 0 (V.range 0 (stringByteLength digits)) in
   let places = stringByteLength text - point - 1 in
-  toFloat whole /. V.foldl (\acc i -> acc *. 10.0) 1.0 (V.range 0 places)
+  _primDivF (toFloat whole) (V.foldl (\acc i -> _primMulF acc 10.0) 1.0 (V.range 0 places))
 
 -- A string literal's text, its escapes resolved as the Rust lexer resolves
 -- them.

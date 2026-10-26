@@ -40,3 +40,11 @@ Generated; don't edit by hand. To regenerate, from `idyll-eval/`:
 ```sh
 cargo run --release --example cut_corpus -- ../cut-corpus
 ```
+
+To run every program on a runtime and hold it to its `.expect` (CI does, on
+both), from the repository's root with `meadow` on the path:
+
+```sh
+python scripts/cut-corpus.py cut-corpus glade
+python scripts/cut-corpus.py cut-corpus silo
+```

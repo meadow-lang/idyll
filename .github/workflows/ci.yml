@@ -1,0 +1,84 @@
+# What `master` has to pass: the Rust compiler's tests (compiler/, the
+# driver's and the reference interpreter's), front/'s own tests, and the
+# comparisons between the two, and every program of the Cut corpus, on each
+# of Meadow's runtimes.
+#
+# It runs on every pull request, and on the merge queue's own commit -- the
+# branch as it will be once it is on `master` -- so nothing reaches `master`
+# that was not built and tested as `master` will have it. `master` takes pull
+# requests only, and this check is required of them.
+#
+# Meadow is the nightly build: front/ and the runtimes are what `master` of
+# Meadow has. compiler/'s front/ tests build front/ with it, and so do the
+# reference interpreter's, which also run front/'s Cut on Glade and Silo.
+
+name: ci
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            compiler -> ../target
+            idyll-driver -> ../target
+            idyll-eval -> ../target
+
+      - name: Install Meadow (nightly)
+        # The installer asks GitHub's API for the release; with a token it is
+        # not held to the limit on unauthenticated requests.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/meadow-lang/meadow/master/scripts/meadowup-init.sh | sh -s -- --version nightly
+          echo "$HOME/.meadow/bin" >> "$GITHUB_PATH"
+
+      - name: Versions
+        run: |
+          rustc --version
+          meadow --version
+          clang --version
+
+      - name: front/ (its own tests)
+        working-directory: front
+        run: meadow test
+
+      - name: The compiler (and front/ against it)
+        working-directory: compiler
+        run: cargo test --workspace --no-fail-fast
+
+      - name: The driver
+        working-directory: idyll-driver
+        run: cargo test --no-fail-fast
+
+      - name: The reference interpreter (and front/'s Cut on Glade and Silo)
+        working-directory: idyll-eval
+        run: cargo test --release --no-fail-fast
+
+      - name: The Cut corpus (Glade)
+        run: python3 scripts/cut-corpus.py cut-corpus glade
+      - name: The Cut corpus (Silo)
+        run: python3 scripts/cut-corpus.py cut-corpus silo
