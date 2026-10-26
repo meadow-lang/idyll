@@ -232,6 +232,14 @@ end.
    output, and the foreign interface from high-level code.
 5. **A real library in it**: a hash (SHA-256, say) checked against its pure
    specification and against a known C implementation.
+6. **What Meadow's runtime needs**, to be written in this fragment (Chris,
+   2026-10-26; Meadow's `docs/MEADOW-IN-IDYLL.md`): words with tagged
+   immediates, blocks typed by their headers, interior pointers, C function
+   pointers, C-layout structs, globals and a thread-local, C11 atomics,
+   trusted primitives (the stack switch, system calls, the instruction-cache
+   flush), a static library with LTO, and 128-bit and overflow-checked
+   arithmetic. ROADMAP.md lists them under *Low-level code*, in the order
+   the runtime uses them.
 
 ## Open questions
 

@@ -869,6 +869,34 @@ shows a type.
     it is called from the rest through a foreign interface; everything else
     stays on Cut, Glade and Silo.
 
+  **For Meadow's runtime written in Idyll** (Chris, 2026-10-26: "Eventually,
+  I want meadow (including the runtime) written in Idyll so we can get
+  maximum performance while also writing proofs for safety"). Meadow's plan
+  is `docs/MEADOW-IN-IDYLL.md` in the Meadow repository (meadow PR #32): the
+  runtime in this fragment, compiled to C and proved memory-safe, then
+  sound, replacing the Rust runtime a module at a time behind its C
+  interface, the layout and the allocator first; the compiler in high-level
+  Idyll, ported from MeadowBoot. Beyond `docs/LOW.md`'s steps 1 to 5 it
+  needs these, in the order it uses them (its *What Idyll must have first*
+  gives the reason for each; how each is designed is Idyll's to decide):
+
+  - [ ] **Words**: a `Word` type with tagged immediates, and a pointer read
+    as a word and back, with proofs.
+  - [ ] **Blocks typed by their headers**: a word buffer with a ghost map
+    from each field to what it holds.
+  - [ ] **Interior pointers**: offsets within an allocation, with in-bounds
+    proofs.
+  - [ ] **C function pointers**, and calls through them.
+  - [ ] **C-layout structs, globals**, and a thread-local for the running
+    thread's context.
+  - [ ] **C11 atomics**, trusted with simple specifications at first.
+  - [ ] **Trusted primitives with specifications**, listed in one module:
+    the stack switch, system calls, the instruction-cache flush.
+  - [ ] **A static library as output**, with exported names, `inline` and
+    `cold`, and LTO with the code LLVM emits.
+  - [ ] **128-bit products and overflow-checked arithmetic**, for big
+    integers and hashing.
+
   Rust-like borrowing in the core language (second-class `&` and `&mut`,
   lifetimes as terms, permission tokens; discussed 2026-09-30 and
   2026-10-16) is shelved behind this. It is still possible later, for
