@@ -470,9 +470,10 @@ examples need strings to take apart first (`Std.Yield` is the generators).
   Cut, through `meadow cut --emit`: the Cut inlined, its AxCut, and Silo's
   LLVM IR (`compiler/idyllic/src/inspect.rs`).
 
-- [x] **A package is checked a module SCC at a time** (Chris, 2026-10-21:
-  packages are the unit of the build, a batch compiler inside, parallel and
-  incremental at module SCCs, mutually recursive modules allowed). Done
+- [x] **A package is checked a module SCC at a time** (2026-10-21).
+  Packages are the unit of the build, with a batch compiler inside, for
+  speed, that is parallel and incremental at module SCCs, so modules may be
+  mutually recursive. Done
   2026-10-21 in Rust: `idyllic::parts` makes the graph of which module
   names which (a `use`, a qualified name, with or without the package's
   name; the package's name alone is the root), its SCCs are the parts, the
@@ -777,8 +778,8 @@ and a `Map` built with one `Ord` is rejected when used with another.
     handing the term back. Tactics are a small `syntax!` grammar. The goal
     stack is an input of the database.
 
-  Proposed to the Lingua session in place of a hook per feature (Chris,
-  2026-10-16): **panes** and **modes**, two separate things.
+  In place of a hook per feature (2026-10-16), Lingua is to have two
+  separate things: **panes** and **modes**.
   - **A pane** is a pop-up a language declares: how it opens (a key or a
     `:` command), its state, a key function (go on, put text on the line,
     enter text, or close) and a Doodle drawing. The finder becomes Lingua's
@@ -869,10 +870,10 @@ shows a type.
     it is called from the rest through a foreign interface; everything else
     stays on Cut, Glade and Silo.
 
-  **For Meadow's runtime written in Idyll** (Chris, 2026-10-26: "Eventually,
-  I want meadow (including the runtime) written in Idyll so we can get
-  maximum performance while also writing proofs for safety"). Meadow's plan
-  is `docs/MEADOW-IN-IDYLL.md` in the Meadow repository (meadow PR #32): the
+  **For Meadow's runtime written in Idyll** (2026-10-26). Why: Meadow, its
+  runtime included, is to be written in Idyll, so that the runtime has the
+  performance of low-level code and proofs of its safety beside it. Meadow's
+  plan is `docs/MEADOW-IN-IDYLL.md` in the Meadow repository (meadow PR #32): the
   runtime in this fragment, compiled to C and proved memory-safe, then
   sound, replacing the Rust runtime a module at a time behind its C
   interface, the layout and the allocator first; the compiler in high-level
@@ -1163,8 +1164,8 @@ do yet `(unsupported)`, and the tests count those apart.
   them (`Link`); Std is a unit of its own. front/'s compiled Std, whole and
   part by part, agrees with Rust's line for line, and the corpus types,
   lowers and runs alike against it. Git dependencies and the lockfile done
-  2026-10-24, on Lingua's shared resolver (`Lingua.Resolve`, Chris's go-ahead
-  that day; Lingua d3b76b8, Cut 3d96fa0): `version`/`tag`/`branch`/`rev`,
+  2026-10-24, on Lingua's shared resolver (`Lingua.Resolve`, shared with
+  MeadowBoot; Lingua d3b76b8, Cut 3d96fa0): `version`/`tag`/`branch`/`rev`,
   `idyll.lock` in the Rust driver's format (the Rust driver builds `--locked`
   from front/'s), `--offline`, `--locked`, `Idyll update [--dry-run]`; Std
   written under `~/.idyll/std/<hash>` (`front_builds_with_a_git_dependency`).
@@ -1176,7 +1177,7 @@ do yet `(unsupported)`, and the tests count those apart.
   LineEditor 0.2.2).
 - [ ] CI, with MeadowBoot's prerelease for the `meadow` it needs.
 - [ ] **The rest of the passes on Lingua's `lang!`/`pass!`**, as MeadowBoot's
-  are (Chris, 2026-10-18: "that's the whole point of Lingua"). Done:
+  are (2026-10-18): writing the compiler on Lingua is for this. Done:
   `Surface`, `Hir` and `Elaborated` are languages; the parser's lowering,
   the renamer, `Scc` (`regroup`) and the checker (`elab : Hir ->
   Elaborated`, bidirectional through its context's goal) are passes, and
