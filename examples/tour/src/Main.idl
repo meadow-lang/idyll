@@ -23,6 +23,7 @@ use Std.Collections.Vector (Vector)
 use Std.Collections.HashMap as H
 use Std.Collections.HashMap (HashMap)
 use Std.String as S
+use Std.Test (assertEq, assertTrue)
 
 -- --- numbers -----------------------------------------------------------------
 
@@ -78,3 +79,27 @@ main () =
   let u13 = putStrLn "== sequences and maps" in
   let counts = wordCounts "the cat and the hat and the bat" in
   putStrLn ("\"the\" appears " ++ display (H.getOr 0 "the" counts) ++ " times, \"cat\" " ++ display (H.getOr 0 "cat" counts))
+
+-- --- tests -------------------------------------------------------------------
+
+@test
+areasAreRight : () -> () ! Test
+areasAreRight u =
+  let a = assertEq (area (Rect 2.0 3.0)) 6.0 "a rectangle" in
+  assertTrue (area (Triangle 3.0 4.0 5.0) - 6.0 < 0.000001) "a 3-4-5 triangle has area 6"
+
+@test
+factorialIsGenericOverItsNumberType : () -> () ! Test
+factorialIsGenericOverItsNumberType u =
+  let a = assertEq (factorial 20) 2432902008176640000 "an Int" in
+  assertEq (factorial (toUInt8 5)) (toUInt8 120) "and a UInt8 while it fits"
+
+@test
+theSieveFindsThePrimes : () -> () ! Test
+theSieveFindsThePrimes u = assertEq (V.toList (primesBelow 20)) (2 :: 3 :: 5 :: 7 :: 11 :: 13 :: 17 :: 19 :: Nil) "below 20"
+
+@test
+wordsAreCounted : () -> () ! Test
+wordsAreCounted u =
+  let counts = wordCounts "a b a c a" in
+  assertEq (H.getOr 0 "a" counts, H.getOr 0 "b" counts, H.getOr 0 "z" counts) (3, 1, 0) "missing words count 0"

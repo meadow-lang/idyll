@@ -98,6 +98,38 @@ pub struct Deps<'a> {
     /// part whose inputs have not changed is read back rather than checked
     /// again (see [`PartStore`])
     pub parts: Option<&'a dyn PartStore>,
+    /// the tests to run, as the program, rather than its expression or
+    /// `main` (`idyll test`); the package is then checked whole, not in parts
+    pub tests: Option<&'a TestSelection>,
+}
+
+/// Which of a package's `@test` definitions `idyll test` runs: those whose
+/// name, `Module.test` (a bare `test` in the root module), contains
+/// `filter`, or with `exact` is it; all of them with no filter.
+#[derive(Clone, Debug, Default)]
+pub struct TestSelection {
+    pub filter: Option<String>,
+    pub exact: bool,
+}
+
+impl TestSelection {
+    pub fn selects(&self, name: &str) -> bool {
+        match &self.filter {
+            None => true,
+            Some(f) if self.exact => name == f,
+            Some(f) => name.contains(f.as_str()),
+        }
+    }
+}
+
+/// A test's name, as `idyll test` shows and selects it: `Module.test`, or
+/// the bare name in the root module.
+pub fn test_name(module: &idyllic_hir::Module, u: usize) -> String {
+    let text = module.groups.iter().flat_map(idyllic_hir::BindGroup::binds).find(|b| b.name.unique == Some(u)).map_or("?", |b| b.name.text.as_str());
+    match module.qualifiers.get(&u) {
+        Some(m) => format!("{m}.{text}"),
+        None => text.to_string(),
+    }
 }
 
 /// Where a build keeps the parts of a package (see [`crate::parts`]) it
@@ -561,7 +593,7 @@ pub(crate) fn with_std<R>(package: &str, deps: Deps<'_>, f: impl FnOnce(Deps<'_>
     let std_package = stdlib::compiled();
     let all: Vec<&CompiledPackage> = std::iter::once(&*std_package).chain(deps.all.iter().copied()).collect();
     let direct: Vec<(&str, &CompiledPackage)> = std::iter::once((NAME, &*std_package)).chain(deps.direct.iter().copied()).collect();
-    f(Deps { all: &all, direct: &direct, first_unique: deps.first_unique.max(std_package.uniques.end), parts: deps.parts })
+    f(Deps { all: &all, direct: &direct, first_unique: deps.first_unique.max(std_package.uniques.end), parts: deps.parts, tests: deps.tests })
 }
 
 /// The packages a checked program is to be linked with: all of `deps`,
@@ -651,7 +683,7 @@ pub(crate) fn front(package: &PackageSource, deps: Deps<'_>, opts: &Options, ent
     let parts = crate::parts::parts(&package.name, &paths, &texts);
     // (a module written inside a file whose path another module has is
     // the renamer's to report, which it can only with both in one part)
-    if parts.len() > 1 && !crate::parts::clash(&paths, &asts) {
+    if parts.len() > 1 && deps.tests.is_none() && !crate::parts::clash(&paths, &asts) {
         return Ok(parted(package, deps, &asts, &prelude, &parts, entry, diagnostics, sources));
     }
     // (in the one part's order: each module after those it uses)
@@ -671,7 +703,13 @@ pub(crate) fn front(package: &PackageSource, deps: Deps<'_>, opts: &Options, ent
             .iter()
             .map(rename::RenameError::to_diagnostic),
     );
-    let module = scc::scc_module(renamed.module);
+    let mut module = scc::scc_module(renamed.module);
+    // `idyll test`: the tests asked for are the program
+    if let Some(selection) = deps.tests {
+        module.testing = true;
+        let chosen: Vec<usize> = module.tests.iter().copied().filter(|&u| selection.selects(&test_name(&module, u))).collect();
+        module.tests = chosen;
+    }
     let checked = typecheck::check_module(&module, renamed.spans.len(), entry, deps.all);
     diagnostics.extend(
         checked

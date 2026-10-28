@@ -3035,6 +3035,40 @@ A member takes what the workspace says with `version.workspace = true` and
 all, `--exclude` leaves some out. A package compiled for one member is
 reused by the next.
 
+### Tests: `idyll test`
+
+`@test` on a definition's signature makes it a test: a `() -> ()` with at
+most the effects the runtime handles, as `main` is. A test fails by
+performing `Test`'s `fail`, which `Std.Test`'s assertions do, so a failure
+five calls down still stops it and still says what it was:
+
+```
+use Std.Test (assertEq)
+
+@test
+addsUp : () -> () ! Test
+addsUp u = assertEq (1 + 2) 3 "sums"
+```
+
+`idyll test` builds the package and runs every test in it, in every
+module, in the order they were written, one failing not stopping the
+others; and fails if any did:
+
+```
+$ idyll test
+running 3 tests
+test addsUp ... ok
+test breaks ... FAILED
+    doubling: expected 5, got 4
+test Maths.doubles ... ok
+
+test result: FAILED. 2 passed; 1 failed
+```
+
+A test is named `Module.test` (a bare `test` in the root module), and
+`idyll test doubl` runs those whose name contains `doubl`; `--exact` only
+the one named so. `idyll build` and `idyll run` leave the tests alone.
+
 ## The standard library
 
 Every package has Idyll's standard library, `Std`, with no

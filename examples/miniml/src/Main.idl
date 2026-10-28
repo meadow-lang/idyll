@@ -22,10 +22,13 @@
 use Parser (parse)
 use Infer (typeOf)
 use Eval (run)
-use Std.Console (prompt, println, withInput)
+use Std.Console (prompt, println, withInput, withOutput)
 use Std.String as S
 use Std.Collections.Vector as V
 use Std.Collections.Vector (Vector)
+use Std.Test (assertEq, assertTrue)
+use Std.Result (isErr)
+use Syntax (Expr)
 
 -- What the REPL says of one line: the value and its type, or the first
 -- thing that went wrong. Apart, so it can be checked with no terminal.
@@ -74,3 +77,135 @@ main () =
 demoAsked : (given : List String) -> Bool
 demoAsked (first :: rest) = first == "--demo"
 demoAsked Nil = False
+
+-- --- tests -------------------------------------------------------------------
+--
+-- Meadow's: the parser, the checker and the evaluator each have their own,
+-- and the REPL one that drives the whole thing through `Console`, with no
+-- terminal: the same `loop` that `main` calls.
+
+typeOfSource : (src : String) -> Result String String ! {Mut, Div}
+typeOfSource src = case parse src of
+  Err e -> Err e
+  Ok ast -> typeOf ast
+
+runSource : (src : String) -> Result String String ! {Mut, Div}
+runSource src = case parse src of
+  Err e -> Err e
+  Ok ast -> case typeOf ast of
+    Err e -> Err e
+    Ok ty -> run ast
+
+@test
+parsesArithmetic : () -> () ! Test
+parsesArithmetic u = assertEq (parse "1 + 2 * 3") (Ok (Expr.Bin "+" (Expr.Int 1) (Expr.Bin "*" (Expr.Int 2) (Expr.Int 3)))) "precedence"
+
+@test
+parsesLet : () -> () ! Test
+parsesLet u = assertEq (parse "let x = 1 in x") (Ok (Expr.Let "x" (Expr.Int 1) (Expr.Var "x"))) "let"
+
+@test
+parsesLambdaAndApp : () -> () ! Test
+parsesLambdaAndApp u =
+  assertEq (parse "(fun x y -> x) 1 2") (Ok (Expr.App (Expr.App (Expr.Lam "x" (Expr.Lam "y" (Expr.Var "x"))) (Expr.Int 1)) (Expr.Int 2))) "curried"
+
+@test
+parsesLetRec : () -> () ! Test
+parsesLetRec u =
+  assertEq (parse "let rec f n = f n in f 1") (Ok (Expr.LetRec "f" "n" (Expr.App (Expr.Var "f") (Expr.Var "n")) (Expr.App (Expr.Var "f") (Expr.Int 1)))) "let rec"
+
+@test
+keywordsAreNotIdentifiers : () -> () ! Test
+keywordsAreNotIdentifiers u = assertEq (parse "letter") (Ok (Expr.Var "letter")) "`let` begins `letter`"
+
+@test
+infersSimpleTypes : () -> () ! {Test, Mut, Div}
+infersSimpleTypes u =
+  let a = assertEq (typeOfSource "1 + 1") (Ok "Int") "a sum" in
+  let b = assertEq (typeOfSource "1 < 2") (Ok "Bool") "a comparison" in
+  let c = assertEq (typeOfSource "fun x -> x + 1") (Ok "(Int -> Int)") "a function" in
+  assertEq (typeOfSource "if true then 1 else 2") (Ok "Int") "an if"
+
+@test
+infersPolymorphicIdentity : () -> () ! {Test, Mut, Div}
+infersPolymorphicIdentity u = assertEq (typeOfSource "fun x -> x") (Ok "(t0 -> t0)") "identity"
+
+-- `id` is used at two types, which works only if the `let` generalized it.
+@test
+letIsGeneralized : () -> () ! {Test, Mut, Div}
+letIsGeneralized u = assertEq (typeOfSource "let id = fun x -> x in if id true then id 1 else 2") (Ok "Int") "let-polymorphism"
+
+-- The same function bound by a lambda: monomorphic, so using it at two
+-- types fails. This is the difference `let` makes.
+@test
+lambdaIsNotGeneralized : () -> () ! {Test, Mut, Div}
+lambdaIsNotGeneralized u = assertTrue (isErr (typeOfSource "(fun id -> if id true then id 1 else 2) (fun x -> x)")) "lambda-bound names are monomorphic"
+
+@test
+occursCheckFires : () -> () ! {Test, Mut, Div}
+occursCheckFires u = assertEq (typeOfSource "fun x -> x x") (Err "occurs check: a type would contain itself") "self-application"
+
+@test
+mismatchIsReported : () -> () ! {Test, Mut, Div}
+mismatchIsReported u = assertEq (typeOfSource "1 + true") (Err "cannot unify Bool with Int") "adding a bool"
+
+@test
+unboundIsReported : () -> () ! {Test, Mut, Div}
+unboundIsReported u = assertEq (typeOfSource "x + 1") (Err "unbound variable: x") "unbound"
+
+@test
+recursiveFunctionsType : () -> () ! {Test, Mut, Div}
+recursiveFunctionsType u = assertEq (typeOfSource "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 5") (Ok "Int") "factorial"
+
+@test
+evaluatesArithmetic : () -> () ! {Test, Mut, Div}
+evaluatesArithmetic u =
+  let a = assertEq (runSource "1 + 2 * 3") (Ok "7") "precedence" in
+  let b = assertEq (runSource "(1 + 2) * 3") (Ok "9") "parentheses" in
+  let c = assertEq (runSource "7 / 2") (Ok "3") "division" in
+  assertEq (runSource "1 < 2") (Ok "true") "a comparison"
+
+@test
+evaluatesClosures : () -> () ! {Test, Mut, Div}
+evaluatesClosures u = assertEq (runSource "let add = fun x y -> x + y in let inc = add 1 in inc 41") (Ok "42") "partial application captures"
+
+@test
+evaluatesRecursion : () -> () ! {Test, Mut, Div}
+evaluatesRecursion u = assertEq (runSource "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 10") (Ok "3628800") "factorial"
+
+@test
+evaluatesMutualShadowing : () -> () ! {Test, Mut, Div}
+evaluatesMutualShadowing u = assertEq (runSource "let x = 1 in let x = x + 1 in x") (Ok "2") "shadowing sees the old binding"
+
+@test
+divisionByZeroIsCaught : () -> () ! {Test, Mut, Div}
+divisionByZeroIsCaught u = assertEq (runSource "1 / 0") (Err "division by zero") "a run-time error, not a crash"
+
+@test
+replReportsTypeAndValue : () -> () ! {Test, Mut, Div}
+replReportsTypeAndValue u = assertEq (replLine "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 5") "120 : Int" "value and type"
+
+@test
+replReportsEachKindOfFailure : () -> () ! {Test, Mut, Div}
+replReportsEachKindOfFailure u =
+  let a = assertTrue (S.contains ":" (replLine "1 +")) "a parse error" in
+  let b = assertTrue (S.contains ":" (replLine "1 + true")) "a type error" in
+  assertTrue (S.contains ":" (replLine "1 / 0")) "a run-time error"
+
+-- `main`'s own loop, driven by the `Console` effect: no terminal involved.
+@test
+replRunsUnderWithInput : () -> () ! {Test, Console, Mut, Div}
+replRunsUnderWithInput u =
+  case withOutput (\(v : ()) -> withInput (V.fromList ("1 + 1" :: "let id = fun x -> x in id 41" :: ":q" :: Nil)) loop) of
+    (x, transcript) -> assertEq transcript "> 2 : Int\n> 41 : Int\n> " "a session plays through"
+
+-- `g`'s type comes from the lambda-bound `f`, so the `let` must not
+-- generalize it: quantifying everything free in the right-hand side would
+-- accept this, and levels are what refuse it.
+@test
+levelsPreventUnsoundGeneralization : () -> () ! {Test, Mut, Div}
+levelsPreventUnsoundGeneralization u = assertTrue (isErr (typeOfSource "fun f -> let g = f in if g true then g 1 else 2")) "a let whose type escaped into the environment"
+
+@test
+levelsStillGeneralizeWhatTheyShould : () -> () ! {Test, Mut, Div}
+levelsStillGeneralizeWhatTheyShould u = assertEq (typeOfSource "let g = fun x -> x in if g true then g 1 else 2") (Ok "Int") "a let that is really local"

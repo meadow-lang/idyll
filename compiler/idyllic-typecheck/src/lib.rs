@@ -117,6 +117,7 @@ pub mod prune;
 mod positivity;
 mod sequences;
 mod termination;
+mod tests;
 pub mod typer;
 mod unify;
 pub mod value;
@@ -469,6 +470,10 @@ pub enum TypeErrorKind {
     /// a `main` that is not `() -> () ! Eff`, or has effects `Eff` does not
     /// have
     MainType(Rc<Core>),
+    /// a `@test` that is not `() -> ()` with the runtime's effects
+    TestType { name: String, ty: Rc<Core> },
+    /// tests to run, and no `Std.Test` to run them with
+    NoTestRunner,
 }
 
 /// Where a data type appears that makes it fail strict positivity.
@@ -834,6 +839,11 @@ impl TypeError {
             TypeErrorKind::BadSeq { data, why } => {
                 Diagnostic::error(format!("{data} cannot be built with #[..]")).label(here, why.clone())
             }
+            TypeErrorKind::TestType { name, ty } => Diagnostic::error("a test has the wrong type")
+                .label(here, format!("{name} is {ty}"))
+                .help("a test takes () and gives (), with at most the effects the runtime handles, as main does: t : () -> () ! Eff"),
+            TypeErrorKind::NoTestRunner => Diagnostic::error("nothing to run the tests with")
+                .help("idyll test runs them with Std.Test's testsStart, testCase and testsDone"),
             TypeErrorKind::MainType(ty) => Diagnostic::error("main has the wrong type")
                 .label(here, format!("main is {ty}"))
                 .help("main takes () and gives (), with at most the effects the runtime handles: main : () -> () ! Eff"),
@@ -1574,6 +1584,13 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
             (call, Rc::new(Core::LitTy(Builtin::Unit)))
         }),
         (None, _) => None,
+    };
+    // `idyll test`: the tests, in place of the expression or `main`
+    let body = if m.testing && entry {
+        uses = Some(m.tests.iter().fold(Usage::none(), |u, t| u + Usage::var(*t)));
+        tc.tests_program(&ctx, m, deps, world.clone()).map(|c| (c, Rc::new(Core::LitTy(Builtin::Unit))))
+    } else {
+        body
     };
     let ran_main = m.body.is_none() && body.is_some();
     let program = body.as_ref().map(|(core, _)| Checker::wrap_lets(core.clone(), lets.clone()));

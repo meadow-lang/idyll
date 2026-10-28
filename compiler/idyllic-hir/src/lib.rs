@@ -309,6 +309,12 @@ pub struct Module {
     /// the definitions `@terminating` vouches for: they need not say
     /// `! Div`, though the checker cannot see that they end
     pub terminating: std::collections::HashSet<usize>,
+    /// the package's tests, the definitions marked `@test`, in the order
+    /// they were written
+    pub tests: Vec<usize>,
+    /// whether the program is to run the tests in `tests` rather than its
+    /// expression or `main` (`idyll test`): set by whoever compiles it
+    pub testing: bool,
     /// the definitions `@hint` offers to the search for an auto argument
     pub hints: std::collections::HashSet<usize>,
     /// each trait's superclasses, as the projections of its record that

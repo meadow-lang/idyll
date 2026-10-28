@@ -186,3 +186,19 @@ fn miniml_types_and_runs_its_programs() {
         assert!(out.contains(line), "no {line:?} in:\n{out}");
     }
 }
+
+#[test]
+fn the_examples_own_tests_pass() {
+    // their `@test` definitions, Meadow's for the ones ported from Meadow, as
+    // `idyll test` runs them
+    for (name, count) in [("tour", 4), ("rps", 4), ("miniml", 23)] {
+        let dir = example(name, "test");
+        let printed = common::on_big_stack(|| {
+            let out = pipeline::build_tests(&dir, Profile::Debug, &common::OPTS, &Default::default());
+            assert!(said(&out).is_empty(), "{name}: {:?}", said(&out));
+            idyllic::pipeline::run_compiled(&out.packages(), &common::OPTS, Vec::new()).printed.replace("\r\n", "\n")
+        });
+        let summary = format!("test result: ok. {count} passed; 0 failed");
+        assert!(printed.contains(&summary), "{name}:\n{printed}");
+    }
+}

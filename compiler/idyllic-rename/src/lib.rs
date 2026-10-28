@@ -187,6 +187,8 @@ struct Renamer {
     fields: HashMap<usize, Vec<(String, usize)>>,
     /// the definitions marked `@terminating`
     terminating: std::collections::HashSet<usize>,
+    /// the definitions marked `@test`, in order
+    tests: Vec<usize>,
     /// the definitions marked `@hint`
     hints: std::collections::HashSet<usize>,
     /// each trait's methods with a default, the default, and whether the
@@ -477,6 +479,8 @@ pub fn rename_part(
         names: names_given,
         uniques: (first, r.next_unique),
         terminating: r.terminating,
+        tests: r.tests,
+        testing: false,
         hints: r.hints,
         supers: r.supers,
         methods: r.methods,
@@ -547,6 +551,7 @@ impl Renamer {
             twins: HashMap::new(),
             fields: HashMap::new(),
             terminating: Default::default(),
+            tests: Vec::new(),
             hints: Default::default(),
             defaults: HashMap::new(),
             supers: HashMap::new(),
@@ -653,6 +658,11 @@ impl Renamer {
         for (_, name, _) in &defs {
             if let (Some(u), true) = (name.unique, prog.terminating.iter().any(|x| x.node == name.text)) {
                 self.terminating.insert(u);
+            }
+            if let (Some(u), true) = (name.unique, prog.tests.iter().any(|x| x.node == name.text)) {
+                if !self.tests.contains(&u) {
+                    self.tests.push(u);
+                }
             }
             if let (Some(u), true) = (name.unique, prog.hints.iter().any(|x| x.node == name.text)) {
                 self.hints.insert(u);

@@ -83,6 +83,23 @@ enum Cmd {
         #[arg(last = true, value_name = "ARGS")]
         args: Vec<String>,
     },
+    /// Build a package and run its `@test` definitions: each a `() -> ()`
+    /// that fails by performing `Test`'s `fail` (`Std.Test`'s assertions
+    /// do), one failing not stopping the rest.
+    Test {
+        /// Run only the tests whose name, `Module.test` (a bare `test` in the
+        /// root module), contains this.
+        #[arg(value_name = "FILTER")]
+        filter: Option<String>,
+        /// Run only the test whose whole name is the filter.
+        #[arg(long, requires = "filter")]
+        exact: bool,
+        /// Package directory (or a single `.idl` file).
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        #[command(flatten)]
+        profile: ProfileArgs,
+    },
     /// Create a package: an `Idyll.toml` and a `src/Main.idl` that runs.
     ///
     /// Inside a workspace, the new package is added to its `members`.
@@ -297,6 +314,11 @@ fn command() -> ExitCode {
             let selected = select(&selection, &path);
             let one = exit_on_error(selected.one("run"));
             run(one, resolved, &opts, cli.cut, &args)
+        }
+        Some(Cmd::Test { filter, exact, path, profile }) => {
+            let resolved = profile.resolve(&path);
+            let selection = idyllic::pipeline::TestSelection { filter, exact };
+            test(&path, resolved, &opts, &selection)
         }
         Some(Cmd::Add { what, branch, tag, rev, rename, path }) => {
             let reference = match (branch, tag, rev) {
@@ -529,6 +551,31 @@ fn executable(
 }
 
 /// Build the package at `path` and run it.
+/// `idyll test`: the package built with its tests for its program, and run
+/// on Glade; the program says how each went, and fails if any did.
+fn test(path: &Path, profile: Resolved, opts: &Options, selection: &idyllic::pipeline::TestSelection) -> ExitCode {
+    let started = std::time::Instant::now();
+    let out = pipeline::build_tests(path, profile.profile, opts, selection);
+    report(&out.problem, &out.reported);
+    let name = name_of(&out, path);
+    if out.errors() > 0 {
+        return could_not_compile(&name, out.errors());
+    }
+    finished(&profile, started);
+    status::status("Running", format!("`{name}`'s tests"));
+    let ran = idyllic::pipeline::run_compiled(&out.packages(), opts, Vec::new());
+    let shown = ran.display("", "", opts.style);
+    if !shown.is_empty() {
+        println!("{shown}");
+    }
+    match &ran.evaluation {
+        _ if ran.has_errors() => ExitCode::FAILURE,
+        Some(Evaluation::Exited(code)) => ExitCode::from(*code as u8),
+        Some(Evaluation::Stopped(_) | Evaluation::Failed(_)) => ExitCode::FAILURE,
+        _ => ExitCode::SUCCESS,
+    }
+}
+
 fn run(path: &Path, profile: Resolved, opts: &Options, cut: bool, args: &[String]) -> ExitCode {
     let started = std::time::Instant::now();
     let out = pipeline::build(path, profile.profile, opts);

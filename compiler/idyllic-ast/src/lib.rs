@@ -242,6 +242,8 @@ pub struct Program {
     /// the definitions `@terminating` says end, though the checker cannot
     /// see why
     pub terminating: Vec<Ident>,
+    /// the definitions `@test` makes tests, which `idyll test` runs
+    pub tests: Vec<Ident>,
     /// the definitions `@hint` offers to the search for an auto argument
     pub hints: Vec<Ident>,
     /// `@linear`: an unannotated binder here is linear, `[1]`, rather than

@@ -1094,3 +1094,15 @@ greet u = case prompt "name: " of
   Nothing -> 0
 
 (withOutput (\(u : ()) -> withInput (V.fromList ("ada" :: Nil)) greet), withOutput (\(u : ()) -> withInput V.empty greet))
+%%%
+-- @test on a definition: a test idyll test runs, and an ordinary definition to everything else
+use Std.Test (assertEq)
+
+double : (n : Int) -> Int
+double n = n * 2
+
+@test
+doubles : () -> () ! Test
+doubles u = assertEq (double 21) 42 "forty-two"
+
+double 4

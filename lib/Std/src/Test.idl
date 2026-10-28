@@ -65,3 +65,29 @@ failure act = case outcome act of
 @pub
 assertFails : {a : Type} -> (act : (u : ()) -> a ! {Test | r}) -> (msg : String) -> () ! {Test | r}
 assertFails act msg = let failed = didFail act in assert failed ("expected a failure: " ++ msg)
+
+-- --- running tests ------------------------------------------------------------
+--
+-- What `idyll test` runs a package's `@test` definitions with, in order: how
+-- many there are, then each, then how they went, in Meadow's `meadow test`
+-- lines (a failure's message under its line, rather than at the end).
+
+@pub
+testsStart : (total : Int) -> () ! Console
+testsStart total = putStrLn ("running " ++ showInt total ++ (if total == 1 then " test" else " tests"))
+
+-- One test: `body`, its failure caught, and a line saying how it went; `1`
+-- if it passed, `0` if it failed.
+@pub
+testCase : (name : String) -> (body : (u : ()) -> () ! Eff) -> Int ! Eff
+testCase name body = handle body () with
+  return x -> let u = putStrLn ("test " ++ name ++ " ... ok") in 1
+  fail message k -> let u = putStrLn ("test " ++ name ++ " ... FAILED") in let v = putStrLn ("    " ++ message) in 0
+
+-- How they went; the program fails, exit status 1, if any did.
+@pub
+testsDone : (passed : Int) -> (total : Int) -> () ! Eff
+testsDone passed total =
+  let failed = total - passed in
+  let u = putStrLn ("\ntest result: " ++ (if failed == 0 then "ok" else "FAILED") ++ ". " ++ showInt passed ++ " passed; " ++ showInt failed ++ " failed") in
+  if failed == 0 then () else exit 1

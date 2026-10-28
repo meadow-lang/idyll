@@ -196,12 +196,15 @@ record Attrs = {
   native : Bool,
   terminating : Bool,
   hint : Bool,
+  -- `@test`, on a signature: the definition is a test, which `idyll test`
+  -- runs (the Rust driver's; front/ reads it and checks where it is)
+  test : Bool,
   linear : Bool,
   -- `@derive(Display, PartialEq)`: the traits, each with where it is written
   derive : Maybe [(Syn, String)]
 }
 
-def noAttrs = Attrs { seq = None, vis = None, native = False, terminating = False, hint = False, linear = False, derive = None }
+def noAttrs = Attrs { seq = None, vis = None, native = False, terminating = False, hint = False, test = False, linear = False, derive = None }
 
 -- What the passes carry down the tree: a record's earlier fields, which a
 -- later one's type reads off `self` -- each field's name, and the record's
@@ -1689,7 +1692,7 @@ fun useDecl out (cx : Cx) (d : IdyllUseDecl) =
 
 -- --- attributes ------------------------------------------------------------------------
 
-data Attribute = Seq String String | Vis Visibility | Native | Terminating | Hint | Linear | Derive [(Syn, String)]
+data Attribute = Seq String String | Vis Visibility | Native | Terminating | Hint | Test | Linear | Derive [(Syn, String)]
 
 fun attribute (line : IdyllAttrLine) =
   let name = textOf (idyllAttrLineName line) in
@@ -1711,6 +1714,7 @@ fun attribute (line : IdyllAttrLine) =
   | ("native", 0, _, _) -> Just Attribute.Native
   | ("terminating", 0, _, _) -> Just Attribute.Terminating
   | ("hint", 0, _, _) -> Just Attribute.Hint
+  | ("test", 0, _, _) -> Just Attribute.Test
   | ("linear", 0, _, _) -> Just Attribute.Linear
   -- `@derive(Display, PartialEq)`: upper-case names, and nothing else
   | ("derive", c, _, _) if c >= 2 ->
@@ -1737,6 +1741,7 @@ fun attrsOf (at : Syn) (lines : [IdyllAttrLine]) : Attrs ! { Report | e } =
       | Just Attribute.Terminating ->
           if acc.terminating then let u = twice () in acc else { acc | terminating = True }
       | Just Attribute.Hint -> if acc.hint then let u = twice () in acc else { acc | hint = True }
+      | Just Attribute.Test -> if acc.test then let u = twice () in acc else { acc | test = True }
       | Just Attribute.Linear -> { acc | linear = True }
       | Just (Attribute.Derive ts) -> if M.isSome acc.derive then let u = twice () in acc else { acc | derive = Just ts }
       | None -> acc)
@@ -2275,7 +2280,7 @@ fun itemOf out (it : IdyllItem) =
     | Just (IdyllItemBody.Line l) ->
         (match lineItem out cx l with
          -- an upper-case signature with an attribute on it
-         | Item.Expr e if (M.isSome a.vis or a.terminating or a.hint) and not a.native ->
+         | Item.Expr e if (M.isSome a.vis or a.terminating or a.hint or a.test) and not a.native ->
              (match upperSig out (metaOf at) e with
               | Just d -> Item.Decl d
               | None -> Item.Expr e)
@@ -2302,6 +2307,13 @@ fun itemOf out (it : IdyllItem) =
       match item with
       | Item.Decl d -> if kindSurfaceDecl out d == SurfaceDeclKind.Sig then () else bad at "@hint goes on a definition's signature, f : a"
       | _ -> bad at "@hint goes on a definition's signature, f : a"
+    else ()
+  in
+  let u5 =
+    if a.test then
+      match item with
+      | Item.Decl d -> if kindSurfaceDecl out d == SurfaceDeclKind.Sig then () else bad at "@test goes on a definition's signature, f : () -> ()"
+      | _ -> bad at "@test goes on a definition's signature, f : () -> ()"
     else ()
   in
   let u3 =

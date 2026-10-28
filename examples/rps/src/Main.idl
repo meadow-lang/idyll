@@ -7,7 +7,8 @@
 -- terminal and no entropy anywhere near it, by `Std.Console.withInput` and
 -- `Std.Random.withSeed`. `idyll run -- --demo` plays a game that way.
 
-use Std.Console (prompt, println, withInput)
+use Std.Console (prompt, println, withInput, withOutput)
+use Std.Test (assertEq, assertTrue)
 use Std.Random as R
 use Std.String as S
 use Std.Collections.Vector as V
@@ -100,3 +101,37 @@ main () = if demoAsked (args ()) then R.withSeed 7 (\(v : ()) -> withInput (V.fr
 demoAsked : (given : List String) -> Bool
 demoAsked (first :: rest) = first == "--demo"
 demoAsked Nil = False
+
+-- --- tests -------------------------------------------------------------------
+
+-- Each choice beats one other and loses to one, so following `beats` three
+-- times comes back to where it started.
+@test
+beatingIsACycle : () -> () ! Test
+beatingIsACycle u = assertEq (beats (beats (beats Rock))) Rock "rock -> scissors -> paper -> rock"
+
+@test
+judgingAgreesWithBeating : () -> () ! Test
+judgingAgreesWithBeating u =
+  let a = assertEq (judge Rock Scissors) Win "rock beats scissors" in
+  let b = assertEq (judge Scissors Rock) Lose "and loses the other way round" in
+  assertEq (judge Paper Paper) Draw "a draw"
+
+@test
+inputIsForgiving : () -> () ! Test
+inputIsForgiving u =
+  let a = assertEq (parseChoice "ROCK") (Just Rock) "case" in
+  let b = assertEq (parseChoice " p ") (Just Paper) "space and shorthand" in
+  let c = assertEq (parseChoice "Scissors") (Just Scissors) "a capital" in
+  assertEq (parseChoice "banana") Nothing "not a move"
+
+-- The whole game, with no terminal and no entropy: `withInput` gives the
+-- moves and `Random` is seeded, so what it prints is the same every time.
+-- It runs `game` itself: if the loop, the tally or the reading broke, this
+-- fails.
+@test
+playsAFullRound : () -> () ! {Test, Console, Div}
+playsAFullRound u =
+  let played = withOutput (\(v : ()) -> R.withSeed 7 (\(w : ()) -> withInput (V.fromList ("rock" :: "nonsense" :: "paper" :: "quit" :: Nil)) game)) in
+  case played of
+    (x, transcript) -> assertTrue (S.contains "You won 1, lost 0, drew 1." transcript) "the game plays through to its summary"

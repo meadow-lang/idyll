@@ -861,8 +861,18 @@ accepted when what it does fits within what resuming was found to.
 
 ## Phase 6: Testing and tooling
 
-- [ ] **`@test` functions and `idyll test`**, with Meadow's name filtering,
-  built on the `Test` effect.
+- [x] **`@test` functions and `idyll test`**, with Meadow's name filtering,
+  built on the `Test` effect. A test is checked as `main` is, `() -> ()`
+  with the runtime's effects; `idyll test [FILTER] [--exact]` builds the
+  package whole (not in parts, so every module's tests are found, and not
+  kept, its program being the tests) with `Std.Test`'s runner for its
+  program: `testsStart`, then `testCase` over each test (its `Test`
+  handled, a line said), then `testsDone`, which exits with status 1 if
+  any failed. The examples carry Meadow's tests of them (MiniML's 23 among
+  them). front/ reads `@test` and checks where it is; running tests is the
+  Rust driver's. Still to come: a test's own panic (dividing by zero)
+  stops the rest, as it is no `Test` failure, and what a test prints is not
+  kept apart.
 - [ ] **The formatter** (`meadow-fmt`, adapted to Idyll's layout rules),
   breaking a long signature as the principles above set it out.
 - [ ] **The language server** (`meadow-lsp`). Joining the renamer's span

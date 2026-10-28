@@ -322,6 +322,9 @@ each at the place it was made from:
   definition per default, `Describe.#twice`. The head is read as a term
   and taken apart (`traitHead`), afresh wherever a part of it is written,
   so that no node is shared;
+- `@test` on a signature, which is read and checked to be on one (a
+  definition `idyll test` runs); the tests themselves are run by the Rust
+  driver, front/ having no `test` command yet;
 - `instance [name :] head where` and its equations: a `@terminating`
   definition of the record, a hint unless it is named, whose body is
   `RecordOf` (the trait, its arguments, each method's equations as

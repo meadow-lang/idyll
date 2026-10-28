@@ -33,13 +33,13 @@ fn slot_start(slot: usize) -> usize {
 }
 
 fn library(name: &str, root: &str, all: &[&CompiledPackage], direct: &[(&str, &CompiledPackage)], slot: usize) -> CompiledPackage {
-    let out = pipeline::compile_package_with(&package(name, root), Deps { all, direct, first_unique: slot_start(slot), parts: None }, &OPTIONS);
+    let out = pipeline::compile_package_with(&package(name, root), Deps { all, direct, first_unique: slot_start(slot), parts: None, tests: None }, &OPTIONS);
     assert!(out.diagnostics.is_empty(), "{name}: {:#?}", diags(&out));
     out.checked.and_then(|c| c.compiled).expect("a package that checks is compiled")
 }
 
 fn program(root: &str, all: &[&CompiledPackage], direct: &[(&str, &CompiledPackage)]) -> pipeline::Output {
-    let deps = Deps { all, direct, first_unique: slot_start(9), parts: None };
+    let deps = Deps { all, direct, first_unique: slot_start(9), parts: None, tests: None };
     pipeline::run_package_with(&package("App", root), deps, &OPTIONS, Vec::new())
 }
 
@@ -163,7 +163,7 @@ fn a_program_runs_from_compiled_packages_alone() {
     // own too, read back compiled, linked, and run
     let util = library("Util", UTIL, &[], &[], 1);
     let root = "use Util (double)\n\nmain () = printInt (double 21)\n";
-    let deps = Deps { all: &[&util], direct: &[("Util", &util)], first_unique: slot_start(2), parts: None };
+    let deps = Deps { all: &[&util], direct: &[("Util", &util)], first_unique: slot_start(2), parts: None, tests: None };
     let out = pipeline::check_package_with(&package("App", root), deps, &OPTIONS, true);
     assert!(out.diagnostics.is_empty(), "{:#?}", diags(&out));
     assert!(out.evaluation.is_none(), "only checked");
