@@ -1,0 +1,217 @@
+-- Hindley-Milner type inference, Algorithm J.
+--
+-- The difference from Algorithm W, and the reason to write J: W builds a
+-- substitution and threads it through every recursive call, composing as
+-- it goes. J puts a mutable cell in the type variable instead, so unifying
+-- writes the answer where everyone can already see it, and nothing has to
+-- be threaded. Inferring gives a type and nothing else.
+--
+-- That is what `Ty.Var (Ref Tv)` is for, and why every function here has
+-- `Mut` in its type: the mutation is real, and the type says so. A failure,
+-- a mismatch or an unbound name, is `Exn String`, which unwinds to
+-- `typeOf` with nothing between mentioning it.
+--
+-- Generalizing uses levels, after Rémy. Every variable records the depth
+-- of `let`s it was made at. Generalizing at depth `d`, a variable may be
+-- quantified exactly when its level is greater than `d`: it was invented
+-- inside this `let`, and cannot have escaped into the environment. That
+-- replaces the textbook look for free variables of the environment, which
+-- is right and quadratic.
+--
+-- `Expr` and `Ty` share `Int`, `Bool` and `Var`, and so does the language:
+-- every constructor here is written under its type, `Expr.Int`, `Ty.Int`,
+-- `Tv.Link`, which says which one a line means.
+
+use Syntax (Expr, Ty, Tv, Scheme)
+use Std.Collections.Vector as V
+use Std.Collections.Vector (Vector)
+use Std.String as S
+use Std.Exn (Exn, throw, toResult)
+
+-- What inferring may do: change cells, give up with a message, and recur
+-- over types that are graphs of cells, which nothing sees end.
+effect Infers = {Mut, Exn String, Div}
+
+-- --- the variable supply -------------------------------------------------------
+--
+-- One counter for the whole run, in a `Ref`. A fresh variable starts
+-- `Unbound` at the level it is made at.
+
+newTv : (counter : Ref Int) -> (level : Int) -> Ty ! Mut
+newTv counter level =
+  let n = getRef counter in
+  let ignored = setRef counter (n + 1) in
+  Ty.Var (newRef (Tv.Unbound n level))
+
+-- Links followed to what a type is now. Not path compression, which a toy
+-- can do without, but the same idea.
+force : (t : Ty) -> Ty ! {Mut, Div}
+force (Ty.Var r) = case getRef r of
+  Tv.Link inner -> force inner
+  Tv.Unbound n l -> Ty.Var r
+force other = other
+
+-- --- unification ---------------------------------------------------------------
+
+@pub
+typeName : (t : Ty) -> String ! {Mut, Div}
+typeName t = case force t of
+  Ty.Int -> "Int"
+  Ty.Bool -> "Bool"
+  Ty.Fun a b -> "(" ++ typeName a ++ " -> " ++ typeName b ++ ")"
+  Ty.Var r -> case getRef r of
+    Tv.Unbound n l -> "t" ++ S.fromInt n
+    Tv.Link inner -> typeName inner
+
+-- The occurs check, which lowers levels too.
+--
+-- Two jobs in one walk, as is usual: refuse `t = t -> t`, which would make
+-- an infinite type, and pull every variable inside `t` down to `level`, so
+-- that one escaping into an outer scope stops being generalizable.
+occursAdjust : (id : Int) -> (level : Int) -> (t : Ty) -> () ! Infers
+occursAdjust id level t = case force t of
+  Ty.Var r -> case getRef r of
+    Tv.Unbound n l ->
+      if n == id then throw "occurs check: a type would contain itself"
+      else if l > level then setRef r (Tv.Unbound n level)
+      else ()
+    Tv.Link inner -> occursAdjust id level inner
+  Ty.Fun a b ->
+    let ignored = occursAdjust id level a in
+    occursAdjust id level b
+  other -> ()
+
+-- Two variables are the same cell when, unbound, they have the same id:
+-- every cell `newTv` makes has an id of its own.
+unify : (a : Ty) -> (b : Ty) -> () ! Infers
+unify a b = case (force a, force b) of
+  (Ty.Int, Ty.Int) -> ()
+  (Ty.Bool, Ty.Bool) -> ()
+  (Ty.Fun a1 b1, Ty.Fun a2 b2) -> let ignored = unify a1 a2 in unify b1 b2
+  (Ty.Var r1, Ty.Var r2) -> case (getRef r1, getRef r2) of
+    (Tv.Unbound n1 l1, Tv.Unbound n2 l2) ->
+      if n1 == n2 then ()
+      else let ignored = occursAdjust n1 l1 (Ty.Var r2) in setRef r1 (Tv.Link (Ty.Var r2))
+    other -> bind r1 (Ty.Var r2)
+  (Ty.Var r, other) -> bind r other
+  (other, Ty.Var r) -> bind r other
+  (x, y) -> throw ("cannot unify " ++ typeName x ++ " with " ++ typeName y)
+
+-- The variable in `r`, if unbound, made `t`; otherwise what it is unified
+-- with `t`.
+bind : (r : Ref Tv) -> (t : Ty) -> () ! Infers
+bind r t = case getRef r of
+  Tv.Unbound n l ->
+    let ignored = occursAdjust n l t in
+    setRef r (Tv.Link t)
+  Tv.Link inner -> unify inner t
+
+-- --- generalizing and instantiating ----------------------------------------------
+
+-- Every `Unbound` id in `t` whose level is deeper than `level`: the
+-- variables this `let` owns, and so may quantify.
+freeAbove : (level : Int) -> (t : Ty) -> (acc : Vector Int) -> Vector Int ! {Mut, Div}
+freeAbove level t acc = case force t of
+  Ty.Var r -> case getRef r of
+    Tv.Unbound n l -> if l > level then (if V.elem n acc then acc else V.pushBack acc n) else acc
+    Tv.Link inner -> freeAbove level inner acc
+  Ty.Fun a b -> freeAbove level b (freeAbove level a acc)
+  other -> acc
+
+generalize : (level : Int) -> (t : Ty) -> Scheme ! {Mut, Div}
+generalize level t = Scheme.Forall (freeAbove level t V.empty) t
+
+-- Each quantified id swapped for a fresh variable. Everything else is
+-- shared, which is what makes instantiating cheap.
+substitute : (pairs : Vector (Int, Ty)) -> (t : Ty) -> Ty ! {Mut, Div}
+substitute pairs t = case force t of
+  Ty.Var r -> case getRef r of
+    Tv.Unbound n l -> case V.find (\(p : (Int, Ty)) -> fstOf p == n) pairs of
+      Just p -> sndOf p
+      Nothing -> t
+    Tv.Link inner -> substitute pairs inner
+  Ty.Fun a b -> Ty.Fun (substitute pairs a) (substitute pairs b)
+  other -> other
+
+fstOf : (p : (Int, Ty)) -> Int
+fstOf (n, t) = n
+
+sndOf : (p : (Int, Ty)) -> Ty
+sndOf (n, t) = t
+
+instantiate : (counter : Ref Int) -> (level : Int) -> (scheme : Scheme) -> Ty ! {Mut, Div}
+instantiate counter level (Scheme.Forall ids body) =
+  substitute (V.map (\(n : Int) -> (n, newTv counter level)) ids) body
+
+-- --- inference ---------------------------------------------------------------
+--
+-- The environment is a list of names and schemes rather than a vector, on
+-- purpose: every binder conses a name onto the front, a lookup wants the
+-- latest binding of a name first, and a closure keeps the environment it
+-- was made in while the rest goes on consing.
+
+lookupVar : (env : List (String, Scheme)) -> (name : String) -> Scheme ! Exn String
+lookupVar Nil name = throw ("unbound variable: " ++ name)
+lookupVar ((x, scheme) :: rest) name = if x == name then scheme else lookupVar rest name
+
+binOpType : (op : String) -> (Ty, Ty, Ty)
+binOpType op =
+  if op == "+" then (Ty.Int, Ty.Int, Ty.Int)
+  else if op == "-" then (Ty.Int, Ty.Int, Ty.Int)
+  else if op == "*" then (Ty.Int, Ty.Int, Ty.Int)
+  else if op == "/" then (Ty.Int, Ty.Int, Ty.Int)
+  else (Ty.Int, Ty.Int, Ty.Bool)
+
+infer : (counter : Ref Int) -> (env : List (String, Scheme)) -> (level : Int) -> (e : Expr) -> Ty ! Infers
+infer counter env level (Expr.Int n) = Ty.Int
+infer counter env level (Expr.Bool b) = Ty.Bool
+infer counter env level (Expr.Var name) = instantiate counter level (lookupVar env name)
+infer counter env level (Expr.Lam param body) =
+  let argT = newTv counter level in
+  let bodyT = infer counter ((param, Scheme.Forall V.empty argT) :: env) level body in
+  Ty.Fun argT bodyT
+infer counter env level (Expr.App f a) =
+  let fT = infer counter env level f in
+  let aT = infer counter env level a in
+  let resT = newTv counter level in
+  let ignored = unify fT (Ty.Fun aT resT) in
+  resT
+-- The right-hand side is checked a level deeper, so the variables it
+-- invents are marked as its own. Whatever escaped into the environment was
+-- pulled back down by `occursAdjust`, and is not generalized here.
+infer counter env level (Expr.Let name rhs body) =
+  let rhsT = infer counter env (level + 1) rhs in
+  let scheme = generalize level rhsT in
+  infer counter ((name, scheme) :: env) level body
+-- The name is in scope while its own definition is checked, and
+-- monomorphically: a recursive call cannot be at another type. Only then is
+-- it generalized, for the body.
+infer counter env level (Expr.LetRec name param rhs body) =
+  let fT = newTv counter (level + 1) in
+  let argT = newTv counter (level + 1) in
+  let resT = newTv counter (level + 1) in
+  let inner = (param, Scheme.Forall V.empty argT) :: (name, Scheme.Forall V.empty fT) :: env in
+  let ignored = unify fT (Ty.Fun argT resT) in
+  let bodyT = infer counter inner (level + 1) rhs in
+  let ignored2 = unify resT bodyT in
+  infer counter ((name, generalize level fT) :: env) level body
+infer counter env level (Expr.If c t f) =
+  let cT = infer counter env level c in
+  let ignored = unify cT Ty.Bool in
+  let tT = infer counter env level t in
+  let fT = infer counter env level f in
+  let ignored2 = unify tT fT in
+  tT
+infer counter env level (Expr.Bin op l r) = case binOpType op of
+  (lWant, rWant, out) ->
+    let lT = infer counter env level l in
+    let ignored = unify lT lWant in
+    let rT = infer counter env level r in
+    let ignored2 = unify rT rWant in
+    out
+
+-- The type of a whole expression. `Err` is what a failed unification or an
+-- unbound name threw.
+@pub
+typeOf : (e : Expr) -> Result String String ! {Mut, Div}
+typeOf e = toResult (\(u : ()) -> let counter = newRef 0 in typeName (infer counter Nil 0 e))

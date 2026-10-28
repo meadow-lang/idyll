@@ -9,7 +9,7 @@
 -- | 
 -- | reversed : (v : Vector Int) -> Vector Int
 -- | reversed v = case St.length (St.fromVec v) of
--- |   (bn, a) -> let [n] = bn in St.toVec (St.forRange 0 (n / 2) (\(i : [] Int) (m : StArray Int) -> St.swap m i (n - 1 - i)) a)
+-- |   (bn, a) -> let [n] = bn in let [v] = St.toVec (St.forRange 0 (n / 2) (\(i : [] Int) (m : StArray Int) -> St.swap m i (n - 1 - i)) a) in v
 -- | 
 -- | fibStep : (i : [] Int) -> (m : StArray Int) -> StArray Int
 -- | fibStep i m = case St.get m (i - 1) of
@@ -20,7 +20,7 @@
 -- | fibs n =
 -- |   let start = St.newArray n 0 in
 -- |   let seeded = if n > 1 then St.set start 1 1 else start in
--- |   St.toVec (St.forRange 2 n fibStep seeded)
+-- |   let [v] = St.toVec (St.forRange 2 n fibStep seeded) in v
 -- | 
 -- | below : (k : [] Int) -> (r : StRef Int) -> (Bool [], StRef Int)
 -- | below k r = case St.getRef r of

@@ -105,6 +105,8 @@ fun isBareMeta (tc : Tc) (ty : Value) : Bool ! { Mut | e } =
             let core =
               match t with
               | Value.LitTy b if readsAs lit b -> Core.Lit (readNumber tc lit b)
+              -- at a type variable, through its instance
+              | Value.Rigid _ _ sp if V.isEmpty sp -> (getRef tc.through) ctx lit t
               | _ ->
                   if unify tc ctx.lvl t (Value.LitTy (defaultOf lit)) then Core.Lit lit
                   else

@@ -110,17 +110,19 @@ thaw xs = M.thaw xs
 fromVec : {a : Type} -> (v : [] Vector a) -> StArray a
 fromVec v = M.thaw (V.toArray v)
 
+-- What the array holds, as a vector to use as often as wanted: boxed,
+-- `let [v] = St.toVec m in ..`, since what comes of a linear value is used
+-- once unless it comes out in a box. Each element is read out boxed, so
+-- the vector made of them may be.
 @pub
-toVec : {a : Type} -> StArray a -> Vector a
+toVec : {a : Type} -> StArray a -> Vector a []
 toVec m = case M.length m of
   (bn, m2) -> let [n] = bn in toVecFrom m2 n 0 V.empty
 
--- (each element read out, boxed, so used as often as wanted: the array
--- itself is linear, and what it is frozen to could be used only once)
 @terminating
-toVecFrom : {a : Type} -> StArray a -> (n : [] Int) -> (i : [] Int) -> (acc : [] Vector a) -> Vector a
+toVecFrom : {a : Type} -> StArray a -> (n : [] Int) -> (i : [] Int) -> (acc : [] Vector a) -> Vector a []
 toVecFrom m n i acc =
-  if i >= n then (let ignored = M.freeze m in acc)
+  if i >= n then (let ignored = M.freeze m in [acc])
   else case M.read m i of
     (b, m2) -> let [x] = b in toVecFrom m2 n (i + 1) (V.pushBack acc x)
 

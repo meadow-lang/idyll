@@ -9,6 +9,11 @@
 //! auto argument does (see [`auto`](super::auto)), and is read once its type
 //! is known, after the application it is in or at the end of its
 //! definition, where an unknown type is taken to be the default.
+//!
+//! At a type variable, a literal is read through the variable's `Integer`
+//! instance (`Floating`'s, for one with a point), found as any auto
+//! argument is: `0` at `n` is `fromInt 0`, so code written once for any
+//! integer type, `{n : Type} -> Integer n => ..`, may say `0`.
 
 use super::*;
 use idyllic_ast::Lit;
@@ -69,6 +74,30 @@ impl Checker {
         }
     }
 
+    /// A number literal at the type variable `ty`: `fromInt` (`fromFloat`)
+    /// of it, at that type, its instance searched for.
+    pub(super) fn literal_through(&mut self, ctx: &Ctx, node: NodeId, lit: &Lit, ty: VTy) -> Rc<Core> {
+        let (method, read) = match lit {
+            Lit::Float(_) => ("fromFloat", Builtin::Float),
+            _ => ("fromInt", Builtin::Int),
+        };
+        let mismatch = |this: &mut Self, ty: VTy| {
+            let expected = this.quote(ctx.lvl, ty);
+            this.error(node, TypeErrorKind::Mismatch { expected, actual: Rc::new(Core::LitTy(read)) });
+            Rc::new(Core::Error)
+        };
+        let x = hir::Ident { unique: self.prelude.get(method).copied(), text: method.into() };
+        let Some((f, f_ty, _)) = ctx.lookup(&x) else { return mismatch(self, ty) };
+        let (f, f_ty) = self.insert(ctx, node, f, f_ty);
+        let Value::Pi { cod, .. } = &*self.force(f_ty) else { return mismatch(self, ty) };
+        let arg = Rc::new(Core::Lit(lit.clone()));
+        let result = self.split_comp(self.apply(cod, self.eval(&ctx.env, &arg))).0;
+        if !self.unify(ctx.lvl, result, ty.clone()) {
+            return mismatch(self, ty);
+        }
+        Rc::new(Core::App(f, arg))
+    }
+
     /// A number literal checked against `ty`, a type still to be worked
     /// out: a placeholder, read once it is known.
     pub(super) fn defer_literal(&mut self, ctx: &Ctx, node: NodeId, lit: &Lit, ty: VTy) -> Rc<Core> {
@@ -102,6 +131,7 @@ impl Checker {
             let ty = self.force(d.ty.clone());
             let core = match &*ty {
                 Value::LitTy(b) if reads_as(&d.lit, *b) => Rc::new(Core::Lit(self.read_number(d.node, &d.lit, *b))),
+                Value::Rigid(_, _, sp) if sp.is_empty() => self.literal_through(&d.ctx, d.node, &d.lit, ty.clone()),
                 _ if !last && self.blocked(&ty) => {
                     self.deferred_literals.push(d);
                     continue;

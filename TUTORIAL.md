@@ -739,6 +739,22 @@ definition's are, and `Std.Collections.MArray`, whose arrays are changed
 in place, is the one linear module of it (see [The standard
 library](#the-standard-library)).
 
+### Literals at a type variable
+
+A number literal takes the type wanted (see [Numbers](#numbers)). Where
+that is a type variable, it is read through the variable's `Integer`
+instance, `fromInt` (`Floating`'s `fromFloat`, for one with a point), so
+code written once for every integer type may still say `0`:
+
+```
+> factorial : {n : Type} -> Integer n => PartialEq n => Sub n => Mul n => (k : [] n) -> n ! Div
+factorial k = if k == 0 then 1 else k * factorial (k - 1)
+
+factorial : {n : Type} -> Integer n => PartialEq n => Sub n => Mul n => (k : n) -> n ! Div
+> (factorial 20, factorial (toUInt8 5))
+(2432902008176640000, 120) : (Int, UInt8)
+```
+
 ### Linear types
 
 A grade belongs to a binder, and which binder a value ends up in is not
@@ -3062,7 +3078,7 @@ is nothing to install.
 | `Std.String.Parse` | parser combinators, as Meadow's after megaparsec: `Parser s a` over a `Stream` (a `String`, a `Vector`), `runParser`, `parse` (an error's span and text), `pure`, `map`, `bind`, `alt`, `try`, `label`, `many`, `some`, `sepBy`, `between`, `chainl1`, `satisfy`, `single`, `chunk`, `takeWhileP`, `eof`, ...; and errors that say what was found and wanted |
 | `Std.String.Parse.Char`, `Std.String.Parse.Lexer` | characters, strings and white space (`char`, `string`, `space`, `digitChar`, `eol`, ...); lexemes (`space` with comments, `lexeme`, `symbol`, `decimal`, `hexadecimal`, `float`, `signed`, `charLiteral`) and indentation (`indentGuard`, `indentBlock`, `lineFold`) |
 | `Std.Char` | `code`, `fromCode`, `fromCodeSafe`, `isDigit`, `isAlpha`, `isSpace`, `isUpper`, `toUpper`, `toLower`, `digitToInt`, `hexDigitToInt`, `equal`, `compare` (the classes ASCII only, as Meadow's are) |
-| `Std.Console` | `printLines`, `printList`, `printBool`, `readLines` |
+| `Std.Console` | as Meadow's: `print`, `println`, `eprintln` (as `display` writes a value), `prompt`, `readLineOr`, `readWord`, `promptUntil`, `readAll`, `readLines`, `printLines`; and `withInput` (the lines read given) and `withOutput` (what is written kept), each passing the rest of the console on, so a program that talks to a person runs with no one there |
 | `Std.Fs`, `Std.Process` | `readToStringOr`, `tryReadDir`, `writeLines`, `existsAll`; `argCount`, `arg`, `envOr`, `exitFailure`, ... |
 | `Std.Exn` | an effect: `throw`, and `toResult`, `catch`, `withDefault`, `toMaybe`, `ofResult`, `ensure` |
 | `Std.Ref` | shared mutable cells, as Meadow's: `modify`, `swap`, `getAndModify`, `modifyAndGet`, `bump`, `repeatN`, over the prelude's `Ref`, `newRef`, `getRef`, `setRef` (the effect `Mut`) |

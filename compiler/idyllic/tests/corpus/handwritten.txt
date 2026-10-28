@@ -996,7 +996,7 @@ sumTo n = St.value (St.forRange 1 (n + 1) (\(i : [] Int) (r : StRef Int) -> St.m
 
 reversed : (v : Vector Int) -> Vector Int
 reversed v = case St.length (St.fromVec v) of
-  (bn, a) -> let [n] = bn in St.toVec (St.forRange 0 (n / 2) (\(i : [] Int) (m : StArray Int) -> St.swap m i (n - 1 - i)) a)
+  (bn, a) -> let [n] = bn in let [v] = St.toVec (St.forRange 0 (n / 2) (\(i : [] Int) (m : StArray Int) -> St.swap m i (n - 1 - i)) a) in v
 
 fibStep : (i : [] Int) -> (m : StArray Int) -> StArray Int
 fibStep i m = case St.get m (i - 1) of
@@ -1007,7 +1007,7 @@ fibs : (n : Int) -> Vector Int
 fibs n =
   let start = St.newArray n 0 in
   let seeded = if n > 1 then St.set start 1 1 else start in
-  St.toVec (St.forRange 2 n fibStep seeded)
+  let [v] = St.toVec (St.forRange 2 n fibStep seeded) in v
 
 below : (k : [] Int) -> (r : StRef Int) -> (Bool [], StRef Int)
 below k r = case St.getRef r of
@@ -1065,3 +1065,32 @@ f : () -> (Array Int, Array Int)
 f u = let m = new 2 0 in (freeze (write m 0 1), freeze m)
 
 f ()
+%%%
+-- literals in generic code: read through the type's Integer (Floating) instance, fromInt (fromFloat)
+@terminating
+factorial : {n : Type} -> Integer n => PartialEq n => Sub n => Mul n => (k : [] n) -> n
+factorial k = if k == 0 then 1 else k * factorial (k - 1)
+
+half : {f : Type} -> Floating f => Divide f => (x : [] f) -> f
+half x = x / 2.0
+
+(factorial 20, factorial (toUInt8 5), factorial (toInt16 7), half 3.0, half (toFloat32 1.0))
+%%%
+-- a literal at a type variable is read through the prelude's fromInt, whatever other fromInt Std has (Std.String's, Std.Num.Nat's)
+use Std.String as S
+
+triple : {n : Type} -> Integer n => Mul n => (k : [] n) -> n
+triple k = 3 * k
+
+(triple 14, triple (toUInt8 100), S.fromInt 7)
+%%%
+-- handlers that take part of the console and pass the rest on: what is read given by withInput, what is written kept by withOutput
+use Std.Console (println, prompt, withInput, withOutput)
+use Std.Collections.Vector as V
+
+greet : () -> Int ! Console
+greet u = case prompt "name: " of
+  Just name -> let w = println ("hello, " ++ name) in 1
+  Nothing -> 0
+
+(withOutput (\(u : ()) -> withInput (V.fromList ("ada" :: Nil)) greet), withOutput (\(u : ()) -> withInput V.empty greet))

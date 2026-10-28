@@ -65,23 +65,36 @@ def idyll:Prelude/showInt (n_52: i64; k_53: ptr) =
       idyll:Prelude/negativeDigits(idyll:Prelude/digitFuel, n_52; μ̃ v_58: str.
         prim concatStrings(["-", v_58]; k_53))))
 
-def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) =
-  <fuel_61 | case {
+def idyll:Main/id <'a_65 = d_a_64> (d_a_64: desc, x_66: 'a_65; k_67: ptr) =
+  <x_66 | k_67>
+
+def idyll:Prelude/negativeDigits (fuel_68: ptr, n_69: i64; k_70: ptr) =
+  <fuel_68 | case {
     idyll:Prelude/DigitFuel.Spent =>
-      <"" | k_63>;
-    idyll:Prelude/DigitFuel.More(fuel_64: ptr) =>
-      prim sub(0, 10; μ̃ v_74: i64.
-        prim lt(v_74, n_62; μ̃ v__65: bool.
-          prim if(v__65; μ̃ u_72: unit.
-            prim div(n_62, 10; μ̃ v_70: i64.
-              idyll:Prelude/negativeDigits(fuel_64, v_70; μ̃ v_66: str.
-                prim mod(n_62, 10; μ̃ v_69: i64.
-                  prim sub(0, v_69; μ̃ v_68: i64.
-                    idyll:Prelude/digitString(v_68; μ̃ v_67: str.
-                      prim concatStrings([v_66, v_67]; k_63)))))), μ̃ u_73: unit.
-            prim sub(0, n_62; μ̃ v_71: i64.
-              idyll:Prelude/digitString(v_71; k_63)))))
+      <"" | k_70>;
+    idyll:Prelude/DigitFuel.More(fuel_71: ptr) =>
+      prim sub(0, 10; μ̃ v_81: i64.
+        prim lt(v_81, n_69; μ̃ v__72: bool.
+          prim if(v__72; μ̃ u_79: unit.
+            prim div(n_69, 10; μ̃ v_77: i64.
+              idyll:Prelude/negativeDigits(fuel_71, v_77; μ̃ v_73: str.
+                prim mod(n_69, 10; μ̃ v_76: i64.
+                  prim sub(0, v_76; μ̃ v_75: i64.
+                    idyll:Prelude/digitString(v_75; μ̃ v_74: str.
+                      prim concatStrings([v_73, v_74]; k_70)))))), μ̃ u_80: unit.
+            prim sub(0, n_69; μ̃ v_78: i64.
+              idyll:Prelude/digitString(v_78; k_70)))))
   }>
 
-def idyll:Main/"#entry" (; k_75: ptr) =
-  <unit | k_75>
+def idyll:Main/"#entry" (; k_82: ptr) =
+  <cocase {
+    apply(a_87: desc; k_90: ptr) =>
+      <cocase {
+        apply(a_88: any; k_89: ptr) =>
+          idyll:Main/id(a_87, a_88; k_89)
+      } | k_90>
+  } | μ̃ v_86: ptr.
+    <cocase {
+      apply(f_84: ptr; k_85: ptr) =>
+        <f_84 | k_85>
+    } | apply(v_86; k_82)>>

@@ -1,0 +1,76 @@
+-- mini-ml: a toy ML, after Meadow's `examples/MiniML`.
+--
+--   idyll run                -- a REPL
+--   idyll run -- --demo      -- a session played through `withInput`
+--
+-- Four files, one per pass:
+--
+--   Syntax.idl   the expression and type trees
+--   Parser.idl   source text to `Expr`, with `Std.String.Parse`
+--   Infer.idl    Hindley-Milner, Algorithm J, with `Ref`s for type variables
+--   Eval.idl     a tree-walking interpreter, with a `Ref` to tie `let rec`
+--
+-- The language: integers, booleans, `fun`, application, `let`, `let rec`,
+-- `if`, and the usual arithmetic and comparisons. Enough to show
+-- let-polymorphism and the occurs check, which is the point; not enough to
+-- write anything in.
+--
+--   let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 10
+--   let id = fun x -> x in if id true then id 1 else 2
+--   fun x -> x x                      -- refused: the occurs check
+
+use Parser (parse)
+use Infer (typeOf)
+use Eval (run)
+use Std.Console (prompt, println, withInput)
+use Std.String as S
+use Std.Collections.Vector as V
+use Std.Collections.Vector (Vector)
+
+-- What the REPL says of one line: the value and its type, or the first
+-- thing that went wrong. Apart, so it can be checked with no terminal.
+@pub
+replLine : (src : String) -> String ! {Mut, Div}
+replLine src = case parse src of
+  Err e -> "parse error: " ++ e
+  Ok ast -> case typeOf ast of
+    Err e -> "type error: " ++ e
+    Ok ty -> case run ast of
+      Err e -> "run-time error: " ++ e
+      Ok v -> v ++ " : " ++ ty
+
+loop : () -> () ! {Console, Mut, Div}
+loop u = case prompt "> " of
+  Nothing -> ()
+  Just line -> answer (S.trim line)
+
+answer : (line : String) -> () ! {Console, Mut, Div}
+answer line =
+  if line == "" then loop ()
+  else if line == ":q" then ()
+  else let ignored = println (replLine line) in loop ()
+
+-- A session of every kind of answer, typed by `withInput`.
+demo : Vector String
+demo = V.fromList (
+  "1 + 2 * 3" ::
+  "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 10" ::
+  "let id = fun x -> x in if id true then id 1 else 2" ::
+  "let add = fun x y -> x + y in let inc = add 1 in inc 41" ::
+  "fun x -> x" ::
+  "fun f -> let g = f in if g true then g 1 else 2" ::
+  "fun x -> x x" ::
+  "1 + true" ::
+  "x + 1" ::
+  "1 / 0" ::
+  "1 +" ::
+  ":q" :: Nil)
+
+main : () -> () ! Eff
+main () =
+  let ignored = println "mini-ml. An expression a line, `:q` or Ctrl-D to stop." in
+  if demoAsked (args ()) then withInput demo loop else loop ()
+
+demoAsked : (given : List String) -> Bool
+demoAsked (first :: rest) = first == "--demo"
+demoAsked Nil = False

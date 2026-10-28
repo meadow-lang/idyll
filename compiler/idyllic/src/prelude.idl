@@ -249,20 +249,25 @@ Int64 = Int
 Float64 : Type
 Float64 = Float
 
--- An integer type: what its conversions go through.
+-- An integer type: what its conversions go through; and what an integer
+-- literal is read through at a type variable (`fromInt`).
 trait Integer (a : Type) where
   toInt : a -> Int
   toFloat : a -> Float
+  fromInt : Int -> a
 
--- A float type.
+-- A float type; and what a literal with a point is read through at a type
+-- variable (`fromFloat`).
 trait Floating (a : Type) where
   toFloat64 : a -> Float
   toFloat32 : a -> Float32
   floor : a -> Int
+  fromFloat : Float -> a
 
 instance Integer Int where
   toInt n = n
   toFloat = intToFloat
+  fromInt n = n
 
 @native
 intToFloat : Int -> Float
@@ -330,6 +335,7 @@ instance Debug Int8 where
 instance Integer Int8 where
   toInt = int8ToInt
   toFloat = int8ToFloat
+  fromInt = int8FromInt
 
 toInt64 : {a : Type} -> Integer a => a -> Int64
 toInt64 x = toInt x
@@ -400,6 +406,7 @@ instance Debug Int16 where
 instance Integer Int16 where
   toInt = int16ToInt
   toFloat = int16ToFloat
+  fromInt = int16FromInt
 
 toInt16 : {a : Type} -> Integer a => a -> Int16
 toInt16 x = int16FromInt (toInt x)
@@ -467,6 +474,7 @@ instance Debug Int32 where
 instance Integer Int32 where
   toInt = int32ToInt
   toFloat = int32ToFloat
+  fromInt = int32FromInt
 
 toInt32 : {a : Type} -> Integer a => a -> Int32
 toInt32 x = int32FromInt (toInt x)
@@ -534,6 +542,7 @@ instance Debug UInt8 where
 instance Integer UInt8 where
   toInt = uint8ToInt
   toFloat = uint8ToFloat
+  fromInt = uint8FromInt
 
 toUInt8 : {a : Type} -> Integer a => a -> UInt8
 toUInt8 x = uint8FromInt (toInt x)
@@ -601,6 +610,7 @@ instance Debug UInt16 where
 instance Integer UInt16 where
   toInt = uint16ToInt
   toFloat = uint16ToFloat
+  fromInt = uint16FromInt
 
 toUInt16 : {a : Type} -> Integer a => a -> UInt16
 toUInt16 x = uint16FromInt (toInt x)
@@ -668,6 +678,7 @@ instance Debug UInt32 where
 instance Integer UInt32 where
   toInt = uint32ToInt
   toFloat = uint32ToFloat
+  fromInt = uint32FromInt
 
 toUInt32 : {a : Type} -> Integer a => a -> UInt32
 toUInt32 x = uint32FromInt (toInt x)
@@ -735,6 +746,7 @@ instance Debug UInt64 where
 instance Integer UInt64 where
   toInt = uint64ToInt
   toFloat = uint64ToFloat
+  fromInt = uint64FromInt
 
 toUInt64 : {a : Type} -> Integer a => a -> UInt64
 toUInt64 x = uint64FromInt (toInt x)
@@ -845,11 +857,13 @@ instance Floating Float where
   toFloat64 x = x
   toFloat32 = floatToFloat32
   floor = floatFloor
+  fromFloat x = x
 
 instance Floating Float32 where
   toFloat64 = float32ToFloat
   toFloat32 x = x
   floor = float32Floor
+  fromFloat = floatToFloat32
 
 effect Console where
   putStr : String -> ()

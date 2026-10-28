@@ -122,3 +122,67 @@ fn the_interpreter_runs_its_programs() {
         assert!(out.contains(line), "no {line:?} in:\n{out}");
     }
 }
+
+#[test]
+fn the_tour_runs_as_meadows_does() {
+    let out = printed("tour");
+    for line in [
+        "a triangle with area 6.0",
+        "degenerate: #[Just(\"a rectangle\")]",
+        "distance from (0, 0) to (3, 4): 5.0",
+        "factorial 30 as an Int, wrapping: -8764578968847253504",
+        "factorial 5 as a UInt8: 120",
+        "200 + 100 as a UInt8: 44",
+        "primes below 50: #[2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47]",
+        "\"the\" appears 3 times, \"cat\" 1",
+    ] {
+        assert!(out.contains(line), "no {line:?} in:\n{out}");
+    }
+}
+
+/// What an example prints, run with these arguments.
+fn printed_with(name: &str, args: &[&str]) -> String {
+    let dir = example(name, "run");
+    let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    common::on_big_stack(|| {
+        let out = pipeline::build(&dir, Profile::Debug, &common::OPTS);
+        assert!(said(&out).is_empty(), "{name}: {:?}", said(&out));
+        let ran = idyllic::pipeline::run_compiled(&out.packages(), &common::OPTS, args);
+        assert!(ran.diagnostics.is_empty(), "{:?}", ran.diagnostics);
+        ran.printed.replace("\r\n", "\n")
+    })
+}
+
+#[test]
+fn rock_paper_scissors_plays_a_game_fed_its_moves() {
+    // `--demo`: the moves given by `withInput`, the machine's seeded, so the
+    // game is the same every time, with nothing typed
+    let out = printed_with("rps", &["--demo"]);
+    for line in [
+        "your move (rock / paper / scissors, or quit): I played rock. It's a tie.",
+        "I do not know what that is: nonsense",
+        "I played rock. You win!",
+        "You won 1, lost 0, drew 1.",
+    ] {
+        assert!(out.contains(line), "no {line:?} in:\n{out}");
+    }
+}
+
+#[test]
+fn miniml_types_and_runs_its_programs() {
+    let out = printed_with("miniml", &["--demo"]);
+    for line in [
+        "> 7 : Int",
+        "> 3628800 : Int",
+        "> 1 : Int",
+        "> 42 : Int",
+        "> <function> : (t0 -> t0)",
+        "> type error: cannot unify Bool with Int",
+        "> type error: occurs check: a type would contain itself",
+        "> type error: unbound variable: x",
+        "> run-time error: division by zero",
+        "> parse error: at offset 3: unexpected end of input",
+    ] {
+        assert!(out.contains(line), "no {line:?} in:\n{out}");
+    }
+}

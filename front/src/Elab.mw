@@ -1236,7 +1236,25 @@ fun elaborate (tc : Tc) (cx : Cx) (t : HirExpr) : (Core, Value, Usage) ! { Mut |
 -- Set the pass up to check a module, writing into `out`. (Its cases answer
 -- the checker's own data, and write nothing there yet: what is written out
 -- is the program, once it is checked.)
-@pub fun install (tc : Tc) out = setRef tc.elab (\cx t -> elabExpr (getRef tc.hir) out cx t)
+@pub fun install (tc : Tc) out =
+  let w = setRef tc.through (\ctx lit ty -> literalThrough tc ctx lit ty) in
+  setRef tc.elab (\cx t -> elabExpr (getRef tc.hir) out cx t)
+
+-- A number literal at the type variable `ty`: `fromInt` (`fromFloat`) of
+-- it, at that type, its instance searched for (`literals.rs`).
+fun literalThrough (tc : Tc) (ctx : Ctx) (lit : Literal) (ty : Value) : Core ! { Mut | e } =
+  let method = match lit with | Literal.Float _ -> "fromFloat" | _ -> "fromInt" in
+  let mismatch = \u -> let w = T.error tc "Mismatch" in Core.Error in
+  match M.andThen (\u -> X.lookup ctx (H.Ident [u] method)) (Hm.lookup method (getRef tc.numberLits)) with
+  | None -> mismatch ()
+  | Just (f0, fty0, _) ->
+      let (f, fty) = insert tc ctx f0 fty0 in
+      (match force tc fty with
+       | Value.Pi _ _ _ _ _ cod ->
+           let arg = Core.Lit lit in
+           let result = fst (splitComp tc (apply tc cod (eval tc ctx.env arg))) in
+           if unify tc ctx.lvl result ty then Core.App f arg else mismatch ()
+       | _ -> mismatch ())
 
 -- A term checked against a type: the term in Core, and its usage.
 @pub fun check (tc : Tc) (ctx : Ctx) (t : HirExpr) (expected : Value) : (Core, Usage) ! { Mut | e } =
@@ -1553,6 +1571,9 @@ fun literalAgainst (cx : Cx) (again : Cx -> (Core, Value, Usage) ! { Mut | e }) 
   -- (or one that waits on a metavariable, `T.Elem ?p`)
   | (Literal.Int _, _) if blocked cx.tc g -> (L.deferLiteral cx.tc cx.ctx lit g, g, U.none ())
   | (Literal.Float _, _) if blocked cx.tc g -> (L.deferLiteral cx.tc cx.ctx lit g, g, U.none ())
+  -- at a type variable, through its instance (see `Literals`)
+  | (Literal.Int _, Value.Rigid _ _ sp) if V.isEmpty sp -> (literalThrough cx.tc cx.ctx lit g, g, U.none ())
+  | (Literal.Float _, Value.Rigid _ _ sp) if V.isEmpty sp -> (literalThrough cx.tc cx.ctx lit g, g, U.none ())
   | (Literal.Int n, Value.LitTy Builtin.Grade) ->
       if n >= 0 then (C.grade (G.exact n), g, U.none ())
       else

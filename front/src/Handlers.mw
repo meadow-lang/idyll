@@ -22,7 +22,7 @@ use Idyll.Grade as G
 use Idyll.Tc (Tc, EffectInfo, OpInfo)
 use Idyll.Tc as T
 use Idyll.Eval (force, apply, eval, quote, row, rowParts, toPoly, splitComp)
-use Idyll.Unify (unify, subtype)
+use Idyll.Unify (unify, subtype, effectsFit)
 use Idyll.Usage (Usage)
 use Idyll.Usage as U
 use Idyll.Ctx (Ctx)
@@ -194,7 +194,10 @@ fun handleEffect (tc : Tc) (ctx : Ctx) (body : HirExpr) (clauses : [Clause]) (ex
                     (match rowParts tc clauseRow with
                      | Row.Row cls cts ->
                          let total = row tc (V.concat [[rest], V.map snd cls, V.map snd (V.filter (\kv -> fst kv != resumedKey) cts)]) in
-                         let w = if unify tc ctx.lvl resumed total then () else T.error tc "AmbiguousHandler" in
+                         -- (a clause may have made resuming more already: one
+                         -- giving back a function that resumes and performs
+                         -- the handled effect itself; claiming more is sound)
+                         let w = if unify tc ctx.lvl resumed total or effectsFit tc ctx.lvl total resumed then () else T.error tc "AmbiguousHandler" in
                          let usage = U.add (U.add (U.add bodyU (U.withoutEffects retU)) (U.withoutEffects opsU)) (U.performs total) in
                          (Core.Handle bodyC retCore opsCore, result, usage))))
 

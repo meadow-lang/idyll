@@ -1704,6 +1704,10 @@ impl Checker {
             (TermKind::Lit(l @ (Lit::Int(_) | Lit::Float(_))), _) if self.blocked(&expected) => {
                 (self.defer_literal(ctx, nid, l, expected.clone()), Usage::none())
             }
+            // at a type variable, through its instance (see `literals`)
+            (TermKind::Lit(l @ (Lit::Int(_) | Lit::Float(_))), Value::Rigid(_, _, sp)) if sp.is_empty() => {
+                (self.literal_through(ctx, nid, l, expected.clone()), Usage::none())
+            }
             (TermKind::Lit(Lit::Int(n)), Value::LitTy(Builtin::Grade)) => match u64::try_from(*n) {
                 Ok(n) => (Core::grade(Grade::exact(n)), Usage::none()),
                 Err(_) => {

@@ -301,7 +301,9 @@ fun cutAgainst prelude (names : Rename.PackageNames) (std : Compiled) (text : St
       else
         let vis = Rename.mentionsVisibility (Rename.programOf prog) in
         (match Rename.renamePackageWith "Main" [([], prog)] prelude [("Std", names)] [] std.high True vis with
-         | (m, own, problems) -> if V.isEmpty problems then Lo.cutTextLinked (sccModule m) own "Main" False [std] else "(error)")
+         -- (a `main` with no expression is the program, as the Rust
+         -- compiler's `compile` makes it)
+         | (m, own, problems) -> if V.isEmpty problems then Lo.cutTextLinked (sccModule m) own "Main" True [std] else "(error)")
 
 -- A program checked against Std compiled, if it names Std, as the test
 -- compares it.
@@ -522,7 +524,7 @@ fun ranAgainst prelude (names : Rename.PackageNames) (std : Compiled) (text : St
              else
                let grouped = sccModule m in
                runSt (\() ->
-                 let c = checkedWith grouped False [std] in
+                 let c = checkedWith grouped True [std] in
                  if not (V.isEmpty (getRef c.tc.unsupported)) then "(unsupported)"
                  else if not (V.isEmpty (getRef c.tc.errors)) then "(error)"
                  else

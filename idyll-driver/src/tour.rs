@@ -481,6 +481,21 @@ use Maybe.*"),
         ],
     },
     Step {
+        title: "Literals in generic code",
+        section: Section::Dependent,
+        text: &[
+            "A number literal takes the type wanted. Where that is a type",
+            "variable, it is read through the variable's `Integer` instance,",
+            "`fromInt` (`Floating`'s `fromFloat`, for one with a point), so",
+            "code written once for every integer type may still say `2`.",
+        ],
+        examples: &[
+            ok("double : {n : Type} -> Integer n => Mul n => (k : [] n) -> n
+double k = 2 * k"),
+            ok("(double 21, double (toUInt8 200), double (toInt16 4))"),
+        ],
+    },
+    Step {
         title: "Naming what was implicit",
         section: Section::Dependent,
         text: &[

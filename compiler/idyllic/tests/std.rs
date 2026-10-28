@@ -747,9 +747,9 @@ fn st_cells_and_arrays_are_changed_in_place_as_meadows_are() {
     // rather than kept in a runSt
     let src = format!(
         "{ST}sumTo : (n : Int) -> Int\nsumTo n = St.value (St.forRange 1 (n + 1) (\\(i : [] Int) (r : StRef Int) -> St.modifyRef r (\\(t : [] Int) -> t + i)) (St.newRef 0))\n\n\
-         reversed : (v : Vector Int) -> Vector Int\nreversed v = case St.length (St.fromVec v) of\n  (bn, a) -> let [n] = bn in St.toVec (St.forRange 0 (n / 2) (\\(i : [] Int) (m : StArray Int) -> St.swap m i (n - 1 - i)) a)\n\n\
+         reversed : (v : Vector Int) -> Vector Int\nreversed v = case St.length (St.fromVec v) of\n  (bn, a) -> let [n] = bn in let [v] = St.toVec (St.forRange 0 (n / 2) (\\(i : [] Int) (m : StArray Int) -> St.swap m i (n - 1 - i)) a) in v\n\n\
          fibStep : (i : [] Int) -> (m : StArray Int) -> StArray Int\nfibStep i m = case St.get m (i - 1) of\n  (b1, m2) -> case St.get m2 (i - 2) of\n    (b2, m3) -> let [x] = b1 in let [y] = b2 in St.set m3 i (x + y)\n\n\
-         fibs : (n : Int) -> Vector Int\nfibs n =\n  let start = St.newArray n 0 in\n  let seeded = if n > 1 then St.set start 1 1 else start in\n  St.toVec (St.forRange 2 n fibStep seeded)\n\n\
+         fibs : (n : Int) -> Vector Int\nfibs n =\n  let start = St.newArray n 0 in\n  let seeded = if n > 1 then St.set start 1 1 else start in\n  let [v] = St.toVec (St.forRange 2 n fibStep seeded) in v\n\n\
          below : (k : [] Int) -> (r : StRef Int) -> (Bool [], StRef Int)\nbelow k r = case St.getRef r of\n  (b, r2) -> let [x] = b in ([x < k], r2)\n\n\
          counted : () -> Int ! Div\ncounted u = St.value (St.while (below 5) (\\(r : StRef Int) -> St.modifyRef r (\\(x : [] Int) -> x + 1)) (St.newRef 0))\n\n\
          shared : Array Int\nshared = #[1; 2; 3]\n\n\
@@ -787,4 +787,27 @@ fn a_linear_value_is_never_shared() {
     // and what holds one many times over, and is no linear value itself,
     // is fine: a list of them, `Maybe` one, a pair
     assert_eq!(value(&format!("{m}case (Just (new 1 3), new 2 4 :: Nil) of\n  (Just a, b :: rest) -> (freeze a, freeze b)\n  other -> (#[0;], #[0;])")), "(#[3;], #[4; 4])");
+}
+
+#[test]
+fn the_console_is_read_and_written_by_handlers_as_meadows_is() {
+    // Meadow's tests of Std.Console: what is written kept by `withOutput`,
+    // what is read given by `withInput`, each passing the rest on
+    let src = "use Std.Console (print, println, prompt, readLineOr, readWord, promptUntil, readAll, withInput, withOutput)\nuse Std.Collections.Vector as V\n\n\
+               yes : (s : String) -> Maybe Bool\nyes s = if s == \"yes\" then Just True else Nothing\n\n\
+               lines : (xs : List String) -> V.Vector String\nlines xs = V.fromList xs\n\n\
+               (withOutput (\\(u : ()) -> let a = print \"a\" in let b = println \"b\" in println 42), \
+               withOutput (\\(u : ()) -> let x = print \"x\" in 7), \
+               withOutput (\\(u : ()) -> withInput (lines (\"ada\" :: Nil)) (\\(v : ()) -> prompt \"name: \")), \
+               withInput (lines (\"one\" :: \"two\" :: Nil)) (\\(u : ()) -> (readLine (), readLine ())), \
+               withInput (lines (\"only\" :: Nil)) (\\(u : ()) -> (readLine (), readLine (), readLine ())), \
+               withInput (lines (\"here\" :: Nil)) (\\(u : ()) -> (readLineOr \"gone\", readLineOr \"gone\")), \
+               withInput (lines (\"  rock  \" :: Nil)) (\\(u : ()) -> readWord ()), \
+               withInput (lines (\"a\" :: \"b\" :: \"c\" :: Nil)) (\\(u : ()) -> (readLine (), V.toList (readAll ()))), \
+               withOutput (\\(u : ()) -> withInput (lines (\"no\" :: \"maybe\" :: \"yes\" :: Nil)) (\\(v : ()) -> promptUntil \"?\" \"again\" yes)), \
+               withOutput (\\(u : ()) -> withInput (lines (\"no\" :: \"no\" :: Nil)) (\\(v : ()) -> promptUntil \"?\" \"again\" yes)))\n";
+    assert_eq!(
+        value(src),
+        "(((), \"ab\\n42\\n\"), (7, \"x\"), (Just \"ada\", \"name: \"), (Just \"one\", Just \"two\"), (Just \"only\", Nothing, Nothing), (\"here\", \"gone\"), Just \"rock\", (Just \"a\", \"b\" :: \"c\" :: Nil), (Just True, \"?again\\n?again\\n?\"), Nothing, \"?again\\n?again\\n?\")"
+    );
 }

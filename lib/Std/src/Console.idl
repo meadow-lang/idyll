@@ -1,5 +1,44 @@
--- More than a line at a time. The prelude has the `Console` effect itself
--- (`putStr`, `putErr`, `readLine`) and `putStrLn` and `printInt`.
+-- The console, as Meadow's `Std.Console`: writing, reading, and running a
+-- program with the console handled by its own code rather than the
+-- runtime's. The prelude has the `Console` effect itself (`putStr`,
+-- `putErr`, `readLine`), and `putStrLn` and `printInt`.
+--
+--   use Std.Console (prompt, println)
+--
+--   main : () -> () ! Eff
+--   main () = case prompt "your name: " of
+--     Just name -> println ("hello, " ++ name)
+--     Nothing -> println "nothing to read"
+--
+-- With `withInput` a program reads from a vector you supply, and with
+-- `withOutput` it hands back what it wrote: an interactive program can be
+-- tested with no terminal anywhere near it.
+--
+-- `readLine` answers `Nothing` at the end of the input, a closed pipe or
+-- Ctrl-D at a terminal. That is not an error, so a loop ends by matching
+-- it rather than by catching anything.
+
+use Std.String as S
+use Std.Collections.Vector as V
+use Std.Collections.Vector (Vector)
+
+-- --- writing -----------------------------------------------------------------
+
+-- A value with no newline after it, as `display` writes it: `print 42`
+-- writes `42`, and `print "hi"` writes `hi`, not `"hi"`.
+@pub
+print : {a : Type} -> Display a => (value : [] a) -> () ! Console
+print value = putStr (display value)
+
+-- `print`, then a newline.
+@pub
+println : {a : Type} -> Display a => (value : [] a) -> () ! Console
+println value = putStr (display value ++ "\n")
+
+-- A value and a newline, to standard error.
+@pub
+eprintln : {a : Type} -> Display a => (value : [] a) -> () ! Console
+eprintln value = putErr (display value ++ "\n")
 
 -- Each string on a line of its own.
 @pub
@@ -16,10 +55,86 @@ printList show xs = putStrLn (Std.String.fromList show xs)
 printBool : Bool -> () ! Console
 printBool b = putStrLn (if b then "True" else "False")
 
--- Every line until the input ends. Nothing says when that will be, so it
--- may not end, as far as the checker can see: hence `Div`.
+-- --- reading -----------------------------------------------------------------
+
+-- `message` with no newline after it, then a line read.
+@pub
+prompt : {a : Type} -> Display a => (message : [] a) -> Maybe String ! Console
+prompt message = let u = print message in readLine ()
+
+-- The next line, or `fallback` at the end of the input.
+@pub
+readLineOr : (fallback : String) -> String ! Console
+readLineOr fallback = case readLine () of
+  Just line -> line
+  Nothing -> fallback
+
+-- The next line with the space around it taken off, which is nearly always
+-- what is wanted of a person typing: `rock ` is no other answer than
+-- `rock`.
+@pub
+readWord : () -> Maybe String ! Console
+readWord u = case readLine () of
+  Just line -> Just (S.trim line)
+  Nothing -> Nothing
+
+-- Asked until the answer parses: `Nothing` from `parse` is answered with
+-- `retry`, and the question put again. `Nothing` only once the input ends,
+-- so a file piped in cannot keep it asking for ever.
+@pub
+promptUntil : {a b c : Type} -> Display a => Display b => (message : [] a) -> (retry : [] b) -> (parse : (line : String) -> Maybe c ! Console) -> Maybe c ! {Console, Div}
+promptUntil message retry parse = case prompt message of
+  Nothing -> Nothing
+  Just line -> case parse (S.trim line) of
+    Just x -> Just x
+    Nothing -> let u = println retry in promptUntil message retry parse
+
+-- Every line still to come, in order. Nothing says when the input will end,
+-- so it may not, as far as the checker can see: hence `Div`.
+@pub
+readAll : () -> Vector String ! {Console, Div}
+readAll u = readAllFrom V.empty
+
+readAllFrom : (acc : Vector String) -> Vector String ! {Console, Div}
+readAllFrom acc = case readLine () of
+  Nothing -> acc
+  Just line -> readAllFrom (V.pushBack acc line)
+
+-- Every line until the input ends, as a list.
 @pub
 readLines : () -> List String ! {Console, Div}
 readLines u = case readLine () of
   Nothing -> Nil
   Just line -> line :: readLines ()
+
+-- --- handling ----------------------------------------------------------------
+
+-- `body` run with `lines` as its input, so nothing reads the terminal; once
+-- they are used up every `readLine` answers `Nothing`. What it writes goes
+-- on to the console there is.
+@pub
+withInput : {a : Type} -> (lines : Vector String) -> (body : (u : ()) -> a ! {Console | r}) -> a ! {Console | r}
+withInput lines body = fed lines body 0
+
+-- (each clause a function of the next line's place, as `State`'s are of
+-- the state)
+fed : {a : Type} -> (lines : Vector String) -> (body : (u : ()) -> a ! {Console | r}) -> ((next : Int) -> a ! {Console | r}) ! {Console | r}
+fed lines body = handle body () with
+  return x -> \(next : Int) -> x
+  putStr s k -> \(next : Int) -> let u = putStr s in k () next
+  putErr s k -> \(next : Int) -> let u = putErr s in k () next
+  readLine u k -> \(next : Int) -> k (V.get lines next) (next + 1)
+
+-- `body` run with what it writes kept rather than written: what it gives,
+-- and the text. What it reads it reads from the console there is, so this
+-- and `withInput` go inside each other either way round.
+@pub
+withOutput : {a : Type} -> (body : (u : ()) -> a ! {Console | r}) -> (a, String) ! {Console | r}
+withOutput body = collected body ""
+
+collected : {a : Type} -> (body : (u : ()) -> a ! {Console | r}) -> ((written : [1] String) -> (a, String) ! {Console | r}) ! {Console | r}
+collected body = handle body () with
+  return x -> \(written : String) -> (x, written)
+  putStr s k -> \(written : String) -> k () (written ++ s)
+  putErr s k -> \(written : String) -> let u = putErr s in k () written
+  readLine u k -> \(written : String) -> k (readLine ()) written

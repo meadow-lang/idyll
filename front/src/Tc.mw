@@ -203,7 +203,12 @@ use Std.Maybe.Maybe.*
   -- parameters given what may be a linear type, to check once it is known:
   -- the length of the context, and what was given (see `Linear`)
   linearDatas : Ref (HashMap Int Bool),
-  linearWants : Ref [(Int, Value)]
+  linearWants : Ref [(Int, Value)],
+  -- the prelude's `fromInt` and `fromFloat`, by name, which a literal at a
+  -- type variable is read through; and how (`Elab.literalThrough`, given
+  -- here as `elab` is)
+  numberLits : Ref (HashMap String Int),
+  through : Ref (Ctx -> Literal -> Value -> Core ! { Mut })
 }
 
 @pub fun new () =
@@ -214,6 +219,8 @@ use Std.Maybe.Maybe.*
     constants = newRef Hm.empty,
     linearDatas = newRef Hm.empty,
     linearWants = newRef [],
+    numberLits = newRef Hm.empty,
+    through = newRef (\ctx lit ty -> Core.Error),
     globals = newRef Hm.empty,
     problems = newRef [],
     opened = newRef [],
@@ -278,6 +285,8 @@ use Std.Maybe.Maybe.*
     constants = newRef (getRef tc.constants),
     linearDatas = newRef (getRef tc.linearDatas),
     linearWants = newRef (getRef tc.linearWants),
+    numberLits = newRef (getRef tc.numberLits),
+    through = newRef (getRef tc.through),
     globals = newRef (getRef tc.globals),
     problems = newRef (getRef tc.problems),
     opened = newRef (getRef tc.opened),
@@ -339,6 +348,8 @@ use Std.Maybe.Maybe.*
   let w3 = setRef tc.constants (getRef saved.constants) in
   let wLinearDatas = setRef tc.linearDatas (getRef saved.linearDatas) in
   let wLinearWants = setRef tc.linearWants (getRef saved.linearWants) in
+  let wNumberLits = setRef tc.numberLits (getRef saved.numberLits) in
+  let wThrough = setRef tc.through (getRef saved.through) in
   let wGlobals = setRef tc.globals (getRef saved.globals) in
   let w4 = setRef tc.problems (getRef saved.problems) in
   let w5 = setRef tc.opened (getRef saved.opened) in

@@ -677,7 +677,12 @@ checked with them: `x` has the type of the operation's argument, and `k`,
 the resumption, takes the operation's result and gives back what the
 whole `handle` does. Handlers are deep, so resuming has the handle's own
 effects: those of `e` but the handled one, and those of the clauses, which
-are solved for once the clauses are checked. How often a clause resumes is
+are solved for once the clauses are checked. A clause that gives back a
+function, resuming inside it and performing the handled effect again
+there (`Std.Console`'s `withInput`, passing what is written on), makes
+resuming that function's effects, more than the handler's; that is a
+sound claim, so the handler is accepted when what it does fits within
+what resuming was found to (`effectsFit`). How often a clause resumes is
 inferred from how it uses `k`, and may be more than once only for an
 operation declared `@many` (`ResumesTooOften`).
 
@@ -697,7 +702,12 @@ a placeholder, as an auto argument does, and is read when `Auto.settleAutos`
 runs: after an application, so `1 + x` at `Int8` checks, or at the end of
 its definition, where an unknown type is taken to be `Int` or `Float`. A
 literal pattern is read at the type of what it is matched against, and a
-sized or float one compared with its type's `Eq` native.
+sized or float one compared with its type's `Eq` native. At a type variable, a
+literal is read through its `Integer` instance (`Floating`'s for one with
+a point): `fromInt 0`, the prelude's method applied as any function is,
+its instance searched for (`Elab.literalThrough`; the settling of a
+waiting literal reaches it through `tc.through`, as `Check` reaches the
+elaborator through `tc.elab`, `Literals` being imported by `Elab`).
 
 **Not in yet**: packages (a module's `use` of another package, which the
 renamer does not do yet either), and choosing by type among the names

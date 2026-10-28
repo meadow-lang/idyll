@@ -801,7 +801,7 @@ and a `Map` built with one `Ord` is rejected when used with another.
   `Terminal`, `Test.Fuzz` and `Test.Property`, `Eff`, and those on the
   runtimes' larger natives (`Thread`, `Stm`, `Net`, `Http`, `Tls`, `Ffi`,
   `Macro`).
-- [ ] **Adapt rather than copy**: `St` becomes linear mutable references
+- [x] **Adapt rather than copy**: `St` becomes linear mutable references
   and arrays (`MArray`, and a cell beside it) rather than an effect: a
   linear value is never shared, so changing it in place is never seen, and
   no `runSt` is needed to keep it from escaping. `Ref` and `Mut` stay as
@@ -832,8 +832,32 @@ and a `Map` built with one `Ord` is rejected when used with another.
   for its fields of linear types; a program's top-level definition of one
   is used at most once, counted as a `let`'s are, and a library has none.
 
+- [x] **Literals in generic code**: a number literal at a type variable is
+  read through its `Integer` instance (`Floating`'s, for one with a
+  point): `0` at `n` is `fromInt 0`, the instance searched for as any auto
+  argument is, so `factorial : {n : Type} -> Integer n => .. -> n` says
+  `0` and `1`, as Meadow's generic code does. Only at a type variable: `5`
+  where a `List Int` is wanted stays a mismatch.
+
 *Done when:* Meadow's `examples/Tour`, `examples/MiniML` and
 `examples/RockPaperScissors` run, the last tested by feeding it input.
+All three run (2026-10-28), in `examples/`; their tests, until `@test`,
+are what `idyll-driver/tests/examples.rs` expects each to print:
+- `tour`, but for its `BigInt` line, which waits on `BigInt`; its sieve is
+  written in a linear array, threaded through, rather than in a `runSt`.
+- `rps`, fed its moves both by `Std.Console.withInput` (`--demo`, the
+  machine's moves seeded) and on its standard input.
+- `miniml`, its four passes as Meadow's, type variables `Ref`s; two unbound
+  variables are the same cell when their ids are, as Idyll's `Ref` has no
+  `==`. Its `--demo` session gives every answer Meadow's tests expect.
+
+On the way: Meadow's `Std.Console` (`print`, `println`, `prompt`,
+`promptUntil`, `readAll`, `withInput`, `withOutput`), whose handlers take
+part of the console and pass the rest on, performing it again from inside
+the function each clause gives back. That had been refused (`which
+Console?`): such a clause makes resuming do what the function does, more
+than the handler does, which is a sound claim, and a handler is now
+accepted when what it does fits within what resuming was found to.
 
 ## Phase 6: Testing and tooling
 

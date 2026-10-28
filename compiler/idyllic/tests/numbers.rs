@@ -103,3 +103,16 @@ fn dividing_a_sized_integer_by_zero_stops_the_program() {
         other => panic!("{other:?}"),
     }
 }
+
+#[test]
+fn a_literal_at_a_type_variable_is_read_through_its_instance() {
+    // `fromInt` and `fromFloat`, `Integer`'s and `Floating`'s, at whichever
+    // type the code is used at: generic arithmetic says `0` and `1`
+    let fact = "@terminating\nfactorial : {n : Type} -> Integer n => PartialEq n => Sub n => Mul n => (k : [] n) -> n\nfactorial k = if k == 0 then 1 else k * factorial (k - 1)\n\n\
+                half : {f : Type} -> Floating f => Divide f => (x : [] f) -> f\nhalf x = x / 2.0\n\n";
+    assert_eq!(value(&format!("{fact}(factorial 20, factorial (toUInt8 5), half 3.0, half (toFloat32 1.0))\n")).0, "(2432902008176640000, 120, 1.5, 0.5)");
+    // with no instance to read it through, it says so
+    assert!(rejected("zero : {n : Type} -> (k : [] n) -> n\nzero k = 0\n\n1\n").iter().any(|e| e.contains("Integer n")));
+    // and only at a type variable: anything else is a mismatch, as it was
+    assert!(rejected("(5 : List Int)\n").iter().any(|e| e.starts_with("type mismatch")));
+}

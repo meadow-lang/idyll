@@ -146,6 +146,21 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
   let wd = setRef tc.traits (V.concatMap (\d -> if hirDataIsTrait h d then [uniqueOf h (hirDataName h d)] else []) datas) in
   let listOf = V.find (\d -> hirIdentText h (hirDataName h d) == "List" and uniqueOf h (hirDataName h d) < m.first) datas in
   let w0b = match listOf with | Just d -> setRef tc.list (uniqueOf h (hirDataName h d)) | None -> () in
+  -- (the prelude's `fromInt` and `fromFloat`, which a literal at a type
+  -- variable is read through: the prelude's uniques come first, before a
+  -- dependency's own `fromInt`, `Std.String`'s say)
+  let w0c =
+    V.foldl
+      (\acc b ->
+        let x = hirBindName h b in
+        let text = hirIdentText h x in
+        let u = uniqueOf h x in
+        let lower = match Hm.lookup text (getRef tc.numberLits) with | Just known -> u < known | None -> True in
+        if (text == "fromInt" or text == "fromFloat") and u < m.first and lower then setRef tc.numberLits (Hm.insert text u (getRef tc.numberLits))
+        else acc)
+      ()
+      (V.concatMap (bindsOf h) groups)
+  in
   -- what the packages it depends on give
   let ctx0 = importAll tc (initial tc) deps in
   -- native types first, which the data types and effects may mention; and
@@ -275,6 +290,16 @@ fun importAll (tc : Tc) (ctx : Ctx) (deps : [Compiled]) : Ctx ! { Mut | e } =
             | Constant.Constant u name ty value unfold ->
                 let t = eval tc (Va.emptyEnv ()) ty in
                 let cc2 = declareConstant tc cc (Ident.Ident [u] name) t in
+                -- (the prelude's `fromInt` and `fromFloat`, compiled with
+                -- a part this one depends on: the prelude's uniques come
+                -- first)
+                let wLits =
+                  if name == "fromInt" or name == "fromFloat" then
+                    (match Hm.lookup name (getRef tc.numberLits) with
+                     | Just known -> if u < known then setRef tc.numberLits (Hm.insert name u (getRef tc.numberLits)) else ()
+                     | None -> setRef tc.numberLits (Hm.insert name u (getRef tc.numberLits)))
+                  else ()
+                in
                 let w1 = match value with | Just v -> setRef tc.globals (Hm.insert u (eval tc (Va.emptyEnv ()) v) (getRef tc.globals)) | None -> () in
                 let w2 =
                   match unfold with

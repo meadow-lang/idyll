@@ -7,6 +7,9 @@ for native code, built by Silo. Either needs `meadow` installed.
 
 | Package | What it shows |
 | --- | --- |
+| [`tour/`](tour) | Meadow's tour of the language: data types, records and matching in a module of their own, generic arithmetic over any integer type, a sieve in a linear mutable array (`Std.St`), vectors and hash maps |
+| [`rps/`](rps) | Meadow's rock paper scissors: `Console` reads your moves and `Random` picks the machine's, both effects, so `idyll run -- --demo` plays a whole game with the moves given by `withInput` and the machine seeded |
+| [`miniml/`](miniml) | Meadow's mini-ml: a toy ML parsed with `Std.String.Parse`, typed by Hindley-Milner (Algorithm J, type variables as shared `Ref` cells, levels for generalizing) and run by a tree-walking interpreter that ties `let rec` through a cell; `idyll run` is its REPL, `-- --demo` a session |
 | [`hello/`](hello) | `main`, the console, command-line arguments (`idyll run -- Ada Grace`), and `Div` |
 | [`euler/`](euler) | Project Euler's first ten problems, one module each, `P1` to `P10`. Problem 10 sieves in a mutable array |
 | [`effects/`](effects) | Effects you declare yourself, and their handlers: a log kept, printed or thrown away, and backtracking search with an operation resumed many times (`@many`); also Std's `State`, `Exn` and `Yield` |
