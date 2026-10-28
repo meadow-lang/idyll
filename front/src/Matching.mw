@@ -50,7 +50,7 @@ use Idyll.Usage (Usage)
 use Idyll.Usage as U
 use Idyll.Ctx (Ctx, Info)
 use Idyll.Ctx as X
-use Idyll.Elab (check, infer, insert, freshMeta, closeEffects, leaveKey, leaveBinder, lam, gradeFits, fitsOrWaits, joinUsage, defaultGrade, mentions, keyOf, effectsOf, hirOf)
+use Idyll.Elab (check, infer, insert, freshMeta, closeEffects, leaveKey, leaveBinder, lam, gradeFits, fitsOrWaits, joinUsage, defaultGrade, mentions, keyOf, effectsOf, hirOf, isLinear)
 use Idyll.Hir (Ident)
 use Idyll.Hir as H
 use Idyll.Rename
@@ -795,11 +795,11 @@ fun leaveField (tc : Tc) (ctx : Ctx) (key : Int) (allowed : Value) (usage : Usag
     rest
 
 -- How often a slot may be used, if known; otherwise as an unannotated
--- binder may be.
+-- binder may be, but once for a value of a linear type.
 fun slotGrade (tc : Tc) (ctx : Ctx) (k : Int) : Value ! { Mut | e } =
   match X.gradeAt ctx k with
   | Just g -> g
-  | None -> gradeValue (defaultGrade tc)
+  | None -> gradeValue (if isLinear tc (X.typeAt ctx k) then G.one else defaultGrade tc)
 
 -- Whether no value of a type has fields.
 fun fieldless (tc : Tc) (ty : Value) : Bool ! { Mut | e } =
@@ -833,8 +833,12 @@ fun ctorArity (tc : Tc) (c : Int) : Int ! { Mut | e } = match ctorOf tc c with |
 -- variable in slot `k` with `c` applied to them, indices and all.
 fun instantiate (tc : Tc) (ctx : Ctx) (k : Int) (c : Int) (hints : [Maybe String]) : (Ctx, [(Int, Int, String, Value)], Unified) ! { Mut | e } =
   let cty0 = M.unwrapOr Value.Error (Hm.lookup c (getRef tc.constants)) in
+  -- (the fields of a value have its grade; but a value of a linear type is
+  -- used once only for its fields of linear types, the rest copied out of
+  -- it as often as wanted)
   let whole = slotGrade tc ctx k in
-  let (inner, delta, cty) = telescope tc whole ctx [] cty0 hints in
+  let linearSlot = isLinear tc (X.typeAt ctx k) and (match Va.asConstant (toPoly tc whole) with | Just g -> not (G.isZero g) | None -> False) in
+  let (inner, delta, cty) = telescope tc whole linearSlot ctx [] cty0 hints in
   match (force tc (X.typeAt ctx k), force tc cty) with
   | (Value.Opaque _ _ indices, Value.Opaque _ _ result) ->
       let apps = \sp -> V.concatMap (\e -> match e with | Elim.App a -> [a] | _ -> []) sp in
@@ -844,7 +848,7 @@ fun instantiate (tc : Tc) (ctx : Ctx) (k : Int) (c : Int) (hints : [Maybe String
       (inner, delta, unifyIndices tc inner eqs)
   | _ -> (inner, delta, Unified.Absurd)
 
-fun telescope (tc : Tc) (whole : Value) (inner : Ctx) (delta : [(Int, Int, String, Value)]) (cty : Value) (hints : [Maybe String]) : (Ctx, [(Int, Int, String, Value)], Value) ! { Mut | e } =
+fun telescope (tc : Tc) (whole : Value) (linearSlot : Bool) (inner : Ctx) (delta : [(Int, Int, String, Value)]) (cty : Value) (hints : [Maybe String]) : (Ctx, [(Int, Int, String, Value)], Value) ! { Mut | e } =
   match V.head hints with
   | None -> (inner, delta, cty)
   | Just hint0 ->
@@ -853,9 +857,10 @@ fun telescope (tc : Tc) (whole : Value) (inner : Ctx) (delta : [(Int, Int, Strin
            let hint = match hint0 with | Just h -> h | None -> if name == "_" then "x" else name in
            let key = T.freshKey tc in
            let lvl = inner.lvl in
-           let g = Va.polyValue (Va.polyMul (toPoly tc grade) (toPoly tc whole)) in
+           let w = if linearSlot and not (isLinear tc dom) then gradeValue (defaultGrade tc) else whole in
+           let g = Va.polyValue (Va.polyMul (toPoly tc grade) (toPoly tc w)) in
            let inner2 = X.bindKeyed inner key hint dom (Just g) in
-           telescope tc whole inner2 (V.pushBack delta (lvl, key, hint, g)) (apply tc cod (Va.vvar lvl hint)) (V.drop hints 1)
+           telescope tc whole linearSlot inner2 (V.pushBack delta (lvl, key, hint, g)) (apply tc cod (Va.vvar lvl hint)) (V.drop hints 1)
        | _ -> (inner, delta, cty))
 
 -- A name for the `i`th argument of constructor `c`, from the first pattern

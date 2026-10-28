@@ -984,3 +984,84 @@ check u =
   (before, shown t, tied 10, old, bump c 1, getRef c)
 
 check ()
+%%%
+-- Std.St, linear: cells and arrays written in place, each step giving them back, as Meadow's tests of it
+use Std.St as St
+use Std.St (StRef, StArray)
+use Std.Collections.Vector as V
+use Std.Collections.Vector (Vector)
+
+sumTo : (n : Int) -> Int
+sumTo n = St.value (St.forRange 1 (n + 1) (\(i : [] Int) (r : StRef Int) -> St.modifyRef r (\(t : [] Int) -> t + i)) (St.newRef 0))
+
+reversed : (v : Vector Int) -> Vector Int
+reversed v = case St.length (St.fromVec v) of
+  (bn, a) -> let [n] = bn in St.toVec (St.forRange 0 (n / 2) (\(i : [] Int) (m : StArray Int) -> St.swap m i (n - 1 - i)) a)
+
+fibStep : (i : [] Int) -> (m : StArray Int) -> StArray Int
+fibStep i m = case St.get m (i - 1) of
+  (b1, m2) -> case St.get m2 (i - 2) of
+    (b2, m3) -> let [x] = b1 in let [y] = b2 in St.set m3 i (x + y)
+
+fibs : (n : Int) -> Vector Int
+fibs n =
+  let start = St.newArray n 0 in
+  let seeded = if n > 1 then St.set start 1 1 else start in
+  St.toVec (St.forRange 2 n fibStep seeded)
+
+below : (k : [] Int) -> (r : StRef Int) -> (Bool [], StRef Int)
+below k r = case St.getRef r of
+  (b, r2) -> let [x] = b in ([x < k], r2)
+
+counted : () -> Int ! Div
+counted u = St.value (St.while (below 5) (\(r : StRef Int) -> St.modifyRef r (\(x : [] Int) -> x + 1)) (St.newRef 0))
+
+shared : Array Int
+shared = #[1; 2; 3]
+
+(sumTo 100, V.toList (reversed (V.fromList (1 :: 2 :: 3 :: 4 :: 5 :: Nil))), V.toList (reversed V.empty), V.toList (fibs 10), St.freeze (St.set (St.thaw shared) 0 99), shared, counted ())
+%%%
+-- linear types: a value of one used twice, given to what may share it, put in a shared cell; a data type holding one
+use Std.Collections.MArray (MArray, new, write, freeze, read)
+
+dup : {a : Type} -> (x : [] a) -> (a, a)
+dup x = (x, x)
+
+-- a data type of the program's own, holding an array: linear itself
+data Grid = Grid (MArray Int) Int
+
+use Grid.*
+
+poke : (g : Grid) -> Grid
+poke (Grid m n) = Grid (write m 0 n) (n + 1)
+
+done : (g : Grid) -> Array Int
+done (Grid m n) = freeze m
+
+shared : () -> Array Int
+shared u = let g = poke (Grid (new 2 0) 7) in let h = g in done h
+
+bad1 : () -> (MArray Int, MArray Int)
+bad1 u = dup (new 2 0)
+
+bad2 : () -> Ref (MArray Int) ! Mut
+bad2 u = newRef (new 2 0)
+
+bad3 : () -> (Grid, Grid)
+bad3 u = let g = Grid (new 1 0) 0 in (g, g)
+
+ok1 : () -> Maybe (MArray Int)
+ok1 u = Just (new 1 0)
+
+ok2 : () -> List (MArray Int)
+ok2 u = new 1 0 :: new 2 0 :: Nil
+
+done (poke (poke (Grid (new 2 0) 7)))
+%%%
+-- a linear value used twice through a let, which would see a write in place
+use Std.Collections.MArray (MArray, new, write, freeze)
+
+f : () -> (Array Int, Array Int)
+f u = let m = new 2 0 in (freeze (write m 0 1), freeze m)
+
+f ()

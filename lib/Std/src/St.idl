@@ -1,0 +1,140 @@
+-- State changed in place, as Meadow's `Std.St`, made linear rather than an
+-- effect:
+--
+--   use Std.St as St
+--
+--   sumTo : (n : Int) -> Int
+--   sumTo n = St.value (St.forRange 1 (n + 1) (\(i : [] Int) (r : St.StRef Int) -> St.modifyRef r (\(t : [] Int) -> t + i)) (St.newRef 0))
+--
+-- `sumTo` changes a cell, and its type says nothing about it. Meadow's
+-- `runSt` sees to that with a state type no result may mention; here a cell
+-- (`StRef`) and an array (`StArray`, the mutable array of
+-- `Std.Collections.MArray`) are linear instead: each operation takes the
+-- one there is and gives it back, so nothing else ever holds it, nobody can
+-- see it change, and there is no `runSt` to say where it ends. A read gives
+-- back what it read in a box, `a []`, to use as often as wanted, beside the
+-- cell or array, to go on with: `case St.getRef r of (b, r2) -> let [x] = b
+-- in ..`.
+--
+-- A cell that is shared, held in many places at once, is `Std.Ref`'s.
+
+@linear
+
+use Std.Collections.MArray as M
+use Std.Collections.MArray (MArray)
+use Std.Collections.Vector as V
+use Std.Collections.Vector (Vector)
+
+-- --- cells -------------------------------------------------------------------
+
+-- A cell no one else holds: one place in a mutable array.
+@pub
+data StRef a = StRef (MArray a)
+
+-- A new cell holding `x`.
+@pub
+newRef : {a : Type} -> (x : [] a) -> StRef a
+newRef x = StRef (M.new 1 x)
+
+-- What the cell holds, and the cell back.
+@pub
+getRef : {a : Type} -> StRef a -> (a [], StRef a)
+getRef (StRef.StRef m) = case M.read m 0 of
+  (b, m2) -> (b, StRef.StRef m2)
+
+-- The cell with `x` in it in place of what it held.
+@pub
+setRef : {a : Type} -> StRef a -> (x : [] a) -> StRef a
+setRef (StRef.StRef m) x = StRef.StRef (M.write m 0 x)
+
+-- `f` of what the cell holds, put in it.
+@pub
+modifyRef : {a : Type} -> StRef a -> (f : [] ((x : [] a) -> a)) -> StRef a
+modifyRef (StRef.StRef m) f = StRef.StRef (M.modify m 0 f)
+
+-- What the cell holds, the cell done with.
+@pub
+value : {a : Type} -> StRef a -> a
+value (StRef.StRef m) = case M.read m 0 of
+  (b, m2) -> let [x] = b in let ignored = M.freeze m2 in x
+
+-- --- arrays ------------------------------------------------------------------
+
+-- A fixed-length array written in place: `get` and `set` are O(1), with no
+-- copying, unlike `Array`'s `arraySet`.
+@pub
+StArray : Type -> Type
+StArray a = MArray a
+
+-- `n` copies of `x`.
+@pub
+newArray : {a : Type} -> Int -> (x : [] a) -> StArray a
+newArray n x = M.new n x
+
+-- What is at `i`, and the array back.
+@pub
+get : {a : Type} -> StArray a -> Int -> (a [], StArray a)
+get m i = M.read m i
+
+-- The array with `x` at `i`.
+@pub
+set : {a : Type} -> StArray a -> Int -> (x : [] a) -> StArray a
+set m i x = M.write m i x
+
+-- How many elements, and the array back.
+@pub
+length : {a : Type} -> StArray a -> (Int [], StArray a)
+length m = M.length m
+
+-- What is at `i`, replaced by `f` of it.
+@pub
+modify : {a : Type} -> StArray a -> (i : [] Int) -> (f : [] ((x : [] a) -> a)) -> StArray a
+modify m i f = M.modify m i f
+
+-- What is at `i` and what is at `j`, the other way round.
+@pub
+swap : {a : Type} -> StArray a -> (i : [] Int) -> (j : [] Int) -> StArray a
+swap m i j = M.swap m i j
+
+-- The array, done with: an `Array`, which may be shared.
+@pub
+freeze : {a : Type} -> StArray a -> Array a
+freeze m = M.freeze m
+
+-- An array to change, copied the first time it is written to.
+@pub
+thaw : {a : Type} -> (xs : [] Array a) -> StArray a
+thaw xs = M.thaw xs
+
+@pub
+fromVec : {a : Type} -> (v : [] Vector a) -> StArray a
+fromVec v = M.thaw (V.toArray v)
+
+@pub
+toVec : {a : Type} -> StArray a -> Vector a
+toVec m = case M.length m of
+  (bn, m2) -> let [n] = bn in toVecFrom m2 n 0 V.empty
+
+-- (each element read out, boxed, so used as often as wanted: the array
+-- itself is linear, and what it is frozen to could be used only once)
+@terminating
+toVecFrom : {a : Type} -> StArray a -> (n : [] Int) -> (i : [] Int) -> (acc : [] Vector a) -> Vector a
+toVecFrom m n i acc =
+  if i >= n then (let ignored = M.freeze m in acc)
+  else case M.read m i of
+    (b, m2) -> let [x] = b in toVecFrom m2 n (i + 1) (V.pushBack acc x)
+
+-- --- loops -------------------------------------------------------------------
+
+-- `f lo`, `f (lo + 1)`, ... up to but not including `hi`, each given the
+-- state the one before gave back.
+@pub
+@terminating
+forRange : {s : Type} -> (lo : [] Int) -> (hi : [] Int) -> (f : [] ((i : [] Int) -> (st : s) -> s)) -> (st : s) -> s
+forRange lo hi f st = if lo >= hi then st else forRange (lo + 1) hi f (f lo st)
+
+-- `step` while `cond` holds of the state, which each gives back.
+@pub
+while : {s : Type} -> (cond : [] ((st : s) -> (Bool [], s))) -> (step : [] ((st : s) -> s)) -> (st : s) -> s ! Div
+while cond step st = case cond st of
+  (b, st2) -> let [go] = b in if go then while cond step (step st2) else st2

@@ -58,6 +58,7 @@ pub const MODULES: &[(&str, &str)] = &[
     ("Result", include_str!("../../../lib/Std/src/Result.idl")),
     ("Sigma", include_str!("../../../lib/Std/src/Sigma.idl")),
     ("Sort", include_str!("../../../lib/Std/src/Sort.idl")),
+    ("St", include_str!("../../../lib/Std/src/St.idl")),
     ("State", include_str!("../../../lib/Std/src/State.idl")),
     ("Stream", include_str!("../../../lib/Std/src/Stream.idl")),
     ("String", include_str!("../../../lib/Std/src/String.idl")),

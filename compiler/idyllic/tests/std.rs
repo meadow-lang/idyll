@@ -737,3 +737,54 @@ fn a_cell_is_seen_in_a_type() {
     let out = pipeline::run("peek : (n : Int) -> Int\npeek n = getRef (newRef n)\n\npeek 1\n", &OPTS);
     assert!(out.diagnostics.iter().any(|d| d.message.contains("effect")), "{:#?}", out.diagnostics);
 }
+
+/// Std.St's cells and arrays, threaded through, and the loops over them.
+const ST: &str = "use Std.St as St\nuse Std.St (StRef, StArray)\nuse Std.Collections.Vector as V\nuse Std.Collections.Vector (Vector)\n\n";
+
+#[test]
+fn st_cells_and_arrays_are_changed_in_place_as_meadows_are() {
+    // Meadow's own tests of Std.St, with the state given back by each step
+    // rather than kept in a runSt
+    let src = format!(
+        "{ST}sumTo : (n : Int) -> Int\nsumTo n = St.value (St.forRange 1 (n + 1) (\\(i : [] Int) (r : StRef Int) -> St.modifyRef r (\\(t : [] Int) -> t + i)) (St.newRef 0))\n\n\
+         reversed : (v : Vector Int) -> Vector Int\nreversed v = case St.length (St.fromVec v) of\n  (bn, a) -> let [n] = bn in St.toVec (St.forRange 0 (n / 2) (\\(i : [] Int) (m : StArray Int) -> St.swap m i (n - 1 - i)) a)\n\n\
+         fibStep : (i : [] Int) -> (m : StArray Int) -> StArray Int\nfibStep i m = case St.get m (i - 1) of\n  (b1, m2) -> case St.get m2 (i - 2) of\n    (b2, m3) -> let [x] = b1 in let [y] = b2 in St.set m3 i (x + y)\n\n\
+         fibs : (n : Int) -> Vector Int\nfibs n =\n  let start = St.newArray n 0 in\n  let seeded = if n > 1 then St.set start 1 1 else start in\n  St.toVec (St.forRange 2 n fibStep seeded)\n\n\
+         below : (k : [] Int) -> (r : StRef Int) -> (Bool [], StRef Int)\nbelow k r = case St.getRef r of\n  (b, r2) -> let [x] = b in ([x < k], r2)\n\n\
+         counted : () -> Int ! Div\ncounted u = St.value (St.while (below 5) (\\(r : StRef Int) -> St.modifyRef r (\\(x : [] Int) -> x + 1)) (St.newRef 0))\n\n\
+         shared : Array Int\nshared = #[1; 2; 3]\n\n\
+         (sumTo 100, V.toList (reversed (V.fromList (1 :: 2 :: 3 :: 4 :: 5 :: Nil))), V.toList (reversed V.empty), V.toList (fibs 10), St.freeze (St.set (St.thaw shared) 0 99), shared, counted ())\n"
+    );
+    assert_eq!(
+        value(&src),
+        "(5050, 5 :: 4 :: 3 :: 2 :: 1 :: Nil, Nil, 0 :: 1 :: 1 :: 2 :: 3 :: 5 :: 8 :: 13 :: 21 :: 34 :: Nil, #[99; 2; 3], #[1; 2; 3], 5)"
+    );
+}
+
+#[test]
+fn a_linear_value_is_never_shared() {
+    // `MArray` is a linear type, and so is a data type that holds one: a
+    // value of one is used at most once, in any module, so that a write in
+    // place is never seen through another name for it
+    let m = "use Std.Collections.MArray (MArray, new, write, freeze)\n\n";
+    let linear = |src: &str| rejected(src).iter().filter(|e| e.contains("linear")).count();
+    assert_eq!(linear(&format!("{m}f : () -> (Array Int, Array Int)\nf u = let m = new 2 0 in (freeze (write m 0 1), freeze m)\n\nf ()\n")), 1);
+    assert_eq!(linear(&format!("{m}f : (m : MArray Int) -> (Array Int, Array Int)\nf m = (freeze (write m 0 1), freeze m)\n\n1\n")), 1);
+    // not boxed to be used more often
+    assert_eq!(linear(&format!("{m}f : () -> MArray Int []\nf u = [new 1 0]\n\n1\n")), 1);
+    // not given for a type parameter something may use more than once
+    assert_eq!(linear(&format!("{m}dup : {{a : Type}} -> (x : [] a) -> (a, a)\ndup x = (x, x)\n\nf : () -> (MArray Int, MArray Int)\nf u = dup (new 2 0)\n\n1\n")), 1);
+    assert_eq!(linear(&format!("{m}f : () -> Ref (MArray Int) ! Mut\nf u = newRef (new 2 0)\n\n1\n")), 1);
+    // a data type of the program's own that holds one is linear too, its
+    // other fields copied out of it as often as wanted
+    let grid = format!("{m}data Grid = Grid (MArray Int) Int\n\nuse Grid.*\n\npoke : (g : Grid) -> Grid\npoke (Grid m n) = Grid (write m 0 n) (n + n)\n\ndone : (g : Grid) -> Array Int\ndone (Grid m n) = freeze m\n\n");
+    assert_eq!(value(&format!("{grid}done (poke (poke (Grid (new 2 0) 7)))")), "#[14; 0]");
+    assert_eq!(linear(&format!("{grid}f : () -> (Grid, Grid)\nf u = let g = Grid (new 1 0) 0 in (g, g)\n\n1\n")), 1);
+    // a library's top-level value of one would be shared by its every use;
+    // a program's is used at most once
+    assert_eq!(value(&format!("{m}arr : MArray Int\narr = new 2 0\n\nfreeze (write arr 1 5)")), "#[0; 5]");
+    assert_eq!(linear(&format!("{m}arr : MArray Int\narr = new 2 0\n\n(freeze arr, freeze arr)")), 1);
+    // and what holds one many times over, and is no linear value itself,
+    // is fine: a list of them, `Maybe` one, a pair
+    assert_eq!(value(&format!("{m}case (Just (new 1 3), new 2 4 :: Nil) of\n  (Just a, b :: rest) -> (freeze a, freeze b)\n  other -> (#[0;], #[0;])")), "(#[3;], #[4; 4])");
+}

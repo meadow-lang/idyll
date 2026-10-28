@@ -902,9 +902,15 @@ impl Checker {
     }
 
     /// How often a slot may be used, if known; otherwise as an unannotated
-    /// binder may be (as often as wanted, or once in a linear module).
-    fn slot_grade(&self, ctx: &Ctx, k: Lvl) -> Rc<Value> {
-        ctx.binders[k].grade.clone().unwrap_or_else(|| Poly::constant(self.default_grade()).into_value())
+    /// binder may be (as often as wanted, or once in a linear module), but
+    /// once for a value of a linear type (see [`super::linear`]).
+    fn slot_grade(&mut self, ctx: &Ctx, k: Lvl) -> Rc<Value> {
+        if let Some(g) = &ctx.binders[k].grade {
+            return g.clone();
+        }
+        let ty = ctx.binders[k].ty.clone();
+        let g = if self.is_linear(&ty) { Grade::ONE } else { self.default_grade() };
+        Poly::constant(g).into_value()
     }
 
     /// Whether no value of a type has fields: a literal's type, or a data
@@ -918,16 +924,18 @@ impl Checker {
     }
 
     /// Whether a slot is erased: its grade is known to be `0`.
-    fn erased_slot(&self, ctx: &Ctx, k: Lvl) -> bool {
-        self.to_poly(self.slot_grade(ctx, k)).as_constant().is_some_and(|g| g.is_zero())
+    fn erased_slot(&mut self, ctx: &Ctx, k: Lvl) -> bool {
+        let g = self.slot_grade(ctx, k);
+        self.to_poly(g).as_constant().is_some_and(|g| g.is_zero())
     }
 
     /// What splitting slot `k` uses of it: all of it, since its fields come
     /// out with its grade.  Except that a value that is not there at run
     /// time (grade `0`) cannot be looked at, and looking is a use.
-    fn split_use(&self, ctx: &Ctx, k: Lvl) -> Usage {
+    fn split_use(&mut self, ctx: &Ctx, k: Lvl) -> Usage {
         let Some(key) = ctx.binders[k].key else { return Usage::none() };
-        let grade = self.to_poly(self.slot_grade(ctx, k));
+        let grade = self.slot_grade(ctx, k);
+        let grade = self.to_poly(grade);
         match grade.as_constant() {
             Some(g) if g.is_zero() => Usage::var(key),
             _ => Usage::var(key).scale(&grade),
@@ -943,8 +951,12 @@ impl Checker {
     /// the variable in slot `k` with `c` applied to them, indices and all.
     fn instantiate(&mut self, ctx: &Ctx, k: Lvl, c: usize, hints: &[Option<String>]) -> (Ctx, Telescope, Unified) {
         let mut cty = self.constants[&c].clone();
-        // the fields of a value have its grade
+        // the fields of a value have its grade; but a value of a linear type
+        // is used once only for its fields of linear types, the rest being
+        // copied out of it as often as wanted (see [`super::linear`])
         let whole = self.slot_grade(ctx, k);
+        let slot_ty = ctx.binders[k].ty.clone();
+        let linear_slot = self.is_linear(&slot_ty) && self.constant(&whole).is_some_and(|g| !g.is_zero());
         let mut inner = ctx.clone();
         let mut delta = Vec::new();
         for hint in hints {
@@ -953,7 +965,9 @@ impl Checker {
             let hint = hint.clone().unwrap_or_else(|| if name == "_" { "x".to_string() } else { name.clone() });
             let key = self.fresh_key();
             let lvl = inner.lvl;
-            let grade = (&self.to_poly(grade.clone()) * &self.to_poly(whole.clone())).into_value();
+            let (grade, dom) = (grade.clone(), dom.clone());
+            let whole = if linear_slot && !self.is_linear(&dom) { Poly::constant(self.default_grade()).into_value() } else { whole.clone() };
+            let grade = (&self.to_poly(grade) * &self.to_poly(whole)).into_value();
             inner = inner.bind_keyed(key, &hint, dom.clone(), Some(grade.clone()));
             delta.push((lvl, key, hint.clone(), grade));
             cty = self.apply(cod, vvar(lvl, hint));

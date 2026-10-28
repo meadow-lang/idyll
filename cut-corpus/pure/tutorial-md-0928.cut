@@ -65,8 +65,8 @@ def idyll:Prelude/showInt (n_52: i64; k_53: ptr) =
       idyll:Prelude/negativeDigits(idyll:Prelude/digitFuel, n_52; μ̃ v_58: str.
         prim concatStrings(["-", v_58]; k_53))))
 
-def idyll:Main/id <'a_65 = d_a_64> (d_a_64: desc, x_66: 'a_65; k_67: ptr) =
-  <x_66 | k_67>
+def idyll:Main/phantom <'a_65 = d_a_64> (d_a_64: desc, n_66: i64; k_67: ptr) =
+  <n_66 | k_67>
 
 def idyll:Prelude/negativeDigits (fuel_68: ptr, n_69: i64; k_70: ptr) =
   <fuel_68 | case {
@@ -87,10 +87,5 @@ def idyll:Prelude/negativeDigits (fuel_68: ptr, n_69: i64; k_70: ptr) =
   }>
 
 def idyll:Main/"#entry" (; k_82: ptr) =
-  <cocase {
-    apply(a_86: i64; k_87: ptr) =>
-      idyll:Main/id(desc(i64), a_86; k_87)
-  } | μ̃ v_84: ptr.
-    idyll:Main/id(desc(ptr), v_84; μ̃ r_85: ptr.
-      <r_85 | apply(1; μ̃ answer_83: i64.
-        idyll:Prelude/showInt(answer_83; k_82))>)>
+  idyll:Main/phantom(desc(bool), 1; μ̃ answer_83: i64.
+    idyll:Prelude/showInt(answer_83; k_82))

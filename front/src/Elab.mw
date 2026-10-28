@@ -338,6 +338,7 @@ fun fitsMeta (tc : Tc) (ctx : Ctx) (m : Int) (ty : Value) : Bool ! { Mut | e } =
   | Value.Pi name Icit.Implicit grade _ dom cod ->
       let arg = freshMetaWith tc ctx (Origin.Inferred ("the implicit argument " ++ name)) (Just dom) in
       let argV = eval tc ctx.env arg in
+      let w = noteLinearWant tc ctx name dom cod argV in
       insert tc ctx (Core.App core (argument tc grade arg)) (fst (splitComp tc (apply tc cod argV)))
   | Value.Pi name Icit.Auto grade _ dom cod ->
       let later = determines tc (quote tc (ctx.lvl + 1) (apply tc cod (Va.vvar ctx.lvl name))) 0 in
@@ -353,6 +354,7 @@ fun fitsMeta (tc : Tc) (ctx : Ctx) (m : Int) (ty : Value) : Bool ! { Mut | e } =
   | Value.Pi name Icit.Implicit grade _ dom cod ->
       let arg = freshMetaWith tc ctx (Origin.Inferred ("the implicit argument " ++ name)) (Just dom) in
       let argV = eval tc ctx.env arg in
+      let w = noteLinearWant tc ctx name dom cod argV in
       insertImplicit tc ctx (Core.App core (argument tc grade arg)) (fst (splitComp tc (apply tc cod argV)))
   | fty -> (core, fty)
 
@@ -405,11 +407,17 @@ fun gradeFitsAt (tc : Tc) (lvl : Int) (used0 : Poly) (allowed0 : Value) : Bool !
 -- lose by dropping one.
 @pub(pkg) fun leaveKey (tc : Tc) (ctx : Ctx) (key : Maybe Int) (allowed : Value) (usage : Usage) (inType : Bool) : Usage ! { Mut | e } =
   let (used, rest) = U.take usage key in
-  let unit =
-    match key with
-    | Just k -> M.map (\t -> force tc t) (X.typeOfKey ctx k)
-    | None -> None
+  let ty = match key with | Just k -> X.typeOfKey ctx k | None -> None in
+  -- a value of a linear type is used at most once, whatever its binder's
+  -- grade
+  let linear =
+    match ty with
+    | Just t -> not inType and not (U.isUnknown rest) and linearUsage tc ctx t used
+    | None -> False
   in
+  if linear then rest
+  else
+  let unit = M.map (\t -> force tc t) ty in
   let isUnit = match unit with | Just (Value.LitTy Builtin.Unit) -> True | _ -> False in
   -- a parameter that says no grade: its grade is worked out from its uses,
   -- here, and what waited on it is checked against it
@@ -429,6 +437,174 @@ fun gradeFitsAt (tc : Tc) (lvl : Int) (used0 : Poly) (allowed0 : Value) : Bool !
 
 @pub(pkg) fun leaveBinder (tc : Tc) (ctx : Ctx) (x : Ident) (allowed : Value) (usage : Usage) (inType : Bool) : Usage ! { Mut | e } =
   leaveKey tc ctx (keyOf x) allowed usage inType
+
+-- --- linear types -------------------------------------------------------------------
+--
+-- Types whose values are never shared, so that changing one in place is
+-- never seen (`linear.rs`): `MArray`, a data type with a field of a linear
+-- type, or one applied to a linear type. A variable of one is used at most
+-- once, whatever its grade (`linearUsage`); a function type's binder of one
+-- that says no grade is `[1]`; one is never boxed; a linear type is given
+-- for a type parameter only of something that holds values of that type at
+-- most once (`noteLinearWant`, `checkLinearWants`); and a program's
+-- top-level definition of one is used at most once, a library's none at all
+-- (`linearTopLevel`).
+
+fun atMostOnce () : Grade = M.unwrapOr G.one (G.range G.zero G.one)
+
+-- Whether values of `ty` are linear.
+@pub(pkg) fun isLinear (tc : Tc) (ty : Value) : Bool ! { Mut | e } =
+  match force tc ty with
+  | Value.Opaque u _ spine ->
+      (match Hm.lookup u (getRef tc.nativeInfo) with
+       | Just (name, _) -> name == "MArray"
+       | None ->
+           if not (Hm.member u (getRef tc.datas)) then False
+           else dataIsLinear tc u or V.any (\e -> match e with | Elim.App a -> isLinear tc a | _ -> False) spine)
+  | Value.BoxTy _ inner -> isLinear tc inner
+  | Value.Comp inner _ -> isLinear tc inner
+  | _ -> False
+
+-- Whether a data type has a field of a linear type, its parameters aside:
+-- worked out once (a data type that holds itself is not linear for that).
+fun dataIsLinear (tc : Tc) (u : Int) : Bool ! { Mut | e } =
+  match Hm.lookup u (getRef tc.linearDatas) with
+  | Just known -> known
+  | None ->
+      let w = setRef tc.linearDatas (Hm.insert u False (getRef tc.linearDatas)) in
+      let ctors = M.unwrapOr [] (Hm.lookup u (getRef tc.datas)) in
+      let linear = V.any (\c -> match Hm.lookup c (getRef tc.constants) with | Just ty -> fieldsLinear tc ty 0 | None -> False) ctors in
+      let w2 = setRef tc.linearDatas (Hm.insert u linear (getRef tc.linearDatas)) in
+      linear
+
+fun fieldsLinear (tc : Tc) (ty : Value) (l : Int) : Bool ! { Mut | e } =
+  match force tc ty with
+  | Value.Pi name icit _ _ dom cod ->
+      if icit == Icit.Explicit and isLinear tc dom then True
+      else fieldsLinear tc (apply tc cod (Va.vvar l name)) (l + 1)
+  | _ -> False
+
+-- Whether `ty` holds a value of the type variable at level `a`: is it, or
+-- has it among a data type's arguments or in a box, not under a function
+-- type.
+fun holds (tc : Tc) (ty : Value) (a : Int) : Bool ! { Mut | e } =
+  match force tc ty with
+  | Value.Rigid l _ spine -> l == a and V.isEmpty spine
+  | Value.Opaque _ _ spine -> V.any (\e -> match e with | Elim.App x -> holds tc x a | _ -> False) spine
+  | Value.BoxTy _ inner -> holds tc inner a
+  | Value.Comp inner _ -> holds tc inner a
+  | _ -> False
+
+-- Whether a function type, after its type parameter `name` bound at `lvl`
+-- (its body `cod`), takes a value holding one of that type at a grade that
+-- allows more than one use.
+fun shares (tc : Tc) (lvl : Int) (name : String) (cod : Closure) : Bool ! { Mut | e } =
+  sharesFrom tc lvl (apply tc cod (Va.vvar lvl name)) (lvl + 1)
+
+fun sharesFrom (tc : Tc) (a : Int) (ty : Value) (l : Int) : Bool ! { Mut | e } =
+  match force tc ty with
+  | Value.Pi name _ grade _ dom cod ->
+      let once = match constant tc grade with | Just g -> G.fits g (atMostOnce ()) | None -> False in
+      if not once and holds tc dom a then True
+      else sharesFrom tc a (fst (splitComp tc (apply tc cod (Va.vvar l name)))) (l + 1)
+  | _ -> False
+
+-- An implicit argument `given` for the parameter `name` of a function type
+-- whose body is `cod`, a type: if the function may share a value of that
+-- type, the argument is to be no linear type, checked once it is known.
+@pub(pkg) fun noteLinearWant (tc : Tc) (ctx : Ctx) (name : String) (dom : Value) (cod : Closure) (given : Value) : () ! { Mut | e } =
+  let isType = match force tc dom with | Value.Type _ -> True | _ -> False in
+  if isType and shares tc ctx.lvl name cod then setRef tc.linearWants (V.pushBack (getRef tc.linearWants) (ctx.lvl, given))
+  else ()
+
+-- The type parameters given what may be linear types: each that is one is
+-- an error.
+@pub(pkg) fun checkLinearWants (tc : Tc) : () ! { Mut | e } =
+  let wants = getRef tc.linearWants in
+  let w = setRef tc.linearWants [] in
+  V.foldl (\acc want -> match want with | (_, given) -> if isLinear tc given then T.error tc "LinearInstance" else acc) () wants
+
+-- A value of type `ty` boxed: no linear type may be.
+@pub(pkg) fun linearBox (tc : Tc) (ty : Value) : () ! { Mut | e } =
+  if isLinear tc ty then T.error tc "LinearBox" else ()
+
+-- A variable of a linear type `ty`, used as `used` says: at most once, or
+-- the error is reported (`True`), or waits on a grade being worked out.
+@pub(pkg) fun linearUsage (tc : Tc) (ctx : Ctx) (ty : Value) (used : Poly) : Bool ! { Mut | e } =
+  if not (isLinear tc ty) then False
+  else if fitsOrWaits tc ctx used (Va.polyValue (Va.polyConstant (atMostOnce ()))) False then False
+  else
+    let w = T.error tc "LinearUsage" in
+    True
+
+-- The variables a `let` bound, from level `from` of `ctx` on, used in its
+-- body as `usage` says: those of a linear type at most once.
+fun linearLets (tc : Tc) (ctx : Ctx) (from : Int) (usage : Usage) (pending : [Pending]) : () ! { Mut | e } =
+  if U.isUnknown usage then ()
+  else
+    V.foldl
+      (\acc l ->
+        match X.keyAt ctx l with
+        | Just key ->
+            let bound = V.any (\p -> match p with | Pending.NonRec (Just u) _ -> u == key | _ -> False) pending in
+            if bound then
+              let (used, _) = U.take usage (Just key) in
+              let w = linearUsage tc ctx (X.typeAt ctx l) used in
+              acc
+            else acc
+        | None -> acc)
+      ()
+      (V.range from ctx.lvl)
+
+-- A module's top-level definitions of a linear type. In a program (with an
+-- expression, or a `main`, which `uses` is the uses of) each is used at
+-- most once, what a definition uses being used once per use of it; in a
+-- library, which any module may use as often as it likes, there is none.
+@pub fun linearTopLevel (tc : Tc) (ctx : Ctx) (groups : [(Maybe Ident, Pending)]) (uses : Maybe Usage) : () ! { Mut | e } =
+  match uses with
+  | None ->
+      V.foldl
+        (\acc g ->
+          match g with
+          | (Just x, Pending.NonRec _ _) ->
+              (match X.lookup ctx x with
+               | Just (_, ty, _) -> if isLinear tc ty then T.error tc "LinearTopLevel" else acc
+               | None -> acc)
+          | _ -> acc)
+        ()
+        groups
+  | Just u0 ->
+      let w =
+        V.foldl
+          (\usage g ->
+            if U.isUnknown usage then usage
+            else
+              match g with
+              | (mx, Pending.NonRec unique rhs) ->
+                  let (n, rest) = U.take usage unique in
+                  let w1 =
+                    match mx with
+                    | Just x -> (match X.lookup ctx x with | Just (_, ty, _) -> linearUsage tc ctx ty n | None -> False)
+                    | None -> False
+                  in
+                  U.add rest (U.scale rhs n)
+              | (_, Pending.Rec uniques rhs) ->
+                  let (used, rest, rhs2) =
+                    V.foldl
+                      (\acc k ->
+                        match acc with
+                        | (b, u, r) ->
+                            let (n, u2) = U.take u k in
+                            let (_, r2) = U.take r k in
+                            (b or not (Va.polyIsZero n), u2, r2))
+                      (False, usage, rhs)
+                      uniques
+                  in
+                  U.add rest (U.scale rhs2 (Va.polyConstant (if used then G.default else G.zero))))
+          u0
+          (V.reverse groups)
+      in
+      ()
 
 -- --- grades worked out ---------------------------------------------------------------
 
@@ -1220,11 +1396,13 @@ pass! {
            (\(c : Cx) ->
              let grade = freshValue c.tc c.ctx "the grade of this box" in
              let (eC, eTy, usage) = infer c.tc c.ctx expr in
+             let w = linearBox c.tc eTy in
              (Core.BoxIntro eC, Value.BoxTy grade eTy, U.scale usage (toPoly c.tc grade)))
            (\(c : Cx) g ->
              match g with
              | Value.BoxTy grade a ->
                  (let (eC, usage) = check c.tc c.ctx expr a in
+                  let wLinear = linearBox c.tc a in
                   let w =
                     if constant c.tc grade == Just G.zero then
                       (match effectsOf c.tc usage with
@@ -1268,6 +1446,7 @@ pass! {
            (\(c : Cx) g ->
              let (ctx2, pending, wraps) = enterLet c.tc c.ctx groups in
              let (bodyC, usage) = check c.tc ctx2 body g in
+             let w = linearLets c.tc ctx2 c.ctx.lvl usage pending in
              (wrapLets bodyC wraps, g, leaveGroups usage pending)))
     | Case { raw scrutinee, raw clauses } ->
         (let again = \(c : Cx) -> elabExpr src out c node in
@@ -1403,12 +1582,6 @@ fun inferPi (tc : Tc) (ctx : Ctx) (mx : Maybe Ident) (icit : Icit) (ann : Maybe 
   -- as wanted
   let default = if icit == Icit.Implicit then G.zero else if icit == Icit.Auto then G.default else defaultGrade tc in
   let (gs, its) = binderGrades tc ctx ann default in
-  -- a parameter of a definition that says no grade, in a module that is
-  -- not linear: its grade is worked out from the body
-  let grade =
-    if spine > 0 and icit == Icit.Explicit and M.isNone ann and not (getRef tc.linear) then fst (inferredGrade tc ctx name)
-    else fst gs
-  in
   let (inType, inTypeV) = its in
   let (domC, domV, domLevel, domU) =
     if kindHirExpr h dom == HirExprKind.Omitted then
@@ -1417,6 +1590,14 @@ fun inferPi (tc : Tc) (ctx : Ctx) (mx : Maybe Ident) (icit : Icit) (ann : Maybe 
       let c = freshMeta tc ctx ("the type of " ++ name) in
       (c, eval tc ctx.env c, 0, U.none ())
     else inferType tc ctx dom
+  in
+  -- a binder of a linear type that says no grade is used once, whatever
+  -- the module's default; a parameter of a definition that says no grade,
+  -- in a module that is not linear, has its grade worked out from the body
+  let grade =
+    if icit == Icit.Explicit and M.isNone ann and isLinear tc domV then C.grade G.one
+    else if spine > 0 and icit == Icit.Explicit and M.isNone ann and not (getRef tc.linear) then fst (inferredGrade tc ctx name)
+    else fst gs
   in
   let ctx1 = X.bind ctx mx name domV in
   -- an auto binder is what a search in the rest of the type may find:
@@ -1522,6 +1703,7 @@ fun inferLet (tc : Tc) (ctx : Ctx) (groups : [HirGroup]) (body : HirExpr) : (Cor
       Value.Error
     else ty
   in
+  let w = linearLets tc ctx2 ctx.lvl usage pending in
   (wrapLets bodyC wraps, ty2, leaveGroups usage pending)
 
 fun unsupported (tc : Tc) (what : String) : (Core, Value, Usage) ! { Mut | e } =
@@ -1601,6 +1783,7 @@ fun inferApp (tc : Tc) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value, U
   match fTy with
   | Value.Error -> failed ()
   | _ ->
+      let param = match fTy with | Value.Pi name _ _ _ _ _ -> name | _ -> "" in
       let pi =
         match fTy with
         | Value.Pi _ _ grade _ dom cod -> Just (grade, dom, cod)
@@ -1625,6 +1808,7 @@ fun inferApp (tc : Tc) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value, U
            let built = match coreHead fC with | Core.Opaque u _ -> M.isSome (T.ctorInfo tc u) | _ -> False in
            let (aC, aU) = check tc ctx a dom in
            let aV0 = eval tc ctx.env aC in
+           let wLinear = noteLinearWant tc ctx param dom cod aV0 in
            -- a computation with effects never reaches a type: not as an
            -- argument the result mentions, nor as an erased one
            let aV =

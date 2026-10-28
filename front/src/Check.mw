@@ -20,9 +20,10 @@ use Idyll.Tc as T
 use Idyll.Eval (force, apply, eval, quote, row, rowParts, splitComp)
 use Idyll.Unify (unify, effectsFit)
 use Idyll.Usage (Usage)
+use Idyll.Usage as U
 use Idyll.Ctx (Ctx, Entry, Binder, Info)
 use Idyll.Ctx as X
-use Idyll.Elab (Pending, effectsOf, enterGroups, infer, retryPostponed, closeOpened, closeRows, reportHoles, reportUnsolved, keyOf, wrapLets, install)
+use Idyll.Elab (Pending, effectsOf, enterGroups, infer, retryPostponed, closeOpened, closeRows, reportHoles, reportUnsolved, keyOf, wrapLets, install, checkLinearWants, linearTopLevel)
 use Idyll.Elaborated (ElaboratedProgram, newElaboratedBuilder, freezeElaborated, moduleRow)
 use Idyll.Tc (Meta)
 use Idyll.Auto as A
@@ -172,12 +173,16 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
   in
   let main = V.find (\b -> Just (bindUnique h b) == m.main) (V.concatMap (bindsOf h) groups) in
   let mainFits = M.map (\b -> checkMain tc ctx (identOf h (hirBindName h b)) world) main in
+  -- what the program uses of its top-level definitions: its expression's
+  -- uses, or `main`, used once
+  let bodyUses = newRef (M.map (\b -> U.var (bindUnique h b)) main) in
   let body =
     match hirModuleBody h root with
     | Just e ->
         let w = setRef tc.linear m.linearBody in
         let mark = V.len (getRef tc.recDefs) in
         let (core0, ty, usage) = infer tc ctx e in
+        let wUses = setRef bodyUses (Just usage) in
         -- what it put off, found and written over
         let s1 = O.settle tc in
         let core1 = A.resolve tc core0 ctx.lvl in
@@ -199,6 +204,9 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
   let w3 = retryPostponed tc True in
   let w4 = closeOpened tc in
   let w5 = closeRows tc in
+  let wl1 = checkLinearWants tc in
+  let named = V.map (\gp -> match gp with | (g, p) -> (M.map (\b -> identOf h (hirBindName h b)) (V.head (bindsOf h g)), p)) (V.zip groups owed) in
+  let wl2 = linearTopLevel tc ctx named (getRef bodyUses) in
   let w6 = reportUnsolved tc in
   -- the unique of each top-level `let`: each group that made one
   let toplevel =

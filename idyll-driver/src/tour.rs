@@ -358,6 +358,26 @@ use Maybe.*"),
         ],
     },
     Step {
+        title: "Linear types",
+        section: Section::Grades,
+        text: &[
+            "Some values must never be shared, whatever binder holds them:",
+            "a mutable array is written in place, and would be seen changing",
+            "through another name. So `MArray` is a linear type, as is any",
+            "data type holding one: a value of it is used at most once, in",
+            "every module, never boxed, and never given to something that",
+            "might use it twice. Each write gives the array back.",
+        ],
+        examples: &[
+            ok("use Std.Collections.MArray (MArray, new, write, freeze)"),
+            rejected(
+                "twice : (m : MArray Int) -> (Array Int, Array Int)\ntwice m = (freeze (write m 0 1), freeze m)",
+                "a linear value used more than once",
+            ),
+            ok("freeze (write (write (new 3 0) 0 7) 2 9)"),
+        ],
+    },
+    Step {
         title: "Grade polymorphism",
         section: Section::Grades,
         text: &[

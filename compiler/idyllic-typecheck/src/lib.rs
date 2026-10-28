@@ -107,6 +107,7 @@ pub mod grade;
 mod elab;
 mod eval;
 pub mod handlers;
+mod linear;
 mod literals;
 mod matching;
 pub mod natives;
@@ -342,6 +343,16 @@ pub enum TypeErrorKind {
     /// a variable used a different number of times than its grade allows;
     /// `in_type` when it is a function type's uses of its own binder
     UsageMismatch { name: String, used: Rc<Core>, allowed: Rc<Core>, in_type: bool },
+    /// a variable of a linear type used more than once, whatever its
+    /// grade says
+    LinearUsage { name: String, ty: Rc<Core>, used: Rc<Core> },
+    /// a value of a linear type boxed, to be used more than once
+    LinearBox(Rc<Core>),
+    /// a linear type given for a type parameter of something that may hold
+    /// a value of that type more than once
+    LinearInstance { ty: Rc<Core>, param: String },
+    /// a top-level definition of a linear type, which every use would share
+    LinearTopLevel { name: String, ty: Rc<Core> },
     /// a field a pattern bound used a different number of times than the
     /// grade of what it came out of allows
     FieldUsage { name: String, used: Rc<Core>, allowed: Rc<Core>, whole: Option<String> },
@@ -633,6 +644,17 @@ impl TypeError {
                         times(used)
                     ))
             }
+            TypeErrorKind::LinearUsage { name, ty, used } => Diagnostic::error("a linear value used more than once")
+                .label(here, format!("{name} is of type {ty}, which is linear, but is used {}", times(used)))
+                .help(format!("a value of {ty} is changed in place, so it is never shared: each use must give it back for the next, as a write does")),
+            TypeErrorKind::LinearBox(ty) => Diagnostic::error("a linear value boxed")
+                .label(here, format!("this is of type {ty}, which is linear, so it may not be boxed to be used more than once")),
+            TypeErrorKind::LinearInstance { ty, param } => Diagnostic::error("a linear type for a type parameter that is shared")
+                .label(here, format!("{ty} is linear, but this may hold a value of type {param} more than once"))
+                .help(format!("{ty} is changed in place, so it is never shared: it may be given only for a parameter whose values are used at most once")),
+            TypeErrorKind::LinearTopLevel { name, ty } => Diagnostic::error("a linear value at the top level")
+                .label(here, format!("{name} is of type {ty}, which is linear, and every use of a top-level definition shares it"))
+                .help("make it a function, so that each call makes one of its own"),
             TypeErrorKind::UsageMismatch { name, used, allowed, in_type: true } => {
                 Diagnostic::error("usage mismatch").label(
                     here,
@@ -1105,6 +1127,11 @@ pub struct Checker {
     /// the type of every constant (data type, constructor, recursive
     /// definition), by its unique
     constants: HashMap<usize, VTy>,
+    /// which data types are linear, as far as worked out (see [`linear`])
+    linear_datas: HashMap<usize, bool>,
+    /// the type parameters given what may be a linear type, to check once
+    /// it is known (see [`linear`])
+    linear_wants: Vec<linear::LinearWant>,
     /// the next key for a slot the checker makes itself (see
     /// [`Binder::key`]); counts down from the top, far from the renamer's
     /// uniques
@@ -1393,6 +1420,8 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         terminating: m.terminating.clone(),
         linear: false,
         constants: HashMap::new(),
+        linear_datas: HashMap::new(),
+        linear_wants: Vec::new(),
         next_key: usize::MAX,
         transparent: HashMap::new(),
         effects: HashMap::new(),
@@ -1518,12 +1547,16 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
     let prelude: HashSet<usize> = m.prelude.values().copied().collect();
     let main = m.groups.iter().flat_map(hir::BindGroup::binds).find(|b| b.name.unique.is_some() && b.name.unique == m.main);
     let main_fits = main.map(|b| tc.check_main(&ctx, b, world.clone()));
+    // what the program uses of its top-level definitions: its expression's
+    // uses, or `main`, used once
+    let mut uses: Option<Usage> = main.map(|b| b.name.unique.map_or_else(Usage::none, Usage::var));
     let body = match (&m.body, main.zip(main_fits)) {
         (Some(body), _) => {
             // in the root module's mode
             tc.linear = m.linear_body;
             let mark = tc.rec_defs.len();
             let (core, ty, usage) = tc.infer(&ctx, body);
+            uses = Some(usage.clone());
             tc.settle_deferred();
             let core = tc.resolve(&core, ctx.lvl);
             tc.resolve_rec_defs(mark);
@@ -1551,6 +1584,8 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
     tc.retry_postponed(true);
     tc.close_opened();
     tc.close_rows();
+    tc.check_linear_wants();
+    tc.linear_top_level(&ctx, &m.groups, &owed, uses);
     tc.report_unsolved_metas();
     // the prelude's own definitions, which come first
     let prelude_lets: Vec<(String, Rc<Core>)> = m

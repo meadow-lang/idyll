@@ -739,6 +739,39 @@ definition's are, and `Std.Collections.MArray`, whose arrays are changed
 in place, is the one linear module of it (see [The standard
 library](#the-standard-library)).
 
+### Linear types
+
+A grade belongs to a binder, and which binder a value ends up in is not
+up to the value. Some values must never be shared whatever binder holds
+them: a mutable array, written in place, would be seen changing through
+any other name for it. So a type can be linear itself. `MArray` is, and so
+is a data type with a field of a linear type, or applied to one (`Pair
+(Int []) (MArray Int)`). In every module, linear or not:
+
+- a variable of a linear type is used at most once, whatever its grade;
+- a binder of one that says no grade is `[1]`, so a constructor's field
+  or a parameter of one charges what it is given once;
+- a value of one is never boxed, `[e]`, to be used more often;
+- a linear type is given for a type parameter only of something that holds
+  values of that type at most once: a pair, a list, `Maybe`, whose fields
+  are linear, but not `dup : {a : Type} -> (x : [] a) -> (a, a)`;
+- and a top-level definition of one is used at most once by the program,
+  a library having none (any module could use it).
+
+A value of a linear type is copied out of only for its fields of linear
+types; the rest of them, an `Int` beside an array, as often as wanted.
+
+```
+> use Std.Collections.MArray (MArray, new, write, freeze)
+> twice : (m : MArray Int) -> (Array Int, Array Int)
+twice m = (freeze (write m 0 1), freeze m)
+
+Error: a linear value used more than once
+   │ ╰── m is of type MArray Int, which is linear, but is used 2 times
+> freeze (write (new 2 0) 0 1)
+#[1; 0] : Array Int
+```
+
 ### Grades flow through calls
 
 If a function uses its argument twice, then everything *in* that argument
@@ -3033,6 +3066,7 @@ is nothing to install.
 | `Std.Fs`, `Std.Process` | `readToStringOr`, `tryReadDir`, `writeLines`, `existsAll`; `argCount`, `arg`, `envOr`, `exitFailure`, ... |
 | `Std.Exn` | an effect: `throw`, and `toResult`, `catch`, `withDefault`, `toMaybe`, `ofResult`, `ensure` |
 | `Std.Ref` | shared mutable cells, as Meadow's: `modify`, `swap`, `getAndModify`, `modifyAndGet`, `bump`, `repeatN`, over the prelude's `Ref`, `newRef`, `getRef`, `setRef` (the effect `Mut`) |
+| `Std.St` | state changed in place, as Meadow's but linear rather than an effect: a cell, `StRef a` (`newRef`, `getRef`, `setRef`, `modifyRef`, `value`), and an array, `StArray a` (`newArray`, `get`, `set`, `length`, `modify`, `swap`, `freeze`, `thaw`, `fromVec`, `toVec`), each operation giving it back; `forRange` and `while` thread it through a loop |
 | `Std.State` | an effect: `get`, `put`, `modify`, and `runState` from a first state |
 | `Std.Yield` | an effect: `yield`, `each`, and `collect` into a list |
 | `Std.Stream` | consumers and transformers of what is yielded: `toVec`, `toList`, `forEach`, `fold`, `sum`, `count`, `take`, `takeWhile`, `first`, `any`, `all`, `find`, `map`, `filter`; and producers, `range`, `repeat`, `iterate`, `ofList`, `ofVec` |

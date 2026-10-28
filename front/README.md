@@ -606,6 +606,24 @@ uniques the renamer reserves for them.
 
 The prelude's definitions come first and are checked like the program's.
 
+**Linear types** (the end of `Elab.mw`, `linear.rs`). A grade is a
+binder's, and a value may end up in any binder; so some types are linear
+themselves, their values never shared, and changing one in place never
+seen: `MArray`, and a data type with a field of a linear type or applied
+to one (`isLinear`, each data type worked out once, `tc.linearDatas`). A
+variable of one is used at most once whatever its grade (`linearUsage`,
+from `leaveKey`, and for a `let`'s variables, which have no grade of their
+own, `linearLets`); a function type's binder of one that says no grade is
+`[1]` (`inferPi`); a value of one is never boxed (`linearBox`); an
+implicit type argument given to something that holds values of that type
+at a grade over one (`shares`: a binder holding it, not under a function
+type) is kept (`noteLinearWant`, `tc.linearWants`) and is an error if it
+turns out linear (`checkLinearWants`, at the end of the module); and a
+program's top-level definition of one is used at most once, counted as a
+`let`'s uses are, a library's being an error (`linearTopLevel`). Matching
+a value of a linear type uses it once (`slotGrade`), and its fields of
+other types come out of it as often as wanted (`instantiate`).
+
 **Matching** (`Matching.mw`, `matching.rs`) turns equations and `case`
 alternatives into case trees, with dependent matching, after Cockx and
 Abel's *Elaborating Dependent (Co)pattern Matching*. Each equation is a

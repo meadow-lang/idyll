@@ -333,7 +333,7 @@ impl Checker {
     }
 
     /// The grade, if it is known outright (not a variable, not still a meta).
-    fn constant(&self, grade: &Rc<Value>) -> Option<Grade> {
+    pub(super) fn constant(&self, grade: &Rc<Value>) -> Option<Grade> {
         self.to_poly(grade.clone()).as_constant()
     }
 
@@ -376,8 +376,10 @@ impl Checker {
             let desc = MetaOrigin::Inferred(format!("the implicit argument {name}"));
             let arg = self.fresh_meta_with(ctx, node, desc, Some(dom.clone()));
             let arg_v = self.eval(&ctx.env, &arg);
+            let (name, dom, cod) = (name.clone(), dom.clone(), cod.clone());
+            self.note_linear_want(ctx, node, &name, &dom, &cod, arg_v.clone());
             core = Rc::new(Core::App(core, self.argument(grade, arg)));
-            ty = self.split_comp(self.apply(cod, arg_v)).0;
+            ty = self.split_comp(self.apply(&cod, arg_v)).0;
         }
     }
 
@@ -433,6 +435,10 @@ impl Checker {
                 self.fresh_meta_with(ctx, node, desc, Some(dom.clone()))
             };
             let arg_v = self.eval(&ctx.env, &arg);
+            if *icit == Icit::Implicit {
+                let (name, dom, cod) = (name.clone(), dom.clone(), cod.clone());
+                self.note_linear_want(ctx, node, &name, &dom, &cod, arg_v.clone());
+            }
             core = Rc::new(Core::App(core, self.argument(grade, arg)));
             ty = self.split_comp(self.apply(cod, arg_v)).0;
         }
@@ -714,9 +720,17 @@ impl Checker {
         in_type: bool,
     ) {
         let used = usage.take(key);
+        // a value of a linear type is used at most once, whatever its
+        // binder's grade (see [`linear`])
+        let ty = ctx.binders.iter().rev().find(|b| key.is_some() && b.key == key).map(|b| b.ty.clone());
+        if let Some(ty) = &ty {
+            if !in_type && !usage.is_unknown() && self.linear_usage(ctx, node, name, ty, &used) {
+                return;
+            }
+        }
         // `()` is the only value of its type, so there is nothing to lose by
         // dropping one: a `Unit` may be used less than its grade says
-        let unit = ctx.binders.iter().rev().find(|b| key.is_some() && b.key == key).map(|b| self.force(b.ty.clone()));
+        let unit = ty.map(|t| self.force(t));
         let is_unit = matches!(unit.as_deref(), Some(Value::LitTy(Builtin::Unit)));
         // a parameter that says no grade: its grade is worked out from its
         // uses, here, and what waited on it is checked against it
@@ -1286,11 +1300,6 @@ impl Checker {
                 let ((grade, _), (in_type, in_type_v)) = self.binder_grades(ctx, ann.as_ref(), default);
                 // a parameter of a definition that says no grade, in a module
                 // that is not linear: its grade is worked out from the body
-                let grade = if spine > 0 && *icit == Icit::Explicit && ann.is_none() && !self.linear {
-                    self.inferred_grade(ctx, nid, &name).0
-                } else {
-                    grade
-                };
                 let (dom_c, dom_v, dom_level, dom_usage) = match &dom.kind {
                     // a variable a signature mentions without binding it:
                     // its type is for unification to find, in whatever
@@ -1302,6 +1311,15 @@ impl Checker {
                         (c, v, 0, Usage::none())
                     }
                     _ => self.infer_type(ctx, dom),
+                };
+                // (a binder of a linear type that says no grade is used
+                // once, whatever the module's default: see [`linear`])
+                let grade = if *icit == Icit::Explicit && ann.is_none() && self.is_linear(&dom_v) {
+                    Rc::new(Core::GradeLit(Grade::ONE))
+                } else if spine > 0 && *icit == Icit::Explicit && ann.is_none() && !self.linear {
+                    self.inferred_grade(ctx, nid, &name).0
+                } else {
+                    grade
                 };
                 let ctx2 = ctx.bind(mx.as_ref(), &name, dom_v);
                 // an auto binder is what a search in the rest of the type may
@@ -1373,6 +1391,7 @@ impl Checker {
                 let grade_c = self.fresh_meta(ctx, nid, "the grade of this box");
                 let grade = self.eval(&ctx.env, &grade_c);
                 let (e_c, e_ty, usage) = self.infer(ctx, e);
+                self.linear_box(ctx, e.id, &e_ty);
                 let usage = usage.scale(&self.to_poly(grade.clone()));
                 (Rc::new(Core::BoxIntro(e_c)), Rc::new(Value::BoxTy(grade, e_ty)), usage)
             }
@@ -1399,6 +1418,7 @@ impl Checker {
                     }
                     None => ty,
                 };
+                self.linear_lets(&ctx2, ctx.lvl, nid, &usage, &pending);
                 (Self::wrap_lets(body_c, wraps), ty, Self::leave_groups(usage, pending))
             }
             TermKind::Case(scrutinee, clauses) => self.case_of(ctx, nid, scrutinee, clauses, None),
@@ -1447,6 +1467,10 @@ impl Checker {
         a: &hir::Term,
     ) -> (Rc<Core>, VTy, Usage) {
         let err = || (Rc::new(Core::Error), Rc::new(Value::Error), Usage::unknown());
+        let param = match &*f_ty {
+            Value::Pi { name, .. } => name.clone(),
+            _ => String::new(),
+        };
         let pi = match &*f_ty {
             Value::Pi { grade, dom, cod, .. } => Some((grade.clone(), dom.clone(), cod.clone())),
             Value::Error => return err(),
@@ -1479,8 +1503,9 @@ impl Checker {
                 // its descriptor, kept all the same; so an instance may give
                 // its own parameter as an associated type, `Elem = a`)
                 let is_type = matches!(*self.force(dom.clone()), Value::Type(_));
-                let (a_c, a_usage) = self.check(ctx, a, dom);
+                let (a_c, a_usage) = self.check(ctx, a, dom.clone());
                 let mut a_v = self.eval(&ctx.env, &a_c);
+                self.note_linear_want(ctx, a.id, &param, &dom, &cod, a_v.clone());
                 // A computation with effects never reaches a type: not
                 // as an argument the result type mentions, and not as
                 // an erased one, which is never run, so its effects
@@ -1655,6 +1680,7 @@ impl Checker {
             // must be available `grade` times over
             (TermKind::BoxIntro(e), Value::BoxTy(grade, a)) => {
                 let (e_c, usage) = self.check(ctx, e, a.clone());
+                self.linear_box(ctx, e.id, a);
                 // a box nobody may open is never filled, so what would fill
                 // it must not have effects that then never happen
                 if self.constant(grade) == Some(Grade::ZERO) {
@@ -1739,6 +1765,7 @@ impl Checker {
             (TermKind::Let(groups, body), _) => {
                 let (ctx2, pending, wraps) = self.enter_let(ctx, groups);
                 let (body_c, usage) = self.check(&ctx2, body, expected.clone());
+                self.linear_lets(&ctx2, ctx.lvl, nid, &usage, &pending);
                 (Self::wrap_lets(body_c, wraps), Self::leave_groups(usage, pending))
             }
             // Everything else: infer, fill in any implicit arguments, then

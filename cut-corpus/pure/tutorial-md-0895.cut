@@ -1,6 +1,6 @@
 cut 0
 entry idyll:Main/"#entry"
-answer str
+answer none
 
 data idyll:Prelude/DigitFuel { Spent; More(ptr) }
 
@@ -65,8 +65,8 @@ def idyll:Prelude/showInt (n_52: i64; k_53: ptr) =
       idyll:Prelude/negativeDigits(idyll:Prelude/digitFuel, n_52; μ̃ v_58: str.
         prim concatStrings(["-", v_58]; k_53))))
 
-def idyll:Main/phantom <'a_65 = d_a_64> (d_a_64: desc, n_66: i64; k_67: ptr) =
-  <n_66 | k_67>
+def idyll:Main/id <'a_65 = d_a_64> (d_a_64: desc, x_66: 'a_65; k_67: ptr) =
+  <x_66 | k_67>
 
 def idyll:Prelude/negativeDigits (fuel_68: ptr, n_69: i64; k_70: ptr) =
   <fuel_68 | case {
@@ -87,5 +87,14 @@ def idyll:Prelude/negativeDigits (fuel_68: ptr, n_69: i64; k_70: ptr) =
   }>
 
 def idyll:Main/"#entry" (; k_82: ptr) =
-  idyll:Main/phantom(desc(bool), 1; μ̃ answer_83: i64.
-    idyll:Prelude/showInt(answer_83; k_82))
+  <cocase {
+    apply(a_87: desc; k_90: ptr) =>
+      <cocase {
+        apply(a_88: any; k_89: ptr) =>
+          idyll:Main/id(a_87, a_88; k_89)
+      } | k_90>
+  } | μ̃ v_86: ptr.
+    <cocase {
+      apply(f_84: ptr; k_85: ptr) =>
+        <f_84 | k_85>
+    } | apply(v_86; k_82)>>

@@ -458,6 +458,12 @@ impl Native {
         matches!(self, Native::Array | Native::MArray | Native::Ref)
     }
 
+    /// A type whose values are linear: never shared, so changed in place
+    /// unseen (see `Checker::is_linear`).
+    pub fn is_linear_type(self) -> bool {
+        matches!(self, Native::MArray)
+    }
+
     /// An operation on cells, whose type ends in the effect `Mut`: what
     /// it does is seen, so it is no function of its arguments.
     pub fn is_mutation(self) -> bool {

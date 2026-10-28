@@ -811,10 +811,13 @@ and a `Map` built with one `Ord` is rejected when used with another.
   hold, which no linear reference can be. `Ref` and `Mut` are done: the
   prelude's `Ref`, `newRef`, `getRef` and `setRef` are natives, Meadow's
   primitives, the only ones whose types end in an effect, `Mut`, which has
-  no operations and so no handler; `Std.Ref` has Meadow's helpers. The
-  linear `St` waits on linear types (below). `Compact` is specific to
+  no operations and so no handler; `Std.Ref` has Meadow's helpers.
+  `Std.St` is done too, linear: a cell (`StRef`, a one-place mutable
+  array) and an array (`StArray`, `MArray`), each operation giving it
+  back, and `forRange` and `while` threading it through; Meadow's tests of
+  it pass, rewritten to thread the state. `Compact` is specific to
   Meadow's garbage collector and is not ported.
-- [ ] **Linear types** (Chris, 2026-10-28): `MArray` is linear only on
+- [x] **Linear types** (Chris, 2026-10-28): `MArray` was linear only on
   the binders of its own `@linear` module, so code elsewhere may alias one
   and see it written in place: `let m = new 2 0 in (freeze (write m 0
   1), freeze m)` is `(#[1; 0], #[1; 0])` on the runtimes, and the spec
@@ -823,7 +826,11 @@ and a `Map` built with one `Ord` is rejected when used with another.
   every module, by default too; it is never boxed (`[e]`) or given to an
   unrestricted parameter; and it instantiates only a type parameter its
   callee uses at most once (`Pair`'s, whose fields are linear, but not
-  that of a function taking `(x : [] a)`).
+  that of a function taking `(x : [] a)`). Done
+  (`idyllic-typecheck/src/linear.rs`, and front/'s `Elab.mw`): a binder
+  of one that says no grade is `[1]`; a value of one is copied out of only
+  for its fields of linear types; a program's top-level definition of one
+  is used at most once, counted as a `let`'s are, and a library has none.
 
 *Done when:* Meadow's `examples/Tour`, `examples/MiniML` and
 `examples/RockPaperScissors` run, the last tested by feeding it input.
