@@ -886,3 +886,11 @@ use Std.Stream as St
 use Std.Collections.Vector as V
 
 (withSeed 42 (\u -> between 1 7), V.toList (withSeed 11 (\u -> shuffle (V.range 1 6))), withTickingClock 1789405445123 1000 (\u -> let a = now () in formatTimestamp (now ())), formatNanos 999600, failure (\u -> assertEq (1 :: Nil) (2 :: Nil) "lists"), St.sum (\u -> St.map (\x -> x * x) (\v -> St.range 1 4)))
+%%%
+-- byte arrays: to and from strings and hex, and wider integers read and written by their bytes
+use Std.Bytes
+
+b : Array UInt8
+b = #[0x34; 0x12; 0xff]
+
+(bytesToHex (stringToBytes "hé!"), bytesToString (stringToBytes "hé"), bytesFromHex "0aFf", bytesFromHex "abc", bytesGetU16LE b 0, bytesGetU16BE b 0, bytesToHex (bytesSetU32BE (stringToBytes "abcd") 0 305419896), bytesGetU64LE (bytesSetU64LE (stringToBytes "12345678") 0 (toUInt64 (0 - 1))) 0)

@@ -1160,6 +1160,8 @@ impl Lower<'_> {
             Native::StringHash => &[Rep::Str],
             Native::CharHash => &[Rep::Char],
             Native::BoolHash => &[Rep::Bool],
+            Native::StringToBytes | Native::BytesFromHex => &[Rep::Str],
+            Native::BytesToString | Native::BytesToHex => &[Rep::Ptr],
             _ => &[],
         }
     }

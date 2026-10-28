@@ -1290,7 +1290,7 @@ fun nativeArity (n : String) : Int =
   if M.isSome (N.ofName n) then M.unwrapOr 0 (M.map (\p -> N.arity (fst p)) (N.ofName n))
   else if n == "Array" or n == "MArray" then 0
   else if V.elem n ["arrayLen", "arrayPop", "arrayFromList", "arrayToList", "marrayLen", "marrayFreeze", "marrayThaw"] then 1
-  else if V.elem n ["stringByteLength", "stringToChars", "charsToString", "charCode", "charFromCode", "stringHash", "charHash", "boolHash"] then 1
+  else if V.elem n ["stringByteLength", "stringToChars", "charsToString", "charCode", "charFromCode", "stringHash", "charHash", "boolHash", "stringToBytes", "bytesToString", "bytesToHex", "bytesFromHex"] then 1
   else if V.elem n ["arrayGet", "arrayPush", "arrayConcat", "marrayNew", "marrayGet", "stringByteAt", "stringCompare"] then 2
   else 3
 
@@ -1329,6 +1329,8 @@ fun nativeApp (l : L s) (env : LEnv) (whole : Tm) (ni : (String, Int)) (args : [
              else if n == "charCode" then Just [Rep.Char]
              else if n == "charFromCode" then Just [Rep.I64]
              else if n == "stringHash" then Just [Rep.Str]
+             else if n == "stringToBytes" or n == "bytesFromHex" then Just [Rep.Str]
+             else if n == "bytesToString" or n == "bytesToHex" then Just [Rep.Ptr]
              else if n == "charHash" then Just [Rep.Char]
              else if n == "boolHash" then Just [Rep.Bool]
              else None

@@ -747,7 +747,7 @@ and a `Map` built with one `Ord` is rejected when used with another.
   `Result`, `Tuple`, `Function`, `Ordering`, `Cmp` (done, without traits:
   comparisons are passed along); then `String` and `Char` (done, as
   Meadow's, on the prelude's string natives and a builtin `Char`), `Bytes`
-  and the parsers; then collections (`List`, `Array`, `Vector`, `Map`, `Set` done;
+  (done, on Meadow's four byte primitives as natives) and the parsers; then collections (`List`, `Array`, `Vector`, `Map`, `Set` done;
   `Hash`, Meadow's hashes, and `Num.Bits`, the bit operations at each
   width that it combines with, and `HashMap`, Meadow's hash array mapped
   trie, done); then the effect modules (`Exn`, `State`,

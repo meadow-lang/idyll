@@ -75,3 +75,24 @@ mod tests {
         assert_eq!(from_code(-1), None);
     }
 }
+
+/// Bytes as hex, two lower-case digits a byte: Meadow's `bytesToHex`.
+pub fn to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Hex digits, two a byte and either case, as bytes: Meadow's
+/// `bytesFromHex`; `None` for an odd count or anything that is no digit.
+pub fn from_hex(s: &str) -> Option<Vec<u8>> {
+    let bytes = s.as_bytes();
+    if bytes.len() % 2 != 0 {
+        return None;
+    }
+    bytes
+        .chunks_exact(2)
+        .map(|pair| {
+            let digit = |b: u8| (b as char).to_digit(16);
+            Some((digit(pair[0])? << 4 | digit(pair[1])?) as u8)
+        })
+        .collect()
+}

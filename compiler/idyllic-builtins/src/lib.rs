@@ -331,6 +331,16 @@ pub enum Native {
     StringHash,
     CharHash,
     BoolHash,
+    /// `String -> Array UInt8`: its bytes of UTF-8
+    StringToBytes,
+    /// `Array UInt8 -> String`: bytes read as UTF-8, a sequence that is
+    /// none the replacement character
+    BytesToString,
+    /// `Array UInt8 -> String`: two lower-case hex digits a byte
+    BytesToHex,
+    /// `String -> Maybe (Array UInt8)`: hex digits, two a byte, either
+    /// case; `Nothing` for an odd count or anything else
+    BytesFromHex,
     /// An operation on numbers of one type, `int8Add : Int8 -> Int8 ->
     /// Int8`: what the prelude's instances for the sized integers and
     /// the floats are made of (see [`num`]).
@@ -339,7 +349,7 @@ pub enum Native {
 
 impl Native {
     /// The natives with a name of their own, which are not [`Native::Num`].
-    pub const NAMED: [Native; 30] = [
+    pub const NAMED: [Native; 34] = [
         Native::Array,
         Native::ArrayLen,
         Native::ArrayGet,
@@ -370,6 +380,10 @@ impl Native {
         Native::StringHash,
         Native::CharHash,
         Native::BoolHash,
+        Native::StringToBytes,
+        Native::BytesToString,
+        Native::BytesToHex,
+        Native::BytesFromHex,
     ];
 
     /// Every native there is.
@@ -412,6 +426,10 @@ impl Native {
             Native::StringHash => "stringHash",
             Native::CharHash => "charHash",
             Native::BoolHash => "boolHash",
+            Native::StringToBytes => "stringToBytes",
+            Native::BytesToString => "bytesToString",
+            Native::BytesToHex => "bytesToHex",
+            Native::BytesFromHex => "bytesFromHex",
         }
     }
 
@@ -443,7 +461,11 @@ impl Native {
             | Native::CharFromCode
             | Native::StringHash
             | Native::CharHash
-            | Native::BoolHash => 1,
+            | Native::BoolHash
+            | Native::StringToBytes
+            | Native::BytesToString
+            | Native::BytesToHex
+            | Native::BytesFromHex => 1,
             Native::ArrayGet
             | Native::ArrayPush
             | Native::ArrayConcat

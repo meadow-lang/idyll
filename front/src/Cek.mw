@@ -436,7 +436,7 @@ fun nativeArity (name : String) : Int =
   if M.isSome (N.ofName name) then M.unwrapOr 0 (M.map (\p -> N.arity (fst p)) (N.ofName name))
   else if name == "Array" or name == "MArray" then 0
   else if V.elem name ["arrayLen", "arrayPop", "arrayFromList", "arrayToList", "marrayLen", "marrayFreeze", "marrayThaw"] then 1
-  else if V.elem name ["stringByteLength", "stringToChars", "charsToString", "charCode", "charFromCode", "stringHash", "charHash", "boolHash"] then 1
+  else if V.elem name ["stringByteLength", "stringToChars", "charsToString", "charCode", "charFromCode", "stringHash", "charHash", "boolHash", "stringToBytes", "bytesToString", "bytesToHex", "bytesFromHex"] then 1
   else if V.elem name ["arrayGet", "arrayPush", "arrayConcat", "marrayNew", "marrayGet", "stringByteAt", "stringCompare"] then 2
   else 3
 
@@ -572,7 +572,28 @@ fun native (n : String) (args : [Value]) : Result Halt Value =
     (match arg 0 with
      | Value.Bool b -> Ok (Value.Int (hash b))
      | _ -> Err (Halt.Stuck "boolHash is given something that is not a truth value"))
+  -- (a byte array is an array of `UInt8`s; Meadow's own primitives are the
+  -- runtimes')
+  else if n == "stringToBytes" then (match text 0 with | Ok s -> Ok (byteArray (stringToBytes s)) | Err h -> Err h)
+  else if n == "bytesToString" then (match bytesOf (arg 0) with | Ok b -> Ok (Value.Str (bytesToString b)) | Err h -> Err h)
+  else if n == "bytesToHex" then (match bytesOf (arg 0) with | Ok b -> Ok (Value.Str (bytesToHex b)) | Err h -> Err h)
+  else if n == "bytesFromHex" then
+    (match text 0 with
+     | Ok s ->
+         (match bytesFromHex s with
+          | Just b -> Ok (Value.Con "Just" 1 [byteArray b])
+          | None -> Ok (Value.Con "Nothing" 0 []))
+     | Err h -> Err h)
   else Ok (arg 0)
+
+fun byteArray (b : #[UInt8]) : Value = Value.Array (V.map (\x -> Value.Num (Number.Word "UInt8" (toInt x))) (V.fromArray b))
+
+fun bytesOf (v : Value) : Result Halt #[UInt8] =
+  match v with
+  | Value.Array items ->
+      let bs = V.concatMap (\x -> match x with | Value.Num (Number.Word _ k) -> [toUInt8 k] | _ -> []) items in
+      if V.len bs == V.len items then Ok (V.toArray bs) else Err (Halt.Stuck "a byte array holds something that is not a byte")
+  | _ -> Err (Halt.Stuck "a byte array is given something that is not an array")
 
 fun fromList (list : Value) (acc : [Value]) : Result Halt Value =
   match list with

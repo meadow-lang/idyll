@@ -704,6 +704,17 @@ fn native(n: Native, args: &[Rc<Value>]) -> Result<Value, EvalError> {
         Value::Str(s) => Ok(s.clone()),
         _ => stuck(format!("{} is given something that is not a string", n.name())),
     };
+    // a byte array: an array of `UInt8`s
+    let byte = |b: u8| Rc::new(Value::Num(Number::Word(idyllic_builtins::Width::U8, u64::from(b))));
+    let bytes = |v: &Rc<Value>| {
+        array(v)?
+            .iter()
+            .map(|b| match **b {
+                Value::Num(Number::Word(_, w)) => Ok(w as u8),
+                _ => stuck(format!("{} is given something that is not a byte", n.name())),
+            })
+            .collect::<Result<Vec<u8>, _>>()
+    };
     // `Pair [a] b`: how a native gives back two things, the first boxed
     let pair = |a: Rc<Value>, b: Rc<Value>| Value::Con { name: "Pair".into(), tag: 0, fields: vec![Rc::new(Value::Box(a)), b] };
     Ok(match n {
@@ -836,6 +847,17 @@ fn native(n: Native, args: &[Rc<Value>]) -> Result<Value, EvalError> {
         Native::BoolHash => match *args[0] {
             Value::Bool(b) => Value::Int(idyllic_builtins::hash::bool(b)),
             _ => return stuck("boolHash is given something that is not a truth value"),
+        },
+        Native::StringToBytes => Value::Array(text(&args[0])?.bytes().map(byte).collect()),
+        Native::BytesToString => Value::Str(String::from_utf8_lossy(&bytes(&args[0])?).into()),
+        Native::BytesToHex => Value::Str(strings::to_hex(&bytes(&args[0])?).into()),
+        Native::BytesFromHex => match strings::from_hex(&text(&args[0])?) {
+            Some(bs) => Value::Con {
+                name: "Just".into(),
+                tag: 1,
+                fields: vec![Rc::new(Value::Array(bs.into_iter().map(byte).collect()))],
+            },
+            None => Value::Con { name: "Nothing".into(), tag: 0, fields: Vec::new() },
         },
     })
 }

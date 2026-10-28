@@ -707,7 +707,8 @@ of its own:
   number type's hash (`floatHash`) are Meadow's primitives (`bitAnd`,
   `shl`, `popCount`, `hash`), which the CEK machine computes with at the
   type's own width (`onBits`); `stringHash`, `charHash` and `boolHash` are
-  Meadow's `hash` too.
+  Meadow's `hash` too, and the byte natives (`stringToBytes`,
+  `bytesToHex`, ...) Meadow's primitives of the same names.
 - **`Tc.mw`**: the checker's state: the metacontext (each metavariable
   unsolved or solved, with where it came from and its type), the errors,
   the holes, the kept questions, and the tables of what is declared.

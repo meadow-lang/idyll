@@ -535,6 +535,20 @@ fn a_clock_of_ones_own_answers_the_time() {
 }
 
 #[test]
+fn bytes_are_read_and_written_as_meadows_are() {
+    let src = "use Std.Bytes\n\nb : Array UInt8\nb = #[0x34; 0x12; 0xff]\n\n\
+               (bytesToHex (stringToBytes \"hé!\"), bytesToString (stringToBytes \"hé\"), bytesFromHex \"0aFf\", bytesFromHex \"abc\", \
+               bytesGetU16LE b 0, bytesGetU16BE b 0, bytesToHex (bytesSetU32BE (stringToBytes \"abcd\") 0 305419896), \
+               bytesGetOr (toUInt8 0) (bytesSet b 0 511) 0, bytesGet b 5, \
+               bytesGetU64LE (bytesSetU64LE (stringToBytes \"12345678\") 0 (toUInt64 (0 - 1))) 0, bytesToHex (bytesSetU16LE (stringToBytes \"ab\") 0 4660), \
+               bytesLength (bytesPush b 4), bytesIsEmpty bytesEmpty)\n";
+    assert_eq!(
+        value(src),
+        "(\"68c3a921\", \"hé\", Just #[10; 255], Nothing, 4660, 13330, \"12345678\", 255, Nothing, 18446744073709551615, \"3412\", 4, True)"
+    );
+}
+
+#[test]
 fn streams_are_yielded_and_consumed() {
     let src = "use Std.Stream as St\nuse Std.Yield (Yield, yield)\nuse Std.Collections.Vector as V\n\n\
                @terminating\ncountdown : (n : Int) -> () ! Yield Int\ncountdown n = if n <= 0 then () else let u = yield n in countdown (n - 1)\n\n\

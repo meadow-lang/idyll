@@ -3023,6 +3023,7 @@ is nothing to install.
 | `Std.Collections.Set` | `Set a`, the same for sets (`SetBy a o`): `insert`, `member`, `delete`, `union`, `diff`, `intersect`, `subset`, `minElem`, `toList`, `fromList`, ... |
 | `Std.Sort` | a stable merge sort: `sortBy`, `sort`, `sortOn`, `sortArrayBy`, `sortVectorBy`, `isSortedBy` |
 | `Std.String` | as Meadow's, by bytes: `byteLength`, `slice`, `take`, `drop`, `byteAt`, `indexOf`, `contains`, `startsWith`, `split`, `lines`, `words`, `trim`, `toUpper`, `toInt`, `equal`, `compare`; by characters: `chars`, `fromChars`, `charAt`, `charLength`; and `join`, `concatAll`, `unlines`, `unwords`, `repeat`, `fromList` |
+| `Std.Bytes` | byte arrays, `Array UInt8`, as Meadow's: `stringToBytes`, `bytesToString`, `bytesToHex`, `bytesFromHex`, `bytesGet`, `bytesSet`, `bytesPush`, `bytesSlice`, `bytesConcat`, and the wider unsigned integers by their bytes, `bytesGetU16LE` ... `bytesSetU64BE` |
 | `Std.Char` | `code`, `fromCode`, `fromCodeSafe`, `isDigit`, `isAlpha`, `isSpace`, `isUpper`, `toUpper`, `toLower`, `digitToInt`, `hexDigitToInt`, `equal`, `compare` (the classes ASCII only, as Meadow's are) |
 | `Std.Console` | `printLines`, `printList`, `printBool`, `readLines` |
 | `Std.Fs`, `Std.Process` | `readToStringOr`, `tryReadDir`, `writeLines`, `existsAll`; `argCount`, `arg`, `envOr`, `exitFailure`, ... |

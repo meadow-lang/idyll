@@ -1,0 +1,148 @@
+-- Byte arrays, as Meadow's `Std.Bytes`: an `Array UInt8`. The runtimes
+-- bridge one to a `String` (`stringToBytes`, and `bytesToString`, which
+-- reads UTF-8 and puts the replacement character for what is none) and to
+-- hex (`bytesToHex`, `bytesFromHex`); this module adds building one,
+-- setters that take any integer and keep its low 8 bits, and little- and
+-- big-endian reads and writes of the wider unsigned types.
+
+use Std.Num.Bits (Bits, bitAnd, bitOr, shl, shr)
+
+@pub
+@native
+stringToBytes : (s : [0..1] String) -> Array UInt8
+
+@pub
+@native
+bytesToString : (b : [0..1] Array UInt8) -> String
+
+@pub
+@native
+bytesToHex : (b : [0..1] Array UInt8) -> String
+
+@pub
+@native
+bytesFromHex : (s : [0..1] String) -> Maybe (Array UInt8)
+
+-- The empty byte array.
+@pub
+bytesEmpty : Array UInt8
+bytesEmpty = stringToBytes ""
+
+@pub
+bytesLength : {a : Type} -> (b : Array a) -> Int
+bytesLength b = arrayLen b
+
+@pub
+bytesIsEmpty : {a : Type} -> (b : Array a) -> Bool
+bytesIsEmpty b = arrayLen b == 0
+
+-- `Just` the byte at `i`, or `Nothing` if `i` is out of range.
+@pub
+bytesGet : {a : Type} -> (b : Array a) -> (i : Int) -> Maybe a
+bytesGet b i = if i < 0 then Nothing else if i >= arrayLen b then Nothing else Just (arrayGet b i)
+
+-- The byte at `i`, or `default` out of range.
+@pub
+bytesGetOr : {a : Type} -> (default : a) -> (b : Array a) -> (i : Int) -> a
+bytesGetOr default b i = arrayGetOr default b i
+
+-- `b` with byte `i` set to the low 8 bits of `v`, which may be any integer.
+@pub
+bytesSet : {n : Type} -> {auto k : Integer n} -> (b : Array UInt8) -> (i : Int) -> (v : n) -> Array UInt8
+bytesSet b i v = arraySet b i (toUInt8 (toInt v))
+
+-- `b` with the low 8 bits of `v` after it.
+@pub
+bytesPush : {n : Type} -> {auto k : Integer n} -> (b : Array UInt8) -> (v : n) -> Array UInt8
+bytesPush b v = arrayPush b (toUInt8 (toInt v))
+
+@pub
+bytesPop : {a : Type} -> (b : Array a) -> Array a
+bytesPop b = arrayPop b
+
+-- The bytes from `from` up to but not including `to`, kept within bounds.
+@pub
+bytesSlice : {a : Type} -> (b : Array a) -> (from : Int) -> (to : Int) -> Array a
+bytesSlice b from to = arraySlice b from to
+
+@pub
+bytesConcat : {a : Type} -> (x : Array a) -> (y : Array a) -> Array a
+bytesConcat x y = arrayConcat x y
+
+-- --- reads of several bytes (a byte past the end reads as 0) ------------------
+
+at : (b : Array UInt8) -> (i : Int) -> Int
+at b i = toInt (arrayGetOr (toUInt8 0) b i)
+
+-- `n` bytes from `i`, the first the least significant.
+@terminating
+little : (b : Array UInt8) -> (i : Int) -> (n : Int) -> Int
+little b i n = if n <= 0 then 0 else bitOr (at b i) (shl (little b (i + 1) (n - 1)) 8)
+
+-- `n` bytes from `i`, the first the most significant.
+big : (b : Array UInt8) -> (i : Int) -> (n : Int) -> Int
+big b i n = bigFrom b i n 0
+
+@terminating
+bigFrom : (b : Array UInt8) -> (i : Int) -> (n : Int) -> (acc : Int) -> Int
+bigFrom b i n acc = if n <= 0 then acc else bigFrom b (i + 1) (n - 1) (bitOr (shl acc 8) (at b i))
+
+@pub
+bytesGetU16LE : (b : Array UInt8) -> (i : Int) -> UInt16
+bytesGetU16LE b i = toUInt16 (little b i 2)
+
+@pub
+bytesGetU16BE : (b : Array UInt8) -> (i : Int) -> UInt16
+bytesGetU16BE b i = toUInt16 (big b i 2)
+
+@pub
+bytesGetU32LE : (b : Array UInt8) -> (i : Int) -> UInt32
+bytesGetU32LE b i = toUInt32 (little b i 4)
+
+@pub
+bytesGetU32BE : (b : Array UInt8) -> (i : Int) -> UInt32
+bytesGetU32BE b i = toUInt32 (big b i 4)
+
+@pub
+bytesGetU64LE : (b : Array UInt8) -> (i : Int) -> UInt64
+bytesGetU64LE b i = toUInt64 (little b i 8)
+
+@pub
+bytesGetU64BE : (b : Array UInt8) -> (i : Int) -> UInt64
+bytesGetU64BE b i = toUInt64 (big b i 8)
+
+-- --- writes of several bytes, each a new byte array -----------------------------
+
+-- `b` with the low `n` bytes of `v` from `i`, the least significant first.
+@terminating
+putLittle : (b : Array UInt8) -> (i : Int) -> (n : Int) -> (v : Int) -> Array UInt8
+putLittle b i n v = if n <= 0 then b else putLittle (arraySet b i (toUInt8 v)) (i + 1) (n - 1) (shr v 8)
+
+-- The same, the most significant first.
+@terminating
+putBig : (b : Array UInt8) -> (i : Int) -> (n : Int) -> (v : Int) -> Array UInt8
+putBig b i n v = if n <= 0 then b else putBig (arraySet b (i + n - 1) (toUInt8 v)) i (n - 1) (shr v 8)
+
+@pub
+bytesSetU16LE : {n : Type} -> {auto k : Integer n} -> (b : Array UInt8) -> (i : Int) -> (v : n) -> Array UInt8
+bytesSetU16LE b i v = putLittle b i 2 (toInt v)
+
+@pub
+bytesSetU16BE : {n : Type} -> {auto k : Integer n} -> (b : Array UInt8) -> (i : Int) -> (v : n) -> Array UInt8
+bytesSetU16BE b i v = putBig b i 2 (toInt v)
+
+@pub
+bytesSetU32LE : {n : Type} -> {auto k : Integer n} -> (b : Array UInt8) -> (i : Int) -> (v : n) -> Array UInt8
+bytesSetU32LE b i v = putLittle b i 4 (toInt v)
+
+@pub
+bytesSetU32BE : {n : Type} -> {auto k : Integer n} -> (b : Array UInt8) -> (i : Int) -> (v : n) -> Array UInt8
+bytesSetU32BE b i v = putBig b i 4 (toInt v)
+
+@pub
+bytesSetU64LE : {n : Type} -> {auto k : Integer n} -> (b : Array UInt8) -> (i : Int) -> (v : n) -> Array UInt8
+bytesSetU64LE b i v = putLittle b i 8 (toInt v)
+
+@pub
+bytesSetU64BE : {n : Type} -> {auto k : Integer n} -> (b : Array UInt8) -> (i : Int) -> (v : n) -> Array UInt8
+bytesSetU64BE b i v = putBig b i 8 (toInt v)
