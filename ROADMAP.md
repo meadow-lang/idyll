@@ -616,9 +616,18 @@ from what `idyll.lock` pinned.
   field a type may compute with off it, an associated type or a
   superclass, and a dependency's instances the same; its methods stay
   calls. A goal blocked on a metavariable (`T.Elem ?p`, its instance still
-  to be found) waits as one that is a metavariable does. Not yet:
-  associated *data* types, each instance declaring a type of its own,
-  which would be injective.
+  to be found) waits as one that is a metavariable does.
+- [ ] **Associated data types** (later, beside associated types): a
+  trait's field that is a type the instance *declares*, `data Elem =
+  ListElem Int`, fresh for each instance, rather than one it names. No two
+  instances share one, so it is injective: a value of `Elem (List Int)`
+  says its instance, and `singleton (ListElem 3)` needs no annotation,
+  where with an associated type (`Elem = Int`, which `IntSet` may say
+  too) it does. The price is that elements are wrapped, `insert (ListElem
+  1) xs`. For an instance that wants a representation of its own, as a
+  map keyed by any type does (`data Map v = PairMap (Map a (Map b v))`
+  for pairs). In record terms, a field whose value must be a data type
+  declared in the instance.
 - [x] **Integer types, floating point, `Show`/`Eq`/`Ord`, and string
   interpolation**, which all wait on traits. `Display` and `Debug` (Meadow's
   `Show`), and interpolation, done 2026-10-21 in both compilers: the
