@@ -479,3 +479,89 @@ fn keys_whose_hashes_collide_are_told_apart_and_the_hash_is_in_the_type() {
     let usual = "count : HashMap Int Int -> Int\ncount h = HashMap.size h\n\n";
     assert!(rejected(&format!("{HASHED}{m}{usual}count m\n")).iter().any(|e| e == "type mismatch"));
 }
+
+const RANDOM: &str = "use Std.Random (withSeed, withSeedFrom, between, step, seed, shuffle, choose, nextFloat)\n\
+                      use Std.Collections.Vector as V\nuse Std.Tuple (snd)\n\n";
+
+#[test]
+fn a_seed_gives_the_same_numbers_as_meadows() {
+    // what Meadow's `Std.Random` gives for the same seeds, the same
+    // SplitMix64 on every engine
+    assert_eq!(
+        value(&format!(
+            "{RANDOM}(withSeed 42 (\\u -> between 1 7), step (seed 42), V.toList (withSeed 11 (\\u -> shuffle (V.range 1 6))), \
+             withSeed 9 (\\u -> nextFloat ()))\n"
+        )),
+        "(1, (-5014216602933006456, -7046029254386353088), 5 :: 1 :: 3 :: 2 :: 4 :: Nil, 0.6823627349789958)"
+    );
+}
+
+#[test]
+fn random_numbers_keep_to_their_ranges_and_runs_repeat() {
+    assert_eq!(
+        value(&format!(
+            "{RANDOM}(withSeed 7 (\\u -> V.toList (V.map (\\i -> between 0 1000) (V.range 0 3))) == withSeed 7 (\\u -> V.toList (V.map (\\i -> between 0 1000) (V.range 0 3))), \
+             withSeed 1 (\\u -> between 0 1000000) == withSeed 2 (\\u -> between 0 1000000), \
+             withSeed 4 (\\u -> let n = between (0 - 10) 0 in if n < 0 then (0 - 10) <= n else False), \
+             withSeed 1 (\\u -> between 5 5), withSeed 1 (\\u -> between 5 1), \
+             withSeed 3 (\\u -> choose (V.range 0 0)), V.sum (withSeed 11 (\\u -> shuffle (V.range 1 6))), \
+             snd (withSeedFrom 42 (\\u -> between 0 9)) == seed 42)\n"
+        )),
+        "(True, False, True, 5, 5, Nothing, 15, False)"
+    );
+}
+
+#[test]
+fn durations_and_dates_read_as_meadows_do() {
+    // what Meadow's `Std.Time` writes for the same numbers
+    let src = "use Std.Time (formatNanos, formatMillis, formatTimestamp, formatReadable, formatAgo, formatDuration, utc, DateTime)\n\n\
+               (formatNanos 742, formatNanos 1234, formatNanos 999600, formatNanos 125300000000, formatNanos 3723000000000, \
+               formatMillis 273600000, formatTimestamp 1789405445123, formatReadable 1789405445123, formatTimestamp (0 - 86400001), \
+               formatAgo 100000 40000, formatAgo 0 300000, formatDuration 3723004, (utc 0).weekday)\n";
+    assert_eq!(
+        value(src),
+        "(\"742ns\", \"1.23µs\", \"1.00ms\", \"2m 05.3s\", \"1h 02m 03s\", \"3d 04h 00m\", \"2026-09-14T17:04:05.123Z\", \
+         \"Mon 14 Sep 2026 17:04:05 UTC\", \"1969-12-30T23:59:59.999Z\", \"1m ago\", \"in 5m\", \"01:02:03.004\", 4)"
+    );
+}
+
+#[test]
+fn a_clock_of_ones_own_answers_the_time() {
+    // stopped, or moving on by a tick at each reading and by a sleep
+    let src = "use Std.Time (withClock, withTickingClock, elapsed)\n\n\
+               (withClock 500 (\\u -> now () > 100), withTickingClock 10 5 (\\u -> let a = now () in let b = now () in b - a), \
+               withTickingClock 0 1 (\\u -> let s = sleep 1000 in now ()), withClock 7 (\\u -> elapsed (\\v -> now ())))\n";
+    assert_eq!(value(src), "(True, 5, 1000, 0)");
+}
+
+#[test]
+fn streams_are_yielded_and_consumed() {
+    let src = "use Std.Stream as St\nuse Std.Yield (Yield, yield)\nuse Std.Collections.Vector as V\n\n\
+               @terminating\ncountdown : (n : Int) -> () ! Yield Int\ncountdown n = if n <= 0 then () else let u = yield n in countdown (n - 1)\n\n\
+               (V.toList (St.toVec (\\u -> countdown 3)), St.toList (\\u -> countdown 3), St.sum (\\u -> St.range 1 5), St.count (\\u -> countdown 4), \
+               V.toList (St.take 2 (\\u -> St.repeat 1000000 7)), V.toList (St.takeWhile (\\x -> x > 1) (\\u -> countdown 5)), \
+               St.first (\\u -> countdown 0), St.find (\\x -> x % 2 == 0) (\\u -> St.ofList (1 :: 3 :: 4 :: 5 :: Nil)), \
+               St.any (\\x -> x > 2) (\\u -> countdown 3), St.all (\\x -> x > 2) (\\u -> countdown 3), \
+               St.toList (\\u -> St.map (\\x -> x * 10) (\\v -> St.filter (\\x -> x % 2 == 1) (\\w -> St.range 0 6))), \
+               St.toList (\\u -> St.iterate 4 (\\x -> x * 2) 1))\n";
+    assert_eq!(
+        value(src),
+        "(3 :: 2 :: 1 :: Nil, 3 :: 2 :: 1 :: Nil, 10, 4, 7 :: 7 :: Nil, 5 :: 4 :: 3 :: 2 :: Nil, Nothing, Just 4, True, False, \
+         10 :: 30 :: 50 :: Nil, 1 :: 2 :: 4 :: 8 :: Nil)"
+    );
+}
+
+#[test]
+fn assertions_fail_when_they_should_and_say_what_failed() {
+    let src = "use Std.Test (assert, assertEq, assertNeq, assertTrue, assertFalse, refuteThat, failWith, didFail, failure, assertFails)\n\n\
+               inner : () -> Int ! Test\ninner u = let ignored = assertEq 1 2 \"inner\" in 0\n\n\
+               (didFail (\\u -> assertEq 1 1 \"fine\"), didFail (\\u -> assert False \"x\"), didFail (\\u -> assertNeq 1 1 \"x\"), \
+               didFail (\\u -> assertTrue False \"x\"), didFail (\\u -> assertFalse False \"x\"), didFail (\\u -> refuteThat True \"x\"), \
+               didFail (\\u -> failWith \"x\"), didFail (\\u -> 1 + 2 * inner ()), didFail (\\u -> assertFails (\\v -> failWith \"e\") \"f\"), \
+               failure (\\u -> assertEq (1 :: 2 :: Nil) (1 :: 3 :: Nil) \"lists\"), failure (\\u -> assertEq (Just \"a\") Nothing \"maybes\"))\n";
+    assert_eq!(
+        value(src),
+        "(False, True, True, True, False, True, True, True, False, (True, \"lists: expected #[1, 3], got #[1, 2]\"), \
+         True, \"maybes: expected Nothing, got Just(\\\"a\\\")\")"
+    );
+}

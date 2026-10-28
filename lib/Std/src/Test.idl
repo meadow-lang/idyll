@@ -1,0 +1,67 @@
+-- Assertions for tests, as Meadow's `Std.Test`. A failure is the prelude's
+-- `Test` effect, not a value given back, so an assertion in a helper five
+-- calls down still stops the test and still says what it was. With no
+-- handler in the way the runtime takes `fail` as the program failing; a
+-- `handle` comes first, which is how `didFail` checks that something does
+-- fail.
+
+-- --- assertions --------------------------------------------------------------
+
+@pub
+assert : (cond : Bool) -> (msg : String) -> () ! Test
+assert cond msg = if cond then () else fail msg
+
+@pub
+refuteThat : (cond : Bool) -> (msg : String) -> () ! Test
+refuteThat cond msg = if cond then fail ("expected false: " ++ msg) else ()
+
+-- The assertion to reach for: the message says what was being checked, and
+-- the values speak for themselves.
+@pub
+assertEq : {a : Type} -> {auto e : PartialEq a} -> {auto d : Debug a} -> (actual : [] a) -> (expected : [] a) -> (msg : String) -> () ! Test
+assertEq actual expected msg =
+  if actual == expected then () else fail (msg ++ ": expected " ++ debug expected ++ ", got " ++ debug actual)
+
+@pub
+assertNeq : {a : Type} -> {auto e : PartialEq a} -> {auto d : Debug a} -> (actual : [] a) -> (unexpected : [] a) -> (msg : String) -> () ! Test
+assertNeq actual unexpected msg =
+  if actual != unexpected then () else fail (msg ++ ": expected anything but " ++ debug unexpected)
+
+@pub
+assertTrue : (actual : Bool) -> (msg : String) -> () ! Test
+assertTrue actual msg = assertEq actual True msg
+
+@pub
+assertFalse : (actual : Bool) -> (msg : String) -> () ! Test
+assertFalse actual msg = assertEq actual False msg
+
+-- Fail whatever happens: for an alternative that should never be reached.
+@pub
+failWith : (msg : String) -> () ! Test
+failWith msg = fail msg
+
+-- --- checking that something fails -------------------------------------------
+
+-- What `act` gave, or the message of the assertion it failed: the one
+-- place the `Test` effect is handled rather than left to the runtime.
+outcome : {a : Type} -> (act : (u : ()) -> a ! {Test | r}) -> Result String a ! r
+outcome act = handle act () with
+  return x -> Ok x
+  fail msg k -> Err msg
+
+-- Run `act` and say whether it failed an assertion.
+@pub
+didFail : {a : Type} -> (act : (u : ()) -> a ! {Test | r}) -> Bool ! r
+didFail act = Std.Result.isErr (outcome act)
+
+-- Run `act` and say whether it failed an assertion, and with what message.
+@pub
+failure : {a : Type} -> (act : (u : ()) -> a ! {Test | r}) -> (Bool, String) ! r
+failure act = case outcome act of
+  Ok x -> (False, "")
+  Err msg -> (True, msg)
+
+-- `act` must fail; if it does not, that is the failure.
+@pub
+assertFails : {a : Type} -> (act : (u : ()) -> a ! {Test | r}) -> (msg : String) -> () ! {Test | r}
+assertFails act msg = let failed = didFail act in assert failed ("expected a failure: " ++ msg)

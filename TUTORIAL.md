@@ -2556,9 +2556,9 @@ with these operations (and `Maybe` and `Result` declared alongside,
 | `Console` | `putStr : String -> ()`, `putErr : String -> ()` (to standard error), `readLine : () -> Maybe String` |
 | `Fs` | `readToString : String -> Result String String`; `writeString`, `appendString : String -> String -> Result String ()` (a path, then the text); `removeFile`, `createDir`, `createDirAll`, `removeDir`, `removeDirAll : String -> Result String ()`; `rename : String -> String -> Result String ()`; `copy : String -> String -> Result String Int` (how many bytes it copied); `listDir : String -> Result String (Array String)`; `exists`, `isFile`, `isDir : String -> Bool` |
 | `Process` | `exit : Int -> ()`, `currentPid : () -> Int`, `argv : () -> Array String`, `getEnv : String -> Maybe String`, `setEnv : String -> String -> ()`, `removeEnv : String -> ()`, `isTerminal : Int -> Bool` |
-| `Random` | `nextInt : () -> Int`, `intBetween : Int -> Int -> Int` (from the first, up to but not including the second), `nextSeed : () -> Int` |
-| `Time` | `now : () -> Int` (milliseconds since 1970), `monotonic : () -> Int` (nanoseconds, for measuring), `sleep : Int -> ()` (milliseconds) |
-| `Test` | `fail : String -> ()`, which stops the program |
+| `Random` | `nextInt : () -> Int`, `intBetween : Int -> Int -> Int` (from the first, up to but not including the second), `nextSeed : () -> Int` (`Std.Random` has the rest: a seeded generator, `nextFloat`, shuffling) |
+| `Time` | `now : () -> Int` (milliseconds since 1970), `monotonic : () -> Int` (nanoseconds, for measuring), `sleep : Int -> ()` (milliseconds; `Std.Time` has clocks of your own, timing and dates) |
+| `Test` | `fail : String -> ()`, which stops the program (`Std.Test` has the assertions) |
 | `Abort` | `abort : {a : Type} -> String -> a`, which gives up: unhandled, it writes its message to standard error and exits with status 1 |
 
 The runtime prints only strings. `putStrLn` and `printInt` are ordinary
@@ -3029,6 +3029,10 @@ is nothing to install.
 | `Std.Exn` | an effect: `throw`, and `toResult`, `catch`, `withDefault`, `toMaybe`, `ofResult`, `ensure` |
 | `Std.State` | an effect: `get`, `put`, `modify`, and `runState` from a first state |
 | `Std.Yield` | an effect: `yield`, `each`, and `collect` into a list |
+| `Std.Stream` | consumers and transformers of what is yielded: `toVec`, `toList`, `forEach`, `fold`, `sum`, `count`, `take`, `takeWhile`, `first`, `any`, `all`, `find`, `map`, `filter`; and producers, `range`, `repeat`, `iterate`, `ofList`, `ofVec` |
+| `Std.Random` | as Meadow's, SplitMix64: `withSeed` (the same numbers from the same seed), `withSeedFrom`, `between`, `nextFloat`, `bool`, `choose`, `shuffle`, and the pure `step`, `seed`, `stepBetween`, `stepFloat` |
+| `Std.Time` | as Meadow's: `withClock`, `withTickingClock`, `timed`, `elapsed`, `time`, `timeRuns`; units (`seconds`, `millisPerDay`, ...); `formatNanos`, `formatMillis`, `formatDuration`; dates in UTC, `utc` (a `DateTime`), `formatTimestamp`, `formatDate`, `formatReadable`, `formatAgo`, `monthName`, `weekdayName` |
+| `Std.Test` | assertions, the `Test` effect: `assert`, `assertEq`, `assertNeq`, `assertTrue`, `assertFalse`, `refuteThat`, `failWith`, and `didFail`, `failure`, `assertFails` to check that something fails |
 
 A module and its type share a name, so its constructors are
 `Std.Num.Nat.Nat.Z`, or bare after `use Std.Num.Nat.Nat.*`.

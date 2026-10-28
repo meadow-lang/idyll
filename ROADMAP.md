@@ -751,7 +751,11 @@ and a `Map` built with one `Ord` is rejected when used with another.
   `Hash`, Meadow's hashes, and `Num.Bits`, the bit operations at each
   width that it combines with, and `HashMap`, Meadow's hash array mapped
   trie, done); then the effect modules (`Exn`, `State`,
-  `Yield`, `Fs`, `Process` done; `Stream`, `Random`, `Time`, `Test` left);
+  `Yield`, `Fs`, `Process`, and `Stream`, `Random`, `Time`, `Test` done,
+  Meadow's, giving the same numbers and text for the same seeds and
+  times; a stream's producer gives back `()`, as `Yield`'s `collect`
+  takes one, and `nextFloat` is a function of `nextInt`, as the runtimes
+  compute it);
   then `Json`. (The prelude already declares `Maybe`, `Result`
   and the world's effects themselves; what is left of those modules is
   their functions, and the operations phase 2 left out.)

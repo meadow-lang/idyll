@@ -26,14 +26,20 @@ fn package(name: &str, root: &str) -> PackageSource {
 }
 
 /// Compile a library against what it depends on.
+/// The first unique of package slot `slot`: above Std's, which every
+/// package depends on, as the build tool places packages after it.
+fn slot_start(slot: usize) -> usize {
+    idyllic::stdlib::compiled().uniques.end.div_ceil(CHUNK) * CHUNK + slot * CHUNK
+}
+
 fn library(name: &str, root: &str, all: &[&CompiledPackage], direct: &[(&str, &CompiledPackage)], slot: usize) -> CompiledPackage {
-    let out = pipeline::compile_package_with(&package(name, root), Deps { all, direct, first_unique: slot * CHUNK, parts: None }, &OPTIONS);
+    let out = pipeline::compile_package_with(&package(name, root), Deps { all, direct, first_unique: slot_start(slot), parts: None }, &OPTIONS);
     assert!(out.diagnostics.is_empty(), "{name}: {:#?}", diags(&out));
     out.checked.and_then(|c| c.compiled).expect("a package that checks is compiled")
 }
 
 fn program(root: &str, all: &[&CompiledPackage], direct: &[(&str, &CompiledPackage)]) -> pipeline::Output {
-    let deps = Deps { all, direct, first_unique: 9 * CHUNK, parts: None };
+    let deps = Deps { all, direct, first_unique: slot_start(9), parts: None };
     pipeline::run_package_with(&package("App", root), deps, &OPTIONS, Vec::new())
 }
 
@@ -157,7 +163,7 @@ fn a_program_runs_from_compiled_packages_alone() {
     // own too, read back compiled, linked, and run
     let util = library("Util", UTIL, &[], &[], 1);
     let root = "use Util (double)\n\nmain () = printInt (double 21)\n";
-    let deps = Deps { all: &[&util], direct: &[("Util", &util)], first_unique: 2 * CHUNK, parts: None };
+    let deps = Deps { all: &[&util], direct: &[("Util", &util)], first_unique: slot_start(2), parts: None };
     let out = pipeline::check_package_with(&package("App", root), deps, &OPTIONS, true);
     assert!(out.diagnostics.is_empty(), "{:#?}", diags(&out));
     assert!(out.evaluation.is_none(), "only checked");
@@ -185,3 +191,4 @@ fn a_compiled_package_survives_being_saved() {
     assert!(out.diagnostics.is_empty(), "{:#?}", diags(&out));
     assert_eq!(out.printed, "42\nhello\n");
 }
+

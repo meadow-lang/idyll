@@ -153,6 +153,15 @@ instance Debug a => Debug b => Debug (a, b) where
   debug p = case p of
     (x, y) -> "(" ++ debug x ++ ", " ++ debug y ++ ")"
 
+-- a list as its literal is written, `#[1, 2]`
+instance Debug a => Debug (List a) where
+  debug xs = "#[" ++ debugItems xs ++ "]"
+
+debugItems : {a : Type} -> {auto d : Debug a} -> (xs : [] List a) -> String
+debugItems Nil = ""
+debugItems (x :: Nil) = debug x
+debugItems (x :: rest@(y :: more)) = debug x ++ ", " ++ debugItems rest
+
 charString : (c : [] Char) -> String
 charString c = charsToString (arrayFromList (c :: Nil))
 
@@ -903,13 +912,13 @@ args () = arrayToList (argv ())
 
 effect Random where
   nextInt : () -> Int
-  intBetween : Int -> Int -> Int
+  intBetween : (lo : [] Int) -> (hi : [] Int) -> Int
   nextSeed : () -> Int
 
 effect Time where
   now : () -> Int
   monotonic : () -> Int
-  sleep : Int -> ()
+  sleep : (ms : [] Int) -> ()
 
 effect Test where
   fail : String -> ()

@@ -1,0 +1,11 @@
+-- | -- Std's effect modules: a seeded generator, a clock of one's own, assertions and streams
+-- | use Std.Random (withSeed, between, shuffle)
+-- | use Std.Time (withTickingClock, formatTimestamp, formatNanos)
+-- | use Std.Test (assertEq, failure)
+-- | use Std.Stream as St
+-- | use Std.Collections.Vector as V
+-- | 
+-- | (withSeed 42 (\u -> between 1 7), V.toList (withSeed 11 (\u -> shuffle (V.range 1 6))), withTickingClock 1789405445123 1000 (\u -> let a = now () in formatTimestamp (now ())), formatNanos 999600, failure (\u -> assertEq (1 :: Nil) (2 :: Nil) "lists"), St.sum (\u -> St.map (\x -> x * x) (\v -> St.range 1 4)))
+answer: (1, 5 :: 1 :: 3 :: 2 :: 4 :: Nil, "2026-09-14T17:04:06.123Z", "1.00ms", (True, "lists: expected #[2], got #[1]"), 14)
+exit: 0
+nondeterministic
