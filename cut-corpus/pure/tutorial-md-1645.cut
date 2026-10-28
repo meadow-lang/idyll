@@ -4,6 +4,8 @@ answer str
 
 data idyll:Prelude/DigitFuel { Spent; More(ptr) }
 
+data idyll:Main/Point { Point(i64, i64) }
+
 val idyll:Prelude/digitFuel : ptr =
   <idyll:Prelude/DigitFuel.Spent | μ̃ v_20: ptr.
     <idyll:Prelude/DigitFuel.More(v_20) | μ̃ v_19: ptr.
@@ -83,24 +85,13 @@ def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) =
               idyll:Prelude/digitString(v_71; k_63)))))
   }>
 
-def idyll:Main/"#items Array Int" (xs_77: ptr, i_78: i64, n_79: i64; k_80: ptr) =
-  prim arrayGet(xs_77, i_78; μ̃ e_81: i64.
-    idyll:Prelude/showInt(e_81; μ̃ s_82: str.
-      prim add(i_78, 1; μ̃ j_83: i64.
-        prim eq(j_83, n_79; μ̃ u_85: unit.
-          idyll:Main/"#items Array Int"(xs_77, j_83, n_79; μ̃ s_84: str.
-            prim concatStrings([s_82, "; ", s_84]; k_80)), μ̃ u_86: unit.
-          <s_82 | k_80>))))
+def idyll:Main/first (p_75: ptr; k_76: ptr) =
+  <p_75 | case {
+    idyll:Main/Point.Point(a_77: i64, y_78: i64) =>
+      <a_77 | k_76>
+  }>
 
-def idyll:Main/"#show Array Int" (xs_87: ptr; k_89: ptr) =
-  prim arrayLen(xs_87; μ̃ n_88: i64.
-    prim eq(n_88, 0; μ̃ u_93: unit.
-      idyll:Main/"#items Array Int"(xs_87, 0, n_88; μ̃ s_90: str.
-        prim eq(n_88, 1; μ̃ u_91: unit.
-          prim concatStrings(["#[", s_90, "]"]; k_89), μ̃ u_92: unit.
-          prim concatStrings(["#[", s_90, ";]"]; k_89))), μ̃ u_94: unit.
-      <"#[;]" | k_89>))
-
-def idyll:Main/"#entry" (; k_75: ptr) =
-  <[10, 20, 30] | μ̃ answer_76: ptr.
-    idyll:Main/"#show Array Int"(answer_76; k_75)>
+def idyll:Main/"#entry" (; k_79: ptr) =
+  <idyll:Main/Point.Point(7, 8) | μ̃ v_82: ptr.
+    idyll:Main/first(v_82; μ̃ answer_80: i64.
+      idyll:Prelude/showInt(answer_80; k_79))>

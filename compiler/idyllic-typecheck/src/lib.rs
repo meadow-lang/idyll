@@ -387,6 +387,8 @@ pub enum TypeErrorKind {
     DotMismatch { expected: Rc<Core>, given: Rc<Core> },
     /// a string literal as a pattern
     StringPattern,
+    /// `{p}` or `@{p}` where no implicit (or auto) argument is to be had
+    MisplacedImplicitPattern,
     /// a data type whose kind does not end in `Type`
     DataKindNotType(Rc<Core>),
     /// a constructor whose type does not end in its data type, applied to
@@ -701,6 +703,9 @@ impl TypeError {
                 .help("give this equation a right-hand side"),
             TypeErrorKind::DotMismatch { expected, given } => Diagnostic::error("dot pattern does not match")
                 .label(here, format!("matching has worked out that this is {expected}, not {given}")),
+            TypeErrorKind::MisplacedImplicitPattern => Diagnostic::error("no implicit argument is here to match")
+                .label(here, "`{p}` matches an implicit argument, and `@{p}` an auto one, where the type has one next")
+                .help("an implicit pattern goes where its binder is, in the order the type gives them"),
             TypeErrorKind::StringPattern => Diagnostic::error("strings cannot be matched on yet")
                 .label(here, "use a guard with a comparison instead"),
             TypeErrorKind::DataKindNotType(kind) => Diagnostic::error("a data type's kind ends in Type")
@@ -1183,6 +1188,9 @@ pub struct Checker {
     /// constant or a primitive: a method of it is that (see [`auto`])
     methods: HashMap<usize, (usize, usize, usize)>,
     instance_fields: HashMap<usize, Vec<Option<Rc<Core>>>>,
+    /// a signature's implicit binders that equations naming one before
+    /// them left to their matching, by name (see `check_against_sig`)
+    quantified: Vec<hir::Ident>,
 }
 
 /// A parameter's grade being worked out: how many variables its meta is
@@ -1395,6 +1403,7 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         supers: m.supers.clone(),
         methods: m.methods.clone(),
         instance_fields: HashMap::new(),
+        quantified: Vec::new(),
     };
     for b in m.groups.iter().flat_map(hir::BindGroup::binds) {
         if let Some(u) = b.name.unique.filter(|u| m.hints.contains(u)) {

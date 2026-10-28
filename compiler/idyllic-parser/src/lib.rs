@@ -1389,6 +1389,32 @@ where
     .boxed()
 }
 
+/// A lambda's binder, or `{x}` or `@{x}`, naming its next implicit or auto
+/// argument: each as a pattern, a parameter's being `Pat::Bind`.
+fn lambda_binder<'t, I>(
+    term: impl Parser<'t, I, LTerm, Extra<'t>> + Clone + 't,
+) -> Boxed<'t, 't, I, Vec<LPat>, Extra<'t>>
+where
+    I: ValueInput<'t, Token = Token, Span = SimpleSpan>,
+{
+    let named = |icit: Icit| {
+        move |name: Ident, span: Span| {
+            let param = Spanned::new(Pat::Bind(Param { name, unbox: false, grade: None, ty: None }), span);
+            vec![Spanned::new(Pat::Implicit(icit, Box::new(param)), span)]
+        }
+    };
+    choice((
+        binder(term).map(|ps| ps.into_iter().map(|p| p.map(Pat::Bind)).collect()),
+        lower()
+            .delimited_by(just(Token::LBrace), just(Token::RBrace))
+            .map_with(move |x, e| named(Icit::Implicit)(x, span_of(e.span()))),
+        just(Token::At)
+            .ignore_then(lower().delimited_by(just(Token::LBrace), just(Token::RBrace)))
+            .map_with(move |x, e| named(Icit::Auto)(x, span_of(e.span()))),
+    ))
+    .boxed()
+}
+
 /// A pattern that needs no parentheses to be an argument: a variable, `_`,
 /// a literal, a constructor on its own, `x@p`, `.e`, `[x]`, or anything in
 /// parentheses.
@@ -1413,7 +1439,18 @@ where
             term.delimited_by(just(Token::LParen), just(Token::RParen)),
         ));
         choice((
-            lower().then_ignore(just(Token::At)).then(apat.clone()).map(|(x, p)| Pat::As(x, Box::new(p))),
+            // (`x @{p}` is `x` and then `@{p}`, not `x` as `{p}`)
+            lower()
+                .then_ignore(just(Token::At).then(just(Token::LBrace).not().rewind()))
+                .then(apat.clone())
+                .map(|(x, p)| Pat::As(x, Box::new(p))),
+            // `{p}`, the next implicit argument, and `@{p}`, the next auto one
+            pattern(apat.clone())
+                .delimited_by(just(Token::LBrace), just(Token::RBrace))
+                .map(|p| Pat::Implicit(Icit::Implicit, Box::new(p))),
+            just(Token::At)
+                .ignore_then(pattern(apat.clone()).delimited_by(just(Token::LBrace), just(Token::RBrace)))
+                .map(|p| Pat::Implicit(Icit::Auto, Box::new(p))),
             literal().map(Pat::Lit),
             just(Token::Underscore).to(Pat::Wild),
             lower().map(var),
@@ -1875,13 +1912,20 @@ where
 
         let lambda = just(Token::BackSlash)
             .map_with(|_, e| span_of(e.span()))
-            .then(binder(term.clone()).repeated().at_least(1).collect::<Vec<Vec<LParam>>>())
+            .then(lambda_binder(term.clone()).repeated().at_least(1).collect::<Vec<Vec<LPat>>>())
             .then_ignore(just(Token::RArrow))
             .then(term.clone())
             .map(|((backslash, groups), body)| {
                 let span = backslash.merge(body.span);
-                groups.into_iter().flatten().rev().fold(body, |acc, p| {
-                    Spanned::new(Term::Lam(Box::new(p), Box::new(acc)), span)
+                let pats: Vec<LPat> = groups.into_iter().flatten().collect();
+                // `\{a} x -> e` names an implicit argument, which only an
+                // equation's patterns can: such a lambda is one equation
+                if pats.iter().any(|p| matches!(p.node, Pat::Implicit(..))) {
+                    return Spanned::new(Term::Equations(vec![(pats, Rhs::Plain(body))]), span);
+                }
+                pats.into_iter().rev().fold(body, |acc, p| {
+                    let Pat::Bind(param) = p.node else { unreachable!("a lambda's binders are parameters") };
+                    Spanned::new(Term::Lam(Box::new(Spanned::new(param, p.span)), Box::new(acc)), span)
                 })
             });
 

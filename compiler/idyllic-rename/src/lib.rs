@@ -1670,6 +1670,7 @@ impl Renamer {
                     self.bind_pattern(&desugared, names);
                 }
             }
+            ast::Pat::Implicit(_, q) => self.bind_pattern(q, names),
             ast::Pat::Wild | ast::Pat::Lit(_) | ast::Pat::Dot(_) => {}
         }
     }
@@ -1701,6 +1702,7 @@ impl Renamer {
                 Some(desugared) => return self.rename_pattern(&desugared, names),
                 None => hir::PatKind::Wild,
             },
+            ast::Pat::Implicit(icit, q) => hir::PatKind::Implicit(*icit, Box::new(self.rename_pattern(q, names))),
             ast::Pat::Wild => hir::PatKind::Wild,
             ast::Pat::Lit(l) => hir::PatKind::Lit(l.clone()),
             ast::Pat::Dot(e) => hir::PatKind::Dot(self.as_term(|r| r.rename_term(e))),

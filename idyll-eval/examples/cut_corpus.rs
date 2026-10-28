@@ -53,6 +53,16 @@ fn main() {
     };
     let opts = Options { debug: false, style: OutputStyle::PLAIN, live: false };
     let mut written = Written::default();
+    // what was written before goes first: a program the corpora no longer
+    // give (or give under another name, as a tutorial example moved) is gone
+    for group in ["pure", "world", "handlers"] {
+        for entry in std::fs::read_dir(dir.join(group)).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "cut" || e == "expect") {
+                std::fs::remove_file(&path).expect("the file can be removed");
+            }
+        }
+    }
     for (corpus, text) in CORPORA {
         for (i, src) in text.replace("\r\n", "\n").split("\n%%%\n").enumerate() {
             write(&dir, &format!("{corpus}-{i:04}"), src, &opts, &mut written);

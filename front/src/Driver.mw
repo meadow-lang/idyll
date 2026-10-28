@@ -154,11 +154,12 @@ def stdHash : Int =
   V.foldl (\h m -> V.foldl (\h2 i -> (h2 * 31 + toInt (stringByteAt (snd m) i)) % 1000000007) h (V.range 0 (stringByteLength (snd m)))) 17 stdModules
 
 -- Std, as a package: its manifest and its modules, as this program holds
--- them, under `stdDir root`.
+-- them, under `stdDir root`. A file already as it should be is left alone:
+-- another build may be reading it.
 fun writtenStd () : () ! { Fs, Process | e } =
   let dir = stdDir () in
   let made = createDirAll (Path.join dir "src") in
-  let w = writeString (Path.join dir "Idyll.toml", "[package]\nname = \"Std\"\n") in
+  let w = unlessSame (Path.join dir "Idyll.toml") "[package]\nname = \"Std\"\n" in
   V.foldl
     (\acc m ->
       match m with
@@ -166,10 +167,17 @@ fun writtenStd () : () ! { Fs, Process | e } =
           let file = if path == "" then "Lib.idl" else S.join "/" (S.split "." path) ++ ".idl" in
           let full = Path.join (Path.join dir "src") file in
           let made = createDirAll (M.unwrapOr dir (Path.parent full)) in
-          let w2 = writeString (full, text) in
+          let w2 = unlessSame full text in
           ())
     ()
     stdModules
+
+-- `text` written to `file`, unless it is there already.
+fun unlessSame (file : String) (text : String) : () ! { Fs | e } =
+  if readToStringOr "" file == text then ()
+  else
+    match writeString (file, text) with
+    | _ -> ()
 
 -- --- what the build is told -----------------------------------------------------
 

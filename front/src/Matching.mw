@@ -88,6 +88,8 @@ record Matcher = {
   argTypes : Ref [Value],
   -- the slots matching bound that no pattern named
   unnamed : Ref [Int],
+  -- the signature's names for the implicit binders no pattern takes
+  quantified : Ref [Ident],
   -- something was wrong, and has been reported: coverage and usage then
   -- say nothing
   failed : Ref Bool
@@ -134,13 +136,15 @@ fun isCtor (tc : Tc) (c : Int) : Bool ! { Mut | e } = M.isSome (T.ctorInfo tc c)
 -- A function defined by equations, against its type.
 @pub fun elabMatch (tc : Tc) (ctx : Ctx) (clauses : [HirClause]) (goal : Value) : (Core, Usage) ! { Mut | e } =
   let hir = hirOf tc in
-  let arity = match V.head clauses with | Just c -> V.len (patsOf hir c) | None -> 0 in
+  -- (an implicit pattern, `{p}`, is for an argument written nowhere, so
+  -- does not count)
+  let arity = match V.head clauses with | Just c -> explicitPatterns hir (patsOf hir c) | None -> 0 in
   let problems =
     V.concatMap
       (\i ->
         match V.get clauses i with
         | Just c ->
-            if V.len (patsOf hir c) == arity then [Problem.Problem c i (patsOf hir c) [] [] []]
+            if explicitPatterns hir (patsOf hir c) == arity then [Problem.Problem c i (patsOf hir c) [] [] []]
             else
               let w = T.error tc "ClauseArity" in
               []
@@ -154,7 +158,7 @@ fun isCtor (tc : Tc) (c : Int) : Bool ! { Mut | e } = M.isSome (T.ctorInfo tc c)
 -- them, starting from how many arguments it takes.
 @pub fun inferMatch (tc : Tc) (ctx : Ctx) (clauses : [HirClause]) : (Core, Value, Usage) ! { Mut | e } =
   let hir = hirOf tc in
-  let arity = match V.head clauses with | Just c -> V.len (patsOf hir c) | None -> 0 in
+  let arity = match V.head clauses with | Just c -> explicitPatterns hir (patsOf hir c) | None -> 0 in
   let (under, doms) =
     V.foldl
       (\acc i ->
@@ -243,9 +247,12 @@ fun runMatch (tc : Tc) (ctx : Ctx) (clauses : [HirClause]) (problems : [Problem]
       args = newRef args,
       argTypes = newRef (V.map (\k -> X.typeAt ctx k) args),
       unnamed = newRef [],
+      quantified = newRef (getRef tc.quantified),
       failed = newRef failed
     }
   in
+  -- (the signature's names are for this match, not one inside it)
+  let w0 = setRef tc.quantified [] in
   let (core, usage) = tree tc m ctx problems goal in
   if failedNow m then
     let w = abandon tc goal in
@@ -293,43 +300,73 @@ fun intro (tc : Tc) (m : Matcher) (ctx : Ctx) (problems : [Problem]) (goal0 : Va
   let goal = force tc goal0 in
   match goal with
   | Value.Pi name icit grade _ dom cod ->
-      let key = T.freshKey tc in
       let lvl = ctx.lvl in
-      -- named after the first equation to name it (an implicit argument has
-      -- no pattern)
-      let named =
-        if icit != Icit.Explicit then None
+      let nextOf = \p -> match p with | Problem.Problem _ _ pending _ _ _ -> M.andThen (\q -> takes hir q icit) (V.head pending) in
+      -- an implicit binder no pattern takes, which the signature names:
+      -- bound as that name
+      let taken = V.any (\p -> M.isSome (nextOf p)) problems in
+      let names = getRef m.quantified in
+      let quantified =
+        if icit == Icit.Explicit or taken then None
         else
-          V.foldl
-            (\acc p ->
-              match acc with
-              | Just x -> Just x
-              | None ->
-                  (match p with
-                   | Problem.Problem _ _ pending _ _ _ ->
-                       (match M.map (\q -> (hir, q)) (V.head pending) with
-                        | Just (HirPatternVar x) -> Just (hirIdentText hir x)
-                        | Just (HirPatternAs x _) -> Just (hirIdentText hir x)
-                        | _ -> None)))
-            None
-            problems
+          match V.find (\x -> H.textOf x == name) names with
+          | Just x ->
+              let w = setRef m.quantified (V.filter (\y -> H.uniqueOf y != H.uniqueOf x) names) in
+              Just x
+          | None -> None
+      in
+      let key = match quantified with | Just x -> H.uniqueOf x | None -> T.freshKey tc in
+      -- named after the first equation to name it (an implicit argument may
+      -- have no pattern)
+      let named =
+        V.foldl
+          (\acc p ->
+            match acc with
+            | Just x -> Just x
+            | None ->
+                (match M.map (\q -> (hir, q)) (nextOf p) with
+                 | Just (HirPatternVar x) -> Just (hirIdentText hir x)
+                 | Just (HirPatternAs x _) -> Just (hirIdentText hir x)
+                 | _ -> None))
+          None
+          problems
       in
       let w = if M.isNone named and name == "_" then setRef m.unnamed (V.pushBack (getRef m.unnamed) lvl) else () in
       let hint = match named with | Just x -> x | None -> if name != "_" then name else "x" in
-      let ctx2 = X.bindKeyed ctx key hint dom (Just grade) in
-      let problems2 =
-        if icit == Icit.Explicit then
+      let ctx1 =
+        match quantified with
+        | Just x -> X.graded (X.bind ctx (Just x) hint dom) grade
+        | None -> X.bindKeyed ctx key hint dom (Just grade)
+      in
+      -- an auto argument is one a search inside may find
+      let ctx2 = if icit == Icit.Auto then X.autoBound ctx1 else ctx1 in
+      let w1 =
+        if icit == Icit.Explicit or taken then
           let w2 = setRef m.args (V.pushBack (getRef m.args) lvl) in
-          let w3 = setRef m.argTypes (V.pushBack (getRef m.argTypes) dom) in
-          V.map
-            (\p ->
-              match p with
-              | Problem.Problem c i pending cs bs ds ->
-                  (match V.head pending with
-                   | Just pat -> Problem.Problem c i (V.drop pending 1) (V.pushBack cs (pat, Target.Slot lvl)) bs ds
-                   | None -> p))
-            problems
-        else problems
+          setRef m.argTypes (V.pushBack (getRef m.argTypes) dom)
+        else ()
+      in
+      -- a clause's next pattern, if it is for this binder: an explicit one
+      -- for an explicit argument, `{p}` for an implicit one and `@{p}` for
+      -- an auto one (and one in braces where an explicit argument is,
+      -- misplaced)
+      let problems2 =
+        V.map
+          (\p ->
+            match p with
+            | Problem.Problem c i pending cs bs ds ->
+                (match V.head pending with
+                 | Just pat ->
+                     (match takes hir pat icit with
+                      | Just q -> Problem.Problem c i (V.drop pending 1) (V.pushBack cs (q, Target.Slot lvl)) bs ds
+                      | None ->
+                          if icit == Icit.Explicit then
+                            let w4 = T.error tc "MisplacedImplicitPattern" in
+                            let w5 = fail m in
+                            Problem.Problem c i (V.drop pending 1) (V.pushBack cs (implicitInner hir pat, Target.Slot lvl)) bs ds
+                          else p)
+                 | None -> p))
+          problems
       in
       let (codV, effects) = splitComp tc (apply tc cod (Va.vvar lvl hint)) in
       let (body, usage0) = tree tc m ctx2 problems2 codV in
@@ -346,16 +383,39 @@ fun intro (tc : Tc) (m : Matcher) (ctx : Ctx) (problems : [Problem]) (goal0 : Va
       let codC = freshMeta tc ctxArg "the result type of this function" in
       let effects = freshMeta tc ctxArg "the effects of this function" in
       let pi = Value.Pi "x" Icit.Explicit (gradeValue G.default) (gradeValue G.defaultInType) dom (Closure.Closure ctx.env (Core.Comp codC effects)) in
-      if unify tc ctx.lvl goal pi then intro tc m ctx problems pi else tooManyPatterns tc m
+      if unify tc ctx.lvl goal pi then intro tc m ctx problems pi else tooManyPatterns tc m problems
   | Value.Error ->
       let w = fail m in
       nothing ()
-  | _ -> tooManyPatterns tc m
+  | _ -> tooManyPatterns tc m problems
 
-fun tooManyPatterns (tc : Tc) (m : Matcher) : (Core, Usage) ! { Mut | e } =
-  let w = T.error tc "TooManyPatterns" in
+fun tooManyPatterns (tc : Tc) (m : Matcher) (problems : [Problem]) : (Core, Usage) ! { Mut | e } =
+  let hir = hirOf tc in
+  let next = match V.head problems with | Just (Problem.Problem _ _ pending _ _ _) -> V.head pending | _ -> None in
+  let implicit = match M.map (\q -> (hir, q)) next with | Just (HirPatternImplicit _ _) -> True | _ -> False in
+  let w = T.error tc (if implicit then "MisplacedImplicitPattern" else "TooManyPatterns") in
   let w2 = fail m in
   nothing ()
+
+-- How many of an equation's patterns are for arguments that are written:
+-- all but its implicit ones, `{p}` and `@{p}`.
+@pub(pkg) fun explicitPatterns (hir : HirArena) (pats : [HirPattern]) : Int =
+  V.len (V.filter (\p -> match (hir, p) with | HirPatternImplicit _ _ -> False | _ -> True) pats)
+
+-- What of a clause's next pattern `p` matches a binder that is `icit`: the
+-- pattern itself for an explicit one, the pattern inside `{p}` for an
+-- implicit one and inside `@{p}` for an auto one; or nothing, where `p` is
+-- for a later binder.
+fun takes (hir : HirArena) (p : HirPattern) (icit : Icit) : Maybe HirPattern =
+  match (hir, p) with
+  | HirPatternImplicit i q -> if i == icit then Just q else None
+  | _ -> if icit == Icit.Explicit then Just p else None
+
+-- The pattern inside `{p}` or `@{p}`.
+fun implicitInner (hir : HirArena) (p : HirPattern) : HirPattern =
+  match (hir, p) with
+  | HirPatternImplicit _ q -> q
+  | _ -> p
 
 -- Settle what can be settled of a problem's patterns, left to right, until
 -- one waits on a variable or disagrees.
@@ -405,6 +465,11 @@ fun simplify (tc : Tc) (ctx : Ctx) (p : Problem) : (Step, Problem) ! { Mut | e }
             -- matched against
             | HirPatternSeqNil -> seqStep tc ctx p target rest []
             | HirPatternSeqCons hd tl -> seqStep tc ctx p target rest [hd, tl]
+            -- (an implicit pattern meets an implicit binder in `intro`: one
+            -- here is where no implicit argument is)
+            | HirPatternImplicit _ _ ->
+                let w = T.error tc "MisplacedImplicitPattern" in
+                (Step.Failed, p)
             | _ -> (Step.Failed, p)))
 
 fun seqStep (tc : Tc) (ctx : Ctx) (p : Problem) (target : Target) (rest : [(HirPattern, Target)]) (args : [HirPattern]) : (Step, Problem) ! { Mut | e } =

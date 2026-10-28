@@ -59,7 +59,9 @@ a build after that needs no network. `--offline` never fetches, `--locked`
 refuses a build that would change the lock, and `Idyll update [names]
 [--dry-run]` moves dependencies forward. Std is a unit too, which this
 program holds (`includeStr`) and writes out under `~/.idyll/std/<hash>`
-(`$IDYLL_HOME` moves both), so that every package's path to it holds; the
+(`$IDYLL_HOME` moves both), so that every package's path to it holds (a
+file already as it should be is not written again, as another build may be
+reading it); the
 prelude is in the program, `compiler/idyllic/src/prelude.idl`, the Rust
 compiler's own. The link puts the program together from the compiled packages
 (`Link.linked`), lowers it to Cut, its `main` the entry, into
@@ -605,6 +607,15 @@ Missing cases and unreachable equations are reported. `if` is a `case` on
 `Bool`. The fields a split binds are used as often as the value was, times
 their own grade (once, for a data type's fields).
 
+An equation may name an implicit argument, `len {n} _ = n`, or an auto one,
+`shout @{e} x = ..`: `{p}` (`@{p}`) is a pattern for the implicit (auto)
+binder the type has next, and a binder no pattern takes is bound without
+one, under the name the signature gives it if it gives one
+(`checkAgainstSig` binds the signature's implicits itself only up to the
+first one the equations name). The surface reads `x @{p}` as two patterns,
+as the Rust parser does, though Lingua's grammar reads `x@{p}` as one name
+with a tail; and a lambda that names one, `\{m} v -> m`, is one equation.
+
 **Termination** (`Termination.mw`, `termination.rs`). Each recursive
 group's case trees are examined with the size-change principle, as Agda
 does: every recursive call is summarised by how its arguments relate to
@@ -751,8 +762,14 @@ object called with `resume`.
 Every binder needs a representation, which comes from its type. The
 elaborated program does not say the types, so `Typer.mw` (`typer.rs`)
 works them out again from the checker's state, by normalisation by
-evaluation, as checking did. Before lowering, `Prune.mw` (`prune.rs`)
-leaves out the definitions nothing live uses (most of the prelude).
+evaluation, as checking did. Before lowering, each solved metavariable is
+made its solution (`Core.zonked`, `Core::zonked`), so that what only a
+solution uses is kept; a solution applied to the variables it was made a
+function of is applied to them then, rather than lowered as a closure.
+Then `Prune.mw` (`prune.rs`) leaves out the definitions nothing live uses
+(most of the prelude). A program is linked with Std only if what it
+computes uses something of Std's (`Link.toLink`, `pipeline::to_link`):
+through solutions, not into what is erased.
 
 The runtimes print only strings, so the lowering also writes code that
 turns the program's answer into text as the REPL shows it: a `def` per
@@ -789,7 +806,7 @@ panic in Meadow's back end, should there be one, is counted apart as
 Meadow's.)
 
 The Cut corpus (`cut-corpus/`, which `idyllic-cut` writes) runs on Glade:
-all 221 programs pass, the 18 with handlers among them, and on Silo too.
+all 274 programs pass, the 19 with handlers among them, and on Silo too.
 
 A primitive whose answer is whatever was stored (`arrayGet`) has it bound at
 the element's representation before it goes on: given straight to a

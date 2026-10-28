@@ -41,7 +41,7 @@ use Idyll.Compiled (compiledOf)
 use Idyll.Parts as Parts
 use Std.Macro (toDatum, fromDatum)
 use Idyll.Link (merged, emptyCompiled)
-use Idyll.Link (linked)
+use Idyll.Link (linked, toLink)
 use Std.St (runSt)
 use Idyll.Interface
 use Std.Sort (sortOn)
@@ -513,7 +513,8 @@ fun ranAgainst prelude (names : Rename.PackageNames) (std : Compiled) (text : St
                  if not (V.isEmpty (getRef c.tc.unsupported)) then "(unsupported)"
                  else if not (V.isEmpty (getRef c.tc.errors)) then "(error)"
                  else
-                   let p = Cek.programOf (linked c (compiledOf c grouped own) [std]) in
+                   let compiled = compiledOf c grouped own in
+                   let p = Cek.programOf (linked c compiled (toLink compiled [std])) in
                    match p.body with
                    | None -> "(no expression)"
                    | Just term -> runCore p term))

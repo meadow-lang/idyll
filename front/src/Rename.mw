@@ -694,6 +694,9 @@ fun theRecordWith (r : Rn) (wanted : [String]) : Maybe (String, [String]) ! { Mu
   Pattern + Dot { expr : Expr }
   Pattern + SeqNil {}
   Pattern + SeqCons { head : Pattern, tail : Pattern }
+  -- `{p}`: the next implicit argument (`@{p}`: the next auto one), matched
+  -- against `p`. Only an equation's own patterns may be one.
+  Pattern + Implicit { icit : Icit, pat : Pattern }
   Bind + Bind { name : Ident, ty : Maybe Expr, rhs : Expr, linear : Bool }
   Group + NonRec { bind : Bind }
   Group + Rec { binds : [Bind] }
@@ -926,6 +929,7 @@ pass! {
     | Pat.Seq { items } ->
         (\u -> V.foldr (\h tl -> newHirPatternSeqCons out here h tl) (newHirPatternSeqNil out here) (V.map (\i -> i ()) items))
     | Pat.Record { name, fields } -> (\u -> recordPattern out here r name fields)
+    | Pat.Implicit { icit, pat } -> (\u -> Pattern.Implicit { icit, pat = pat () })
 }
 
 -- `\x -> body`, or `\[x] -> body`, which is `\b -> let [x] = b in body`.
@@ -1942,6 +1946,7 @@ fun patternText (a : HirArena) (p : HirPattern) : String =
   | HirPatternDot e -> sx ["dot", termText a e]
   | HirPatternSeqNil -> "pnil"
   | HirPatternSeqCons h tl -> sx ["pcons", go h, go tl]
+  | HirPatternImplicit i q -> sx ["pimplicit", (match i with | Icit.Explicit -> "e" | Icit.Implicit -> "i" | Icit.Auto -> "a"), go q]
 
 fun uniqueIn (a : HirArena) (x : HirIdent) : Int = V.getOr (0 - 1) (hirIdentUniques a x) 0
 

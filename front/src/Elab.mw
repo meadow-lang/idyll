@@ -47,7 +47,7 @@ use Idyll.Rename (Hir!)
 use Idyll.Elaborated
 use Idyll.Elaborated (Elaborated!)
 use Lingua (pass!)
-use Idyll.Matching (caseOf, inferMatch, elabMatch)
+use Idyll.Matching (caseOf, inferMatch, elabMatch, explicitPatterns)
 use Idyll.Handlers (handled)
 use Idyll.Auto as A
 use Idyll.Literals as L
@@ -598,8 +598,21 @@ fun settleRest (tc : Tc) (keep : [Int]) : () ! { Mut | e } =
 fun parameters (h : HirArena) (rhs : HirExpr) : Int =
   match (h, rhs) with
   | HirExprLam _ _ _ body -> 1 + parameters h body
-  | HirExprMatch clauses -> (match V.head clauses with | Just c -> V.len (hirClausePats h c) | None -> 0)
+  | HirExprMatch clauses -> (match V.head clauses with | Just c -> explicitPatterns h (hirClausePats h c) | None -> 0)
   | _ -> 0
+
+-- Whether `t` is equations one of which names its next argument, which is
+-- `icit`: `{p}` for an implicit one, `@{p}` for an auto one.
+@pub(pkg) fun namesImplicit (h : HirArena) (t : HirExpr) (icit : Icit) : Bool =
+  match (h, t) with
+  | HirExprMatch clauses ->
+      V.any
+        (\c ->
+          match M.map (\p -> (h, p)) (V.head (hirClausePats h c)) with
+          | Just (HirPatternImplicit i _) -> i == icit
+          | _ -> False)
+        clauses
+  | _ -> False
 
 -- --- bindings ----------------------------------------------------------------------
 
@@ -615,7 +628,8 @@ fun checkAgainstSig (tc : Tc) (ctx : Ctx) (rhs : HirExpr) (sig : HirExpr) (vsig 
     | _ -> None
   in
   match (implicitSig, fsig) with
-  | (Just (x, sigCod, sigIcit), Value.Pi name icit grade _ dom cod) if icit != Icit.Explicit ->
+  -- (up to one the equations name, `f {n} xs = ..`)
+  | (Just (x, sigCod, sigIcit), Value.Pi name icit grade _ dom cod) if icit != Icit.Explicit and not (namesImplicit h rhs sigIcit) ->
       let ctx1 = X.graded (X.bind ctx (Just x) name dom) grade in
       let ctx2 = if sigIcit == Icit.Auto then X.autoBound ctx1 else ctx1 in
       let (codV, allowed) = splitComp tc (apply tc cod (Va.vvar ctx.lvl name)) in
@@ -623,7 +637,26 @@ fun checkAgainstSig (tc : Tc) (ctx : Ctx) (rhs : HirExpr) (sig : HirExpr) (vsig 
       let u1 = closeEffects tc ctx2 usage allowed in
       let u2 = leaveBinder tc ctx2 x grade u1 False in
       (lam tc ctx name grade dom body, u2)
-  | _ -> check tc ctx rhs fsig
+  | _ ->
+      -- equations that name an implicit argument bind it and those after
+      -- it themselves: those the signature names, as it names them
+      let w =
+        if namesImplicit h rhs Icit.Implicit or namesImplicit h rhs Icit.Auto then setRef tc.quantified (quantifiedIn h sig)
+        else ()
+      in
+      let checked = check tc ctx rhs fsig in
+      let w2 = setRef tc.quantified [] in
+      checked
+
+-- The names a signature gives its implicit and auto binders, in order.
+fun quantifiedIn (h : HirArena) (sig : HirExpr) : [Ident] =
+  match (h, sig) with
+  | HirExprPi x icit _ _ cod ->
+      let rest = quantifiedIn h cod in
+      (match x with
+       | Just i -> if icit != Icit.Explicit then V.append [identOf h i] rest else rest
+       | None -> rest)
+  | _ -> []
 
 -- An unannotated binder's grade: unrestricted, or once in a linear module.
 @pub(pkg) fun defaultGrade (tc : Tc) : Grade ! { Mut | e } = if getRef tc.linear then G.one else G.default
@@ -656,7 +689,7 @@ fun declare (tc : Tc) (x : Ident) (name : String) (ty : Core) =
   setRef tc.declared (V.pushBack (getRef tc.declared) (H.uniqueOf x, name, ty))
 
 -- A group's bindings, and a binding's name.
-fun groupBinds (h : HirArena) (g : HirGroup) : [HirBind] =
+@pub(pkg) fun groupBinds (h : HirArena) (g : HirGroup) : [HirBind] =
   match (h, g) with
   | HirGroupNonRec b -> [b]
   | HirGroupRec bs -> bs
@@ -1176,7 +1209,15 @@ pass! {
            (\(c : Cx) g -> (match caseOf c.tc c.ctx scrutinee clauses (Just g) with | (core, _, usage) -> (core, g, usage))))
     | Match { raw clauses } ->
         (let again = \(c : Cx) -> elabExpr src out c node in
-         mode cx again (\(c : Cx) -> inferMatch c.tc c.ctx clauses) (\(c : Cx) g -> checked g (elabMatch c.tc c.ctx clauses g)))
+         let matched = \u -> mode cx again (\(c : Cx) -> inferMatch c.tc c.ctx clauses) (\(c : Cx) g -> checked g (elabMatch c.tc c.ctx clauses g)) in
+         -- equations that name the implicit argument wanted, `f {n} xs = ..`,
+         -- bind it themselves (see `Matching`)
+         match cx.goal with
+         | Just g0 ->
+             (match force cx.tc g0 with
+              | Value.Pi _ icit _ _ _ _ if icit != Icit.Explicit and namesImplicit src node icit -> checked g0 (elabMatch cx.tc cx.ctx clauses g0)
+              | _ -> matched ())
+         | None -> matched ())
     | Omitted {} ->
         (let again = \(c : Cx) -> elabExpr src out c node in
          mode

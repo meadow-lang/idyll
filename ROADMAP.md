@@ -583,9 +583,16 @@ from what `idyll.lock` pinned.
   {Int}` in front/ too: the argument in braces is the one the next
   implicit binder of `f`'s type takes, and what is not given is worked
   out (`compiler/idyllic/tests/decls.rs`, `traits.rs`).
-- [ ] **Instance-sensitive collections take the instance in their type**, so
+- [~] **Instance-sensitive collections take the instance in their type**, so
   a `Map` built with the default `Ord` and used with a named one fails to
   unify instead of silently breaking its invariants.
+  The way to say it done 2026-10-27, in both compilers: implicit and auto
+  patterns, `{p}` and `@{p}`, name (or match) the implicit or auto
+  argument a type binds next, so a type keeps the instance it was made
+  with, `SortedBy a @{o} = Sorted a o`, and one shown in a type is shown by
+  its name, or an unnamed one as `instance Ord Int`
+  (`compiler/idyllic/tests/matching.rs`, `auto.rs`). Std's `Map`, `Set` and
+  `HashMap`, built that way, are next.
 - [x] **Integer types, floating point, `Show`/`Eq`/`Ord`, and string
   interpolation**, which all wait on traits. `Display` and `Debug` (Meadow's
   `Show`), and interpolation, done 2026-10-21 in both compilers: the

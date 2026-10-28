@@ -156,7 +156,8 @@ impl Checker {
         // can change is metas it makes itself, which are forgotten if it
         // does not fit
         if candidates.len() == 1 {
-            let (_, core, ty) = candidates.pop().expect("one");
+            let (u, core, ty) = candidates.pop().expect("one");
+            let core = self.called(ctx, u, core);
             let mark = self.mark();
             return match self.apply_candidate(ctx, node, core, ty, wanted, depth) {
                 Some(found) if self.errors.len() == mark.errors => Ok(found),
@@ -174,7 +175,8 @@ impl Checker {
         }
         match fitting.len() {
             1 => {
-                let (_, core, ty) = fitting.pop().expect("one");
+                let (u, core, ty) = fitting.pop().expect("one");
+                let core = self.called(ctx, u, core);
                 self.apply_candidate(ctx, node, core, ty, wanted, depth).ok_or_else(|| TypeErrorKind::NoInstance { wanted: shown(), deep: false })
             }
             0 => Err(TypeErrorKind::NoInstance { wanted: shown(), deep: false }),
@@ -527,6 +529,31 @@ impl Checker {
         };
         *self = saved;
         unify
+    }
+
+    /// The hint `u`, referred to as `core` (with no name, as the search
+    /// looks it up), with the name a type shows it by: its own, or for an
+    /// instance with none, `instance Ord Int`.
+    fn called(&self, ctx: &Ctx, u: usize, core: Rc<Core>) -> Rc<Core> {
+        let name = self.hint_names.get(&u).cloned().unwrap_or_default();
+        let name = name.split(", from").next().unwrap_or_default().to_string();
+        let name = if name.is_empty() || name.contains("#instance") {
+            let x = hir::Ident { unique: Some(u), text: String::new() };
+            let Some((_, ty, _)) = ctx.lookup(&x) else { return core };
+            // (what it is an instance of, past what it is for any of)
+            let mut head = self.quote(ctx.lvl, ty);
+            while let Core::Pi { icit: Icit::Implicit | Icit::Auto, cod, .. } = &*head {
+                head = cod.clone();
+            }
+            format!("instance {head}")
+        } else {
+            name
+        };
+        match &*core {
+            Core::Opaque(u, _) => Rc::new(Core::Opaque(*u, name)),
+            Core::Var(i, _) => Rc::new(Core::Var(*i, name)),
+            _ => core,
+        }
     }
 
     /// A hint, as a message names it.

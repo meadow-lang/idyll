@@ -4,8 +4,6 @@ answer str
 
 data idyll:Prelude/DigitFuel { Spent; More(ptr) }
 
-data idyll:Main/Point { Point(i64, i64) }
-
 val idyll:Prelude/digitFuel : ptr =
   <idyll:Prelude/DigitFuel.Spent | μ̃ v_20: ptr.
     <idyll:Prelude/DigitFuel.More(v_20) | μ̃ v_19: ptr.
@@ -85,13 +83,9 @@ def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) =
               idyll:Prelude/digitString(v_71; k_63)))))
   }>
 
-def idyll:Main/first (p_75: ptr; k_76: ptr) =
-  <p_75 | case {
-    idyll:Main/Point.Point(a_77: i64, y_78: i64) =>
-      <a_77 | k_76>
-  }>
+def idyll:Main/twice (n_75: i64; k_76: ptr) =
+  prim mul(n_75, 2; k_76)
 
-def idyll:Main/"#entry" (; k_79: ptr) =
-  <idyll:Main/Point.Point(7, 8) | μ̃ v_82: ptr.
-    idyll:Main/first(v_82; μ̃ answer_80: i64.
-      idyll:Prelude/showInt(answer_80; k_79))>
+def idyll:Main/"#entry" (; k_77: ptr) =
+  idyll:Main/twice(21; μ̃ answer_78: i64.
+    idyll:Prelude/showInt(answer_78; k_77))

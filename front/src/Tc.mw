@@ -13,7 +13,7 @@ use Idyll.Usage as U
 use Std.St (runSt)
 use Idyll.Value (Value, Env, Poly)
 use Idyll.Core (Core)
-use Idyll.Hir (Literal)
+use Idyll.Hir (Literal, Ident)
 use Idyll.Ctx (Ctx)
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
@@ -162,6 +162,9 @@ use Std.Maybe.Maybe.*
   -- each instance with no parameters, and those of its fields that are a
   -- constant or a primitive: what a method of it is (`Elab.specialize`)
   instanceFields : Ref (HashMap Int [Maybe Core]),
+  -- the hints' names, as a type shows one a search found: this package's
+  -- under their modules, a dependency's by its path there
+  hintNames : Ref (HashMap Int String),
   -- the metavariables standing for an auto argument still to be found, and
   -- what each was found to be, with the length of the context it was found
   -- in: written over the placeholder once the definition is checked
@@ -173,6 +176,9 @@ use Std.Maybe.Maybe.*
   -- the number literals waiting for their types (`Literals`): the
   -- placeholder, the context, the type wanted, and the literal
   deferredLiterals : Ref [(Int, Ctx, Value, Literal)],
+  -- a signature's implicit binders that equations naming one before them
+  -- left to their matching, by name (`Elab.checkAgainstSig`)
+  quantified : Ref [Ident],
   -- the meaning chosen for an overloaded name, by the node it was written
   -- at; the terms put off because more than one still fitted (the
   -- placeholder, the name's node, the term, its context, and what it is to
@@ -224,10 +230,12 @@ use Std.Maybe.Maybe.*
     supers = newRef Hm.empty,
     methods = newRef Hm.empty,
     instanceFields = newRef Hm.empty,
+    hintNames = newRef Hm.empty,
     placeholders = newRef [],
     chosen = newRef Hm.empty,
     deferredAutos = newRef [],
     deferredLiterals = newRef [],
+    quantified = newRef [],
     forced = newRef Hm.empty,
     deferred = newRef [],
     patternChoice = newRef Hm.empty
@@ -278,10 +286,12 @@ use Std.Maybe.Maybe.*
     supers = newRef (getRef tc.supers),
     methods = newRef (getRef tc.methods),
     instanceFields = newRef (getRef tc.instanceFields),
+    hintNames = newRef (getRef tc.hintNames),
     placeholders = newRef (getRef tc.placeholders),
     chosen = newRef (getRef tc.chosen),
     deferredAutos = newRef (getRef tc.deferredAutos),
     deferredLiterals = newRef (getRef tc.deferredLiterals),
+    quantified = newRef (getRef tc.quantified),
     forced = newRef (getRef tc.forced),
     deferred = newRef (getRef tc.deferred),
     patternChoice = newRef (getRef tc.patternChoice)

@@ -898,6 +898,33 @@ still worked out.
 (1, True) : (Int, Bool)
 ```
 
+The same braces in a pattern name an implicit argument where it is bound:
+`{n}` is the implicit argument the type binds next, as a lambda's binder
+or among an equation's patterns. It is still erased unless its binder
+gives it a grade, so returning one needs `[]`:
+
+```
+> let twice : {n : [] Int} -> Int = \{n} -> n * 2 in twice {21}
+42 : Int
+```
+
+In an equation, `{p}` is a pattern like any other, matched against the
+argument: here the length a vector's type carries, which is only there at
+run time because its binder says `[]`.
+
+```
+len : {n : [] Nat} -> {a : Type} -> Vec n a -> Nat
+len {n} _ = n
+
+isZero : {n : [] Nat} -> Bool
+isZero {Z} = True
+isZero {S _} = False
+```
+
+The implicit arguments no pattern takes are bound as before, by the names
+the signature gives them. A pattern in braces where the type has no
+implicit argument next is an error.
+
 ### Auto arguments
 
 An *auto* argument, `{auto d : t}`, is implicit too, but it is not worked
@@ -939,6 +966,35 @@ rest of the definition has said what its type is: in `let xs = Nil in say
 one, more than one hint that does, or a type that is never known well
 enough to look, is an error. An auto argument is used at run time, so its
 grade is `[]` unless it says otherwise.
+
+`@{d}` in a pattern names the auto argument the type binds next, as `{n}`
+names an implicit one:
+
+```
+shout : {a : Type} -> {auto d : Describe a} -> a -> String
+shout @{e} x = e.describe x ++ "!"
+```
+
+That is also how a type keeps the instance it was made with. A list sorted
+by an `Ord` is only sorted by *that* `Ord`, so the instance can be one of
+its type's arguments, and a definition that names it by `@{o}` finds it
+for you:
+
+```
+> data Sorted (a : Type) (o : Ord a) = Sorted (List a)
+use Std.Cmp (Ord)
+SortedBy : (a : Type) -> {auto o : Ord a} -> Type
+SortedBy a @{o} = Sorted a o
+
+Sorted : (a : Type) -> (o : Ord a) -> Type
+Sorted.Sorted : {a : Type} -> {o : Ord a} -> (_ : [1] List a) -> Sorted a o
+SortedBy : (a : Type) -> {auto o : Ord a} -> Type
+> (Sorted.Sorted (1 :: 2 :: Nil) : SortedBy Int)
+Sorted (1 :: 2 :: Nil) : Sorted Int (instance Ord Int)
+```
+
+An instance with no name of its own is shown by what it is an instance of.
+Two `Sorted Int`s made with different orders have different types.
 
 ### Traits
 

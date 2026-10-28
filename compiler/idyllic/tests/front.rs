@@ -746,6 +746,7 @@ mod h {
             PatKind::Dot(e) => sx(["dot".into(), term(e)]),
             PatKind::SeqNil => "pnil".into(),
             PatKind::SeqCons(ps) => with(["pcons"], ps.iter().map(pattern).collect()),
+            PatKind::Implicit(icit, q) => sx(["pimplicit".into(), super::w::icit(*icit).into(), pattern(q)]),
         }
     }
 
@@ -971,6 +972,15 @@ mod w {
             Pat::Dot(e) => sx(["dot".into(), term(e)]),
             Pat::Seq(ps) => with(["pseq"], ps.iter().map(pat).collect()),
             Pat::Record(r, fs) => with(["precord".to_string(), r.node.clone()], fields(fs, pat)),
+            Pat::Implicit(i, q) => sx(["pimplicit".into(), icit(*i).into(), pat(q)]),
+        }
+    }
+
+    pub(super) fn icit(icit: Icit) -> &'static str {
+        match icit {
+            Icit::Explicit => "e",
+            Icit::Implicit => "i",
+            Icit::Auto => "a",
         }
     }
 

@@ -104,6 +104,25 @@ fn a_constraint_is_printed_as_written() {
 }
 
 #[test]
+fn an_auto_pattern_names_an_auto_argument() {
+    // `@{e}` binds the argument `say` calls `d`, under a name of its own
+    let shout = "shout : {a : Type} -> {auto d : Describe a} -> a -> String\nshout @{e} x = e.describe x ++ \"!\"\n\n";
+    assert_eq!(value(&format!("{DESCRIBE}{shout}shout 3\n")), "\"3!\"");
+}
+
+#[test]
+fn a_type_may_keep_the_instance_it_was_made_with() {
+    // a list whose order is in its type, so two made with different orders
+    // are told apart; an instance with no name is shown by its type
+    let ord = "use Std.Cmp (Ord)\n\ndata Sorted (a : Type) (o : Ord a) = Sorted (List a)\n\n\
+               SortedBy : (a : Type) -> {auto o : Ord a} -> Type\nSortedBy a @{o} = Sorted a o\n\n\
+               s : SortedBy Int\ns = Sorted.Sorted Nil\n\ns\n";
+    let out = run(ord);
+    assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
+    assert_eq!(out.body_type.as_deref(), Some("Sorted Int (instance Ord Int)"));
+}
+
+#[test]
 fn a_proof_is_found_as_any_auto_argument_is() {
     // search works for any type: `LTE n m`, by its hints, erased
     let lte = "data Nat = Z | S Nat\n\nuse Nat.*\n\n\

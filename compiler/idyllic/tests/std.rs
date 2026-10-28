@@ -336,3 +336,14 @@ fn ord_compares_and_min_and_max_choose() {
     // and Nat's `==` and `<`
     assert_eq!(value(&format!("{c}(fromInt 4 == fromInt 4, fromInt 1 < fromInt 2)\n")), "(True, True)");
 }
+
+#[test]
+fn a_std_value_only_a_solved_argument_carries_still_links_std() {
+    // `n` is used at run time, and is `S Z` only by what unification solved
+    // it with: the program mentions Std nowhere else (it was linked without
+    // Std, and its Cut named a constructor that was not there)
+    let src = "use Std.Num.Nat (Nat)\nuse Std.Num.Nat.Nat.*\n\n\
+               data Is : Nat -> Type where\n  It : Is (S Z)\n\n\
+               pick : {n : [] Nat} -> Is n -> Nat\npick {n} _ = n\n\npick Is.It\n";
+    assert_eq!(value(src), "S Z");
+}

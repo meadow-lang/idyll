@@ -327,3 +327,33 @@ fn a_method_of_a_known_instance_is_what_the_instance_gives() {
     );
     has(&text, "idyll:Main/plus2(");
 }
+
+/// `Vec` with its index, and a function whose implicit argument is solved.
+const INDEXED: &str = "data Nat = Z | S Nat\n\nuse Nat.*\n\n\
+                       data Vec : Nat -> Type -> Type where\n  VNil : Vec Z a\n  VCons : a -> Vec n a -> Vec (S n) a\n\nuse Vec.*\n\n";
+
+#[test]
+fn a_solved_implicit_argument_is_what_it_was_solved_with_not_a_closure() {
+    // the recursive call's `n` is a metavariable's solution, a function of
+    // the context, applied to it: given the variable it comes to
+    let src = format!(
+        "{INDEXED}toList : {{n : [] Nat}} -> {{a : Type}} -> Vec n a -> List a\n\
+         toList {{Z}} _ = (Nil : List a)\ntoList {{S _}} (VCons x xs) = x :: toList xs\n\n\
+         toList (VCons 1 (VCons 2 VNil))\n"
+    );
+    let text = lowered(&src);
+    has(&text, "idyll:Main/toList(x_N, d_a_N, xs_N;");
+    assert!(!text.contains("cocase"), "{text}");
+}
+
+#[test]
+fn what_only_a_solution_calls_is_kept() {
+    // `twice m` is in an erased argument, and in what `n` was solved with
+    let src = format!(
+        "{INDEXED}data Proxy : Nat -> Type where\n  P : (n : [0] Nat) -> Proxy n\n\n\
+         twice : Nat -> Nat\ntwice Z = Z\ntwice (S n) = S (S (twice n))\n\n\
+         pick : {{n : [] Nat}} -> Proxy n -> Nat\npick {{n}} _ = n\n\n\
+         f : Nat -> Nat\nf m = pick (Proxy.P (twice m))\n\nf (S Z)\n"
+    );
+    has(&lowered(&src), "def idyll:Main/twice");
+}

@@ -461,6 +461,23 @@ use Maybe.*"),
         ],
     },
     Step {
+        title: "Naming what was implicit",
+        section: Section::Dependent,
+        text: &[
+            "In a pattern, `{n}` names the implicit argument the type binds",
+            "next, and `@{d}` the auto one: as a lambda's binder or among an",
+            "equation's patterns, where `{p}` may match it too. It is still",
+            "erased unless its binder gives it a grade. A type can keep the",
+            "instance it was made with this way: `SortedBy a @{o} = Sorted a o`.",
+        ],
+        examples: &[
+            ok("doubled : {n : [] Int} -> Int\ndoubled = \\{n} -> n * 2"),
+            ok("doubled {21}"),
+            ok("loud : {auto d : Measure Int} -> (x : [] Int) -> Int\nloud @{m} x = m.measure x * 10"),
+            ok("loud 4"),
+        ],
+    },
+    Step {
         title: "Holes",
         section: Section::Dependent,
         text: &[

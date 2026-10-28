@@ -28,7 +28,7 @@
 //! one.  The prelude is named the same in every package, so its types are
 //! the same types everywhere.
 
-use super::core::{Core, Lvl};
+use super::core::{Core, Lvl, Note};
 use super::handlers::{EffectInfo, OpInfo};
 use super::termination::Unfold;
 use super::value::Env;
@@ -257,18 +257,17 @@ impl Checker {
     }
 }
 
-/// A program put together from a root package (checked, with its own code
-/// and the prelude's) and the compiled packages it depends on, directly or
-/// not, in an order where each comes after those it depends on.  Replaces
-/// the root's program, recursive definitions and tables with the whole
-/// program's; its metavariables are solved away.
 /// Whether the program refers to anything `dep` declares: a definition, a
-/// constructor (built, or matched on), an operation.
+/// constructor (built, or matched on), an operation. What it computes, that
+/// is: through what its metavariables were solved with (an implicit
+/// argument used at run time may be one), and not into what is erased.
 pub fn uses(root: &TypeCheckResult, dep: &CompiledPackage) -> bool {
-    fn mentions(c: &Core, range: &std::ops::Range<usize>) -> bool {
-        let go = |c: &Core| mentions(c, range);
+    fn mentions(c: &Core, range: &std::ops::Range<usize>, solutions: &[Option<Rc<Core>>]) -> bool {
+        let go = |c: &Core| mentions(c, range, solutions);
         match c {
             Core::Opaque(u, _) => range.contains(u),
+            Core::Meta(m) => solutions.get(*m).cloned().flatten().is_some_and(|s| go(&s)),
+            Core::Runtime(Note::Erased, _) => false,
             Core::Pi { grade, in_type, dom, cod, .. } => go(grade) || go(in_type) || go(dom) || go(cod),
             Core::Lam(_, b) | Core::BoxIntro(b) | Core::Unbox(b) | Core::Runtime(_, b) => go(b),
             Core::Let(_, a, b)
@@ -286,10 +285,16 @@ pub fn uses(root: &TypeCheckResult, dep: &CompiledPackage) -> bool {
             _ => false,
         }
     }
-    let range = &dep.uniques;
-    root.program.as_ref().is_some_and(|p| mentions(p, range)) || root.rec_defs.iter().any(|d| mentions(&d.core, range))
+    let (range, solutions) = (&dep.uniques, &root.meta_solutions);
+    root.program.as_ref().is_some_and(|p| mentions(p, range, solutions))
+        || root.rec_defs.iter().any(|d| mentions(&d.core, range, solutions))
 }
 
+/// A program put together from a root package (checked, with its own code
+/// and the prelude's) and the compiled packages it depends on, directly or
+/// not, in an order where each comes after those it depends on.  Replaces
+/// the root's program, recursive definitions and tables with the whole
+/// program's; its metavariables are solved away.
 pub fn link(root: &mut TypeCheckResult, deps: &[&CompiledPackage]) {
     let Some(own) = root.compiled.clone() else { return };
     let base = own.base;
@@ -441,10 +446,8 @@ fn solved(mut p: CompiledPackage) -> CompiledPackage {
     p
 }
 
-/// A term with every metavariable in it replaced by its solution.
+/// A term with every metavariable in it replaced by its solution (see
+/// [`Core::zonked`]).
 fn zonk(p: &CompiledPackage, core: &Rc<Core>) -> Rc<Core> {
-    core.rewrite(0, &|c, _| match c {
-        Core::Meta(m) => p.meta_solutions.get(*m).cloned().flatten().map(|s| zonk(p, &s)),
-        _ => None,
-    })
+    core.zonked(&p.meta_solutions)
 }

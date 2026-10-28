@@ -177,6 +177,10 @@ pub enum Pat {
     /// `Point { x = p }`: a record, its fields matched by the patterns
     /// given, and any not named by anything.
     Record(Ident, Vec<(Ident, LPat)>),
+    /// `{p}`: the next implicit argument, matched against `p`; `@{p}`, the
+    /// next auto one. Where an equation or a lambda has none, its implicit
+    /// arguments are bound with no name, as they always were.
+    Implicit(Icit, Box<LPat>),
 }
 
 /// What an equation or an alternative gives, if its patterns match.

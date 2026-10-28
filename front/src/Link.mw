@@ -10,7 +10,7 @@
 -- them becomes the variable for its slot, and each package's
 -- metavariables are solved away.
 
-use Idyll.Core (Core)
+use Idyll.Core (Core, Note, Head, CaseAlt, OpClause)
 use Idyll.Core as C
 use Idyll.Check (Checked)
 use Idyll.Interface
@@ -23,11 +23,48 @@ use Std.Maybe.Maybe.*
 
 -- A term of `p`'s with every metavariable in it replaced by what `p`'s
 -- checker solved it with.
-@pub fun zonk (p : Compiled) (c : Core) : Core =
-  C.transform c 0 (\x d ->
-    match x with
-    | Core.Meta m -> (match V.get p.metaSolutions m with | Just (Just s) -> Just (zonk p s) | _ -> None)
-    | _ -> None)
+@pub fun zonk (p : Compiled) (c : Core) : Core = C.zonked c p.metaSolutions
+
+-- Whether `own`'s program refers to anything `dep` declares: a definition,
+-- a constructor (built, or matched on), an operation. What it computes,
+-- that is: through what its metavariables were solved with (an implicit
+-- argument used at run time may be one), and not into what is erased
+-- (`packages::uses`).
+@pub fun uses (own : Compiled) (dep : Compiled) : Bool =
+  let hit = \c -> mentions own dep c in
+  V.any (\l -> match l with | TopLet.TopLet _ _ rhs -> hit rhs) own.lets
+    or V.any (\d -> match d with | RecDef.RecDef _ _ _ core _ -> hit core) own.recDefs
+    or (match own.body with | Just (Body.Body core _) -> hit core | None -> False)
+
+fun mentions (own : Compiled) (dep : Compiled) (c : Core) : Bool =
+  let go = \x -> mentions own dep x in
+  match c with
+  | Core.Opaque u _ -> owns dep u
+  | Core.Meta m -> (match V.get own.metaSolutions m with | Just (Just s) -> go s | _ -> False)
+  | Core.Runtime n x -> (match n with | Note.Erased -> False | _ -> go x)
+  | Core.Pi _ _ g r d cod -> go g or go r or go d or go cod
+  | Core.Lam _ b -> go b
+  | Core.BoxIntro b -> go b
+  | Core.Unbox b -> go b
+  | Core.Let _ a b -> go a or go b
+  | Core.App a b -> go a or go b
+  | Core.BoxTy a b -> go a or go b
+  | Core.GradeAdd a b -> go a or go b
+  | Core.GradeMul a b -> go a or go b
+  | Core.GradeRange a b -> go a or go b
+  | Core.Comp a b -> go a or go b
+  | Core.Case s alts ->
+      go s or V.any (\a -> match a with | CaseAlt.CaseAlt h _ _ body -> (match h with | Head.Con u -> owns dep u | _ -> False) or go body) alts
+  | Core.Handle b r ops -> go b or go r or V.any (\o -> match o with | OpClause.OpClause u _ _ body -> owns dep u or go body) ops
+  | Core.Row ls ts -> V.any go ls or V.any go ts
+  | _ -> False
+
+-- The packages a program is to be linked with: all of `deps`, but Std only
+-- if something uses it -- the program itself, when Std is all there is, or
+-- any other package, which may (`pipeline::to_link`).
+@pub fun toLink (own : Compiled) (deps : [Compiled]) : [Compiled] =
+  let others = V.any (\(p : Compiled) -> p.name != "Std") deps in
+  V.filter (\(p : Compiled) -> p.name != "Std" or others or uses own p) deps
 
 -- `c`'s program, linked with the compiled packages it depends on (`deps`,
 -- each after those it depends on), `own` what checking it compiled to.

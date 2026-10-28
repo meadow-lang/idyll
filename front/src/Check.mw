@@ -30,7 +30,7 @@ use Std.St (runSt)
 use Idyll.Decl (initial, declareNatives, declareEffects, declareDatas, declareOps)
 use Idyll.Hir (Ident)
 use Idyll.Interface
-use Idyll.Elab (declareConstant)
+use Idyll.Elab (declareConstant, groupBinds)
 use Idyll.Value as Va2
 use Idyll.Rename
 use Std.Collections.HashMap as Hm
@@ -123,6 +123,17 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
   let w0 = setRef tc.terminating m.terminating in
   -- what a search for an auto argument may find, and the traits
   let wa = setRef tc.hints m.hints in
+  let wa2 =
+    setRef
+      tc.hintNames
+      (V.foldl
+         (\acc b ->
+           let x = hirBindName h b in
+           let u = uniqueOf h x in
+           if V.elem u m.hints then Hm.insert u (qualified m u (hirIdentText h x)) acc else acc)
+         (getRef tc.hintNames)
+         (V.concatMap (\g -> groupBinds h g) groups))
+  in
   let wb = setRef tc.supers m.supers in
   let wc = setRef tc.methods m.methods in
   let wd = setRef tc.traits (V.concatMap (\d -> if hirDataIsTrait h d then [uniqueOf h (hirDataName h d)] else []) datas) in
@@ -248,6 +259,7 @@ fun importAll (tc : Tc) (ctx : Ctx) (deps : [Compiled]) : Ctx ! { Mut | e } =
       let w10 = into tc.natives (V.map (\e -> match e with | NativeEntry.NativeEntry u _ _ t -> (u, t)) p.natives) in
       let w11 = setRef tc.nativeNames (V.foldl (\m e -> match e with | NativeEntry.NativeEntry u n _ _ -> Hm.insert n u m) (getRef tc.nativeNames) p.natives) in
       let w12 = setRef tc.hints (V.append (getRef tc.hints) p.hints) in
+      let w12b = into tc.hintNames (V.concatMap (\s -> match s with | Symbol.Symbol u _ path -> if V.elem u p.hints then [(u, path)] else []) p.symbols) in
       let w13 = setRef tc.traits (V.append (getRef tc.traits) p.traits) in
       let w14 = into tc.instanceFields (V.map (\f -> match f with | Fields.Fields u fs -> (u, fs)) p.instanceFields) in
       c2)

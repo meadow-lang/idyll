@@ -47,7 +47,7 @@ use Cut as C
 use Cut (CutBuilder, CutProd, CutCons, CutStmt, CutConsKind, kindCutCons)
 use Idyll.Check (checkedIn, checkedAt, checkedWith)
 use Idyll.Compiled (compiledOf)
-use Idyll.Link (linked)
+use Idyll.Link (linked, toLink)
 use Idyll.Interface (Compiled)
 use Idyll.Rename (PackageNames)
 use Idyll.Rename (Renamed)
@@ -306,7 +306,7 @@ fun writeProgram (l : L s) (entry : Maybe Sym) (answer : Bool) (datas : [CData])
     else if not (V.isEmpty (getRef c.tc.errors)) then "(error)"
     else
       let own = compiledOf c m names in
-      match lowerIn (linked c own deps) package with
+      match lowerIn (linked c own (toLink own deps)) package with
       | Ok text -> text
       | Err whys -> "(not lowered: " ++ S.join "; " whys ++ ")")
 
@@ -433,9 +433,9 @@ fun opInfo (l : L s) (u : Int) : Maybe OpInfo ! { Mut, St s | e } = Hm.lookup u 
   -- an answer is shown with the prelude's `showInt`, so it stays
   let showIntU = V.find (\kv -> snd kv == ("Prelude", "showInt")) (Hm.toVec checked.symbols) in
   let roots = V.map fst (vecOf showIntU) in
-  -- what the program never uses is left out, and a hole is what it was
-  -- solved with
-  let (ready, live) = Pr.prepared checked.elaborated checked.toplevel (getRef tc.ctors) roots in
+  -- a hole is what it was solved with: first, so that what only a solution
+  -- uses is kept; and what the program never uses is left out
+  let (ready, live) = Pr.prepared (zonkedProgram checked.elaborated) checked.toplevel (getRef tc.ctors) roots in
   let a = elaboratedArena ready in
   let root = elaboratedRoot ready in
   match elaboratedModuleBody a root with
@@ -551,6 +551,21 @@ fun opInfo (l : L s) (u : Int) : Maybe OpInfo ! { Mut, St s | e } = Hm.lookup u 
       let w5 = setRef l.defs (V.pushBack (getRef l.defs) (CDef.CDef entry [] [] [] [k] body)) in
       let text = declarations l (Just entry) answer in
       if V.isEmpty (getRef l.errors) then Ok text else Err (getRef l.errors)
+
+-- The program with each solved metavariable replaced by its solution
+-- (`IC.zonked`), its body and its recursive definitions.
+fun zonkedProgram (p : ElaboratedProgram) : ElaboratedProgram ! { St s | e } =
+  let a = elaboratedArena p in
+  let root = elaboratedRoot p in
+  let metas = elaboratedModuleMetas a root in
+  let count = V.foldl (\n s -> if elaboratedSolutionNumber a s + 1 > n then elaboratedSolutionNumber a s + 1 else n) 0 metas in
+  let byNumber = V.foldl (\m s -> Hm.insert (elaboratedSolutionNumber a s) (coreOf a (elaboratedSolutionTerm a s)) m) Hm.empty metas in
+  let solutions = V.map (\i -> Hm.lookup i byNumber) (V.range 0 count) in
+  let z = \t -> IC.zonked (coreOf a t) solutions in
+  let out = newElaboratedBuilder () in
+  let defs = V.map (\d -> (elaboratedDefUnique a d, elaboratedDefName a d, elaboratedDefLevel a d, z (elaboratedDefBody a d), elaboratedDefLocal a d)) (elaboratedModuleDefs a root) in
+  let row = moduleRow out (M.map z (elaboratedModuleBody a root)) defs [] in
+  ElaboratedProgram (freezeElaborated out) row
 
 -- The top-level `let`s: each a slot, and the scope after it a level.
 fun toplevels (l : L s) (env : LEnv) (c : Tm) (i : Int) : (LEnv, Tm) ! { Mut, St s | e } =

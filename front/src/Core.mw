@@ -204,6 +204,45 @@ use Std.Maybe.Maybe.*
       | Core.Handle b r ops -> Core.Handle (go b depth) (go r depth) (V.map (\o -> match o with | OpClause.OpClause u n k body -> OpClause.OpClause u n k (go body depth)) ops)
       | other -> other
 
+-- The term with each solved metavariable replaced by its solution
+-- (`Core::zonked`). One applied to a spine has a function of it for its
+-- solution, which is applied there and then, for each argument that is a
+-- variable (as a metavariable's are): run as it is, it would build a
+-- closure at each use.
+@pub fun zonked (c : Core) (solutions : [Maybe Core]) : Core =
+  transform c 0 (\x d ->
+    match x with
+    | Core.Meta m -> (match V.get solutions m with | Just (Just s) -> Just (zonked s solutions) | _ -> None)
+    | Core.App _ _ ->
+        (match spineOf x [] with
+         | (Core.Meta m, args) ->
+             (match V.get solutions m with
+              | Just (Just s) -> Just (applied (zonked s solutions) (V.map (\a -> zonked a solutions) args))
+              | _ -> None)
+         | _ -> None)
+    | _ -> None)
+
+-- A term's head and the arguments it is applied to, in order.
+fun spineOf (c : Core) (args : [Core]) : (Core, [Core]) =
+  match c with
+  | Core.App f a -> spineOf f (V.append [a] args)
+  | _ -> (c, args)
+
+-- `f` applied to `args`, each a lambda of `f`'s that meets a variable
+-- applied there and then.
+fun applied (f : Core) (args : [Core]) : Core =
+  match (f, V.head args) with
+  | (Core.Lam _ body, Just (Core.Var j x)) -> applied (instantiate body j x) (V.drop args 1)
+  | _ -> V.foldl (\acc a -> Core.App acc a) f args
+
+-- A lambda's body with its variable made `Var j` of the context the lambda
+-- is in.
+fun instantiate (body : Core) (j : Int) (x : String) : Core =
+  transform body 0 (\c d ->
+    match c with
+    | Core.Var i n -> if i == d then Just (Core.Var (j + d) x) else if i > d then Just (Core.Var (i - 1) n) else None
+    | _ -> None)
+
 fun isGrade (c : Core) (g : Grade) : Bool =
   match c with
   | Core.GradeLit h -> h == g
@@ -261,8 +300,9 @@ fun go (linear : Bool) (c : Core) (prec : Int) : String =
   | Core.LitTy Builtin.Unit -> "()"
   | Core.LitTy b -> builtinName b
   | Core.Lit l -> literalShown l
-  | Core.Var _ n -> n
-  | Core.Opaque _ n -> n
+  -- (an instance with no name is shown as `instance Ord Int`)
+  | Core.Var _ n -> paren (prec > 10 and S.contains " " n) n
+  | Core.Opaque _ n -> paren (prec > 10 and S.contains " " n) n
   | Core.Meta m -> "?" ++ show m
   | Core.Error -> "?!"
   | Core.Runtime _ inner -> g inner prec

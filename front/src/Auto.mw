@@ -41,6 +41,7 @@ use Std.Collections.HashMap as Hm
 use Std.Collections.HashMap (HashMap)
 use Std.Sort as Srt
 use Std.Maybe as M
+use Std.String as S
 use Std.Maybe.Maybe.*
 use Std.Result.Result.*
 
@@ -190,10 +191,10 @@ fun searchHints (tc : Tc) (ctx : Ctx) (wanted : Value) (depth : Int) : Result St
   if V.len candidates == 1 then
     -- one that could is tried for real, and undone if it does not fit
     match V.head candidates with
-    | Just (_, core, ty) ->
+    | Just (u, core, ty) ->
         let saved = T.save tc in
         let before = errorCount tc in
-        (match applyCandidate tc ctx core ty wanted depth with
+        (match applyCandidate tc ctx (called tc ctx u core) ty wanted depth with
          | Just found if errorCount tc == before -> Ok found
          | _ ->
              let w = T.restore tc saved in
@@ -203,13 +204,36 @@ fun searchHints (tc : Tc) (ctx : Ctx) (wanted : Value) (depth : Int) : Result St
     let fitting = V.filter (\c -> match c with | (_, core, ty) -> candidateFits tc ctx core ty wanted depth) candidates in
     if V.len fitting == 1 then
       match V.head fitting with
-      | Just (_, core, ty) ->
-          (match applyCandidate tc ctx core ty wanted depth with
+      | Just (u, core, ty) ->
+          (match applyCandidate tc ctx (called tc ctx u core) ty wanted depth with
            | Just found -> Ok found
            | None -> Err "NoInstance")
       | None -> Err "NoInstance"
     else if V.isEmpty fitting then Err "NoInstance"
     else Err "AmbiguousInstance"
+
+-- The hint `u`, referred to as `core` (with no name, as the search looks it
+-- up), with the name a type shows it by: its own, or for an instance with
+-- none, `instance Ord Int`.
+fun called (tc : Tc) (ctx : Ctx) (u : Int) (core : Core) : Core ! { Mut | e } =
+  let own = M.unwrapOr "" (Hm.lookup u (getRef tc.hintNames)) in
+  let name =
+    if own == "" or S.contains "#instance" own then
+      match X.lookup ctx (named u) with
+      | Just (_, ty, _) -> "instance " ++ C.shown (getRef tc.linear) (pastImplicits (quote tc ctx.lvl ty))
+      | None -> own
+    else own
+  in
+  match core with
+  | Core.Opaque v _ -> Core.Opaque v name
+  | Core.Var i _ -> Core.Var i name
+  | _ -> core
+
+-- What a type is past its implicit and auto binders.
+fun pastImplicits (c : Core) : Core =
+  match c with
+  | Core.Pi _ icit _ _ _ cod -> if icit != Icit.Explicit then pastImplicits cod else c
+  | _ -> c
 
 -- A builtin type as a key a head is compared by.
 fun builtinKey (b : Builtin) : Int =

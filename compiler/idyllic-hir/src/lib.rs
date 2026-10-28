@@ -165,6 +165,9 @@ pub enum PatKind {
     /// SeqNil])])`, the two patterns a head and a tail.
     SeqNil,
     SeqCons(Vec<Pattern>),
+    /// `{p}`: the next implicit argument (`@{p}`: the next auto one),
+    /// matched against `p`. Only an equation's own patterns may be one.
+    Implicit(idyllic_ast::Icit, Box<Pattern>),
 }
 
 /// `data T (a : k) .. : kind where ..` or `data T (a : k) .. = C t .. | ..`

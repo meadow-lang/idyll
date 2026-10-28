@@ -695,3 +695,87 @@ total Nil = 0
 total (x :: xs) = x + total xs
 
 (name 0, name 255, name 7, sign 0.0, sign (0.0 - 3.5), total (100 :: 27 :: 1 :: Nil))
+%%%
+-- implicit patterns: `{n}` names, or matches, the next implicit argument
+data Nat = Z | S Nat
+
+use Nat.*
+
+data Vec : Nat -> Type -> Type where
+  VNil : Vec Z a
+  VCons : a -> Vec n a -> Vec (S n) a
+
+use Vec.*
+
+len : {n : [] Nat} -> {a : Type} -> Vec n a -> Nat
+len {n} _ = n
+
+isZero : {n : [] Nat} -> Bool
+isZero {Z} = True
+isZero {S _} = False
+
+lenL : {n : [] Nat} -> Vec n Int -> Nat
+lenL = \{m} v -> m
+
+toList : {n : [] Nat} -> {a : Type} -> Vec n a -> List a
+toList {Z} _ = (Nil : List a)
+toList {S _} (VCons x xs) = x :: toList xs
+
+(len (VCons 1 (VCons 2 VNil)), isZero {Z}, isZero {S Z}, lenL (VCons 3 VNil), toList (VCons 1 (VCons 2 VNil)))
+%%%
+-- an auto pattern, `@{e}`, names the auto argument
+record Describe (a : Type) = { describe : a -> String }
+
+@hint
+describeInt : Describe Int
+describeInt = Describe { describe = \(n : Int) -> showInt n }
+
+shout : {a : Type} -> {auto d : Describe a} -> a -> String
+shout @{e} x = e.describe x ++ "!"
+
+shout 3
+%%%
+-- a type that keeps the instance it was made with
+use Std.Cmp (Ord)
+
+data Sorted (a : Type) (o : Ord a) = Sorted (List a)
+
+SortedBy : (a : Type) -> {auto o : Ord a} -> Type
+SortedBy a @{o} = Sorted a o
+
+s : SortedBy Int
+s = Sorted.Sorted (1 :: 2 :: Nil)
+
+s
+%%%
+-- a Std value that only a solved implicit argument carries: Std is linked
+use Std.Num.Nat (Nat)
+use Std.Num.Nat.Nat.*
+
+data Is : Nat -> Type where
+  It : Is (S Z)
+
+pick : {n : [] Nat} -> Is n -> Nat
+pick {n} _ = n
+
+pick Is.It
+%%%
+-- a function only a solved implicit argument calls is kept, not pruned
+data Nat = Z | S Nat
+
+use Nat.*
+
+data Proxy : Nat -> Type where
+  P : (n : [0] Nat) -> Proxy n
+
+twice : Nat -> Nat
+twice Z = Z
+twice (S n) = S (S (twice n))
+
+pick : {n : [] Nat} -> Proxy n -> Nat
+pick {n} _ = n
+
+f : Nat -> Nat
+f m = pick (Proxy.P (twice m))
+
+f (S Z)

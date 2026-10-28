@@ -164,15 +164,13 @@ struct Lower<'t> {
     show_int: Option<Symbol>,
 }
 
-/// Lower a checked (and linked) program, whose own package is `package`.
-/// `c` with each solved metavariable replaced by its solution (which, for
-/// one applied to a spine, is a function of it).
+/// `c` with each solved metavariable replaced by its solution (see
+/// [`Core::zonked`]).
 fn zonk(solutions: &[Option<Rc<Core>>], c: &Rc<Core>) -> Rc<Core> {
-    c.rewrite(0, &|c, _| match c {
-        Core::Meta(m) => solutions.get(*m).cloned().flatten().map(|s| zonk(solutions, &s)),
-        _ => None,
-    })
+    c.zonked(solutions)
 }
+
+/// Lower a checked (and linked) program, whose own package is `package`.
 
 pub fn lower(tc: &mut TypeCheckResult, package: &str) -> Result<Program, Vec<String>> {
     lower_with(tc, package, None)
@@ -191,19 +189,19 @@ fn lower_with(tc: &mut TypeCheckResult, package: &str, mark: Option<&str>) -> Re
     if !tc.ran_main {
         tc.roots.extend(show_int);
     }
+    // a hole is lowered as what it was solved with: first, so that what
+    // only a solution uses is kept
+    let solutions = tc.meta_solutions.clone();
+    tc.program = tc.program.as_ref().map(|p| zonk(&solutions, p));
+    for d in &mut tc.rec_defs {
+        d.core = zonk(&solutions, &d.core);
+    }
     // what the program never uses (most of the prelude, say) is left out
     let Some((program, live)) = idyllic_typecheck::prune::prune(tc) else {
         return Err(vec!["there is no program: it only declares".into()]);
     };
-    // a hole is lowered as what it was solved with
-    let solutions = tc.meta_solutions.clone();
-    let program = zonk(&solutions, &program);
-    let recs: HashMap<usize, RecDef> = tc
-        .rec_defs
-        .iter()
-        .filter(|d| live.contains(&d.unique))
-        .map(|d| (d.unique, RecDef { core: zonk(&solutions, &d.core), ..d.clone() }))
-        .collect();
+    let recs: HashMap<usize, RecDef> =
+        tc.rec_defs.iter().filter(|d| live.contains(&d.unique)).map(|d| (d.unique, d.clone())).collect();
     let toplevel = tc.toplevel.clone();
     let (ran_main, body_type) = (tc.ran_main, tc.body_type.clone());
     let mut l = Lower {

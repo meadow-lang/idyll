@@ -100,6 +100,8 @@ struct Matcher {
     arg_types: Vec<VTy>,
     /// the slots matching bound that no pattern named
     unnamed: std::collections::HashSet<Lvl>,
+    /// the signature's names for the implicit binders no pattern takes
+    quantified: Vec<hir::Ident>,
     /// Something was wrong, and has been reported.  Coverage and usage then
     /// say nothing: the missing cases would be the ones the error hid.
     failed: bool,
@@ -142,13 +144,16 @@ type Telescope = Vec<(Lvl, usize, String, Rc<Value>)>;
 impl Checker {
     /// A function defined by equations, against its type.
     pub(super) fn elab_match(&mut self, ctx: &Ctx, nid: NodeId, clauses: &[hir::Clause], goal: VTy) -> (Rc<Core>, Usage) {
-        let arity = clauses.first().map_or(0, |c| c.pats.len());
+        // (an implicit pattern, `{p}`, is for an argument written nowhere,
+        // so does not count)
+        let arity = clauses.first().map_or(0, |c| explicit_patterns(&c.pats));
         let mut problems = Vec::new();
         for (index, clause) in clauses.iter().enumerate() {
-            if clause.pats.len() == arity {
+            let given = explicit_patterns(&clause.pats);
+            if given == arity {
                 problems.push(Problem::new(clause, index, &clause.pats, Vec::new()));
             } else {
-                self.error(clause.id, TypeErrorKind::ClauseArity { expected: arity, given: clause.pats.len() });
+                self.error(clause.id, TypeErrorKind::ClauseArity { expected: arity, given });
             }
         }
         // without the equation that was dropped, coverage would be wrong
@@ -160,7 +165,7 @@ impl Checker {
     /// worked out from them, starting from nothing but how many arguments
     /// it takes.
     pub(super) fn infer_match(&mut self, ctx: &Ctx, nid: NodeId, clauses: &[hir::Clause]) -> (Rc<Core>, VTy, Usage) {
-        let arity = clauses.first().map_or(0, |c| c.pats.len());
+        let arity = clauses.first().map_or(0, |c| explicit_patterns(&c.pats));
         let mut under = ctx.clone();
         let mut doms = Vec::new();
         for _ in 0..arity {
@@ -279,6 +284,7 @@ impl Checker {
             args,
             arg_types,
             unnamed: Default::default(),
+            quantified: std::mem::take(&mut self.quantified),
             failed,
         };
         let (core, usage) = self.tree(&mut m, ctx, problems, goal.clone());
@@ -328,27 +334,53 @@ impl Checker {
         let goal = self.force(goal);
         match &*goal {
             Value::Pi { name, icit, grade, dom, cod, .. } => {
-                let key = self.fresh_key();
                 let lvl = ctx.lvl;
+                // an implicit binder no pattern takes, which the signature
+                // names: bound as that name
+                let taken = problems.iter().any(|p| p.pending.first().and_then(|q| takes(q, *icit)).is_some());
+                let quantified = match m.quantified.iter().position(|x| x.text == *name) {
+                    Some(i) if *icit != Icit::Explicit && !taken => Some(m.quantified.remove(i)),
+                    _ => None,
+                };
+                let key = quantified.as_ref().and_then(|x| x.unique).unwrap_or_else(|| self.fresh_key());
                 // named after the first equation to name it (an implicit
-                // argument has no pattern)
-                let named = problems.iter().find_map(|p| match &p.pending[0].kind {
-                    PatKind::Var(x) | PatKind::As(x, _) if *icit == Icit::Explicit => Some(x.text.clone()),
+                // argument may have no pattern)
+                let named = problems.iter().find_map(|p| match p.pending.first().and_then(|q| takes(q, *icit)).map(|q| &q.kind) {
+                    Some(PatKind::Var(x) | PatKind::As(x, _)) => Some(x.text.clone()),
                     _ => None,
                 });
                 if named.is_none() && name == "_" {
                     m.unnamed.insert(ctx.lvl);
                 }
                 let hint = named.unwrap_or_else(|| if name != "_" { name.clone() } else { "x".to_string() });
-                let ctx2 = ctx.bind_keyed(key, &hint, dom.clone(), Some(grade.clone()));
-                if *icit == Icit::Explicit {
-                    let ty = self.quote(ctx.lvl, dom.clone());
-                    for p in &mut problems {
-                        let (pat, rest) = p.pending.split_first().expect("every clause has as many patterns");
-                        p.pending = rest;
-                        self.record(pat.id, ty.clone());
-                        p.constraints.push((pat, Target::Slot(lvl)));
-                    }
+                let ctx2 = match &quantified {
+                    Some(x) => ctx.bind(Some(x), &hint, dom.clone()).graded(grade),
+                    None => ctx.bind_keyed(key, &hint, dom.clone(), Some(grade.clone())),
+                };
+                // an auto argument is one a search inside may find
+                let ctx2 = if *icit == Icit::Auto { ctx2.auto_bound() } else { ctx2 };
+                let ty = self.quote(ctx.lvl, dom.clone());
+                // a clause's next pattern, if it is for this binder: an
+                // explicit one for an explicit argument, `{p}` for an
+                // implicit one and `@{p}` for an auto one (and one in braces
+                // where an explicit argument is, misplaced)
+                for p in &mut problems {
+                    let Some((pat, rest)) = p.pending.split_first() else { continue };
+                    let q = match takes(pat, *icit) {
+                        Some(q) => q,
+                        None if *icit == Icit::Explicit => {
+                            self.error(pat.id, TypeErrorKind::MisplacedImplicitPattern);
+                            m.failed = true;
+                            let PatKind::Implicit(_, q) = &pat.kind else { unreachable!("only an implicit pattern is not taken") };
+                            q
+                        }
+                        None => continue,
+                    };
+                    p.pending = rest;
+                    self.record(pat.id, ty.clone());
+                    p.constraints.push((q, Target::Slot(lvl)));
+                }
+                if *icit == Icit::Explicit || taken {
                     m.args.push(lvl);
                     m.arg_types.push(dom.clone());
                 }
@@ -394,7 +426,12 @@ impl Checker {
 
     fn too_many_patterns(&mut self, m: &mut Matcher, ctx: &Ctx, problems: &[Problem<'_>], goal: VTy) -> (Rc<Core>, Usage) {
         let ty = self.quote(ctx.lvl, goal);
-        self.error(problems[0].pending[0].id, TypeErrorKind::TooManyPatterns(ty));
+        let pat = &problems[0].pending[0];
+        let kind = match pat.kind {
+            PatKind::Implicit(..) => TypeErrorKind::MisplacedImplicitPattern,
+            _ => TypeErrorKind::TooManyPatterns(ty),
+        };
+        self.error(pat.id, kind);
         m.failed = true;
         (Rc::new(Core::Error), Usage::unknown())
     }
@@ -418,6 +455,12 @@ impl Checker {
                 PatKind::As(x, q) => {
                     p.bindings.push((pat.id, x, target.clone()));
                     p.constraints[i] = (q, target);
+                }
+                // (an implicit pattern meets an implicit binder in `intro`:
+                // one here is where no implicit argument is)
+                PatKind::Implicit(..) => {
+                    self.error(pat.id, TypeErrorKind::MisplacedImplicitPattern);
+                    return Step::Failed;
                 }
                 PatKind::Dot(e) => {
                     p.dots.push((e, target));
@@ -1254,5 +1297,24 @@ pub(super) fn mentions(c: &Core, i: usize) -> bool {
         Core::Type(_) | Core::LitTy(_) | Core::Lit(_) | Core::Prim(_) | Core::Opaque(..) | Core::Meta(_) | Core::GradeLit(_) | Core::Error => {
             false
         }
+    }
+}
+
+/// How many of an equation's patterns are for arguments that are written:
+/// all but its implicit ones, `{p}` and `@{p}`.
+pub(super) fn explicit_patterns(pats: &[hir::Pattern]) -> usize {
+    pats.iter().filter(|p| !matches!(p.kind, PatKind::Implicit(..))).count()
+}
+
+/// What of a clause's next pattern `p` matches a binder that is `icit`: the
+/// pattern itself for an explicit one, the pattern inside `{p}` for an
+/// implicit one and inside `@{p}` for an auto one; or nothing, where `p` is
+/// for a later binder.
+fn takes(p: &hir::Pattern, icit: Icit) -> Option<&hir::Pattern> {
+    match (&p.kind, icit) {
+        (PatKind::Implicit(i, q), _) if *i == icit => Some(q),
+        (PatKind::Implicit(..), _) => None,
+        (_, Icit::Explicit) => Some(p),
+        _ => None,
     }
 }

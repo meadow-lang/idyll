@@ -154,6 +154,9 @@ use Std.Result.Result.*
   Pat + Dot { expr : Expr }
   Pat + Seq { items : [Pat] }
   Pat + Record { name : Name, fields : [PatField] }
+  -- `{p}`: the next implicit argument, matched against `p`; `@{p}`, the
+  -- next auto one
+  Pat + Implicit { icit : Icit, pat : Pat }
 }
 
 -- --- reading a program --------------------------------------------------------
@@ -871,10 +874,49 @@ fun rowOf out (cx : Cx) (r : IdyllRow) =
             | Just f -> V.foldl (\acc x -> app out m acc x) f (V.drop one 1)
             | None -> hole out m))
 
--- `\x y -> e`, a `Lam` for each binder, each seeing the ones before it.
+-- `\x y -> e`, a `Lam` for each binder, each seeing the ones before it;
+-- but `\{a} x -> e` names an implicit argument, which only an equation's
+-- patterns can, so such a lambda is one equation.
 fun lam out (cx : Cx) (m : Meta) (binders : [Syn]) (body : Syn) =
-  let ps = V.concatMap (\b -> match asIdyllAtom b with | Just a -> binder out a | None -> []) binders in
-  lams out cx m ps body
+  let atoms = V.concatMap (\b -> match asIdyllAtom b with | Just a -> [a] | None -> []) binders in
+  if V.any (\a -> M.isSome (implicitName a) or M.isSome (autoNamed a)) atoms then
+    let pats = V.concatMap (\a -> lamPats out cx a) atoms in
+    newSurfaceExprEquations out m [newSurfaceEquation out m pats (newSurfaceRhsPlain out m (lowerSurfaceTerm () out cx body))]
+  else
+    let ps = V.concatMap (\a -> binder out a) atoms in
+    lams out cx m ps body
+
+-- `{x}` or `@{x}`, a lambda's binder for its next implicit or auto argument.
+fun implicitName (a : IdyllAtom) : Maybe (Icit, String) =
+  match a with
+  | IdyllAtom.Braced b if M.isNone (idyllBracedRest b) -> M.map (\x -> (Icit.Implicit, x)) (loneName (only (idyllBracedItems b)))
+  | IdyllAtom.AutoA x -> M.map (\y -> (Icit.Auto, y)) (loneName (idyllAutoAArg x))
+  | _ -> None
+
+-- `x @{y}`, read as one name with a tail: the second name.
+fun autoNamed (a : IdyllAtom) : Maybe String =
+  match a with
+  | IdyllAtom.Name n if nameKind n == TokenLowerIdent -> M.andThen (\t -> loneName (Just t)) (autoTail n)
+  | _ -> None
+
+-- A term that is one lower-case name, alone.
+fun loneName (t : Maybe IdyllTerm) : Maybe String =
+  match t with
+  | Just (IdyllTerm.Op op) if not (hasTail op) ->
+      (match M.andThen (\c -> names c False) (idyllOpChain op) with
+       | Just ns if V.len ns == 1 -> M.andThen (\s -> if R.kindOf s == TokenLowerIdent then Just (R.text s) else None) (V.head ns)
+       | _ -> None)
+  | _ -> None
+
+-- A lambda's binder as the equation's patterns it is: `{x}` and `@{x}` an
+-- implicit pattern, `x @{y}` two, and any other its parameters.
+fun lamPats out (cx : Cx) (a : IdyllAtom) =
+  let m = metaOf (syntaxIdyllAtom a) in
+  let bound = \x -> newSurfacePatBind out m (newSurfaceParam out m (nameAt out m x) False None None) in
+  match (implicitName a, autoNamed a, a) with
+  | (Just (icit, x), _, _) -> [newSurfacePatImplicit out m icit (bound x)]
+  | (None, Just y, IdyllAtom.Name n) -> [bound (nameText n), newSurfacePatImplicit out m Icit.Auto (bound y)]
+  | _ -> V.map (\xp -> match xp with | (x, p) -> newSurfacePatBind out m (p cx)) (binder out a)
 
 fun lams out (cx : Cx) (m : Meta) ps (body : Syn) =
   match V.head ps with
@@ -1004,7 +1046,7 @@ fun alt out (cx : Cx) (a : IdyllAlt) =
       -- `C x impossible`: the pattern `C x`, with nothing to say
       (match M.andThen impossibleCon (idyllAltPat a) with
        | Just (c, args) ->
-           newSurfaceAlt out m (newSurfacePatCon out m (nameOf out c) (V.map (\x -> lowerPatAtom () out cx (syntaxIdyllAtom x)) args)) (newSurfaceRhsImpossible out m)
+           newSurfaceAlt out m (newSurfacePatCon out m (nameOf out c) (V.concatMap (\x -> patAtoms out cx x) args)) (newSurfaceRhsImpossible out m)
        | None ->
            let pat = patChainOr out cx m (idyllAltPat a) in
            let u = bad at "expected -> or a guard" in
@@ -1075,8 +1117,15 @@ pass! {
     | TypeA {} -> (let u = bad node "not a pattern" in Wild {})
     | InfA {} -> (let u = bad node "not a pattern" in Wild {})
     | OpName {} -> (let u = bad node "not a pattern" in Wild {})
-    | Braced {} -> (let u = bad node "not a pattern" in Wild {})
-    | AutoA {} -> (let u = bad node "not a pattern" in Wild {})
+    -- `{p}`, the next implicit argument, and `@{p}`, the next auto one
+    | Braced {} ->
+        (match M.andThen (\b -> if M.isNone (idyllBracedRest b) then only (idyllBracedItems b) else None) (asIdyllBraced node) with
+         | Just t -> Implicit { icit = Icit.Implicit, pat = patOfTerm out cx (syntaxIdyllTerm t) }
+         | None -> (let u = bad node "not a pattern" in Wild {}))
+    | AutoA {} ->
+        (match M.andThen idyllAutoAArg (asIdyllAutoA node) with
+         | Just t -> Implicit { icit = Icit.Auto, pat = patOfTerm out cx (syntaxIdyllTerm t) }
+         | None -> (let u = bad node "not a pattern" in Wild {}))
     | InterpA {} -> (let u = bad node "not a pattern" in Wild {})
     | Paren { raw items } ->
         (if V.isEmpty items then Pat.Lit { lit = Literal.Unit }
@@ -1156,7 +1205,7 @@ fun patOperand out (cx : Cx) (a : IdyllApp) =
   match V.get atoms 0 with
   | Just c if V.len atoms >= 2 ->
       if plainName TokenUpperIdent c or plainName TokenQualUpper c then
-        newSurfacePatCon out m (nameAt out (metaOf (syntaxIdyllAtom c)) (atomText c)) (V.map (\x -> lowerPatAtom () out cx (syntaxIdyllAtom x)) (V.drop atoms 1))
+        newSurfacePatCon out m (nameAt out (metaOf (syntaxIdyllAtom c)) (atomText c)) (V.concatMap (\x -> patAtoms out cx x) (V.drop atoms 1))
       else
         let u = bad (syntaxIdyllApp a) "only a constructor is applied in a pattern" in
         newSurfacePatWild out m
@@ -1192,8 +1241,20 @@ fun params out (cx : Cx) (atoms : [IdyllAtom]) =
               match annotation out cx an with
               | (g, ty) -> newSurfacePatBind out m (newSurfaceParam out m (binderName out x) False g (Just ty)))
             ns
-      | None -> [lowerPatAtom () out cx (syntaxIdyllAtom a)])
+      | None -> patAtoms out cx a)
     atoms
+
+-- An atom as the patterns it is: `x @{p}` is two, `x` and then `@{p}`, as
+-- the Rust parser reads them.
+fun patAtoms out (cx : Cx) (a : IdyllAtom) =
+  match a with
+  | IdyllAtom.Name n if nameKind n == TokenLowerIdent and M.isSome (autoTail n) ->
+      let m = metaOf (syntaxIdyllName n) in
+      let x = newSurfacePatBind out m (newSurfaceParam out m (nameAt out m (nameText n)) False None None) in
+      (match autoTail n with
+       | Just t -> [x, newSurfacePatImplicit out m Icit.Auto (patOfTerm out cx (syntaxIdyllTerm t))]
+       | None -> [x])
+  | _ -> [lowerPatAtom () out cx (syntaxIdyllAtom a)]
 
 -- --- declarations --------------------------------------------------------------------
 
@@ -1273,11 +1334,18 @@ fun lineItem out (cx : Cx) (line : IdyllLine) =
       let chain = idyllOpChain op in
       let links = match chain with | Just c -> linksOf c | None -> [] in
       let atoms = match chain with | Just c -> firstOf c | None -> [] in
-      (match M.andThen defName (V.head atoms) with
+      -- `f @{d} x = e` reads `f@{d}` as one name with a tail: `f`, and then
+      -- the pattern `@{d}`
+      let tailed =
+        match V.head atoms with
+        | Just (IdyllAtom.Name n) if nameKind n == TokenLowerIdent and M.isSome (autoTail n) and M.isSome (idyllLineRhs line) -> idyllNameName n
+        | _ -> None
+      in
+      (match (match M.andThen defName (V.head atoms) with | Just f -> Just f | None -> tailed) with
        | Just f if V.isEmpty links and not (hasArrow op) ->
            (match (annotOf op, idyllLineRhs line) with
             | (Just an, Just _) ->
-                let ps = params out cx (V.drop atoms 1) in
+                let ps = headParams out cx atoms in
                 let ty = comp out cx m (idyllAnnotTy an) effects in
                 (match rhsOf out cx line with
                  | Just r -> Item.Decl (newSurfaceDeclDef out m (nameOf out f) ps (Just ty) r)
@@ -1287,7 +1355,7 @@ fun lineItem out (cx : Cx) (line : IdyllLine) =
                 else expr out cx line
             | (None, Just _) ->
                 let u = noEffects () in
-                let ps = params out cx (V.drop atoms 1) in
+                let ps = headParams out cx atoms in
                 (match rhsOf out cx line with
                  | Just r -> Item.Decl (newSurfaceDeclDef out m (nameOf out f) ps None r)
                  | None -> Item.Nothing)
@@ -1310,6 +1378,17 @@ fun lineItem out (cx : Cx) (line : IdyllLine) =
       (match idyllLineRhs line with
        | Just _ -> notEquation ()
        | None -> expr out cx line)
+
+-- An equation's parameters, after its name: and `@{d}` first, where the name
+-- was read with it as its tail, `f@{d}`.
+fun headParams out (cx : Cx) (atoms : [IdyllAtom]) =
+  let ps = params out cx (V.drop atoms 1) in
+  match V.head atoms with
+  | Just (IdyllAtom.Name n) ->
+      (match autoTail n with
+       | Just t -> V.append [newSurfacePatImplicit out (metaOf (syntaxIdyllName n)) Icit.Auto (patOfTerm out cx (syntaxIdyllTerm t))] ps
+       | None -> ps)
+  | _ -> ps
 
 -- The program's expression -- or, `@native`, `f : a` written as one.
 fun expr out (cx : Cx) (line : IdyllLine) =
@@ -2381,6 +2460,7 @@ fun patText (a : SurfaceArena) (p : SurfacePat) : String =
   | SurfacePatSeq ps -> sx (V.append ["pseq"] (V.map go ps))
   | SurfacePatRecord r fs ->
       sx (V.append ["precord", nameIn a r] (V.map (\f -> sx [nameIn a (surfacePatFieldName a f), go (surfacePatFieldPat a f)]) fs))
+  | SurfacePatImplicit i q -> sx ["pimplicit", (match i with | Icit.Explicit -> "e" | Icit.Implicit -> "i" | Icit.Auto -> "a"), go q]
 
 fun rhsText (a : SurfaceArena) (r : SurfaceRhs) : String =
   match (a, r) with

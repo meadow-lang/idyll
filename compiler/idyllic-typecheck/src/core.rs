@@ -334,7 +334,8 @@ impl fmt::Display for Core {
                 Core::LitTy(Builtin::Unit) => write!(f, "()"),
                 Core::LitTy(b) => write!(f, "{}", b.name()),
                 Core::Lit(l) => write!(f, "{l}"),
-                Core::Var(_, n) | Core::Opaque(_, n) => write!(f, "{n}"),
+                // (an instance with no name is shown as `instance Ord Int`)
+                Core::Var(_, n) | Core::Opaque(_, n) => paren(prec > 10 && n.contains(' '), f, |f| write!(f, "{n}")),
                 Core::Meta(m) => write!(f, "?{m}"),
                 Core::Error => write!(f, "?!"),
                 Core::Runtime(_, inner) => go(inner, prec, f),
@@ -571,6 +572,44 @@ impl Core {
                 Rc::new(Core::Handle(go(b, depth), go(r, depth), Rc::new(ops)))
             }
         }
+    }
+
+    /// The term with each solved metavariable replaced by its solution. One
+    /// applied to a spine has a function of it for its solution, which is
+    /// applied there and then, for each argument that is a variable (as a
+    /// metavariable's are): run as it is, it would build a closure at each
+    /// use.
+    pub fn zonked(self: &Rc<Core>, solutions: &[Option<Rc<Core>>]) -> Rc<Core> {
+        self.transform(0, &|c, _| match &**c {
+            Core::Meta(m) => solutions.get(*m).cloned().flatten().map(|s| s.zonked(solutions)),
+            Core::App(..) => {
+                let mut args = Vec::new();
+                let mut head = c;
+                while let Core::App(f, a) = &**head {
+                    args.push(a);
+                    head = f;
+                }
+                let Core::Meta(m) = &**head else { return None };
+                let mut f = solutions.get(*m).cloned().flatten()?.zonked(solutions);
+                let mut args = args.into_iter().rev().map(|a| a.zonked(solutions)).peekable();
+                while let (Core::Lam(_, body), Some(Core::Var(j, x))) = (&*f.clone(), args.peek().map(|a| &**a)) {
+                    f = body.instantiate(*j, x);
+                    args.next();
+                }
+                Some(args.fold(f, |f, a| Rc::new(Core::App(f, a))))
+            }
+            _ => None,
+        })
+    }
+
+    /// A lambda's body with its variable made `Var(j)` of the context the
+    /// lambda is in.
+    fn instantiate(self: &Rc<Core>, j: usize, x: &str) -> Rc<Core> {
+        self.transform(0, &|c, d| match &**c {
+            Core::Var(i, _) if *i == d => Some(Rc::new(Core::Var(j + d, x.to_string()))),
+            Core::Var(i, n) if *i > d => Some(Rc::new(Core::Var(i - 1, n.clone()))),
+            _ => None,
+        })
     }
 
     pub fn rewrite(self: &Rc<Core>, depth: usize, f: &dyn Fn(&Core, usize) -> Option<Rc<Core>>) -> Rc<Core> {

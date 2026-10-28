@@ -147,6 +147,7 @@ fn scc_pattern(p: Pattern) -> Pattern {
         PatKind::SeqCons(ps) => PatKind::SeqCons(ps.into_iter().map(scc_pattern).collect()),
         PatKind::As(x, q) => PatKind::As(x, Box::new(scc_pattern(*q))),
         PatKind::Dot(e) => PatKind::Dot(scc_term(e)),
+        PatKind::Implicit(icit, q) => PatKind::Implicit(icit, Box::new(scc_pattern(*q))),
         k @ (PatKind::Var(_) | PatKind::Wild | PatKind::Lit(_) | PatKind::SeqNil) => k,
     };
     Pattern { id: p.id, kind }
@@ -442,7 +443,7 @@ pub fn free_uniques(t: &Term) -> HashSet<usize> {
                 ps.iter().for_each(|p| pattern(p, out));
             }
             PatKind::SeqCons(ps) => ps.iter().for_each(|p| pattern(p, out)),
-            PatKind::As(_, q) => pattern(q, out),
+            PatKind::As(_, q) | PatKind::Implicit(_, q) => pattern(q, out),
             PatKind::Dot(e) => go(e, out),
             PatKind::Var(_) | PatKind::Wild | PatKind::Lit(_) | PatKind::SeqNil => {}
         }

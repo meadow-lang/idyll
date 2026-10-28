@@ -720,21 +720,40 @@ impl Checker {
     /// very names, which is what lets the body's annotations mention them.
     fn check_against_sig(&mut self, ctx: &Ctx, rhs: &hir::Term, sig: &hir::Term, vsig: VTy) -> (Rc<Core>, Usage) {
         let vsig = self.force(vsig);
+        // (up to one the equations name, `f {n} xs = ..`)
         if let (
             TermKind::Pi(Some(x), sig_icit @ (Icit::Implicit | Icit::Auto), _, _, sig_cod),
             Value::Pi { name, icit: Icit::Implicit | Icit::Auto, grade, dom, cod, .. },
         ) = (&sig.kind, &*vsig)
         {
-            let ctx2 = ctx.bind(Some(x), name, dom.clone()).graded(grade);
-            // an auto binder is what a search inside may find
-            let ctx2 = if *sig_icit == Icit::Auto { ctx2.auto_bound() } else { ctx2 };
-            let (cod_v, allowed) = self.split_comp(self.apply(cod, vvar(ctx.lvl, name.clone())));
-            let (body, mut usage) = self.check_against_sig(&ctx2, rhs, sig_cod, cod_v);
-            self.close_effects(&ctx2, rhs.id, &mut usage, allowed);
-            self.leave_binder(&ctx2, rhs.id, x, grade.clone(), &mut usage, false);
-            return (self.lam(ctx, name.clone(), grade, dom, body), usage);
+            if !names_implicit(rhs, *sig_icit) {
+                let ctx2 = ctx.bind(Some(x), name, dom.clone()).graded(grade);
+                // an auto binder is what a search inside may find
+                let ctx2 = if *sig_icit == Icit::Auto { ctx2.auto_bound() } else { ctx2 };
+                let (cod_v, allowed) = self.split_comp(self.apply(cod, vvar(ctx.lvl, name.clone())));
+                let (body, mut usage) = self.check_against_sig(&ctx2, rhs, sig_cod, cod_v);
+                self.close_effects(&ctx2, rhs.id, &mut usage, allowed);
+                self.leave_binder(&ctx2, rhs.id, x, grade.clone(), &mut usage, false);
+                return (self.lam(ctx, name.clone(), grade, dom, body), usage);
+            }
         }
-        self.check(ctx, rhs, vsig)
+        // equations that name an implicit argument, `f {n} xs = ..`, bind
+        // it and those after it themselves: those the signature names, as
+        // it names them
+        if names_implicit(rhs, Icit::Implicit) || names_implicit(rhs, Icit::Auto) {
+            let mut sig = sig;
+            let mut names = Vec::new();
+            while let TermKind::Pi(x, icit, _, _, cod) = &sig.kind {
+                if let (Some(x), Icit::Implicit | Icit::Auto) = (x, icit) {
+                    names.push(x.clone());
+                }
+                sig = cod;
+            }
+            self.quantified = names;
+        }
+        let checked = self.check(ctx, rhs, vsig);
+        self.quantified.clear();
+        checked
     }
 
     /// Check one dependency-ordered group, returning the context extended
@@ -1485,7 +1504,9 @@ impl Checker {
             // An implicit function is wanted, and the surface language has no
             // implicit lambda to be one: bind the argument here.  It has no
             // name in the term, so it cannot be used, only inferred.
-            (_, Value::Pi { name, icit: icit @ (Icit::Implicit | Icit::Auto), grade, dom, cod, .. }) => {
+            // (unless the term is equations that name it, `f {n} xs = ..`,
+            // whose matching binds it: see `matching`)
+            (_, Value::Pi { name, icit: icit @ (Icit::Implicit | Icit::Auto), grade, dom, cod, .. }) if !names_implicit(t, *icit) => {
                 let ctx2 = ctx.bind(None, name, dom.clone()).graded(grade);
                 // an auto binder is what a search inside may find
                 let ctx2 = if *icit == Icit::Auto { ctx2.auto_bound() } else { ctx2 };
@@ -1964,7 +1985,7 @@ impl Checker {
 fn parameters(rhs: &hir::Term) -> usize {
     match &rhs.kind {
         TermKind::Lam(_, _, _, body) => 1 + parameters(body),
-        TermKind::Match(clauses) => clauses.first().map_or(0, |c| c.pats.len()),
+        TermKind::Match(clauses) => clauses.first().map_or(0, |c| super::matching::explicit_patterns(&c.pats)),
         _ => 0,
     }
 }
@@ -1980,5 +2001,14 @@ fn linear_fields(sig: &hir::Term, core: &Rc<Core>) -> Rc<Core> {
             Rc::new(Core::Pi { name: name.clone(), icit: *i, grade, in_type: in_type.clone(), dom: dom.clone(), cod: linear_fields(cod, c) })
         }
         _ => core.clone(),
+    }
+}
+
+/// Whether `t` is equations one of which names its next argument, which is
+/// `icit`: `{p}` for an implicit one, `@{p}` for an auto one.
+fn names_implicit(t: &hir::Term, icit: Icit) -> bool {
+    match &t.kind {
+        TermKind::Match(clauses) => clauses.iter().any(|c| matches!(c.pats.first().map(|p| &p.kind), Some(hir::PatKind::Implicit(i, _)) if *i == icit)),
+        _ => false,
     }
 }

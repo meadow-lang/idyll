@@ -298,6 +298,7 @@ fun patternInto (a : HirArena) (p : HirPattern) (s : Names) : Names =
   | HirPatternCon c ps -> V.foldl (\acc q -> patternInto a q acc) (uniquesInto a c s) ps
   | HirPatternSeqCons h tl -> patternInto a tl (patternInto a h s)
   | HirPatternAs _ q -> patternInto a q s
+  | HirPatternImplicit _ q -> patternInto a q s
   | HirPatternDot e -> freeInto a e s
   | _ -> s
 
