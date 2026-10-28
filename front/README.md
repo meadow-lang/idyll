@@ -533,7 +533,17 @@ placeholder met by unification is solved there and searched for no more
 (`Unify.solveDeferredAuto`): which instance it is is then what the
 arguments' types say, whatever order they are checked in. An auto binder
 of a type is what a search later in that type finds, so a signature may
-say `Map k v` after `{auto o : Ord k}`. Once a definition is
+say `Map k v` after `{auto o : Ord k}`. A goal that waits on a metavariable
+(`T.Elem ?p`, a projection of an instance still to be found) waits, as one
+that is a metavariable does (`Eval.blocked`). An instance that refers to
+itself, through a default, is no value the types see; it unfolds only
+where a `case` reads a field a type may compute with off it, an associated
+type or a superclass (`Eval.opened`: `tc.onCase`, the fields in
+`tc.opens`), so `Elem (List Int)` is `Int` while a method stays a call.
+A trait's associated type, `Elem : Type`, is a field that is a type: its
+record lives in `Type 1` (`tc.large`), its accessor `Elem c @{self}`
+takes the trait's parameters, and the other methods' types read it off
+`self` (`Surface.traitDecl`). Once a definition is
 checked, a call of a method at an instance with no parameters, whose
 field is a constant or a primitive, is made a call of that field
 (`specialize`), so that `plus2 n n` at `Int` lowers to `prim add`. At the
@@ -813,7 +823,7 @@ panic in Meadow's back end, should there be one, is counted apart as
 Meadow's.)
 
 The Cut corpus (`cut-corpus/`, which `idyllic-cut` writes) runs on Glade:
-all 274 programs pass, the 19 with handlers among them, and on Silo too.
+all 276 programs pass, the 19 with handlers among them, and on Silo too.
 
 A primitive whose answer is whatever was stored (`arrayGet`) has it bound at
 the element's representation before it goes on: given straight to a

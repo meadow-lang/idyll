@@ -156,6 +156,25 @@ fun lambdas (c : Core) (most : Int) : (Int, Core) =
     in
     True
 
+-- The instances of a recursive group checked at the top level that do not
+-- unfold already (`Checker::unfold_instances`): each unfolds where a
+-- `case` reads a type or a superclass off it.
+@pub fun unfoldInstances (tc : Tc) (ctx : Ctx) (members : [(Int, Core)]) : () ! { Mut | e } =
+  if V.any (\l -> X.infoAt ctx l == Just Info.Bound) (V.range 0 ctx.lvl) then ()
+  else
+    V.foldl
+      (\acc mc ->
+        match mc with
+        | (u, core) ->
+            if V.elem u (getRef tc.hints) and not (Hm.member u (getRef tc.transparent)) then
+              (match lambdasOf core with
+               | (k, body) ->
+                   let w = setRef tc.transparent (Hm.insert u (ctx.env, k, body) (getRef tc.transparent)) in
+                   setRef tc.onCase (V.pushBack (getRef tc.onCase) u))
+            else ())
+      ()
+      members
+
 fun dedupe (calls : [Call]) : [Call] =
   match V.foldl (\acc c -> match acc with | (ks, cs) -> if V.elem (keyOf c) ks then acc else (V.pushBack ks (keyOf c), V.pushBack cs c)) ([], []) calls with
   | (_, cs) -> cs

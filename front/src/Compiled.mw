@@ -50,6 +50,12 @@ fun exportUnfold (tc : Tc) (ctx : Ctx) (u : (Va.Env, Int, Core)) : Unfold ! { Mu
       let b = quote tc (top + arity) (eval tc env2 body) in
       Unfold.Unfold arity (closeAt ctx (top + arity) top b)
 
+-- An unfolding, as an instance's (`Unfold.OnCase`) if `yes`.
+fun onCaseIf (yes : Bool) (u : Unfold) : Unfold =
+  match u with
+  | Unfold.Unfold arity body -> if yes then Unfold.OnCase arity body else u
+  | _ -> u
+
 fun uniqueOf (h : HirArena) (x : HirIdent) : Int = V.getOr (0 - 1) (hirIdentUniques h x) 0
 
 fun bindsOf (h : HirArena) (g : HirGroup) : [HirBind] =
@@ -70,7 +76,7 @@ fun bindsOf (h : HirArena) (g : HirGroup) : [HirBind] =
     \u text ->
       M.map
         (\ty ->
-          let unfold = M.map (\t -> exportUnfold tc ctx t) (Hm.lookup u (getRef tc.transparent)) in
+          let unfold = M.map (\t -> onCaseIf (V.elem u (getRef tc.onCase)) (exportUnfold tc ctx t)) (Hm.lookup u (getRef tc.transparent)) in
           Constant.Constant u text (close ctx (quote tc ctx.lvl ty)) None unfold)
         (Hm.lookup u (getRef tc.constants))
   in
@@ -171,5 +177,6 @@ fun bindsOf (h : HirArena) (g : HirGroup) : [HirBind] =
     metaSolutions = solutions,
     hints = sortOn (\u -> u) (V.filter own (getRef tc.hints)),
     traits = V.filter own (getRef tc.traits),
-    instanceFields = sortOn (\f -> match f with | Fields.Fields u _ -> u) (V.concatMap (\kv -> if own (fst kv) then [Fields.Fields (fst kv) (snd kv)] else []) (Hm.toVec (getRef tc.instanceFields)))
+    instanceFields = sortOn (\f -> match f with | Fields.Fields u _ -> u) (V.concatMap (\kv -> if own (fst kv) then [Fields.Fields (fst kv) (snd kv)] else []) (Hm.toVec (getRef tc.instanceFields))),
+    opens = sortOn (\f -> match f with | OpensEntry.OpensEntry u _ -> u) (V.concatMap (\kv -> if own (fst kv) then [OpensEntry.OpensEntry (fst kv) (snd kv)] else []) (Hm.toVec (getRef tc.opens)))
   }

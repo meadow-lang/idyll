@@ -87,7 +87,7 @@ impl Checker {
             let ty = self.force(d.ty.clone());
             let core = match &*ty {
                 Value::LitTy(b) if reads_as(&d.lit, *b) => Rc::new(Core::Lit(self.read_number(d.node, &d.lit, *b))),
-                Value::Flex(..) if !last => {
+                _ if !last && self.blocked(&ty) => {
                     self.deferred_literals.push(d);
                     continue;
                 }

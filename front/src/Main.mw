@@ -399,7 +399,7 @@ fun dumpCompiled (p : Compiled) : String =
                 match k with
                 | Constant.Constant _ n ty value unfold ->
                     let v = if M.isSome value then " = .." else "" in
-                    let f = match unfold with | Just (Unfold.Unfold arity _) -> " unfold ${show arity}" | None -> "" in
+                    let f = match unfold with | Just (Unfold.Unfold arity _) -> " unfold ${show arity}" | Just (Unfold.OnCase arity _) -> " unfold ${show arity}" | None -> "" in
                     "constant ${n} : ${C.shown False ty}${v}${f}")
               p.constants
           in

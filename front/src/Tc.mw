@@ -179,6 +179,16 @@ use Std.Maybe.Maybe.*
   -- a signature's implicit binders that equations naming one before them
   -- left to their matching, by name (`Elab.checkAgainstSig`)
   quantified : Ref [Ident],
+  -- the transparent definitions that unfold only where a `case` reads a
+  -- field a type may compute with off them (instances), and which fields
+  -- of each constructor those are; the instances being unfolded
+  onCase : Ref [Int],
+  opens : Ref (HashMap Int [Bool]),
+  opening : Ref [Int],
+  -- the data types that live above `Type`, and where
+  large : Ref (HashMap Int Int),
+  -- that the application being inferred is the head of `f x @{d}`
+  autoGiven : Ref Bool,
   -- the meaning chosen for an overloaded name, by the node it was written
   -- at; the terms put off because more than one still fitted (the
   -- placeholder, the name's node, the term, its context, and what it is to
@@ -236,6 +246,11 @@ use Std.Maybe.Maybe.*
     deferredAutos = newRef [],
     deferredLiterals = newRef [],
     quantified = newRef [],
+    onCase = newRef [],
+    opens = newRef Hm.empty,
+    opening = newRef [],
+    large = newRef Hm.empty,
+    autoGiven = newRef False,
     forced = newRef Hm.empty,
     deferred = newRef [],
     patternChoice = newRef Hm.empty
@@ -292,6 +307,11 @@ use Std.Maybe.Maybe.*
     deferredAutos = newRef (getRef tc.deferredAutos),
     deferredLiterals = newRef (getRef tc.deferredLiterals),
     quantified = newRef (getRef tc.quantified),
+    onCase = newRef (getRef tc.onCase),
+    opens = newRef (getRef tc.opens),
+    opening = newRef (getRef tc.opening),
+    large = newRef (getRef tc.large),
+    autoGiven = newRef (getRef tc.autoGiven),
     forced = newRef (getRef tc.forced),
     deferred = newRef (getRef tc.deferred),
     patternChoice = newRef (getRef tc.patternChoice)

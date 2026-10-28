@@ -1136,6 +1136,37 @@ use Shape.*
 -- ("Box(a, b)", "Box(\"a\", \"b\")", True, "Just(4)")
 ```
 
+**Associated types.** A trait is a record, and a record's field may be a
+type: so a trait may have one, which each instance gives. That is how a
+type that is a function of another is said, rather than with functional
+dependencies. A container's elements are its instance's business:
+
+```
+trait Container (c : Type) where
+  Elem : Type
+  empty : c
+  insert : Elem -> c -> c
+  toList : c -> List Elem
+
+instance Container (List Int) where
+  Elem = Int
+  empty = Nil
+  insert x xs = x :: xs
+  toList xs = xs
+
+firstOr : {c : Type} -> {auto d : Container c} -> Elem c -> c -> Elem c
+firstOr d xs = case toList xs of
+  Nil -> d
+  (x :: rest) -> x
+
+firstOr 0 (insert 5 (empty : List Int))     -- 5
+```
+
+In the methods, `Elem` is the instance's own; outside, `Elem c` is the
+one the instance for `c` gives, which takes `c` by hand, since nothing
+else would say which instance it is. A trait with a field that is a type
+lives in `Type 1`, as any record with one does.
+
 The result type can depend on an argument in more interesting ways. Here
 `b` is a *function* from values to types, so the type of `f y` depends on
 the value `y`:

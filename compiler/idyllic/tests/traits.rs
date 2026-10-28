@@ -159,3 +159,34 @@ fn derive_writes_display_debug_partial_eq_and_partial_ord() {
     // and only the four can be
     assert!(rejected("@derive(Ord)\ndata T = A\n\n1\n").iter().any(|m| m.contains("parse error")));
 }
+
+/// A trait with an associated type, and two instances.
+const CONTAINER: &str = "trait Container (c : Type) where\n  Elem : Type\n  empty : c\n  insert : Elem -> c -> c\n  toList : c -> List Elem\n\n\
+                         instance Container (List Int) where\n  Elem = Int\n  empty = Nil\n  insert x xs = x :: xs\n  toList xs = xs\n\n\
+                         record Bag = { items : List String }\n\n\
+                         instance Container Bag where\n  Elem = String\n  empty = Bag { items = Nil }\n  insert x b = Bag { items = x :: b.items }\n  toList b = b.items\n\n";
+
+#[test]
+fn an_associated_type_is_a_field_that_is_a_type() {
+    // each instance says what it is, and the methods' types read it off
+    // the instance they are of
+    assert_eq!(
+        value(&format!("{CONTAINER}(toList (insert 1 (insert 2 (empty : List Int))), toList (insert \"a\" (empty : Bag)))\n")),
+        "(1 :: 2 :: Nil, \"a\" :: Nil)"
+    );
+    // `Elem c` is the type the instance for `c` gives
+    assert_eq!(value(&format!("{CONTAINER}e : Elem Bag\ne = \"an element\"\n\ne\n")), "\"an element\"");
+    // and a function generic in the container says it of any
+    let first = "firstOr : {c : Type} -> {auto d : Container c} -> Elem c -> c -> Elem c\n\
+                 firstOr d xs = case toList xs of\n  Nil -> d\n  (x :: rest) -> x\n\n";
+    assert_eq!(value(&format!("{CONTAINER}{first}(firstOr 0 (empty : List Int), firstOr \"none\" (insert \"b\" (empty : Bag)))\n")), "(0, \"b\")");
+}
+
+#[test]
+fn an_associated_type_is_what_its_instance_says() {
+    // so a `Bag`'s element is no `Int`
+    assert!(rejected(&format!("{CONTAINER}insert 1 (empty : Bag)\n")).iter().any(|m| m == "type mismatch"));
+    // and an instance given by hand gives its own
+    let named = "instance chars : Container (List Char) where\n  Elem = Char\n  empty = Nil\n  insert x xs = x :: xs\n  toList xs = xs\n\n";
+    assert_eq!(value(&format!("{CONTAINER}{named}e : Elem (List Char) @{{chars}}\ne = 'x'\n\ne\n")), "'x'");
+}

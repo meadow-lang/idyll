@@ -722,7 +722,7 @@ impl TypeError {
                 .label(here, "level variables are not supported yet"),
             TypeErrorKind::LargeField { data, level } => Diagnostic::error("field too large for its data type")
                 .label(here, format!("this field's type lives in Type {level}, but {data} lives in Type"))
-                .help("a data type lives in Type, so its fields must be types in Type; larger data types are not supported yet"),
+                .help("a data type lives in Type, so its fields must be types in Type, unless its kind says it lives higher, as a record's or a trait's with a field that is a type does"),
             TypeErrorKind::UniverseTooLarge { what, solution, allowed, actual } => {
                 Diagnostic::error("universe too large").label(
                     here,
@@ -1191,6 +1191,14 @@ pub struct Checker {
     /// a signature's implicit binders that equations naming one before
     /// them left to their matching, by name (see `check_against_sig`)
     quantified: Vec<hir::Ident>,
+    /// the instances being unfolded (see `Checker::opened`): one whose
+    /// default reads another of its fields reads it once it is there
+    opening: std::cell::RefCell<Vec<usize>>,
+    /// the data types that live above `Type`, and where
+    large: HashMap<usize, core::Level>,
+    /// that the application being inferred is the head of `f x @{d}`, so
+    /// that its auto argument is left for `d`
+    auto_given: bool,
 }
 
 /// A parameter's grade being worked out: how many variables its meta is
@@ -1226,6 +1234,11 @@ pub struct CtorInfo {
     /// how many (implicit, erased) type parameters come before the fields
     pub params: usize,
     pub fields: usize,
+    /// which of its fields a type may read off a known instance (see
+    /// `Checker::opened`): a record's fields that are types, and a trait's
+    /// superclasses
+    #[serde(default)]
+    pub opens: Vec<bool>,
 }
 
 /// An elaborated recursive definition.  In Core a recursive definition is a
@@ -1404,6 +1417,9 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         methods: m.methods.clone(),
         instance_fields: HashMap::new(),
         quantified: Vec::new(),
+        opening: Default::default(),
+        large: HashMap::new(),
+        auto_given: false,
     };
     for b in m.groups.iter().flat_map(hir::BindGroup::binds) {
         if let Some(u) = b.name.unique.filter(|u| m.hints.contains(u)) {

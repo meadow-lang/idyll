@@ -381,17 +381,31 @@ impl Checker {
         }
     }
 
-    /// Whether what a binder's `cod` comes to mentions its variable.
+    /// Whether what a binder's `cod` comes to mentions its variable where
+    /// unification could find it: as an argument of a data type (`MapBy k
+    /// o v`), not inside a function's application (`Container.Elem self`,
+    /// which does not say what `self` is).
     fn mentioned_after(&self, ctx: &Ctx, cod: &Closure, name: &str) -> bool {
         let rest = self.quote(ctx.lvl + 1, self.apply(cod, vvar(ctx.lvl, name.to_string())));
-        let found = std::cell::Cell::new(false);
-        rest.rewrite(0, &|c, d| {
-            if matches!(c, Core::Var(i, _) if *i == d) {
-                found.set(true);
+        self.determines(&rest, 0)
+    }
+
+    fn determines(&self, c: &Core, i: usize) -> bool {
+        match c {
+            Core::Pi { dom, cod, .. } => self.determines(dom, i) || self.determines(cod, i + 1),
+            Core::Comp(t, _) | Core::Runtime(_, t) => self.determines(t, i),
+            Core::App(..) => {
+                let mut args = Vec::new();
+                let mut head = c;
+                while let Core::App(f, a) = head {
+                    args.push(a);
+                    head = f;
+                }
+                matches!(head, Core::Opaque(u, _) if self.datas.contains_key(u))
+                    && args.iter().any(|a| matches!(&***a, Core::Var(j, _) if *j == i) || self.determines(a, i))
             }
-            None
-        });
-        found.get()
+            _ => false,
+        }
     }
 
     /// The auto arguments a type begins with, found.
@@ -922,7 +936,9 @@ impl Checker {
                 // 4. if they terminate, they may compute in types from here
                 //    on; if they may not, they have to say so, unless
                 //    `@terminating` says they end after all
-                if !self.check_termination(&ctx_rec, &members) {
+                let terminates = self.check_termination(&ctx_rec, &members);
+                self.unfold_instances(&ctx_rec, &members);
+                if !terminates {
                     for (b, ty) in bs.iter().zip(&sigs) {
                         if b.name.unique.is_some_and(|u| self.terminating.contains(&u)) {
                             continue;
@@ -995,7 +1011,11 @@ impl Checker {
     /// `?b := \n -> Vec n a`, after `Nil` has been checked against `?b Z`.
     /// Whether the question was kept.
     pub(super) fn postpone(&mut self, lvl: Lvl, actual: &Rc<Value>, expected: &Rc<Value>, node: NodeId) -> bool {
-        let stuck = |v: &Rc<Value>| matches!(&*self.force(v.clone()), Value::Flex(_, spine) if !spine.is_empty());
+        let stuck = |v: &Rc<Value>| match &*self.force(v.clone()) {
+            Value::Flex(_, spine) => !spine.is_empty(),
+            Value::Opaque(..) => self.blocked(v),
+            _ => false,
+        };
         if !(stuck(expected) || stuck(actual)) {
             return false;
         }
@@ -1141,6 +1161,8 @@ impl Checker {
                 }
             }
             TermKind::App(f, a) => {
+                // (the head of `f x @{d}`: its auto argument is `d`)
+                let given = std::mem::take(&mut self.auto_given);
                 // `() [r]`: the unit *type*, since that is what can be boxed
                 let (f_c, f_ty, f_usage) = match (&f.kind, &a.kind) {
                     (TermKind::Lit(Lit::Unit), TermKind::BoxIntro(_)) => {
@@ -1174,7 +1196,7 @@ impl Checker {
                         let (core, ty, usage) = self.apply_to(ctx, f.id, (f_c, f_ty, f_usage), a);
                         // an auto argument after the last one given is
                         // found now: what it is for is all there
-                        let (core, ty) = self.insert_autos(ctx, nid, core, ty);
+                        let (core, ty) = if given { (core, ty) } else { self.insert_autos(ctx, nid, core, ty) };
                         // and one waiting for its type may have it now, as
                         // Lean synthesizes an application's instances once
                         // its arguments are elaborated: so that `2 + 2` in a
@@ -1204,7 +1226,9 @@ impl Checker {
             // `f @{d}`: `f`'s next auto argument is `d`, rather than one
             // searched for; the implicit ones before it are worked out
             TermKind::AutoApp(f, a) => {
+                self.auto_given = matches!(f.kind, TermKind::App(..));
                 let (f_c, f_ty, f_usage) = self.infer(ctx, f);
+                self.auto_given = false;
                 let (f_c, f_ty) = self.insert_implicit(ctx, f.id, f_c, f_ty);
                 match &*self.force(f_ty.clone()) {
                     Value::Pi { icit: Icit::Auto, .. } => self.apply_to(ctx, f.id, (f_c, f_ty, f_usage), a),
@@ -1601,7 +1625,7 @@ impl Checker {
                 (Rc::new(Core::Lit(self.read_number(nid, l, *b))), Usage::none())
             }
             // (a meta under binders is applied to them, `?a y`)
-            (TermKind::Lit(l @ (Lit::Int(_) | Lit::Float(_))), Value::Flex(..)) => {
+            (TermKind::Lit(l @ (Lit::Int(_) | Lit::Float(_))), _) if self.blocked(&expected) => {
                 (self.defer_literal(ctx, nid, l, expected.clone()), Usage::none())
             }
             (TermKind::Lit(Lit::Int(n)), Value::LitTy(Builtin::Grade)) => match u64::try_from(*n) {
@@ -1781,6 +1805,15 @@ impl Checker {
                     let (indices, end) = self.telescope_end(under.lvl, k_v);
                     match &*end {
                         Value::Type(0) | Value::Error => (k_c, indices),
+                        // a large data type, one with a type among its fields
+                        // (a trait with an associated type): its fields may be
+                        // as large as it is
+                        Value::Type(n) => {
+                            if let Some(u) = d.name.unique {
+                                self.large.insert(u, *n);
+                            }
+                            (k_c, indices)
+                        }
                         _ => {
                             let end = self.quote(under.lvl + indices, end);
                             self.error(k.id, TypeErrorKind::DataKindNotType(end));
@@ -1846,7 +1879,8 @@ impl Checker {
                 self.record(c.id, shown);
                 ctx = self.declare_constant(&ctx, &c.name, ty);
                 if let (Some(u), Some(data)) = (c.name.unique, d.name.unique) {
-                    let info = CtorInfo { name: c.name.text.clone(), data, tag, params: n + implicit, fields };
+                    let opens = self.field_opens(&shape, c, fields);
+                    let info = CtorInfo { name: c.name.text.clone(), data, tag, params: n + implicit, fields, opens };
                     self.ctors.insert(u, info);
                 }
             }
@@ -1855,6 +1889,37 @@ impl Checker {
         }
         self.check_positivity(&shapes);
         ctx
+    }
+
+    /// Which of a constructor's `count` fields a type may read off a known
+    /// instance: those that are types, and a trait's superclasses.
+    fn field_opens(&self, shape: &DataShape, c: &hir::CtorDecl, count: usize) -> Vec<bool> {
+        let fields: Vec<&Field> = shape.fields.iter().filter(|f| f.ctor == c.name.text).collect();
+        let fields = &fields[fields.len().saturating_sub(count)..];
+        let mut names = Vec::new();
+        if let hir::CtorShape::Sig(sig) = &c.shape {
+            let mut t = sig;
+            while let TermKind::Pi(x, icit, _, _, cod) = &t.kind {
+                if *icit == Icit::Explicit {
+                    names.push(x.as_ref().map_or(String::new(), |x| x.text.clone()));
+                }
+                t = cod;
+            }
+        }
+        let names = &names[names.len().saturating_sub(count)..];
+        fields
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                let (_, end) = self.telescope_end(f.lvl, f.ty.clone());
+                matches!(*end, Value::Type(_)) || names.get(i).is_some_and(|n| n.starts_with("#super"))
+            })
+            .collect()
+    }
+
+    /// The universe a data type lives in: `Type`, unless its kind says more.
+    fn data_level(&self, d: &hir::DataDecl) -> super::core::Level {
+        d.name.unique.and_then(|u| self.large.get(&u).copied()).unwrap_or(0)
     }
 
     /// How many function types a type starts with, and what it ends in.
@@ -1885,7 +1950,7 @@ impl Checker {
         let mut elaborated = Vec::new();
         for f in fields {
             let (f_c, f_v, level, _not_charged) = self.infer_type(&under, f);
-            if level > 0 {
+            if level > self.data_level(d) {
                 self.error(f.id, TypeErrorKind::LargeField { data: d.name.text.clone(), level });
             }
             shape.fields.push(Field { node: f.id, ctor: c.name.text.clone(), lvl: under.lvl, ty: f_v.clone() });
@@ -1983,7 +2048,7 @@ impl Checker {
         for (i, (lvl, icit, _, dom, mut types)) in binders.iter().cloned().enumerate() {
             let node = nodes.get(i).copied().unwrap_or(sig.id);
             let level = self.sort_of(&mut types, dom.clone());
-            if let Some(level) = level.filter(|l| *l > 0) {
+            if let Some(level) = level.filter(|l| *l > self.data_level(d)) {
                 if icit == Icit::Explicit || !forced.contains(&lvl) {
                     self.error(node, TypeErrorKind::LargeField { data: d.name.text.clone(), level });
                 }

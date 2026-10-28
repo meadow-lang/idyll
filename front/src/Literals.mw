@@ -17,7 +17,7 @@ use Idyll.Core as C
 use Idyll.Value (Value)
 use Idyll.Tc (Tc, Meta, MetaInfo, Origin)
 use Idyll.Tc as T
-use Idyll.Eval (force, eval)
+use Idyll.Eval (force, eval, blocked)
 use Idyll.Unify (unify)
 use Idyll.Ctx (Ctx)
 use Idyll.Num as N
@@ -78,7 +78,7 @@ fun defaultOf (lit : Literal) : Builtin =
       match d with
       | (m, ctx, ty, lit) ->
           let t = force tc ty in
-          let flex = match t with | Value.Flex _ _ -> True | _ -> False in
+          let flex = blocked tc t in
           if flex and not last then
             let w2 = setRef tc.deferredLiterals (V.pushBack (getRef tc.deferredLiterals) d) in
             progress

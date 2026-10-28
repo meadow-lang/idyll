@@ -53,13 +53,25 @@ use Std.Maybe.Maybe.*
        | None -> v)
   | _ -> v
 
+-- Whether a value waits on an unsolved metavariable: is one, or is a
+-- definition that would unfold but for one it is applied to
+-- (`Container.Elem ?p`, whose instance is still to be found).
+@pub fun blocked (tc : Tc) (v : Value) : Bool ! { Mut | e } =
+  match force tc v with
+  | Value.Flex _ _ -> True
+  | Value.Opaque u _ sp ->
+      Hm.member u (getRef tc.transparent)
+        and V.foldl (\acc e -> if acc then True else (match e with | Elim.App a -> blocked tc a | _ -> False)) False sp
+  | _ -> False
+
 -- A transparent definition applied to `sp`, if its case tree can choose a
 -- right-hand side.
 fun unfold (tc : Tc) (u : Int) (sp : [Elim]) : Maybe Value ! { Mut | e } =
   match Hm.lookup u (getRef tc.transparent) with
   | None -> None
   | Just (env0, arity, body) ->
-      if V.len sp < arity then None
+      let caseWaits = match V.get sp arity with | Just (Elim.Case _ _) -> True | _ -> False in
+      if V.len sp < arity or (V.elem u (getRef tc.onCase) and not caseWaits) then None
       else
         let args = V.concatMap (\e -> match e with | Elim.App a -> [a] | _ -> []) (V.take sp arity) in
         if V.len args < arity then None
@@ -71,10 +83,40 @@ fun evalTree (tc : Tc) (env : Env) (c : Core) : Maybe Value ! { Mut | e } =
   | Core.Runtime _ inner -> evalTree tc env inner
   | Core.Let _ e body -> evalTree tc (Va.push env (eval tc env e)) body
   | Core.Case s alts ->
-      (match choose (force tc (eval tc env s)) alts with
+      let v0 = force tc (eval tc env s) in
+      -- (an instance a field is read off: what it is)
+      let v = match choose v0 alts with | None -> M.unwrapOr v0 (opened tc v0 alts) | Just _ -> v0 in
+      (match choose v alts with
        | Just (CaseAlt.CaseAlt _ _ _ body, fields) -> evalTree tc (V.foldl Va.push env fields) body
        | None -> None)
   | _ -> Just (eval tc env c)
+
+-- An instance a `case` waits on, unfolded (`Checker::opened`): when the
+-- case reads a field a type may compute with, a type or a superclass (a
+-- method stays a call of the instance's).
+@pub(pkg) fun opened (tc : Tc) (v : Value) (alts : [CaseAlt]) : Maybe Value ! { Mut | e } =
+  match (v, if V.len alts == 1 then V.head alts else None) with
+  | (Value.Opaque u _ sp, Just (CaseAlt.CaseAlt (Head.Con ctor) _ vars body)) ->
+      (match (peelRuntime body, Hm.lookup u (getRef tc.transparent)) with
+       | (Core.Var k _, Just (env0, arity, tree)) ->
+           let field = V.len vars - k - 1 in
+           let readable = match Hm.lookup ctor (getRef tc.opens) with | Just os -> V.getOr False os field | None -> False in
+           if not (V.elem u (getRef tc.onCase)) or not readable or V.len sp < arity or V.elem u (getRef tc.opening) then None
+           else
+             let args = V.concatMap (\e -> match e with | Elim.App a -> [a] | _ -> []) (V.take sp arity) in
+             if V.len args < arity then None
+             else
+               let w = setRef tc.opening (V.pushBack (getRef tc.opening) u) in
+               let made = evalTree tc (V.foldl Va.push env0 args) tree in
+               let w2 = setRef tc.opening (V.filter (\o -> o != u) (getRef tc.opening)) in
+               M.map (\r -> force tc (applySpine tc r (V.drop sp arity))) made
+       | _ -> None)
+  | _ -> None
+
+fun peelRuntime (c : Core) : Core =
+  match c with
+  | Core.Runtime _ inner -> peelRuntime inner
+  | _ -> c
 
 -- How many arguments a primitive takes.
 fun arity (p : Prim) : Int = 2
@@ -230,7 +272,11 @@ fun quoteAlt (tc : Tc) (l : Int) (env : Env) (alt : CaseAlt) : CaseAlt ! { Mut |
   let fv = force tc v in
   match choose fv alts with
   | Just (CaseAlt.CaseAlt _ _ _ body, fields) -> eval tc (V.foldl (\e f -> Va.push e f) env fields) body
-  | None -> stuck fv (Elim.Case env alts)
+  -- (an instance unfolds once a `case` waits on it: see `opened`)
+  | None ->
+      (match opened tc fv alts with
+       | Just made -> vcase tc made env alts
+       | None -> stuck fv (Elim.Case env alts))
 
 -- The alternative for a value, and its fields: the last of its arguments,
 -- one a variable of the alternative.

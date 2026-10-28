@@ -242,6 +242,9 @@ fun importAll (tc : Tc) (ctx : Ctx) (deps : [Compiled]) : Ctx ! { Mut | e } =
                 let w2 =
                   match unfold with
                   | Just (Unfold.Unfold arity body) -> setRef tc.transparent (Hm.insert u (Va.emptyEnv (), arity, body) (getRef tc.transparent))
+                  | Just (Unfold.OnCase arity body) ->
+                      let w3 = setRef tc.transparent (Hm.insert u (Va.emptyEnv (), arity, body) (getRef tc.transparent)) in
+                      setRef tc.onCase (V.pushBack (getRef tc.onCase) u)
                   | None -> ()
                 in
                 cc2)
@@ -250,6 +253,7 @@ fun importAll (tc : Tc) (ctx : Ctx) (deps : [Compiled]) : Ctx ! { Mut | e } =
       in
       let into = \table pairs -> setRef table (V.foldl (\m kv -> Hm.insert (fst kv) (snd kv) m) (getRef table) pairs) in
       let w3 = into tc.ctors (V.map (\e -> match e with | CtorEntry.CtorEntry u i -> (u, i)) p.ctors) in
+      let w3b = into tc.opens (V.map (\e -> match e with | OpensEntry.OpensEntry u os -> (u, os)) p.opens) in
       let w4 = into tc.datas (V.map (\e -> match e with | DataEntry.DataEntry u cs -> (u, cs)) p.datas) in
       let w5 = into tc.positive (V.map (\e -> match e with | Positive.Positive u ps -> (u, ps)) p.positive) in
       let w6 = into tc.seqs (V.map (\e -> match e with | SeqEntry.SeqEntry u n cs -> (u, (n, cs))) p.seqs) in

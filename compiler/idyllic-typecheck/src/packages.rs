@@ -49,6 +49,9 @@ pub struct ImportedConstant {
     /// how many arguments it takes before it can compute, and its case tree
     /// under them
     pub unfold: Option<(usize, Rc<Core>)>,
+    /// whether it unfolds only where a `case` waits on it (an instance)
+    #[serde(default)]
+    pub unfold_on_case: bool,
 }
 
 /// What compiling a package makes: see the module docs.
@@ -113,7 +116,7 @@ impl Checker {
                     self.globals.insert(c.unique, v);
                 }
                 if let Some((arity, body)) = &c.unfold {
-                    self.transparent.insert(c.unique, Unfold::closed(*arity, body.clone()));
+                    self.transparent.insert(c.unique, Unfold::closed(*arity, body.clone(), c.unfold_on_case));
                 }
             }
             self.ctors.extend(p.ctors.iter().cloned());
@@ -177,7 +180,8 @@ impl Checker {
             let unique = x.unique?;
             let ty = this.constant_type(ctx, unique)?;
             let unfold = this.transparent.get(&unique).map(|u| u.export(this, ctx));
-            Some(ImportedConstant { unique, name: x.text.clone(), ty, value: None, unfold })
+            let unfold_on_case = this.transparent.get(&unique).is_some_and(|u| u.on_case);
+            Some(ImportedConstant { unique, name: x.text.clone(), ty, value: None, unfold, unfold_on_case })
         };
         for d in m.datas.iter().filter(|d| own(&d.name.unique)) {
             constants.extend(constant(self, &d.name));
@@ -209,7 +213,7 @@ impl Checker {
                         let ty = self.close(ctx, &self.quote(ctx.lvl, binder.ty.clone()));
                         let value = (binder.info == BinderInfo::Defined)
                             .then(|| self.close(ctx, &self.quote(ctx.lvl, ctx.value(*level))));
-                        constants.push(ImportedConstant { unique, name: b.name.text.clone(), ty, value, unfold: None });
+                        constants.push(ImportedConstant { unique, name: b.name.text.clone(), ty, value, unfold: None, unfold_on_case: false });
                     }
                     _ => constants.extend(constant(self, &b.name)),
                 }

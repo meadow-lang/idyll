@@ -34,7 +34,7 @@ use Idyll.Grade (Grade)
 use Idyll.Grade as G
 use Idyll.Tc (Tc, Meta, MetaInfo, MetaTy, Origin, HoleAt, Postponed, Waiting)
 use Idyll.Tc as T
-use Idyll.Eval (force, apply, eval, quote, row, rowParts, toPoly, splitComp, comp, renormalise)
+use Idyll.Eval (force, apply, eval, quote, row, rowParts, toPoly, splitComp, comp, renormalise, blocked)
 use Idyll.Unify (subtype, unify, sibling, effectsFit, shownRow, rowHasError, rowKind, sortOf)
 use Idyll.Usage (Usage)
 use Idyll.Usage as U
@@ -53,7 +53,7 @@ use Idyll.Auto as A
 use Idyll.Literals as L
 use Idyll.Overloads as O
 use Idyll.Sequences (checkSeq, inferSeq, arrayLiteral, arrayElement)
-use Idyll.Termination (checkTermination, arity)
+use Idyll.Termination (checkTermination, unfoldInstances, arity)
 use Std.Collections.Vector as V
 use Std.Sort as Srt
 use Std.Collections.HashMap as Hm
@@ -130,6 +130,28 @@ fun isUnitLit (h : HirArena) (t : HirExpr) : Bool =
   | _ -> False
 
 -- Whether a Core term mentions the variable of index `i`.
+-- Whether a type mentions slot `i` where unification could find it: as an
+-- argument of a data type (`MapBy k o v`), not inside a function's
+-- application (`T.Elem self`, which does not say what `self` is).
+fun determines (tc : Tc) (c : Core) (i : Int) : Bool ! { Mut | e } =
+  match c with
+  | Core.Pi _ _ _ _ dom cod -> determines tc dom i or determines tc cod (i + 1)
+  | Core.Comp t _ -> determines tc t i
+  | Core.Runtime _ t -> determines tc t i
+  | Core.App _ _ ->
+      let (head, args) = spineOfCore c [] in
+      (match head with
+       | Core.Opaque u _ ->
+           Hm.member u (getRef tc.datas)
+             and V.foldl (\acc a -> if acc then True else (match a with | Core.Var j _ -> j == i | _ -> determines tc a i)) False args
+       | _ -> False)
+  | _ -> False
+
+fun spineOfCore (c : Core) (args : [Core]) : (Core, [Core]) =
+  match c with
+  | Core.App f a -> spineOfCore f (V.append [a] args)
+  | _ -> (c, args)
+
 @pub fun mentions (c : Core) (i : Int) : Bool =
   match c with
   | Core.Var j _ -> j == i
@@ -318,7 +340,7 @@ fun fitsMeta (tc : Tc) (ctx : Ctx) (m : Int) (ty : Value) : Bool ! { Mut | e } =
       let argV = eval tc ctx.env arg in
       insert tc ctx (Core.App core (argument tc grade arg)) (fst (splitComp tc (apply tc cod argV)))
   | Value.Pi name Icit.Auto grade _ dom cod ->
-      let later = mentions (quote tc (ctx.lvl + 1) (apply tc cod (Va.vvar ctx.lvl name))) 0 in
+      let later = determines tc (quote tc (ctx.lvl + 1) (apply tc cod (Va.vvar ctx.lvl name))) 0 in
       let arg = A.autoArgumentIn tc ctx dom later in
       let argV = eval tc ctx.env arg in
       insert tc ctx (Core.App core (argument tc grade arg)) (fst (splitComp tc (apply tc cod argV)))
@@ -345,10 +367,14 @@ fun insertAutos (tc : Tc) (ctx : Ctx) (core : Core) (ty : Value) : (Core, Value)
 
 -- An application's result, with the auto arguments after the last one
 -- given found: what they are for is all there.
-fun autosAfter (tc : Tc) (ctx : Ctx) (r : (Core, Value, Usage)) : (Core, Value, Usage) ! { Mut | e } =
+fun autosAfter (tc : Tc) (ctx : Ctx) (r : (Core, Value, Usage)) : (Core, Value, Usage) ! { Mut | e } = autosAfterIf tc ctx True r
+
+-- The same, the auto arguments after the last one given inserted only if
+-- `trailing` (not before `@{d}`).
+fun autosAfterIf (tc : Tc) (ctx : Ctx) (trailing : Bool) (r : (Core, Value, Usage)) : (Core, Value, Usage) ! { Mut | e } =
   match r with
   | (core, ty, usage) ->
-      let (c2, t2) = insertAutos tc ctx core ty in
+      let (c2, t2) = if trailing then insertAutos tc ctx core ty else (core, ty) in
       -- and one waiting for its type may have it now, as Lean synthesizes an
       -- application's instances once its arguments are elaborated: so that
       -- `2 + 2` in a type computes, rather than waiting for the end of the
@@ -786,8 +812,10 @@ fun checkGroupIn (tc : Tc) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, Maybe
       in
       -- if they terminate they may compute in types from here on; if they may
       -- not, they must say so, unless `@terminating` says they end after all
+      let terminates = checkTermination tc ctxRec members in
+      let w0 = unfoldInstances tc ctxRec members in
       let w =
-        if checkTermination tc ctxRec members then ()
+        if terminates then ()
         else
           V.foldl
             (\acc bct ->
@@ -876,7 +904,13 @@ fun enterLet (tc : Tc) (ctx : Ctx) (groups : [HirGroup]) : (Ctx, [Pending], [May
 -- unify yet: kept for later if either is stuck on a metavariable applied to
 -- something, which what is checked after it may solve.
 fun postpone (tc : Tc) (lvl : Int) (actual : Value) (expected : Value) : Bool ! { Mut | e } =
-  let stuck = \v -> match force tc v with | Value.Flex _ sp -> not (V.isEmpty sp) | _ -> False in
+  let stuck =
+    \v ->
+      match force tc v with
+      | Value.Flex _ sp -> not (V.isEmpty sp)
+      | Value.Opaque _ _ _ -> blocked tc v
+      | _ -> False
+  in
   if not (stuck expected or stuck actual) then False
   else
     let w = setRef tc.postponed (V.pushBack (getRef tc.postponed) (Postponed.Postponed lvl actual expected)) in
@@ -1303,8 +1337,9 @@ fun literalAgainst (cx : Cx) (again : Cx -> (Core, Value, Usage) ! { Mut | e }) 
   -- a number is read at the type wanted (see `Literals`)
   | (_, Value.LitTy b) if L.readsAs lit b -> (Core.Lit (L.readNumber cx.tc lit b), g, U.none ())
   -- (a metavariable under binders is applied to them, `?a y`)
-  | (Literal.Int _, Value.Flex _ _) -> (L.deferLiteral cx.tc cx.ctx lit g, g, U.none ())
-  | (Literal.Float _, Value.Flex _ _) -> (L.deferLiteral cx.tc cx.ctx lit g, g, U.none ())
+  -- (or one that waits on a metavariable, `T.Elem ?p`)
+  | (Literal.Int _, _) if blocked cx.tc g -> (L.deferLiteral cx.tc cx.ctx lit g, g, U.none ())
+  | (Literal.Float _, _) if blocked cx.tc g -> (L.deferLiteral cx.tc cx.ctx lit g, g, U.none ())
   | (Literal.Int n, Value.LitTy Builtin.Grade) ->
       if n >= 0 then (C.grade (G.exact n), g, U.none ())
       else
@@ -1471,7 +1506,10 @@ fun inferImplicitApp (tc : Tc) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, 
 
 -- `f @{d}`, the implicit arguments before `d`'s worked out.
 fun inferAutoApp (tc : Tc) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value, Usage) ! { Mut | e } =
+  -- (the head of `f x @{d}` leaves its auto argument for `d`)
+  let w0 = setRef tc.autoGiven (kindHirExpr (hirOf tc) f == HirExprKind.App) in
   let (fC0, fTy0, fU) = infer tc ctx f in
+  let w1 = setRef tc.autoGiven False in
   let (fC, fTy) = insertImplicit tc ctx fC0 fTy0 in
   match fTy with
   | Value.Pi _ Icit.Auto _ _ _ _ -> applyTo tc ctx fC fTy fU a
@@ -1482,6 +1520,9 @@ fun inferAutoApp (tc : Tc) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Valu
 
 fun inferApp (tc : Tc) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value, Usage) ! { Mut | e } =
   let h = hirOf tc in
+  -- (the head of `f x @{d}`: its auto argument is `d`)
+  let given = getRef tc.autoGiven in
+  let w0 = setRef tc.autoGiven False in
   let argIsBox = kindHirExpr h a == HirExprKind.Box in
   if kindHirExpr h f == HirExprKind.Type and not argIsBox then
     match (h, a) with
@@ -1513,8 +1554,8 @@ fun inferApp (tc : Tc) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value, U
         if unify tc ctx.lvl fTy (Value.Type 0) then
           let (gC, _) = checkGrade tc ctx g in
           (Core.BoxTy gC fC, Value.Type 0, fU)
-        else autosAfter tc ctx (applyTo tc ctx fC fTy fU a)
-    | _ -> autosAfter tc ctx (applyTo tc ctx fC fTy fU a)
+        else autosAfterIf tc ctx (not given) (applyTo tc ctx fC fTy fU a)
+    | _ -> autosAfterIf tc ctx (not given) (applyTo tc ctx fC fTy fU a)
 
 -- `f a`, for an `f` elaborated already, its implicit arguments inserted.
 @pub fun applyTo (tc : Tc) (ctx : Ctx) (fC : Core) (fTy : Value) (fU : Usage) (a : HirExpr) : (Core, Value, Usage) ! { Mut | e } =

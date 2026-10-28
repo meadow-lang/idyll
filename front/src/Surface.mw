@@ -1528,13 +1528,15 @@ fun recordDecl out (cx : Cx) (d : IdyllRecordDecl) =
       (whole ())
       fields
   in
+  -- one with a field that is a type lives in `Type 1`
+  let large = V.foldl (\acc f -> if acc then True else endsInType out (fieldTy top f)) False fields in
   let decl =
     newSurfaceData
       out
       m
       (nameAt out m name)
       (V.map (typeParam out cx) ps)
-      None
+      (if large then Just (typeOne out m) else None)
       [newSurfaceCtorSig out m (nameAt out m name) ctorTy]
       None
       (visOf cx)
@@ -1798,11 +1800,34 @@ fun traitParams out (t : SurfaceExpr) (acc : [(String, Maybe SurfaceExpr)]) =
 fun blockLines (at : Syn) (entries : [IdyllLetEntry]) =
   separated at (V.map (\x -> match x with | IdyllLetEntry.Line y -> Just y | IdyllLetEntry.Sep _ -> None) entries) True False
 
--- A signature's type, as a line read in `cx` makes it.
+-- A signature's type, as a line read in `cx` makes it (an associated
+-- type's, `Elem : Type`, reads as an annotated expression).
 fun sigTyOf out (cx : Cx) (m : Meta) (line : IdyllLine) =
-  match lineItem out cx line with
+  match traitLine out cx line with
   | Item.Decl d if kindSurfaceDecl out d == SurfaceDeclKind.Sig -> surfaceDeclSigTy out d
   | _ -> hole out m
+
+-- A line of a trait's block: `Elem : Type` a signature, as an upper-case
+-- name's is there.
+fun traitLine out (cx : Cx) (line : IdyllLine) =
+  match lineItem out cx line with
+  | Item.Expr e ->
+      (match upperSig out (metaOf (syntaxIdyllLine line)) e with
+       | Just d -> Item.Decl d
+       | None -> Item.Expr e)
+  | it -> it
+
+-- Whether a field's type is a universe, or a function to one: a type the
+-- field is, `Elem : Type`, or a type constructor, `F : Type -> Type`.
+fun endsInType out (t : SurfaceExpr) =
+  match kindSurfaceExpr out t with
+  | SurfaceExprKind.Pi -> endsInType out (surfaceExprPiCod out t)
+  | SurfaceExprKind.Type -> True
+  | SurfaceExprKind.App -> kindSurfaceExpr out (surfaceExprAppFunc out t) == SurfaceExprKind.Type
+  | _ -> False
+
+-- `Type 1`.
+fun typeOne out (m : Meta) = app out m (newSurfaceExprType out m) (lit out m (Literal.Int 1))
 
 -- Whether a method's type is a function's, past its implicit binders.
 fun isFunction out (t : SurfaceExpr) =
@@ -1823,7 +1848,7 @@ fun traitDecl out (cx : Cx) (d : IdyllTraitDecl) =
       Item.Nothing
   | Ok (name, params, supers0) ->
       let lines = blockLines at (idyllTraitDeclEntries d) in
-      let items = V.map (\l -> (l, lineItem out top l)) lines in
+      let items = V.map (\l -> (l, traitLine out top l)) lines in
       let sigs =
         V.concatMap
           (\it ->
@@ -1918,16 +1943,39 @@ fun traitDecl out (cx : Cx) (d : IdyllTraitDecl) =
             ])
           (V.range 0 nFields)
       in
+      -- an associated type, a field that is a type (`Elem : Type`): nothing
+      -- in its type says which instance it is of, so its accessor takes the
+      -- trait's parameters, `Elem c`, and the other methods' types read it
+      -- off the instance they are of, `T.Elem self`
+      let associated = V.foldl (\acc sg -> match sg with | (x, l) -> if endsInType out (sigTyOf out top m l) then V.pushBack acc x else acc) [] sigs in
+      let readOff = { top | subst = V.map (\g -> (g, name)) associated } in
       let methods =
         V.concatMap
           (\sg ->
             match sg with
             | (x, l) ->
                 let body = app out m (newSurfaceExprVar out m (nameAt out m "${name}.${x}")) (newSurfaceExprVar out m (nameAt out m "self")) in
-                [
-                  newSurfaceDeclSig out m (nameAt out m x) (under (sigTyOf out top m l)),
-                  newSurfaceDeclDef out m (nameAt out m x) [] None (newSurfaceRhsPlain out m body)
-                ])
+                if V.elem x associated then
+                  -- `(c : Type) -> {auto self : T c} -> Type`, and
+                  -- `Elem c @{self} = T.Elem self`
+                  let kinds = match head () with | Ok (_, ps, _) -> V.map snd ps | Err _ -> [] in
+                  let found = newSurfaceExprPi out m (Just (nameAt out m "self")) Icit.Auto None (whole ()) (sigTyOf out (hiding readOff x) m l) in
+                  let sig =
+                    V.foldr
+                      (\i acc ->
+                        let k = match V.getOr None kinds i with | Just k -> k | None -> newSurfaceExprType out m in
+                        newSurfaceExprPi out m (Just (nameAt out m (V.getOr "_" paramNames i))) Icit.Explicit None k acc)
+                      found
+                      (V.range 0 (V.len paramNames))
+                  in
+                  let bound = \y -> newSurfacePatBind out m (newSurfaceParam out m (nameAt out m y) False None None) in
+                  let pats = V.pushBack (V.map bound paramNames) (newSurfacePatImplicit out m Icit.Auto (bound "self")) in
+                  [newSurfaceDeclSig out m (nameAt out m x) sig, newSurfaceDeclDef out m (nameAt out m x) pats None (newSurfaceRhsPlain out m body)]
+                else
+                  [
+                    newSurfaceDeclSig out m (nameAt out m x) (under (sigTyOf out readOff m l)),
+                    newSurfaceDeclDef out m (nameAt out m x) [] None (newSurfaceRhsPlain out m body)
+                  ])
           sigs
       in
       let defaulted = V.filter (\sg -> V.any (\e -> match e with | (x, _, _) -> x == fst sg) equations) sigs in
@@ -1938,7 +1986,7 @@ fun traitDecl out (cx : Cx) (d : IdyllTraitDecl) =
             | (x, l) ->
                 let dname = "${name}.#${x}" in
                 V.append
-                  [newSurfaceDeclSig out m (nameAt out m dname) (under (sigTyOf out top m l))]
+                  [newSurfaceDeclSig out m (nameAt out m dname) (under (sigTyOf out readOff m l))]
                   (V.concatMap
                      (\e ->
                        match e with
@@ -1954,13 +2002,14 @@ fun traitDecl out (cx : Cx) (d : IdyllTraitDecl) =
           (\sg -> match sg with | (x, l) -> newSurfaceDefault out m (nameAt out m x) "${name}.#${x}" (isFunction out (sigTyOf out top m l)))
           defaulted
       in
+      let large = V.foldl (\acc i -> if acc then True else endsInType out (fieldTy top i)) False (V.range 0 nFields) in
       let decl =
         newSurfaceData
           out
           m
           (nameAt out m name)
           typeParams
-          None
+          (if large then Just (typeOne out m) else None)
           [newSurfaceCtorSig out m (nameAt out m name) ctorTy]
           None
           (visOf cx)

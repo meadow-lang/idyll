@@ -216,7 +216,8 @@ fun mentions (own : Compiled) (dep : Compiled) (c : Core) : Bool =
     metaSolutions = [],
     hints = all (\(p : Compiled) -> p.hints),
     traits = all (\(p : Compiled) -> p.traits),
-    instanceFields = all fields
+    instanceFields = all fields,
+    opens = all (\(p : Compiled) -> p.opens)
   }
 
 -- What several parts' modules give, as one package's.
@@ -253,5 +254,6 @@ fun mentions (own : Compiled) (dep : Compiled) (c : Core) : Bool =
     metaSolutions = [],
     hints = [],
     traits = [],
-    instanceFields = []
+    instanceFields = [],
+    opens = []
   }

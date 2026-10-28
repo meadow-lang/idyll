@@ -16,7 +16,7 @@ use Std.Macro (Reflect)
 -- How many arguments a recursive definition takes before it can compute,
 -- and its case tree under them, closed: what unfolds in types.
 @derive(Reflect)
-@pub data Unfold = Unfold Int Core
+@pub data Unfold = Unfold Int Core | OnCase Int Core
 
 -- A constant another package may mention: its unique, its name, its type,
 -- its value if the types may see it, and how it unfolds if it is a
@@ -102,8 +102,15 @@ use Std.Macro (Reflect)
   metaSolutions : [Maybe Core],
   hints : [Int],
   traits : [Int],
-  instanceFields : [Fields]
+  instanceFields : [Fields],
+  -- which fields of each constructor a type may read off a known
+  -- instance (`Checker::opened`)
+  opens : [OpensEntry]
 }
+
+-- A constructor's fields a type may read off a known instance.
+@derive(Reflect)
+@pub data OpensEntry = OpensEntry Int [Bool]
 
 -- Whether `u` is one of `c`'s own.
 @pub fun owns (c : Compiled) (u : Int) : Bool = u >= c.low and u < c.high

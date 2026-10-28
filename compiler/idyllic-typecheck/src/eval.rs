@@ -108,6 +108,19 @@ impl Checker {
         }
     }
 
+    /// Whether a value waits on an unsolved metavariable: is one, or is a
+    /// definition that would unfold but for one it is applied to
+    /// (`Container.Elem ?p`, whose instance is still to be found).
+    pub(super) fn blocked(&self, v: &Rc<Value>) -> bool {
+        match &*self.force(v.clone()) {
+            Value::Flex(..) => true,
+            Value::Opaque(u, _, sp) if self.transparent.contains_key(u) => {
+                sp.iter().any(|e| matches!(e, Elim::App(a) if self.blocked(a)))
+            }
+            _ => false,
+        }
+    }
+
     /// Record an elimination on a stuck head.  Eliminating anything else is
     /// ill-typed — already reported, so keep going with an error value.
     fn stuck(&self, head: Rc<Value>, elim: Elim) -> Rc<Value> {
@@ -353,7 +366,12 @@ impl Checker {
                 let inner = fields.into_iter().fold(env.clone(), |e, f| e.push(f));
                 self.eval(&inner, &alt.body)
             }
-            None => self.stuck(v, Elim::Case(env.clone(), alts.clone())),
+            // (an instance unfolds once a `case` waits on it: see `Unfold`)
+            // (an instance unfolds once a `case` waits on it: see `Unfold`)
+            None => match self.opened(&v, alts) {
+                Some(record) => self.vcase(record, env, alts),
+                None => self.stuck(v, Elim::Case(env.clone(), alts.clone())),
+            },
         }
     }
 }

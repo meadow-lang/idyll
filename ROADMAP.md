@@ -602,13 +602,23 @@ from what `idyll.lock` pinned.
   is does not depend on the order things are checked in; and an auto
   binder of a signature is what a search later in it finds. `HashMap`,
   which wants a `Hash` trait, is left.
-- [ ] **Associated types**: a trait's field may be a type, `Elem : Type`,
+- [x] **Associated types**: a trait's field may be a type, `Elem : Type`,
   since a trait is a record and a record's fields may be types; an
   instance gives it (`Elem = a`), and `Elem c` is the field of the
   instance found for `c`. A type a function of another is said that way,
-  rather than with functional dependencies. For it to compute, a field of a
-  known instance has to unfold in types, a dependency's instances too
-  (today a dependency's definitions are constants to the checker).
+  rather than with functional dependencies.
+  Done 2026-10-28, both compilers (`compiler/idyllic/tests/traits.rs`). A
+  record with a field that is a type lives in `Type 1` (a data type may
+  live higher than `Type` when its kind says so). `Elem c @{self} =
+  T.Elem self` is its accessor, and the methods' types read it off
+  `self`. An instance that refers to itself (through a default) is no
+  value the types may see, so it unfolds only where a `case` reads a
+  field a type may compute with off it, an associated type or a
+  superclass, and a dependency's instances the same; its methods stay
+  calls. A goal blocked on a metavariable (`T.Elem ?p`, its instance still
+  to be found) waits as one that is a metavariable does. Not yet:
+  associated *data* types, each instance declaring a type of its own,
+  which would be injective.
 - [x] **Integer types, floating point, `Show`/`Eq`/`Ord`, and string
   interpolation**, which all wait on traits. `Display` and `Debug` (Meadow's
   `Show`), and interpolation, done 2026-10-21 in both compilers: the

@@ -38,6 +38,7 @@ use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
 use Std.Maybe as M
 use Std.Maybe.Maybe.*
+use Std.String as S
 
 -- --- the declarations, read off the renamed program's tables -----------------
 
@@ -144,6 +145,12 @@ fun underParams (params : [(Ident, Maybe HirExpr)]) (ks : [Core]) (ty : Core) (g
                   (match last with
                    | Value.Type 0 -> (kC, indices)
                    | Value.Error -> (kC, indices)
+                   -- a large data type, one with a type among its fields (a
+                   -- trait with an associated type): its fields may be as
+                   -- large as it is
+                   | Value.Type n ->
+                       let w = setRef tc.large (Hm.insert (H.uniqueOf d.name) n (getRef tc.large)) in
+                       (kC, indices)
                    | _ ->
                        let w = T.error tc "DataKindNotType" in
                        (Core.Type 0, 0))
@@ -196,6 +203,7 @@ fun declareCtors (tc : Tc) (ctx : Ctx) (d : DataDecl) (ks : [Core]) (indices : I
                let w = declare tc d.name (H.textOf d.name ++ "." ++ H.textOf x) (quote tc c.lvl ty) in
                let info = CtorInfo.CtorInfo (H.textOf x) (H.uniqueOf d.name) tag (n + implicit) fields in
                let w2 = setRef tc.ctors (Hm.insert (H.uniqueOf x) info (getRef tc.ctors)) in
+               let w3 = setRef tc.opens (Hm.insert (H.uniqueOf x) (fieldOpens tc shape found fields) (getRef tc.opens)) in
                (declareConstant tc c x ty, V.append fieldsSoFar found)))
     (ctx, [])
     (V.zip (V.range 0 (V.len d.ctors)) d.ctors)
@@ -220,6 +228,38 @@ fun declareSeq (tc : Tc) (d : DataDecl) =
         if fits n 0 and fits c 2 then setRef tc.seqs (Hm.insert (H.uniqueOf d.name) (n, c) (getRef tc.seqs))
         else T.error tc "BadSeq"
 
+-- Which of a constructor's `count` fields a type may read off a known
+-- instance: those that are types, and a trait's superclasses.
+fun fieldOpens (tc : Tc) (shape : CtorShape) (found : [(Int, Value)]) (count : Int) : [Bool] ! { Mut | e } =
+  let h = hirOf tc in
+  let names =
+    match shape with
+    | CtorShape.Sig sig -> piNames h sig
+    | _ -> []
+  in
+  let fields = V.drop found (V.len found - count) in
+  let names2 = V.drop names (V.len names - count) in
+  V.map
+    (\i ->
+      match V.get fields i with
+      | Just (lvl, ty) ->
+          (match telescopeEnd tc lvl ty with
+           | (_, Value.Type _) -> True
+           | _ -> S.startsWith "#super" (V.getOr "" names2 i))
+      | None -> False)
+    (V.range 0 count)
+
+-- The names of a signature's explicit binders.
+fun piNames (h : HirArena) (t : HirExpr) : [String] =
+  match (h, t) with
+  | HirExprPi x icit _ _ cod ->
+      let rest = piNames h cod in
+      if icit == Icit.Explicit then V.append [match x with | Just i -> hirIdentText h i | None -> ""] rest else rest
+  | _ -> []
+
+-- The universe a data type lives in: `Type`, unless its kind says more.
+fun dataLevel (tc : Tc) (d : DataDecl) : Int ! { Mut | e } = Hm.getOr 0 (H.uniqueOf d.name) (getRef tc.large)
+
 -- How many function types a type starts with, and what it ends in.
 fun telescopeEnd (tc : Tc) (lvl : Int) (ty : Value) : (Int, Value) ! { Mut | e } =
   match force tc ty with
@@ -237,7 +277,7 @@ fun ctorFields (tc : Tc) (d : DataDecl) (params : Ctx) (fields : [HirExpr]) : (C
         match acc with
         | (es, u, fs) ->
             let (fC, fV, level, _) = inferType tc u f in
-            let w = if level > 0 then T.error tc "LargeField" else () in
+            let w = if level > dataLevel tc d then T.error tc "LargeField" else () in
             (V.pushBack es fC, X.bind u None "_" fV, V.pushBack fs (u.lvl, fV)))
       ([], params, [])
       fields
@@ -293,7 +333,7 @@ fun ctorSig (tc : Tc) (d : DataDecl) (params : Ctx) (paramsAt : Int) (sig : HirE
         match b with
         | (lvl, icit, _, dom, types) ->
             (match sortOf tc types dom with
-             | Just level -> if level > 0 and (icit == Icit.Explicit or not (V.elem lvl forced)) then T.error tc "LargeField" else ()
+             | Just level -> if level > dataLevel tc d and (icit == Icit.Explicit or not (V.elem lvl forced)) then T.error tc "LargeField" else ()
              | None -> ()))
       ()
       binders

@@ -777,10 +777,15 @@ where
     I: ValueInput<'t, Token = Token, Span = SimpleSpan>,
 {
     let semi = just(Token::VSemi).or(just(Token::Semi));
-    let entries = semi
-        .clone()
-        .repeated()
-        .ignore_then(decl(term.clone()).separated_by(semi.clone()).allow_trailing().collect::<Vec<LDecl>>());
+    // a method's signature, or an associated type's, `Elem : Type`; or a
+    // default's equation
+    let upper = select! { Token::UpperIdent(s) = e => Spanned::new(s, span_of(e.span())) };
+    let associated = upper
+        .then_ignore(just(Token::Colon))
+        .then(term.clone())
+        .map_with(|(x, ty), e| Spanned::new(Decl::Sig(x, ty), span_of(e.span())));
+    let entry = associated.or(decl(term.clone()));
+    let entries = semi.clone().repeated().ignore_then(entry.separated_by(semi.clone()).allow_trailing().collect::<Vec<LDecl>>());
     // the head, read as a term: `Describe a => Loud (a : Type)`, its
     // superclasses its auto binders, then the trait's name and parameters
     let head = term.try_map(|t: LTerm, at| trait_head(t).map_err(|why| Rich::custom(at, why)));
@@ -880,10 +885,35 @@ fn trait_parts(
             at(Term::Pi(Some(p.clone()), Icit::Implicit, None, Box::new(kind), Box::new(acc)))
         })
     };
+    // An associated type, a field that is a type (`Elem : Type`): nothing in
+    // its type says which instance it is of, so its accessor takes the
+    // trait's parameters, `Elem c`, and the other methods' types read it off
+    // the instance they are of, `Container.Elem self`.
+    let associated: Vec<&Ident> = sigs.iter().filter(|(_, ty)| ends_in_type(ty)).map(|(m, _)| m).collect();
+    let read_off = |ty: &LTerm| {
+        associated.iter().fold(ty.clone(), |ty, g| {
+            idyllic_ast::substitute(&ty, &g.node, &app(var(&format!("{}.{}", name.node, g.node)), var("self")))
+        })
+    };
     for (m, ty) in &sigs {
         let projection = format!("{}.{}", name.node, m.node);
-        decls.push(Spanned::new(Decl::Sig(m.clone(), under(ty)), m.span));
         let body = app(var(&projection), var("self"));
+        if associated.iter().any(|g| g.node == m.node) {
+            // `(c : Type) -> {auto self : Container c} -> Type`, and
+            // `Elem c @{self} = Container.Elem self`
+            let found = at(Term::Pi(Some(Spanned::new("self".into(), span)), Icit::Auto, None, Box::new(whole.clone()), Box::new(read_off(ty))));
+            let sig = params.iter().rev().fold(found, |acc, (p, k)| {
+                let kind = k.clone().unwrap_or_else(|| at(Term::Type));
+                at(Term::Pi(Some(p.clone()), Icit::Explicit, None, Box::new(kind), Box::new(acc)))
+            });
+            decls.push(Spanned::new(Decl::Sig(m.clone(), sig), m.span));
+            let bind = |x: &str| Spanned::new(Pat::Bind(Param { name: Spanned::new(x.to_string(), span), unbox: false, grade: None, ty: None }), span);
+            let mut pats: Vec<LPat> = params.iter().map(|(p, _)| bind(&p.node)).collect();
+            pats.push(Spanned::new(Pat::Implicit(Icit::Auto, Box::new(bind("self"))), span));
+            decls.push(Spanned::new(Decl::Def(m.clone(), pats, None, Rhs::Plain(body)), m.span));
+            continue;
+        }
+        decls.push(Spanned::new(Decl::Sig(m.clone(), under(&read_off(ty))), m.span));
         decls.push(Spanned::new(Decl::Def(m.clone(), Vec::new(), None, Rhs::Plain(body)), m.span));
     }
     for (m, ty) in &sigs {
@@ -892,7 +922,7 @@ fn trait_parts(
             continue;
         }
         let default = Spanned::new(format!("{}.#{}", name.node, m.node), m.span);
-        decls.push(Spanned::new(Decl::Sig(default.clone(), under(ty)), m.span));
+        decls.push(Spanned::new(Decl::Sig(default.clone(), under(&read_off(ty))), m.span));
         for eq in equations {
             if let Decl::Def(_, pats, ty, rhs) = &eq.node {
                 decls.push(Spanned::new(Decl::Def(default.clone(), pats.clone(), ty.clone(), rhs.clone()), eq.span));
@@ -907,6 +937,17 @@ fn trait_parts(
         data.node.defaults.push((m.clone(), default.node, function));
     }
     (data, decls)
+}
+
+/// Whether a field's type is a universe, or a function to one: a type the
+/// field is, `Elem : Type`, or a type constructor, `F : Type -> Type`.
+fn ends_in_type(t: &LTerm) -> bool {
+    match &t.node {
+        Term::Pi(_, _, _, _, cod) => ends_in_type(cod),
+        Term::Type => true,
+        Term::App(f, _) => matches!(f.node, Term::Type),
+        _ => false,
+    }
 }
 
 /// `instance Describe Int where` and a block of its methods' equations, or
@@ -1023,11 +1064,14 @@ fn record_parts(name: Ident, params: Vec<(Ident, Option<LTerm>)>, fields: Vec<(I
     let ctor_ty = fields.iter().rev().fold(whole.clone(), |acc, (f, ty)| {
         at(Term::Pi(Some(f.clone()), Icit::Explicit, None, Box::new(ty.clone()), Box::new(acc)))
     });
+    // one with a field that is a type (a trait's associated type) lives in
+    // `Type 1`
+    let large = fields.iter().any(|(_, ty)| ends_in_type(ty));
     let data = Spanned::new(
         Data {
             name: name.clone(),
             params,
-            kind: None,
+            kind: large.then(|| app(at(Term::Type), at(Term::Lit(Lit::Int(1))))),
             ctors: vec![(name.clone(), Ctor::Sig(ctor_ty))],
             seq: None,
             visibility: Visibility::Private,
