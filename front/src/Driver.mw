@@ -178,7 +178,7 @@ fun filesOf (dir : String) : [String] ! { Fs | e } =
   V.pushBack (V.map (\f -> Path.join (Path.join dir "src") f) (idlFiles (Path.join dir "src") [])) (Path.join dir "Idyll.toml")
 
 -- The `.idl` files under a directory, by their paths in it.
-fun idlFiles (dir : String) (prefix : [String]) : [String] ! { Fs | e } =
+@pub fun idlFiles (dir : String) (prefix : [String]) : [String] ! { Fs | e } =
   let at = if V.isEmpty prefix then dir else Path.join dir (S.join "/" prefix) in
   match readDir at with
   | Err _ -> []
@@ -252,23 +252,13 @@ fun quotedAfter (key : String) (line : String) : Maybe String =
 -- (`use App (shared)`), as `idyllic::parts` reads them. The manifest is a
 -- part of its own, importing nothing.
 fun partsOf (sources : [(String, String)]) : [(String, [String])] =
-  let name = packageNameIn sources in
   let modules = V.filter (\s -> S.endsWith ".idl" (fst s)) sources in
-  let pathOf = \file -> S.join "." (modulePathIn file) in
-  let paths = V.map (\s -> pathOf (fst s)) modules in
-  let named = V.filter (\p -> p != "") paths in
+  let edges = Pa.imports (packageNameIn sources) (V.map (\s -> S.join "." (modulePathIn (fst s))) modules) (V.map snd modules) in
   V.map
     (\s ->
-      let here = pathOf (fst s) in
-      let others =
-        V.filter
-          (\o ->
-            let p = pathOf (fst o) in
-            p != here
-              and (if p == "" then namesRoot (snd s) name named else names (snd s) p or names (snd s) "${name}.${p}"))
-          modules
-      in
-      (fst s, V.map fst others))
+      match V.find (\k -> M.map fst (V.get modules k) == Just (fst s)) (V.range 0 (V.len modules)) with
+      | Just i -> (fst s, V.map (\j -> M.unwrapOr "" (M.map fst (V.get modules j))) (V.getOr [] edges i))
+      | None -> (fst s, []))
     sources
 
 -- The package's name, from its manifest among `sources`.
@@ -289,34 +279,6 @@ fun modulePathIn (file : String) : [String] =
 fun isWordByte (b : Int) : Bool = (b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b == 95 or b == 39 or b == 46
 
 fun byteOf (s : String) (i : Int) : Int = if i >= 0 and i < stringByteLength s then toInt (stringByteAt s i) else 0 - 1
-
--- Whether `text` names the module at `path`: `use Odd`, `use Odd (odd)`,
--- `Odd.odd`, `use Odd.*`, and not `Oddity` or `-- Odd numbers`.
-fun names (text : String) (path : String) : Bool = namesFrom text path 0 (\rest -> True)
-
--- Whether `text` names the root, by the package's name alone: not as the
--- start of another module's path, `App.Syntax`.
-fun namesRoot (text : String) (package : String) (modules : [String]) : Bool =
-  namesFrom text package 0 (\rest ->
-    if S.startsWith "." rest then
-      let under = M.unwrapOr "" (V.head (S.split " " (S.drop rest 1))) in
-      not (V.any (\m -> S.startsWith m under and (S.byteLength under == S.byteLength m or byteOf under (S.byteLength m) == 46)) modules)
-    else True)
-
--- An occurrence of `path` in `text` from byte `from` that is a word of its
--- own, followed by a `.`, or after a `use`, and that `ok` takes, given what
--- follows it.
-fun namesFrom (text : String) (path : String) (from : Int) (ok : String -> Bool) : Bool =
-  match S.indexOfFrom path text from with
-  | None -> False
-  | Just start ->
-      let stop = start + stringByteLength path in
-      let after = byteOf text stop in
-      let before = start == 0 or not (isWordByte (byteOf text (start - 1))) in
-      let follows = after == 0 - 1 or after == 46 or after == 32 or after == 10 or after == 13 or after == 40 or after == 9 in
-      let named = after == 46 or S.endsWith "use" (S.trimEnd (stringSlice text 0 start)) in
-      if before and follows and named and ok (stringSlice text stop (stringByteLength text)) then True
-      else namesFrom text path stop ok
 
 -- How many uniques each module of a package has room for: a part names its
 -- things from the slot of its first module (by path), so that parts
@@ -426,15 +388,24 @@ fun linkProgram (l : Linking Interface) : Result String () ! { Mut, Fs | e } =
 fun nameOf (dir : String) (sources : [(String, String)]) : String =
   nameOfManifest dir (M.unwrapOr "" (M.map snd (V.find (\s -> S.endsWith "Idyll.toml" (fst s)) sources)))
 
-fun nameOfManifest (dir : String) (manifest : String) : String =
+@pub fun nameOfManifest (dir : String) (manifest : String) : String =
   let name = M.unwrapOr (M.unwrapOr dir (V.last (S.split "/" dir))) (manifestField "name" manifest) in
   match manifestField "version" manifest with
   | Just v -> "${name}@${v}"
   | None -> name
 
 -- A field of a manifest, `name = "Util"`: the first line that sets it.
-fun manifestField (key : String) (manifest : String) : Maybe String =
-  V.foldl (\acc l -> match acc with | Just v -> Just v | None -> (let t = S.trim l in if S.startsWith key t and S.contains "=" t then V.get (S.split "\"" t) 1 else None)) None (S.lines manifest)
+@pub fun manifestField (key : String) (manifest : String) : Maybe String =
+  V.foldl
+    (\acc line ->
+      match acc with
+      | Just n -> Just n
+      | None ->
+          let t = S.trim line in
+          let parts = S.split "\"" t in
+          if S.startsWith key t and S.trim (S.drop (S.take t (S.byteLength (V.getOr "" parts 0))) (S.byteLength key)) == "=" then V.get parts 1 else None)
+    None
+    (S.lines manifest)
 
 -- A source's module path, from where it is under `src/`: `src/Collections/
 -- List.idl` is `Collections.List`; `Main.idl` or `Lib.idl` the root.

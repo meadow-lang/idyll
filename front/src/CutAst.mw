@@ -1,10 +1,9 @@
--- What the lowering (`Lower.mw`) keeps of a program while it writes it:
--- names and representations, and the declarations, each with its body
--- already written in the Cut package's tables (`CutStmt`). Nothing else is
--- Cut as data: every statement, producer and consumer the lowering makes
--- is a row of `Cut`, the package's language.
+-- What the lowering (`Lower.mw`) keeps of a program while it writes it
+-- that Cut's language has no type for: representations, symbols and
+-- binders. Everything else -- each declaration, statement, producer and
+-- consumer -- is a row of `Cut`, the package's language, written as the
+-- lowering makes it.
 
-use Cut (CutStmt)
 use Std.Collections.Vector as V
 use Std.String as S
 use Std.Maybe.Maybe.*
@@ -79,17 +78,3 @@ fun isIdent (s : String) : Bool =
 
 -- A binder: a name, and how its value is represented.
 @pub data Binder = Binder String Rep
-
--- `data S <'a> { K(rep, ..); .. }`
-@pub data CData = CData Sym [String] [(String, [Rep])]
-
--- `effect S { @many op(rep, ..) -> rep; .. }`: name, many, params, result
-@pub data COp = COp String Bool [Rep] Rep
-
-@pub data CEffect = CEffect Sym [COp]
-
--- `def S <'a = d; e: Effect> (params; conts) = body`
-@pub data CDef = CDef Sym [(String, String)] [(String, String)] [Binder] [String] CutStmt
-
--- `val S : rep = s`
-@pub data CVal = CVal Sym Rep CutStmt

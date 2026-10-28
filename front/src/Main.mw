@@ -169,7 +169,7 @@ fun builtDump prelude (std : Maybe String) (dir : String) =
        | Ok stdMods ->
            -- Std only if the package uses it, which it does by naming it, as
            -- the Rust compiler links it only then
-           let named = V.any (\f -> match readToString (dir ++ "/src/" ++ f) with | Ok t -> S.contains "Std" t | Err _ -> False) (idlFiles (dir ++ "/src") []) in
+           let named = V.any (\f -> match readToString (dir ++ "/src/" ++ f) with | Ok t -> S.contains "Std" t | Err _ -> False) (D.idlFiles (dir ++ "/src") []) in
            writeOutput "${built prelude (if named then [("Std", stdMods)] else []) (packageName dir) modules}\n"
        | Err why -> writeError "Std: ${why}\n")
   | (None, _) -> writeError "a build's dump needs --std <dir>\n"
@@ -183,28 +183,7 @@ fun built prelude deps (name : String) (modules : [([String], SurfaceProgram)]) 
 -- A package's name, as its `Idyll.toml` says (`name = "Hello"`), or the
 -- directory's; with its version, `Hello@0.1.0`, if it says one, as the Rust
 -- compiler names a package's symbols.
-fun packageName (dir : String) : String ! { Fs | e } =
-  let fallback = M.unwrapOr dir (V.last (S.split "/" dir)) in
-  match readToString (dir ++ "/Idyll.toml") with
-  | Err _ -> fallback
-  | Ok text ->
-      let name = M.unwrapOr fallback (manifestField text "name") in
-      (match manifestField text "version" with
-       | Just v -> "${name}@${v}"
-       | None -> name)
-
--- A field of a manifest's, `key = "value"`: its value.
-fun manifestField (text : String) (key : String) : Maybe String =
-  V.foldl
-    (\acc line ->
-      match acc with
-      | Just n -> Just n
-      | None ->
-          let t = S.trim line in
-          let parts = S.split "\"" t in
-          if S.startsWith key t and S.trim (S.drop (S.take t (S.byteLength (V.getOr "" parts 0))) (S.byteLength key)) == "=" then V.get parts 1 else None)
-    None
-    (S.lines text)
+fun packageName (dir : String) : String ! { Fs | e } = D.nameOfManifest dir (readToStringOr "" (dir ++ "/Idyll.toml"))
 
 -- `file`'s dump, under a line naming it.
 fun each (file : String) dumpOf =
@@ -387,7 +366,7 @@ fun packageTypes prelude (name : String) (modules : [([String], SurfaceProgram)]
 -- has it; the root first, then the rest each after the modules it imports
 -- (`Parts`).
 fun packageModules (dir : String) : Result String [([String], SurfaceProgram)] ! { Fs, Mut | e } =
-  let files = idlFiles dir [] in
+  let files = D.idlFiles dir [] in
   let modules =
     V.map
       (\rel ->
@@ -428,20 +407,6 @@ fun packageModules (dir : String) : Result String [([String], SurfaceProgram)] !
 
 -- How modules sort: the root first, then by path.
 fun key (m : ([String], String)) : String = if V.isEmpty (fst m) then "" else S.join "." (fst m)
-
--- The `.idl` files under a directory, by their paths in it.
-fun idlFiles (dir : String) (prefix : [String]) : [String] ! { Fs | e } =
-  let here = if V.isEmpty prefix then dir else dir ++ "/" ++ S.join "/" prefix in
-  match readDir here with
-  | Err _ -> []
-  | Ok names ->
-      V.concatMap
-        (\n ->
-          let full = here ++ "/" ++ n in
-          if isDir full then idlFiles dir (V.pushBack prefix n)
-          else if S.endsWith ".idl" n then [S.join "/" (V.pushBack prefix n)]
-          else [])
-        names
 
 -- How many steps a program is given before it is taken not to stop.
 def fuel = 5000000

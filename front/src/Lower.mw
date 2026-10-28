@@ -40,11 +40,11 @@ use Idyll.Typer (TRep, Shown)
 use Idyll.Typer as Ty
 use Idyll.Prune as Pr
 use Idyll.Check (Checked)
-use Idyll.CutAst (Rep, Sym, Binder, CData, COp, CEffect, CDef, CVal)
+use Idyll.CutAst (Rep, Sym, Binder)
 use Idyll.CutAst as A
 use Idyll.Num as N
 use Cut as C
-use Cut (CutBuilder, CutProd, CutCons, CutStmt, CutConsKind, kindCutCons)
+use Cut (CutBuilder, CutProd, CutCons, CutStmt, CutDecl, CutConsKind, kindCutCons)
 use Idyll.Check (checkedIn, checkedAt, checkedWith)
 use Idyll.Compiled (compiledOf)
 use Idyll.Link (linked, toLink)
@@ -159,8 +159,9 @@ record L s = {
   toplevel : [Int],
   levels : Ref [LEnv],
   fresh : Ref Int,
-  defs : Ref [CDef],
-  vals : Ref [CVal],
+  -- the program's `def`s, each with its symbol, and its `val`s, written
+  defs : Ref [(Sym, CutDecl)],
+  vals : Ref [CutDecl],
   datas : Ref [Int],
   effects : Ref [Int],
   performed : Ref [Int],
@@ -169,7 +170,7 @@ record L s = {
   handledByEntry : Ref (Maybe Int),
   nativesMade : Ref [String],
   atoms : Ref [String],
-  showDefs : Ref [CDef],
+  showDefs : Ref [(Sym, CutDecl)],
   showInt : Ref (Maybe Sym),
   -- the lambdas with no note on their binders, each with the grades and
   -- types the parameter it is passed for gives them (`noteLambdas`)
@@ -221,6 +222,10 @@ fun param (l : L s) (b : Binder) =
 
 fun contParam (l : L s) (k : String) = C.param l.out C.nowhere k "ptr"
 
+-- `def sym <reps; effects> (params; conts) = body`, written, with its symbol.
+fun defDecl (l : L s) (sym : Sym) (reps : [(String, String)]) (effs : [(String, String)]) (params : [Binder]) (conts : [String]) (body : CutStmt) =
+  (sym, C.defWith l.out C.nowhere (A.symText sym) reps effs (V.map (\b -> param l b) params) (V.map (\k -> contParam l k) conts) body)
+
 fun method (l : L s) (n : String) (ps : [Binder]) (ks : [String]) (body : CutStmt) =
   C.newCutMethod l.out C.nowhere n (V.map (\b -> param l b) ps) (V.map (\k -> contParam l k) ks) body
 
@@ -264,42 +269,17 @@ fun sHandle (l : L s) clauses (x : Binder) (retK : String) (retS : CutStmt) (bod
 -- its data types, roles, the world's operations it leaves to the runtime,
 -- effects, values in the order they are computed, and definitions; as the
 -- text `meadow cut` reads.
-fun writeProgram (l : L s) (entry : Maybe Sym) (answer : Bool) (datas : [CData]) (roles : [(String, Sym)]) (natives : [(Sym, String)]) (effects : [CEffect]) (vals : [CVal]) (defs : [CDef]) : String ! { St s | e } =
+fun writeProgram (l : L s) (entry : Maybe Sym) (answer : Bool) (datas : [CutDecl]) (roles : [(String, Sym)]) (natives : [(Sym, String)]) (effects : [CutDecl]) (vals : [CutDecl]) (defs : [(Sym, CutDecl)]) : String ! { St s | e } =
   let out = l.out in
   let m = C.nowhere in
   let decls =
     V.concat [
-      V.map
-        (\d ->
-          match d with
-          | CData.CData sym vars ctors ->
-              C.dataDecl out m (A.symText sym) (V.map (\x -> "'" ++ x) vars) (V.map (\c -> match c with | (n, fs) -> C.ctorDecl out m (A.segment n) (V.map A.repText fs)) ctors))
-        datas,
+      datas,
       if V.isEmpty roles then [] else [C.rolesDecl out m (V.map (\r -> match r with | (role, sym) -> (role, A.symText sym)) roles)],
       if V.isEmpty natives then [] else [C.nativeDecl out m (V.map (\n -> match n with | (sym, rt) -> (A.symText sym, rt)) natives)],
-      V.map
-        (\e ->
-          match e with
-          | CEffect.CEffect sym ops ->
-              C.effectDecl
-                out
-                m
-                (A.symText sym)
-                (V.map
-                   (\o ->
-                     match o with
-                     | COp.COp n many ps r ->
-                         if many then C.manyOpDecl out m (A.segment n) (V.map A.repText ps) (A.repText r)
-                         else C.opDecl out m (A.segment n) (V.map A.repText ps) (A.repText r))
-                   ops))
-        effects,
-      V.map (\v -> match v with | CVal.CVal sym r body -> C.valDecl out m (A.symText sym) (A.repText r) body) vals,
-      V.map
-        (\d ->
-          match d with
-          | CDef.CDef sym reps effs params conts body ->
-              C.defWith out m (A.symText sym) reps effs (V.map (\b -> param l b) params) (V.map (\k -> contParam l k) conts) body)
-        defs
+      effects,
+      vals,
+      V.map snd defs
     ]
   in
   let entryText = match entry with | Just sym -> A.symText sym | None -> "" in
@@ -493,7 +473,7 @@ fun opInfo (l : L s) (u : Int) : Maybe OpInfo ! { Mut, St s | e } = Hm.lookup u 
   let roots = V.map fst (vecOf showIntU) in
   -- a hole is what it was solved with: first, so that what only a solution
   -- uses is kept; and what the program never uses is left out
-  let (ready, live) = Pr.prepared (zonkedProgram checked.elaborated) checked.toplevel (getRef tc.ctors) roots checked.pure in
+  let (ready, live) = Pr.prepared checked.elaborated checked.toplevel (getRef tc.ctors) roots checked.pure in
   let a = elaboratedArena ready in
   let root = elaboratedRoot ready in
   match elaboratedModuleBody a root with
@@ -561,7 +541,7 @@ fun opInfo (l : L s) (u : Int) : Maybe OpInfo ! { Mut, St s | e } = Hm.lookup u 
                   (match V.find (\e -> lenOf e == lvl) (getRef l.levels) with
                    | None -> err l (nm ++ " is a recursive definition the lowering cannot place")
                    | Just at ->
-                       let d = defOf l (M.unwrapOr (A.idyll package nm) (symbol l u)) at core in
+                       let d = defOf l (M.unwrapOr (A.idyll package nm) (symbol l u)) at core [] [] in
                        setRef l.defs (V.pushBack (getRef l.defs) d)))
           ()
           (Hm.toVec recs)
@@ -609,24 +589,9 @@ fun opInfo (l : L s) (u : Int) : Maybe OpInfo ! { Mut, St s | e } = Hm.lookup u 
             abortHandler l au b inner r kEntry
         | None -> term l env c kEntry
       in
-      let w5 = setRef l.defs (V.pushBack (getRef l.defs) (CDef.CDef entry [] [] [] [k] body)) in
+      let w5 = setRef l.defs (V.pushBack (getRef l.defs) (defDecl l entry [] [] [] [k] body)) in
       let text = declarations l (Just entry) answer in
       if V.isEmpty (getRef l.errors) then Ok text else Err (getRef l.errors)
-
--- The program with each solved metavariable replaced by its solution
--- (`IC.zonked`), its body and its recursive definitions.
-fun zonkedProgram (p : ElaboratedProgram) : ElaboratedProgram ! { St s | e } =
-  let a = elaboratedArena p in
-  let root = elaboratedRoot p in
-  let metas = elaboratedModuleMetas a root in
-  let count = V.foldl (\n s -> if elaboratedSolutionNumber a s + 1 > n then elaboratedSolutionNumber a s + 1 else n) 0 metas in
-  let byNumber = V.foldl (\m s -> Hm.insert (elaboratedSolutionNumber a s) (coreOf a (elaboratedSolutionTerm a s)) m) Hm.empty metas in
-  let solutions = V.map (\i -> Hm.lookup i byNumber) (V.range 0 count) in
-  let z = \t -> IC.zonked (coreOf a t) solutions in
-  let out = newElaboratedBuilder () in
-  let defs = V.map (\d -> (elaboratedDefUnique a d, elaboratedDefName a d, elaboratedDefLevel a d, z (elaboratedDefBody a d), elaboratedDefLocal a d)) (elaboratedModuleDefs a root) in
-  let row = moduleRow out (M.map z (elaboratedModuleBody a root)) defs [] in
-  ElaboratedProgram (freezeElaborated out) row
 
 -- The top-level `let`s: each a slot, and the scope after it a level.
 fun toplevels (l : L s) (env : LEnv) (c : Tm) (i : Int) : (LEnv, Tm) ! { Mut, St s | e } =
@@ -725,13 +690,13 @@ fun toplevel (l : L s) (env : LEnv) (sym : Sym) (rhs : Tm) : Slot ! { Mut, St s 
   if Ty.isTypeFormer l.tc (scopeOf env) (dataOf l rhs) then Slot.SErased
   else if M.isSome (lambda l rhs) then
     let params = paramsOf l env rhs in
-    let d = defOf l sym env rhs in
+    let d = defOf l sym env rhs [] [] in
     let w = setRef l.defs (V.pushBack (getRef l.defs) d) in
     Slot.SDef sym params
   else
     let r = repOf l env rhs in
     let body = term l env rhs (kHalt l) in
-    let w = setRef l.vals (V.pushBack (getRef l.vals) (CVal.CVal sym r body)) in
+    let w = setRef l.vals (V.pushBack (getRef l.vals) (C.valDecl l.out C.nowhere (A.symText sym) (A.repText r) body)) in
     Slot.SVal sym
 
 -- What each of a function's leading lambdas binds.
@@ -853,27 +818,26 @@ fun lift (l : L s) (u : Int) (env : LEnv) : Maybe (Sym, [Param], [Int]) ! { Mut,
                          | None -> A.idyll l.package "#entry")
                     | None -> A.idyll l.package "#entry"
                   in
-                  let taken = \s -> V.any (\x -> match x with | (s2, _, _) -> s2 == s) (Hm.values (getRef l.lifted)) or V.any (\d -> match d with | CDef.CDef s2 _ _ _ _ _ -> s2 == s) (getRef l.defs) in
+                  let taken = \s -> V.any (\x -> match x with | (s2, _, _) -> s2 == s) (Hm.values (getRef l.lifted)) or V.any (\d -> fst d == s) (getRef l.defs) in
                   let sym = uniqueSym taken enclosing nm (A.child enclosing nm) 1 in
                   let allParams = V.append params (paramsOf l at core) in
                   -- known before its body is lowered, which may call it
                   let w = setRef l.lifted (Hm.insert u (sym, allParams, captured) (getRef l.lifted)) in
-                  (match defOf l sym at core with
-                   | CDef.CDef s rvs evs ps ks body ->
-                       let d = CDef.CDef s (V.append repVars rvs) evs (V.append binders ps) ks body in
-                       let w2 = setRef l.defs (V.pushBack (getRef l.defs) d) in
-                       Just (sym, allParams, captured)))
+                  let w2 = setRef l.defs (V.pushBack (getRef l.defs) (defOf l sym at core repVars binders)) in
+                  Just (sym, allParams, captured))
        | _ -> None)
 
 fun uniqueSym taken (enclosing : Sym) (nm : String) (sym : Sym) (n : Int) : Sym ! { Mut, St s | e } =
   if taken sym then uniqueSym taken enclosing nm (A.child enclosing (nm ++ "#" ++ show (n + 1))) (n + 1) else sym
 
--- A function as a `def`: its leading lambdas are its parameters.
-fun defOf (l : L s) (sym : Sym) (env : LEnv) (c : Tm) : CDef ! { Mut, St s | e } =
+-- A function as a `def`: its leading lambdas are its parameters, after
+-- `outerParams` (with `outerReps`, their representations' variables), what
+-- a lifted one is given.
+fun defOf (l : L s) (sym : Sym) (env : LEnv) (c : Tm) (outerReps : [(String, String)]) (outerParams : [Binder]) : (Sym, CutDecl) ! { Mut, St s | e } =
   let (env2, body0, params, repVars, effectVars) = defParams l env c [] [] [] in
   let k = name l "k" in
   let body = term l env2 body0 (kVar l k) in
-  CDef.CDef sym repVars effectVars params [k] body
+  defDecl l sym (V.append outerReps repVars) effectVars (V.append outerParams params) [k] body
 
 fun defParams (l : L s) (env : LEnv) (c : Tm) (params : [Binder]) (rvs : [(String, String)]) (evs : [(String, String)]) : (LEnv, Tm, [Binder], [(String, String)], [(String, String)]) ! { Mut, St s | e } =
   match lambda l c with
@@ -1679,16 +1643,18 @@ fun declarations (l : L s) (entry : Maybe Sym) (answer : Bool) : String ! { Mut,
                 (ctorsOf d)
             in
             let sortedVars = V.foldl (\acc x -> V.concat [V.filter (\y -> not (S.lessThan x y)) acc, [x], V.filter (\y -> S.lessThan x y) acc]) [] repVars in
-            [CData.CData s sortedVars out])
+            [(s, C.dataDecl l.out C.nowhere (A.symText s) (V.map (\x -> "'" ++ x) sortedVars) (V.map (\c -> match c with | (n, fs) -> C.ctorDecl l.out C.nowhere (A.segment n) (V.map A.repText fs)) out))])
       (getRef l.datas)
   in
   -- the box of what goes where an operation takes or gives `any`
   let datas =
-    if getRef l.boxesUsed then V.pushBack datas0 (CData.CData (A.idyll "Prelude" "#Box") ["a0"] [("Box", [Rep.Var "a0"])])
+    if getRef l.boxesUsed then
+      let box = A.idyll "Prelude" "#Box" in
+      V.pushBack datas0 (box, C.dataDecl l.out C.nowhere (A.symText box) ["'a0"] [C.ctorDecl l.out C.nowhere "Box" [A.repText (Rep.Var "a0")]])
     else datas0
   in
   -- the roles, for the prelude's types the program uses
-  let declared = V.map (\d -> match d with | CData.CData s _ _ -> s) datas in
+  let declared = V.map fst datas in
   let rs =
     V.concatMap
       (\rp ->
@@ -1715,10 +1681,12 @@ fun declarations (l : L s) (entry : Maybe Sym) (answer : Bool) : String ! { Mut,
                   match kv with
                   | (u, OpInfo.OpInfo on _ _ _ _ many) ->
                       let (ps, r) = M.unwrapOr ([], TRep.Any) (Ty.opShape l.tc u) in
-                      COp.COp on many (V.map conv ps) (conv r))
+                      let pts = V.map (\p -> A.repText (conv p)) ps in
+                      if many then C.manyOpDecl l.out C.nowhere (A.segment on) pts (A.repText (conv r))
+                      else C.opDecl l.out C.nowhere (A.segment on) pts (A.repText (conv r)))
                 ops
             in
-            [CEffect.CEffect s out])
+            [C.effectDecl l.out C.nowhere (A.symText s) out])
       (getRef l.effects)
   in
   let natives0 =
@@ -1738,7 +1706,7 @@ fun declarations (l : L s) (entry : Maybe Sym) (answer : Bool) : String ! { Mut,
       (getRef l.performed)
   in
   let natives = V.foldl (\acc x -> V.concat [V.filter (\y -> not (symLess (fst x) (fst y))) acc, [x], V.filter (\y -> symLess (fst x) (fst y)) acc]) [] natives0 in
-  writeProgram l entry answer datas rs natives effects (getRef l.vals) (getRef l.defs)
+  writeProgram l entry answer (V.map snd datas) rs natives effects (getRef l.vals) (getRef l.defs)
 
 -- --- where recursive definitions are ----------------------------------------------------
 
@@ -1896,7 +1864,7 @@ fun flatRep (l : L s) (s : Ctx) (ty : Value) : Rep ! { Mut, St s | e } =
   | r -> conv r
 
 fun pushDef (l : L s) (sym : Sym) (params : [(String, Rep)]) (k : String) (body : CutStmt) =
-  setRef l.showDefs (V.pushBack (getRef l.showDefs) (CDef.CDef sym [] [] (V.map (\p -> match p with | (n, r) -> Binder.Binder n r) params) [k] body))
+  setRef l.showDefs (V.pushBack (getRef l.showDefs) (defDecl l sym [] [] (V.map (\p -> match p with | (n, r) -> Binder.Binder n r) params) [k] body))
 
 fun pushShow (l : L s) (sym : Sym) (x : String) (k : String) (body : CutStmt) = pushDef l sym [(x, Rep.Ptr)] k body
 
@@ -2294,7 +2262,7 @@ fun makeByteAt (l : L s) (sym : Sym) =
   let i = name l "i" in
   let b = name l "b" in
   let body = sPrim l "stringByteAt" [pVar l st, pVar l i] [kMuT l (Binder.Binder b (Rep.Number "UInt8")) (sPrim l "toInt" [pVar l b] [kVar l k])] in
-  setRef l.defs (V.pushBack (getRef l.defs) (CDef.CDef sym [] [] [Binder.Binder st Rep.Str, Binder.Binder i Rep.I64] [k] body))
+  setRef l.defs (V.pushBack (getRef l.defs) (defDecl l sym [] [] [Binder.Binder st Rep.Str, Binder.Binder i Rep.I64] [k] body))
 
 fun makeGeneric (l : L s) (n : String) (sym : Sym) : Maybe () ! { Mut, St s | e } =
   let d = name l "d" in
@@ -2304,7 +2272,7 @@ fun makeGeneric (l : L s) (n : String) (sym : Sym) : Maybe () ! { Mut, St s | e 
   let kv = kVar l k in
   let var = \x -> pVar l x in
   let bind = \x r body -> kMuT l (Binder.Binder x r) body in
-  let mk = \s params kk body -> CDef.CDef s [(a, d)] [] (V.append [Binder.Binder d Rep.Desc] params) [kk] body in
+  let mk = \s params kk body -> defDecl l s [(a, d)] [] (V.append [Binder.Binder d Rep.Desc] params) [kk] body in
   let push = \df -> setRef l.defs (V.pushBack (getRef l.defs) df) in
   if n == "arrayToList" then
     (match (preludeCtor l "Nil", preludeCtor l "::") with

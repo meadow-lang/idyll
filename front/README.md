@@ -47,7 +47,9 @@ cd examples/hello
 ../../front/target/release/native/silo/Idyll help
 ```
 
-That is `Driver.mw`: a `cli!` (Lingua's command line) over a `make!`
+The command line is one `cli!` (Lingua's command line) in `Main.mw`: these
+commands, and the passes' dumps below, theirs a named group of options
+(`--prelude`, `--std`). The commands are `Driver.mw`'s, over a `make!`
 (Lingua's build), each package a unit. A package's `[dependencies]` are
 the units it depends on, read as the Rust driver reads them: by `path`, or
 by `git`, at a `version` (the newest release tag it allows), a `tag`, a
@@ -383,9 +385,16 @@ literals, ...) it copies.
 - A pattern answers a function that writes it once every name it binds is
   bound, so an equation's patterns bind all their names before any `.e`
   among them is renamed.
-- `let`, `case` and handler blocks take their children `raw`, to bind and
-  pair their declarations, and call the pass's own functions inside the
-  scopes those make.
+- A `case`'s alternatives, a term's equations and a handler's clauses are
+  cases of their own, each binding its names in a scope of its own; their
+  right-hand sides and guards, the same in `Hir`, are copied.
+- A data type's or an effect's parameters are a case, each bound after its
+  kind is renamed. A constructor and an operation answer what writes them
+  given their name, which the data type or effect was bound with before
+  (`bindDatas`).
+- `let` takes its declarations `raw`, to bind and pair them, and calls the
+  pass's own functions inside the scope that makes; so does a definition's
+  equation (`renameClause`), its result type around each body.
 
 What is around the pass is ordinary code that hands each term and pattern
 to it: a package's modules, their `use`s, and each module's declarations,
@@ -863,12 +872,13 @@ A lambda read back from a value (a solved metavariable's, say) has no
 types on its binders; passed as an argument, it takes those of the
 parameter it is passed for (`Ty.annotateArgs`, kept in `noted` for
 `lambda` to find), so that `\x -> 7` passed for `hash : Int -> Int` takes
-an `i64`, not an `any`. Before lowering, each solved metavariable is
-made its solution (`Core.zonked`, `Core::zonked`), so that what only a
-solution uses is kept; a solution applied to the variables it was made a
-function of is applied to them then, rather than lowered as a closure.
-Then `Prune.mw` (`prune.rs`) leaves out the definitions nothing live uses
-(most of the prelude). A program is linked with Std only if what it
+an `i64`, not an `any`. Before lowering, `Prune.mw`'s pass, `prepare :
+Elaborated -> Elaborated`, makes each solved metavariable its solution
+(`Core::zonked`), so that what only a solution uses is kept; a solution
+applied to the variables it was made a function of is applied to them
+then, rather than lowered as a closure (its context carries what its
+lambdas' variables are, under how many binders). And it leaves out the
+definitions nothing live uses (`prune.rs`; most of the prelude). A program is linked with Std only if what it
 computes uses something of Std's (`Link.toLink`, `pipeline::to_link`):
 through solutions, not into what is erased.
 
@@ -898,8 +908,8 @@ a `u8`: its `def` makes it an `Int` with `toInt`. A character is Cut's
 [meadow-lang/Cut](https://github.com/meadow-lang/Cut), the package
 MeadowBoot uses too, which writes its text. `CutAst.mw` keeps what Cut's
 package has no type of its own for: the representations (`Rep`: `i64`,
-`u8`, `bool`, `char`, `unit`, `str`, `ptr`, ...), symbols, and the
-declarations made before they are written.
+`u8`, `bool`, `char`, `unit`, `str`, `ptr`, ...) and symbols. Each
+declaration is a row of Cut's language from when it is made.
 
 An operation's slot of a type its effect or itself is generic in is
 declared `any`, and Cut's `any` holds a box (`docs/CUT.md`, open question

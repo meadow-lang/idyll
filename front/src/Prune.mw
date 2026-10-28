@@ -16,6 +16,7 @@
 -- one.
 
 use Lingua (pass!)
+use Lingua.Lang (Meta)
 use Idyll.Elaborated
 use Idyll.Elaborated (Elaborated!)
 use Idyll.Core as C
@@ -27,11 +28,17 @@ use Std.Maybe.Maybe.*
 
 -- What `prepare` carries down: each metavariable's solution, which of the
 -- top-level definitions are left out, and which of them the term being
--- copied is, if it is one of their `let`s (else -1).
+-- copied is, if it is one of their `let`s (else -1). And, inside a
+-- solution, what its variables are: a solution is closed, a function of
+-- the variables the metavariable is applied to, and where it is applied
+-- to variables those are put for its lambdas' (`subst`, the innermost
+-- first), under the `depth` binders written since.
 record Cx = {
   sols : HashMap Int ElaboratedTerm,
   dead : [Bool],
-  at : Int
+  at : Int,
+  depth : Int,
+  subst : [Int]
 }
 
 -- What the context says, read through its type.
@@ -45,23 +52,76 @@ fun inTop (cx : Cx) : Bool = cx.at >= 0 and cx.at < V.len cx.dead
 
 fun setAt (cx : Cx) (i : Int) : Cx = { cx | at = i }
 
+-- Under `n` more binders.
+fun deeper (cx : Cx) (n : Int) : Cx = { cx | depth = cx.depth + n }
+
+-- In a solution, its lambdas' variables `subst`.
+fun entered (cx : Cx) (subst : [Int]) : Cx = { cx | at = 0 - 1, depth = 0, subst }
+
+-- Variable `i` here, as it is written out.
+fun mapped (cx : Cx) (i : Int) : Int =
+  if i < cx.depth then i
+  else
+    match V.get cx.subst (i - cx.depth) with
+    | Just j -> j + cx.depth
+    | None -> i - V.len cx.subst
+
+-- `prepare`: each solved metavariable its solution (`Core.zonked`), one
+-- applied to a spine of variables a function of them applied there and
+-- then, as the checker solves them, so that no use builds a closure; and
+-- the top-level definitions nothing live uses left out.
 pass! {
   prepare : Elaborated -> Elaborated with cx
     | Module { raw body, defs, metas } ->
-        Module { body = M.map (\b -> prepareTerm src out (setAt cx 0) b) body, defs, metas }
+        Module { body = M.map (\b -> prepareTerm src out (setAt cx 0) b) body, defs, metas = [] }
+    | Var { index, name } -> Var { index = mapped cx index, name }
     | Meta { number } ->
         (match solution cx number with
-         | Just s -> prepareTerm src out (setAt cx (0 - 1)) s
+         | Just s -> prepareTerm src out (entered cx []) s
          | None -> Meta { number })
+    | App { raw func, raw arg } ->
+        (match spineOf src node [] with
+         | (h, args) ->
+             (match (src, h) with
+              | ElaboratedTermMeta n ->
+                  (match solution cx n with
+                   | Just s -> applied src out cx here s args []
+                   | None -> App { func = prepareTerm src out cx func, arg = prepareTerm src out cx arg })
+              | _ -> App { func = prepareTerm src out cx func, arg = prepareTerm src out cx arg }))
+    | Pi { name, icit, grade, inType, dom, later cod } -> Pi { name, icit, grade, inType, dom, cod = cod (deeper cx 1) }
+    | Lam { name, later body } -> Lam { name, body = body (deeper cx 1) }
+    | Alt { head, name, vars, later body } -> Alt { head, name, vars, body = body (deeper cx (V.len vars)) }
     | Let { name, raw value, raw body } ->
         (if inTop cx then
            Let {
              name,
              value = (if isDead cx (atLet cx) then newElaboratedTermType out here 0 else prepareTerm src out (setAt cx (0 - 1)) value),
-             body = prepareTerm src out (setAt cx (atLet cx + 1)) body
+             body = prepareTerm src out (deeper (setAt cx (atLet cx + 1)) 1) body
            }
-         else Let { name, value = prepareTerm src out (setAt cx (0 - 1)) value, body = prepareTerm src out (setAt cx (0 - 1)) body })
+         else Let { name, value = prepareTerm src out (setAt cx (0 - 1)) value, body = prepareTerm src out (deeper (setAt cx (0 - 1)) 1) body })
 }
+
+-- A term's head and the arguments it is applied to, in order.
+fun spineOf (a : ElaboratedArena) (t : ElaboratedTerm) (args : [ElaboratedTerm]) : (ElaboratedTerm, [ElaboratedTerm]) =
+  match (a, t) with
+  | ElaboratedTermApp f x -> spineOf a f (V.append [x] args)
+  | _ -> (t, args)
+
+-- Solution `s` applied to `args`: each of its lambdas that meets a variable
+-- gives the variable for its own (`peeled`, the innermost first), and what
+-- is left is applied as it is (`Core.applied`).
+fun applied src out (cx : Cx) (m : Meta) (s : ElaboratedTerm) (args : [ElaboratedTerm]) (peeled : [Int]) =
+  let rest = \u -> V.foldl (\f x -> newElaboratedTermApp out m f (prepareTerm src out cx x)) (prepareTerm src out (entered cx peeled) s) args in
+  match ((src, s), V.head args) with
+  | (ElaboratedTermLam _ body, Just x) ->
+      (match (src, x) with
+       | ElaboratedTermVar i _ -> applied src out cx m body (V.drop args 1) (V.append [mapped cx i] peeled)
+       | _ -> rest ())
+  | (ElaboratedTermMeta n, _) ->
+      (match solution cx n with
+       | Just s2 -> applied src out cx m s2 args peeled
+       | None -> rest ())
+  | _ -> rest ()
 
 -- The program made ready to lower: its metavariables solved, and the
 -- top-level definitions nothing live uses left out; and the uniques of the
@@ -73,10 +133,10 @@ pass! {
   let sols = V.foldl (\m s -> Hm.insert (elaboratedSolutionNumber a s) (elaboratedSolutionTerm a s) m) Hm.empty (elaboratedModuleMetas a root) in
   let recDefs = V.map (\d -> (elaboratedDefUnique a d, elaboratedDefLevel a d, elaboratedDefBody a d)) (elaboratedModuleDefs a root) in
   match elaboratedModuleBody a root with
-  | None -> (prepare (Cx { sols, dead = [], at = 0 - 1 }) p, [])
+  | None -> (prepare (Cx { sols, dead = [], at = 0 - 1, depth = 0, subst = [] }) p, [])
   | Just program ->
-      let (liveLets, liveRecs) = live a program toplevel recDefs ctors roots pure in
-      (prepare (Cx { sols, dead = V.map (\b -> not b) liveLets, at = 0 - 1 }) p, liveRecs)
+      let (liveLets, liveRecs) = live a sols program toplevel recDefs ctors roots pure in
+      (prepare (Cx { sols, dead = V.map (\b -> not b) liveLets, at = 0 - 1, depth = 0, subst = [] }) p, liveRecs)
 
 -- Whether a term is a value without running anything.
 fun isPureValue (a : ElaboratedArena) (ctors : HashMap Int c) (t : ElaboratedTerm) : Bool =
@@ -101,8 +161,9 @@ fun spine (a : ElaboratedArena) (t : ElaboratedTerm) (args : [ElaboratedTerm]) :
   | _ -> (t, args)
 
 -- Which of the first `toplevel` `let`s around the program's expression are
--- live, and which recursive definitions are.
-fun live (a : ElaboratedArena) (program : ElaboratedTerm) (toplevel : [Int]) (recDefs : [(Int, Int, ElaboratedTerm)]) (ctors : HashMap Int c) (roots : [Int]) (pure : [Int]) : ([Bool], [Int]) =
+-- live, and which recursive definitions are: what a solved metavariable's
+-- solution refers to among them.
+fun live (a : ElaboratedArena) (sols : HashMap Int ElaboratedTerm) (program : ElaboratedTerm) (toplevel : [Int]) (recDefs : [(Int, Int, ElaboratedTerm)]) (ctors : HashMap Int c) (roots : [Int]) (pure : [Int]) : ([Bool], [Int]) =
   -- the builtins and the primitive operations come first
   let base = V.len C.builtins + 8 in
   let (lets, body) = peel a program (V.len toplevel) [] in
@@ -119,7 +180,7 @@ fun live (a : ElaboratedArena) (program : ElaboratedTerm) (toplevel : [Int]) (re
   let rootRecs = V.filter (\d -> match d with | (u, _, _) -> V.elem u roots) recDefs in
   let liveRecs0 = V.map (\d -> match d with | (u, _, _) -> u) rootRecs in
   let work1 = V.append work0 (V.map (\d -> match d with | (_, l, c) -> (l, c)) rootRecs) in
-  visit a work1 base lets recs liveLets0 liveRecs0
+  visit a sols work1 base lets recs liveLets0 liveRecs0
 
 -- The values of the first `n` `let`s, and what is under them.
 fun peel (a : ElaboratedArena) (t : ElaboratedTerm) (n : Int) (acc : [ElaboratedTerm]) : ([ElaboratedTerm], ElaboratedTerm) =
@@ -129,12 +190,12 @@ fun peel (a : ElaboratedArena) (t : ElaboratedTerm) (n : Int) (acc : [Elaborated
     | ElaboratedTermLet _ rhs rest -> peel a rest n (V.pushBack acc rhs)
     | _ -> (acc, t)
 
-fun visit (a : ElaboratedArena) (work : [(Int, ElaboratedTerm)]) (base : Int) (lets : [ElaboratedTerm]) recs (liveLets : [Bool]) (liveRecs : [Int]) : ([Bool], [Int]) =
+fun visit (a : ElaboratedArena) (sols : HashMap Int ElaboratedTerm) (work : [(Int, ElaboratedTerm)]) (base : Int) (lets : [ElaboratedTerm]) recs (liveLets : [Bool]) (liveRecs : [Int]) : ([Bool], [Int]) =
   match V.last work with
   | None -> (liveLets, liveRecs)
   | Just (at, t) ->
       let rest = V.take work (V.len work - 1) in
-      let (levels, opaques) = references a t at 0 ([], []) in
+      let (levels, opaques) = references a sols t at 0 ([], []) in
       let (ll, w2) =
         V.foldl
           (\acc lv ->
@@ -158,12 +219,14 @@ fun visit (a : ElaboratedArena) (work : [(Int, ElaboratedTerm)]) (base : Int) (l
           (liveRecs, w2)
           opaques
       in
-      visit a w3 base lets recs ll lr
+      visit a sols w3 base lets recs ll lr
 
 -- The levels (in a context of `at` variables, `depth` binders in) and the
--- constants a term refers to, outside its erased parts.
-fun references (a : ElaboratedArena) (t : ElaboratedTerm) (at : Int) (depth : Int) (acc : ([Int], [Int])) : ([Int], [Int]) =
-  let go = \x d acc2 -> references a x at d acc2 in
+-- constants a term refers to, outside its erased parts; for a solved
+-- metavariable, what its solution refers to (closed, it refers to no level
+-- but through what it is applied to).
+fun references (a : ElaboratedArena) (sols : HashMap Int ElaboratedTerm) (t : ElaboratedTerm) (at : Int) (depth : Int) (acc : ([Int], [Int])) : ([Int], [Int]) =
+  let go = \x d acc2 -> references a sols x at d acc2 in
   match (a, t) with
   | ElaboratedTermVar i _ ->
       if i >= depth then
@@ -171,6 +234,7 @@ fun references (a : ElaboratedArena) (t : ElaboratedTerm) (at : Int) (depth : In
         (match acc with | (ls, os) -> if lv >= 0 and not (V.elem lv ls) then (V.pushBack ls lv, os) else acc)
       else acc
   | ElaboratedTermOpaque u _ -> (match acc with | (ls, os) -> if V.elem u os then acc else (ls, V.pushBack os u))
+  | ElaboratedTermMeta n -> (match Hm.lookup n sols with | Just sol -> go sol depth acc | None -> acc)
   | ElaboratedTermRuntime n x -> if kindElaboratedNote a n == ElaboratedNoteKind.Erased then acc else go x depth acc
   | ElaboratedTermLam _ b -> go b (depth + 1) acc
   | ElaboratedTermLet _ e b -> go b (depth + 1) (go e depth acc)

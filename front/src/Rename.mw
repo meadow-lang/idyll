@@ -843,7 +843,7 @@ data BoundParam g t = BoundParam Ident (Maybe Ident) (Maybe g) (Maybe t)
 -- renamed. What has no case is copied as it is -- an application, an
 -- annotation's term, a row.
 pass! {
-  resolve : Surface -> Hir with r from Expr, Pat, Param
+  resolve : Surface -> Hir with r from Expr, Pat, Param, TypeParam, Ctor, OpSig
     | Name { text } -> text
     | Field { name, value } -> (name, value)
     | PatField { name, later pat } -> (name, pat r)
@@ -881,20 +881,45 @@ pass! {
         scoped r (\u ->
           (let bs = renameDecls src out r decls in
            Let { groups = [newHirGroupRec out here bs], body = body r }))
-    | Case { scrutinee, raw alts } ->
-        Case {
-          scrutinee,
-          clauses = V.map (\a -> renameClause src out r here [surfaceAltPat src a] None (surfaceAltRhs src a)) alts
-        }
-    | Handle { body, raw clauses } -> Handle { body, clauses = V.map (\c -> handleClause src out r c) clauses }
+    | Case { scrutinee, alts } -> Case { scrutinee, clauses = alts }
+    -- an alternative's pattern binds its names for the rest of it
+    | Alt { later pat, later rhs } ->
+        scoped r (\u -> (let p = (pat r) () in Clause { pats = [p], rhs = rhs r }))
+    | Handle { body, clauses } -> Handle { body, clauses }
+    -- `op x k -> e`: `return` is not a name
+    | Clause { op, params, later body } ->
+        (let op2 = if op != "return" then Just (idNode out here (useName r op)) else None in
+         scoped r (\u ->
+           (let xs = V.map (\x -> idNode out here (bindName r x)) params in
+            HandleClause { op = op2, params = xs, body = body r })))
     | Expr.Seq { items } -> V.foldr (\h tl -> newHirExprSeqCons out here h tl) (newHirExprSeqNil out here) items
     | Expr.Record { name, fields } ->
         (match recordLiteral out here r name fields with
          | Just built -> built
          | None -> unresolved out here)
     -- equations: each a clause of a match, as a definition's are
-    | Equations { raw eqs } ->
-        Match { clauses = V.map (\q -> renameClause src out r here (surfaceEquationParams src q) None (surfaceEquationRhs src q)) eqs }
+    | Equations { eqs } -> Match { clauses = eqs }
+    -- its patterns bind all their names before any `.e` among them is renamed
+    | Equation { later params, later rhs } ->
+        scoped r (\u ->
+          (let writers = V.map (\p -> p r) params in
+           Clause { pats = V.map (\w -> w ()) writers, rhs = rhs r }))
+    -- a data type's or an effect's parameter: its kind may mention the
+    -- parameters before it, not itself
+    | TypeParam { name, later kindSig } ->
+        (let k = M.map (\f -> asType r (\u -> f r)) kindSig in
+         TypeParam { name = idNode out here (bindName r name), kindSig = k })
+    -- a constructor and an operation answer what writes them, given the name
+    -- the data type or effect was bound with (see `bindDatas`)
+    | Fields { name, later fields } ->
+        (let ts = V.map (\f -> asType r (\u -> f r)) fields in
+         \(x : HirIdent) -> Fields { name = x, fields = ts })
+    | Ctor.Sig { name, raw ty } ->
+        (let t = renameSig src out r ty in
+         \(x : HirIdent) -> Sig { name = x, ty = t })
+    | OpSig { name, raw ty, many } ->
+        (let t = renameSig src out r ty in
+         \(x : HirIdent) -> Op { name = x, ty = t, many })
     -- the trait's arguments, given by hand, are types
     | RecordOf { name, raw args, fields, inst } ->
         (let given = V.map (\a -> asType r (\u -> resolveExpr src out r a)) args in
@@ -940,15 +965,6 @@ fun wrapParam out (m : Meta) p body =
        | None -> newHirExprLam out m (idNode out m name) grade ty body
        | Just b -> newHirExprLam out m (idNode out m b) None None (newHirExprLetBox out m (idNode out m name) (newHirExprVar out m (idNode out m b)) body))
 
--- `op x k -> e`: `return` is not a name.
-fun handleClause src out (r : Rn) (c : SurfaceClause) =
-  let m = metaSurfaceClause src c in
-  let op = surfaceNameText src (surfaceClauseOp src c) in
-  let op2 = if op != "return" then Just (idNode out m (useName r op)) else None in
-  scoped r (\u ->
-    let params = V.map (\x -> idNode out m (bindName r (surfaceNameText src x))) (surfaceClauseParams src c) in
-    newHirHandleClause out m op2 params (resolveExpr src out r (surfaceClauseBody src c)))
-
 -- A signature: the lower-case names it mentions that nothing binds are bound
 -- in front of it, implicitly, in order of appearance, their types left to
 -- the checker.
@@ -960,9 +976,10 @@ fun renameSig src out (r : Rn) (ty : SurfaceExpr) =
     let body = asType r (\v -> resolveExpr src out r ty) in
     V.foldr (\x acc -> newHirExprPi out m (Just (idNode out m x)) Icit.Implicit None (newHirExprOmitted out m) acc) body bound)
 
--- One equation or alternative: its patterns bind names for the rest of it,
--- all of them before any `.e` is renamed; then the right-hand side, under a
--- result type if one was written.
+-- A definition's equation: its patterns bind names for the rest of it, all
+-- of them before any `.e` is renamed; then the right-hand side, under the
+-- result type if one was written. (An alternative's, and an equation's of
+-- a term, are the pass's `Alt` and `Equation`.)
 fun renameClause src out (r : Rn) (m : Meta) (pats : [SurfacePat]) (resultTy : Maybe SurfaceExpr) (rhs : SurfaceRhs) =
   scoped r (\u ->
     let writers = V.map (\p -> resolvePat src out r p) pats in
@@ -1099,13 +1116,7 @@ fun bindDatas (r : Rn) (a : SurfaceArena) (datas : [SurfaceData]) =
 
 -- A data type's or an effect's parameters: each kind may mention the
 -- parameters before it.
-fun typeParams src out (r : Rn) (ps : [SurfaceTypeParam]) =
-  V.map
-    (\p ->
-      let m = metaSurfaceTypeParam src p in
-      let k2 = M.map (\t -> asType r (\u -> resolveExpr src out r t)) (surfaceTypeParamKindSig src p) in
-      newHirTypeParam out m (idNode out m (bindName r (surfaceNameText src (surfaceTypeParamName src p)))) k2)
-    ps
+fun typeParams src out (r : Rn) (ps : [SurfaceTypeParam]) = V.map (\p -> resolveTypeParam src out r p) ps
 
 fun renameDatas src out (r : Rn) (datas : [SurfaceData]) (names : [(Ident, [Ident])]) =
   V.map
@@ -1122,10 +1133,7 @@ fun renameDatas src out (r : Rn) (datas : [SurfaceData]) (names : [(Ident, [Iden
                 (\j ->
                   let cname = idNode out m (V.getOr (Ident.Ident [] "_") ctorNames j) in
                   match V.get cs j with
-                  | Just c ->
-                      (match (src, c) with
-                       | SurfaceCtorFields _ ts -> newHirCtorFields out m cname (V.map (\t -> asType r (\v -> resolveExpr src out r t)) ts)
-                       | SurfaceCtorSig _ ty -> newHirCtorSig out m cname (renameSig src out r ty))
+                  | Just c -> (resolveCtor src out r c) cname
                   | None -> newHirCtorFields out m cname [])
                 (V.range 0 (V.len cs))
             in
@@ -1156,7 +1164,7 @@ fun renameEffect src out (r : Rn) (e : SurfaceEffect) (names : (Ident, [Ident]))
           V.map
             (\j ->
               match V.get ops j with
-              | Just o -> newHirOp out m (idNode out m (V.getOr (Ident.Ident [] "_") opNames j)) (renameSig src out r (surfaceOpSigTy src o)) (surfaceOpSigMany src o)
+              | Just o -> (resolveOpSig src out r o) (idNode out m (V.getOr (Ident.Ident [] "_") opNames j))
               | None -> newHirOp out m (idNode out m (Ident.Ident [] "_")) (newHirExprHole out m) False)
             (V.range 0 (V.len ops))
         in
