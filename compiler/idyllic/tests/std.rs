@@ -548,6 +548,51 @@ fn bytes_are_read_and_written_as_meadows_are() {
     );
 }
 
+const PARSE: &str = "use Std.String.Parse as P\nuse Std.String.Parse (Parser, ParseError)\nuse Std.String.Parse.Char as C\n\
+                     use Std.String.Parse.Lexer as L\nuse Std.Char (isDigit)\nuse Std.Collections.Vector as V\nuse Std.String as S\n\n\
+                     errorOf : {a : Type} -> (r : Result (ParseError String) a) -> String\n\
+                     errorOf (Ok x) = \"no error\"\nerrorOf (Err e) = S.trimEnd (P.parseErrorTextPretty e)\n\n";
+
+#[test]
+fn parsers_say_what_they_found_and_wanted_as_meadows_do() {
+    let src = format!(
+        "{PARSE}digit : Parser String Char\ndigit = P.label \"a digit\" (P.satisfy isDigit)\n\n\
+         (P.take1 \"héllo\" 1, P.takeN \"héllo\" 2 0, P.runParser (P.chunk \"ab\") \"abc\", P.runParser (P.takeWhile1P \"a digit\" isDigit) \"123x\", \
+         errorOf (P.runParser (P.single 'a') \"b\"), errorOf (P.runParser (P.chunk \"let\") \"lex\"), \
+         errorOf (P.runParser (P.alt (P.single 'a') (P.single 'b')) \"c\"), errorOf (P.runParser (P.single 'a') \"\\n\"), \
+         errorOf (P.runParser (P.thenSkip (P.many digit) P.eof) \"12x\"), errorOf (P.runParser (P.skipThen (P.optional (P.single '-')) digit) \"x\"), \
+         P.parse (P.skipThen (P.chunk \"let x = \") (P.chunk \"1\")) \"let x = y\", \
+         P.runParser (P.alt (P.try (P.skipThen (P.single 'l') (P.single 'z'))) (P.single 'l')) \"let\")\n"
+    );
+    assert_eq!(
+        value(&src),
+        "(Just ('é', 3), Just (\"hé\", 3), Ok \"ab\", Ok \"123\", \"unexpected 'b'\\nexpecting 'a'\", \"unexpected \\\"lex\\\"\\nexpecting \\\"let\\\"\", \
+         \"unexpected 'c'\\nexpecting 'a' or 'b'\", \"unexpected newline\\nexpecting 'a'\", \"unexpected 'x'\\nexpecting end of input or a digit\", \
+         \"unexpected 'x'\\nexpecting a digit or '-'\", Err ((8, 9), \"unexpected 'y'\\nexpecting '1'\\n\"), Ok 'l')"
+    );
+}
+
+#[test]
+fn lexemes_numbers_and_indentation() {
+    let src = format!(
+        "{PARSE}use Std.Ordering.Ordering.*\n\n\
+         sc : Parser String ()\nsc = L.space C.space1 (L.skipLineComment \"--\") (L.skipBlockCommentNested \"{{-\" \"-}}\")\n\n\
+         ok : {{a : Type}} -> (p : Parser String a) -> (text : String) -> Result (ParseError String) a\nok p text = P.runParser (P.thenSkip p P.eof) text\n\n"
+    );
+    let src = format!(
+        "{src}(ok (P.map V.toList (P.skipThen sc (P.many (L.lexeme sc L.decimal)))) \" 1 -- one\\n 2 {{- two {{- nested -}} -}} 3\", \
+         ok L.hexadecimal \"fF\", ok L.octal \"755\", ok (L.signed sc L.decimal) \"- 7\", ok L.float \"2.5e-1\", errorOf (ok L.float \"3\"), \
+         ok (P.map V.toList (P.skipThen (C.char '\"') (P.manyTill L.charLiteral (C.char '\"')))) \"\\\"\\\\x41\\\\u{{e9}}\\\"\", \
+         errorOf (P.runParser (P.skipThen (C.string \"x:\\n\") (L.indentGuard C.space Greater 1)) \"x:\\ny\"), \
+         P.runParser (C.stringCI \"LeT\") \"lEt\")\n"
+    );
+    assert_eq!(
+        value(&src),
+        "(Ok (1 :: 2 :: 3 :: Nil), Ok 255, Ok 493, Ok -7, Ok 0.25, \"unexpected end of input\\nexpecting a digit or '.'\", Ok ('A' :: 'é' :: Nil), \
+         \"incorrect indentation (got 1, should be greater than 1)\", Ok \"lEt\")"
+    );
+}
+
 #[test]
 fn streams_are_yielded_and_consumed() {
     let src = "use Std.Stream as St\nuse Std.Yield (Yield, yield)\nuse Std.Collections.Vector as V\n\n\

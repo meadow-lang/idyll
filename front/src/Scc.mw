@@ -306,3 +306,99 @@ fun vecOf (m : Maybe a) : [a] =
   match m with
   | Just x -> [x]
   | None -> []
+
+-- --- data types among the definitions ------------------------------------------
+
+-- What a data type's declaration mentions: its parameters' kinds, its kind,
+-- and its constructors' types.
+fun dataMentions (a : HirArena) (d : HirData) : Names =
+  let kinds = V.append (V.concatMap (\p -> vecOf (hirTypeParamKindSig a p)) (hirDataParams a d)) (vecOf (hirDataKindSig a d)) in
+  let fromKinds = V.foldl (\s k -> freeInto a k s) Hm.empty kinds in
+  V.foldl
+    (\s c ->
+      match (a, c) with
+      | HirCtorFields n ts -> V.foldl (\acc t -> freeInto a t acc) s ts
+      | HirCtorSig n ty -> freeInto a ty s)
+    fromKinds
+    (hirDataCtors a d)
+
+-- A data type's own uniques: its name's and its constructors'.
+fun dataOwn (a : HirArena) (d : HirData) : [Int] =
+  V.append
+    [uniqueOf a (hirDataName a d)]
+    (V.map (\c -> match (a, c) with | HirCtorFields n ts -> uniqueOf a n | HirCtorSig n ty -> uniqueOf a n) (hirDataCtors a d))
+
+-- The data types and the groups in one order, each after what it mentions
+-- (`idyllic_scc::interleave`): a data type before every group, unless it
+-- mentions a definition (a type alias, a type family, a trait's associated
+-- type), when it comes after that definition's group, and every group that
+-- mentions it after it; otherwise everything keeps its place. The data
+-- types in their new order, how many groups come before each, and the
+-- groups.
+@pub fun interleave (a : HirArena) (datas : [HirData]) (groups : [HirGroup]) : ([HirData], [Int], [HirGroup]) =
+  let nd = V.len datas in
+  let ng = V.len groups in
+  let groupOf =
+    V.foldl
+      (\acc g -> V.foldl (\acc2 b -> Hm.insert (uniqueOf a (hirBindName a b)) g acc2) acc (V.concatMap (bindsOf a) (vecOf (V.get groups g))))
+      Hm.empty
+      (V.range 0 ng)
+  in
+  let mentions = V.map (\d -> Hm.keys (dataMentions a d)) datas in
+  if not (V.any (\m -> V.any (\u -> Hm.member u groupOf) m) mentions) then (datas, V.replicate nd 0, groups)
+  else
+    let dataOf2 = V.foldl (\acc i -> match V.get datas i with | Just d -> V.foldl (\acc2 u -> Hm.insert u i acc2) acc (dataOwn a d) | None -> acc) Hm.empty (V.range 0 nd) in
+    let n = nd + ng in
+    let dataNeeds =
+      V.map
+        (\i ->
+          let m = V.getOr [] mentions i in
+          let gs = V.concatMap (\u -> match Hm.lookup u groupOf with | Just g -> [nd + g] | None -> []) m in
+          let ds = V.concatMap (\u -> match Hm.lookup u dataOf2 with | Just j -> if j != i then [j] else [] | None -> []) m in
+          V.append gs ds)
+        (V.range 0 nd)
+    in
+    let groupNeeds =
+      V.map
+        (\g ->
+          let binds = V.concatMap (bindsOf a) (vecOf (V.get groups g)) in
+          let free = V.foldl (\s b -> V.foldl (\s2 t -> freeInto a t s2) (freeInto a (hirBindRhs a b) s) (vecOf (hirBindTy a b))) Hm.empty binds in
+          V.concatMap
+            (\u ->
+              V.append
+                (match Hm.lookup u groupOf with | Just h -> if h != g then [nd + h] else [] | None -> [])
+                (match Hm.lookup u dataOf2 with | Just j -> [j] | None -> []))
+            (Hm.keys free))
+        (V.range 0 ng)
+    in
+    let needs = V.append dataNeeds groupNeeds in
+    let place =
+      V.append
+        (V.map (\m -> V.foldl (\acc u -> match Hm.lookup u groupOf with | Just g -> if 2 * (g + 1) > acc then 2 * (g + 1) else acc | None -> acc) 0 m) mentions)
+        (V.map (\g -> 2 * g + 1) (V.range 0 ng))
+    in
+    let order = kahn needs place n [] Hm.empty in
+    let (outDatas, after, outGroups) =
+      V.foldl
+        (\acc v ->
+          match acc with
+          | (ds, af, gs) ->
+              if v < nd then (V.append ds (vecOf (V.get datas v)), V.pushBack af (V.len gs), gs)
+              else (ds, af, V.append gs (vecOf (V.get groups (v - nd)))))
+        ([], [], [])
+        order
+    in
+    (outDatas, after, outGroups)
+
+-- Whatever is ready, the one whose place is first; at a cycle, what is
+-- left, in place order.
+fun kahn (needs : [[Int]]) (place : [Int]) (n : Int) (order : [Int]) (done : HashMap Int Bool) : [Int] =
+  if V.len order >= n then order
+  else
+    let pending = V.filter (\v -> not (Hm.member v done)) (V.range 0 n) in
+    let ready = V.filter (\v -> V.all (\w -> Hm.member w done) (V.getOr [] needs v)) pending in
+    let pick = \vs -> V.foldl (\best v -> match best with | Just b -> if V.getOr 0 place v < V.getOr 0 place b then Just v else best | None -> Just v) None vs in
+    let next = match pick ready with | Just v -> Just v | None -> pick pending in
+    match next with
+    | Just v -> kahn needs place n (V.pushBack order v) (Hm.insert v True done)
+    | None -> order

@@ -995,6 +995,18 @@ impl Checker {
                 self.close_opened();
             }
             ctx = next;
+            // (a top-level definition's value, by its name: what a
+            // dependency's exported right-hand side names the prelude's by)
+            if self.lets == 0 {
+                if let hir::BindGroup::NonRec(b) = g {
+                    if let Some(super::Entry::Local(level)) = b.name.unique.and_then(|u| ctx.names.get(&u)) {
+                        if ctx.binders[*level].info == BinderInfo::Defined {
+                            let value = ctx.value(*level);
+                            self.globals.entry(b.name.unique.expect("found by it")).or_insert(value);
+                        }
+                    }
+                }
+            }
             pending.push(p);
             wraps.push(w);
         }
@@ -1011,16 +1023,33 @@ impl Checker {
     /// `?b := \n -> Vec n a`, after `Nil` has been checked against `?b Z`.
     /// Whether the question was kept.
     pub(super) fn postpone(&mut self, lvl: Lvl, actual: &Rc<Value>, expected: &Rc<Value>, node: NodeId) -> bool {
-        let stuck = |v: &Rc<Value>| match &*self.force(v.clone()) {
-            Value::Flex(_, spine) => !spine.is_empty(),
-            Value::Opaque(..) => self.blocked(v),
-            _ => false,
-        };
-        if !(stuck(expected) || stuck(actual)) {
+        if !(self.stuck_within(lvl, expected, 3) || self.stuck_within(lvl, actual, 3)) {
             return false;
         }
         self.postponed.push(super::Postponed { lvl, actual: actual.clone(), expected: expected.clone(), node });
         true
+    }
+
+    /// Whether a type waits on a meta, at its head or inside it, as far as
+    /// `depth` constructors down: a meta applied to something, or a
+    /// definition that would unfold but for one (`Elem ?c ?d`), as the
+    /// domain of a function type (`Elem ?c ?d -> Bool`) or an argument of a
+    /// data type (`Box c (Elem ?c ?d)`) as much as on its own.
+    fn stuck_within(&self, lvl: Lvl, v: &Rc<Value>, depth: usize) -> bool {
+        match &*self.force(v.clone()) {
+            Value::Flex(_, spine) => !spine.is_empty(),
+            Value::Opaque(u, _, sp) => {
+                self.blocked(v)
+                    || (depth > 0
+                        && self.datas.contains_key(u)
+                        && sp.iter().any(|e| matches!(e, Elim::App(a) if self.stuck_within(lvl, a, depth - 1))))
+            }
+            Value::Pi { name, dom, cod, .. } if depth > 0 => {
+                self.stuck_within(lvl, dom, depth - 1) || self.stuck_within(lvl + 1, &self.apply(cod, vvar(lvl, name.clone())), depth - 1)
+            }
+            Value::Comp(t, _) if depth > 0 => self.stuck_within(lvl, t, depth - 1),
+            _ => false,
+        }
     }
 
     /// Ask the postponed questions again, until none can be answered; with
@@ -1276,8 +1305,13 @@ impl Checker {
                 };
                 let ctx2 = ctx.bind(mx.as_ref(), &name, dom_v);
                 // an auto binder is what a search in the rest of the type may
-                // find: `{auto o : Ord k} -> Map k v` is `MapBy k o v`'s
-                let ctx2 = if *icit == Icit::Auto { ctx2.auto_bound() } else { ctx2 };
+                // find: `{auto o : Ord k} -> Map k v` is `MapBy k o v`'s; and
+                // so is a trait's superclass, a field of its record, in the
+                // fields after it, and the record a projection reads its
+                // fields off, `self` (`Elem c` in a method of a subtrait of
+                // `Container`)
+                let dictionary = name.starts_with("#super") || name == "self";
+                let ctx2 = if *icit == Icit::Auto || dictionary { ctx2.auto_bound() } else { ctx2 };
                 // the codomain goes on with the spine, one parameter fewer
                 self.infer_spine = if *icit == Icit::Explicit { spine.saturating_sub(1) } else { spine };
                 let (cod_c, cod_level, mut cod_usage) = match &cod.kind {
@@ -1440,6 +1474,11 @@ impl Checker {
         };
         match pi {
             Some((grade, dom, cod)) => {
+                // (a type a constructor is given, a record's field that is a
+                // type, is used nowhere: a type has nothing at run time but
+                // its descriptor, kept all the same; so an instance may give
+                // its own parameter as an associated type, `Elem = a`)
+                let is_type = matches!(*self.force(dom.clone()), Value::Type(_));
                 let (a_c, a_usage) = self.check(ctx, a, dom);
                 let mut a_v = self.eval(&ctx.env, &a_c);
                 // A computation with effects never reaches a type: not
@@ -1459,7 +1498,16 @@ impl Checker {
                 // everything the argument uses is used that often;
                 // and calling it has its effects
                 let (result, effects) = self.split_comp(self.apply(&cod, a_v));
-                let usage = f_usage + a_usage.scale(&self.to_poly(grade.clone())) + Usage::effect(effects);
+                // (a constructor's, a record's field)
+                let built = {
+                    let mut head = &f_c;
+                    while let Core::App(f, _) = &**head {
+                        head = f;
+                    }
+                    matches!(&**head, Core::Opaque(u, _) if self.ctors.contains_key(u))
+                };
+                let charged = if is_type && built { Poly::constant(Grade::ZERO) } else { self.to_poly(grade.clone()) };
+                let usage = f_usage + a_usage.scale(&charged) + Usage::effect(effects);
                 (Rc::new(Core::App(f_c, self.argument(&grade, a_c))), result, usage)
             }
             None => {
@@ -1560,7 +1608,9 @@ impl Checker {
             (TermKind::Lam(x, ann, ty_ann, body), Value::Pi { grade: pi_grade, in_type: pi_in_type, dom, cod, .. }) => {
                 if let Some(ty_ann) = ty_ann {
                     let (_, ann_v) = self.check_type(ctx, ty_ann);
-                    if !self.unify(ctx.lvl, ann_v.clone(), dom.clone()) {
+                    // (one the expected type is stuck on a meta for, `Token ?s ?d`,
+                    // is asked again once more is known)
+                    if !self.unify(ctx.lvl, ann_v.clone(), dom.clone()) && !self.postpone(ctx.lvl, &ann_v, dom, ty_ann.id) {
                         let expected = self.quote(ctx.lvl, dom.clone());
                         let given = self.quote(ctx.lvl, ann_v);
                         self.error(ty_ann.id, TypeErrorKind::BinderMismatch { expected, given });
@@ -1784,6 +1834,7 @@ impl Checker {
             })
         };
         let mut ctx = ctx.clone();
+        let inherited = self.inherited_levels(datas);
         // the kind of each parameter, under the parameters before it, and
         // how many indices follow them
         let mut kinds: Vec<(Vec<Rc<Core>>, usize)> = Vec::new();
@@ -1799,7 +1850,14 @@ impl Checker {
                 under = under.bind(Some(x), &x.text, k_v);
             }
             let (kind, indices) = match &d.kind {
-                None => (Rc::new(Core::Type(0)), 0),
+                // one with a field that is a large record lives where it does
+                None => match d.name.unique.and_then(|u| inherited.get(&u)) {
+                    Some(&n) => {
+                        self.large.insert(d.name.unique.expect("found by it"), n);
+                        (Rc::new(Core::Type(n)), 0)
+                    }
+                    None => (Rc::new(Core::Type(0)), 0),
+                },
                 Some(k) => {
                     let (k_c, k_v) = self.check_type(&under, k);
                     let (indices, end) = self.telescope_end(under.lvl, k_v);
@@ -1918,6 +1976,64 @@ impl Checker {
     }
 
     /// The universe a data type lives in: `Type`, unless its kind says more.
+    /// The data types among `datas` whose kind is not written and that have
+    /// a field of a large data type (a trait whose superclass has an
+    /// associated type, a record holding such a trait's record): the
+    /// universe each lives in, as large as the largest such field's.
+    fn inherited_levels(&self, datas: &[hir::DataDecl]) -> std::collections::HashMap<usize, super::core::Level> {
+        fn head(t: &hir::Term) -> Option<usize> {
+            match &t.kind {
+                hir::TermKind::Var(x) => x.unique,
+                hir::TermKind::App(f, _) => head(f),
+                _ => None,
+            }
+        }
+        // the batch's own large ones, by their written kinds
+        let written = |d: &hir::DataDecl| match d.kind.as_ref().map(|k| &k.kind) {
+            Some(hir::TermKind::App(f, n)) if matches!(f.kind, hir::TermKind::Type) => match &n.kind {
+                hir::TermKind::Lit(idyllic_ast::Lit::Int(n)) => usize::try_from(n.clone()).ok(),
+                _ => None,
+            },
+            _ => None,
+        };
+        let mut levels: std::collections::HashMap<usize, super::core::Level> = self.large.clone();
+        for d in datas {
+            if let (Some(u), Some(n)) = (d.name.unique, written(d)) {
+                levels.insert(u, n);
+            }
+        }
+        let mut out = std::collections::HashMap::new();
+        // (a field's type may be one of the batch's that is found large in
+        // turn)
+        loop {
+            let mut changed = false;
+            for d in datas.iter().filter(|d| d.kind.is_none()) {
+                let Some(u) = d.name.unique else { continue };
+                let fields = d.ctors.iter().flat_map(|c| match &c.shape {
+                    hir::CtorShape::Fields(fs) => fs.iter().collect::<Vec<_>>(),
+                    // (the domains of its signature)
+                    hir::CtorShape::Sig(ty) => {
+                        let (mut out, mut t) = (Vec::new(), ty);
+                        while let hir::TermKind::Pi(_, _, _, dom, cod) = &t.kind {
+                            out.push(&**dom);
+                            t = cod;
+                        }
+                        out
+                    }
+                });
+                let n = fields.filter_map(|f| head(f).and_then(|h| levels.get(&h).copied())).max().unwrap_or(0);
+                if n > 0 && levels.get(&u).copied().unwrap_or(0) < n {
+                    levels.insert(u, n);
+                    out.insert(u, n);
+                    changed = true;
+                }
+            }
+            if !changed {
+                return out;
+            }
+        }
+    }
+
     fn data_level(&self, d: &hir::DataDecl) -> super::core::Level {
         d.name.unique.and_then(|u| self.large.get(&u).copied()).unwrap_or(0)
     }

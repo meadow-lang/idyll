@@ -67,6 +67,25 @@ fun defaultOf (lit : Literal) : Builtin =
   let w2 = setRef tc.deferredLiterals (V.pushBack (getRef tc.deferredLiterals) (m, ctx, ty, lit)) in
   Core.Meta m
 
+-- The literals whose type is still nothing but a metavariable, which
+-- nothing will say more of, read at their defaults: `5` in `showFirst (5 ::
+-- Nil) 0`, whose list's type is what the search for `showFirst`'s instance,
+-- and so `0`'s type, waits on (`Checker::settle_free_literals`). Whether
+-- any was read.
+@pub fun settleFreeLiterals (tc : Tc) : Bool ! { Mut | e } =
+  let waiting = getRef tc.deferredLiterals in
+  let free = V.filter (\d -> match d with | (m, ctx, ty, lit) -> isBareMeta tc ty) waiting in
+  let rest = V.filter (\d -> match d with | (m, ctx, ty, lit) -> not (isBareMeta tc ty)) waiting in
+  let w = setRef tc.deferredLiterals free in
+  let progress = if V.isEmpty free then False else settleLiterals tc True in
+  let w2 = setRef tc.deferredLiterals (V.append (getRef tc.deferredLiterals) rest) in
+  progress
+
+fun isBareMeta (tc : Tc) (ty : Value) : Bool ! { Mut | e } =
+  match force tc ty with
+  | Value.Flex _ sp -> V.isEmpty sp
+  | _ -> False
+
 -- The literals that waited for their types, read where their types are
 -- known now; with `last`, every one, an unknown type taken to be the
 -- default. Whether any was read.

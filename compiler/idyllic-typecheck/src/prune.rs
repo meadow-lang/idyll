@@ -30,7 +30,7 @@ use std::rc::Rc;
 pub fn prune(tc: &TypeCheckResult) -> Option<(Rc<Core>, HashSet<usize>)> {
     let program = tc.program.as_ref()?;
     let is_ctor = |u: usize| tc.ctors.contains_key(&u);
-    Some(prune_with(program, &tc.toplevel, &tc.rec_defs, &is_ctor, &tc.roots))
+    Some(prune_with(program, &tc.toplevel, &tc.rec_defs, &is_ctor, &tc.roots, &tc.pure))
 }
 
 /// `program` with the top-level definitions nothing live uses left out, and
@@ -43,6 +43,7 @@ fn prune_with(
     rec_defs: &[RecDef],
     is_ctor: &dyn Fn(usize) -> bool,
     roots: &HashSet<usize>,
+    pure: &HashSet<usize>,
 ) -> (Rc<Core>, HashSet<usize>) {
     let toplevel_uniques = toplevel;
     let toplevel = toplevel.len();
@@ -59,7 +60,10 @@ fn prune_with(
     let mut live_recs: HashSet<usize> = HashSet::new();
     let mut work: Vec<(usize, Rc<Core>)> = vec![(base + lets.len(), body.clone())];
     for (i, (_, rhs)) in lets.iter().enumerate() {
-        if !rhs.is_pure_value(is_ctor) || roots.contains(&toplevel_uniques[i]) {
+        // (what is no value is computed, for what it does, unless the
+        // checker found it does nothing but compute one)
+        let computes = !rhs.is_pure_value(is_ctor) && !pure.contains(&toplevel_uniques[i]);
+        if computes || roots.contains(&toplevel_uniques[i]) {
             live_lets[i] = true;
             work.push((base + i, rhs.clone()));
         }

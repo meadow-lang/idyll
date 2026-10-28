@@ -726,6 +726,29 @@ of its own:
   `instance Hash Int` and not what it unfolds to; only if that mentions
   what the solution may not is the unfolded form read instead.
 
+Some rules the checker follows that came with associated types and Std's
+parsers, each as the Rust compiler has it:
+
+- A data type is declared after the definitions its declaration mentions
+  (a type alias, a type family, an associated type), and whatever
+  mentions it after it: `Scc.interleave` puts the data types and the
+  groups in one order, and `Check` declares and enters them in it, as
+  `Compiled` reads them back.
+- A trait or record with no written kind, holding a large record (a
+  superclass with an associated type), lives where that record does
+  (`Decl.inheritedLevels`).
+- In a type, a binder that is a trait's superclass field (`#super0`) or a
+  projection's `self` is what a search finds, as an auto binder is.
+- A type a constructor is given, and a field that is a type read off a
+  record, count as no use (`Elab`, `Matching`).
+- A question whose type waits on a metavariable inside it, not only at
+  its head, is put off (`Elab.stuckWithin`); and in the last pass, the
+  searches that can be made are made before a literal is given its
+  default type (`Auto.finalRounds`, `Literals.settleFreeLiterals`).
+- A package's definition is exported as its right-hand side, closed over
+  the definitions before it, not as its normal form, which takes in
+  everything it uses (Std's parsers came to 18 MB that way).
+
 ### The CEK machine
 
 `Cek.mw` is `idyll-eval`, the reference interpreter: it says what a program

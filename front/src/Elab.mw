@@ -38,7 +38,7 @@ use Idyll.Eval (force, apply, eval, quote, row, rowParts, toPoly, splitComp, com
 use Idyll.Unify (subtype, unify, sibling, effectsFit, shownRow, rowHasError, rowKind, sortOf)
 use Idyll.Usage (Usage)
 use Idyll.Usage as U
-use Idyll.Ctx (Ctx, Info)
+use Idyll.Ctx (Ctx, Info, Entry, Binder)
 use Idyll.Ctx as X
 use Idyll.Hir (Ident)
 use Idyll.Hir as H
@@ -883,6 +883,20 @@ fun enterLet (tc : Tc) (ctx : Ctx) (groups : [HirGroup]) : (Ctx, [Pending], [May
   let w2 = setRef tc.lets (getRef tc.lets - 1) in
   entered
 
+fun defineGlobal (tc : Tc) (ctx : Ctx) (g : HirGroup) : () ! { Mut | e } =
+  let h = hirOf tc in
+  match (h, g) with
+  | HirGroupNonRec b ->
+      let u = V.getOr (0 - 1) (hirIdentUniques h (hirBindName h b)) 0 in
+      (match Hm.lookup u ctx.names with
+       | Just (Entry.Local level) ->
+           (match V.get ctx.binders level with
+            | Just (Binder.Binder Info.Defined _ _ _ _) ->
+                if Hm.member u (getRef tc.globals) then () else setRef tc.globals (Hm.insert u (X.value ctx level) (getRef tc.globals))
+            | _ -> ())
+       | _ -> ())
+  | _ -> ()
+
 @pub fun enterGroups (tc : Tc) (ctx : Ctx) (groups : [HirGroup]) : (Ctx, [Pending], [Maybe (String, Core)]) ! { Mut | e } =
   V.foldl
     (\acc g ->
@@ -891,6 +905,9 @@ fun enterLet (tc : Tc) (ctx : Ctx) (groups : [HirGroup]) : (Ctx, [Pending], [May
           -- (an enclosing definition's grades are not this group's to settle)
           let outer = Hm.keys (getRef tc.inferred) in
           let (next, p, wr) = checkGroup tc c g in
+          -- (a top-level definition's value, by its name: what a
+          -- dependency's exported right-hand side names the prelude's by)
+          let wg = if getRef tc.lets == 0 then defineGlobal tc next g else () in
           let s = settleRest tc outer in
           -- what had to wait for the rest of the definition to be known
           let a = retryPostponed tc False in
@@ -900,18 +917,35 @@ fun enterLet (tc : Tc) (ctx : Ctx) (groups : [HirGroup]) : (Ctx, [Pending], [May
     (ctx, [], [])
     groups
 
+-- Whether a type waits on a meta, at its head or inside it, as far as
+-- `depth` constructors down: a meta applied to something, or a definition
+-- that would unfold but for one (`Elem ?c ?d`), as the domain of a function
+-- type (`Elem ?c ?d -> Bool`) or an argument of a data type (`Box c (Elem
+-- ?c ?d)`) as much as on its own (`Checker::stuck_within`).
+fun stuckWithin (tc : Tc) (lvl : Int) (v : Value) (depth : Int) : Bool ! { Mut | e } =
+  match force tc v with
+  | Value.Flex _ sp -> not (V.isEmpty sp)
+  | Value.Opaque u _ sp ->
+      if blocked tc v then True
+      else if depth > 0 and Hm.member u (getRef tc.datas) then
+        V.any (\el -> match el with | Elim.App a -> stuckWithin tc lvl a (depth - 1) | _ -> False) sp
+      else False
+  | Value.Pi name _ _ _ dom cod ->
+      if depth > 0 then stuckWithin tc lvl dom (depth - 1) or stuckWithin tc (lvl + 1) (apply tc cod (Va.vvar lvl name)) (depth - 1)
+      else False
+  | Value.Comp t _ -> if depth > 0 then stuckWithin tc lvl t (depth - 1) else False
+  | _ -> False
+
+fun coreHead (c : Core) : Core =
+  match c with
+  | Core.App f a -> coreHead f
+  | other -> other
+
 -- A term of type `actual` was to have type `expected` and they do not
 -- unify yet: kept for later if either is stuck on a metavariable applied to
 -- something, which what is checked after it may solve.
 fun postpone (tc : Tc) (lvl : Int) (actual : Value) (expected : Value) : Bool ! { Mut | e } =
-  let stuck =
-    \v ->
-      match force tc v with
-      | Value.Flex _ sp -> not (V.isEmpty sp)
-      | Value.Opaque _ _ _ -> blocked tc v
-      | _ -> False
-  in
-  if not (stuck expected or stuck actual) then False
+  if not (stuckWithin tc lvl expected 3 or stuckWithin tc lvl actual 3) then False
   else
     let w = setRef tc.postponed (V.pushBack (getRef tc.postponed) (Postponed.Postponed lvl actual expected)) in
     True
@@ -1386,8 +1420,11 @@ fun inferPi (tc : Tc) (ctx : Ctx) (mx : Maybe Ident) (icit : Icit) (ann : Maybe 
   in
   let ctx1 = X.bind ctx mx name domV in
   -- an auto binder is what a search in the rest of the type may find:
-  -- `{auto o : Ord k} -> Map k v` is `MapBy k o v`'s
-  let ctx2 = if icit == Icit.Auto then X.autoBound ctx1 else ctx1 in
+  -- `{auto o : Ord k} -> Map k v` is `MapBy k o v`'s; and so is a trait's
+  -- superclass, a field of its record, in the fields after it, and the
+  -- record a projection reads its fields off, `self`
+  let dictionary = S.startsWith "#super" name or name == "self" in
+  let ctx2 = if icit == Icit.Auto or dictionary then X.autoBound ctx1 else ctx1 in
   -- the codomain goes on with the spine, one parameter fewer
   let w0 = setRef tc.inferSpine (if icit == Icit.Explicit then (if spine > 0 then spine - 1 else 0) else spine) in
   let (codC, codLevel, codU) =
@@ -1443,7 +1480,9 @@ fun checkLam (tc : Tc) (ctx : Ctx) (x : Ident) (ann : Maybe HirGrade) (tyAnn : M
     match tyAnn with
     | Just ta ->
         let (_, annV) = checkType tc ctx ta in
-        if unify tc ctx.lvl annV dom then () else T.error tc "BinderMismatch"
+        -- (one the expected type is stuck on a meta for is asked again once
+        -- more is known)
+        if unify tc ctx.lvl annV dom then () else if postpone tc ctx.lvl annV dom then () else T.error tc "BinderMismatch"
     | None -> ()
   in
   let allowed =
@@ -1578,6 +1617,12 @@ fun inferApp (tc : Tc) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value, U
       in
       (match pi with
        | Just (grade, dom, cod) ->
+           -- (a type a constructor is given, a record's field that is a type,
+           -- is used nowhere: a type has nothing at run time but its
+           -- descriptor, kept all the same; so an instance may give its own
+           -- parameter as an associated type, `Elem = a`)
+           let isType = match force tc dom with | Value.Type _ -> True | _ -> False in
+           let built = match coreHead fC with | Core.Opaque u _ -> M.isSome (T.ctorInfo tc u) | _ -> False in
            let (aC, aU) = check tc ctx a dom in
            let aV0 = eval tc ctx.env aC in
            -- a computation with effects never reaches a type: not as an
@@ -1593,7 +1638,8 @@ fun inferApp (tc : Tc) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value, U
              | None -> aV0
            in
            let (result, effects) = splitComp tc (apply tc cod aV) in
-           let usage = U.add (U.add fU (U.scale aU (toPoly tc grade))) (U.performs effects) in
+           let charged = if isType and built then Va.polyConstant G.zero else toPoly tc grade in
+           let usage = U.add (U.add fU (U.scale aU charged)) (U.performs effects) in
            (Core.App fC (argument tc grade aC), result, usage)
        | None ->
            let w = T.error tc "NotAFunction" in

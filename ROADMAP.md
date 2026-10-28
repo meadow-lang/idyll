@@ -631,6 +631,34 @@ from what `idyll.lock` pinned.
   its descriptor's (`compiler/idyllic/tests/reps.rs`); a closure, which
   binds no representation variable, holds one as `any`, as it does a type
   variable's.
+  Made to carry Std's parsers (2026-10-28, both compilers): a generic
+  instance may give its own parameter, `Elem = a` (a type a constructor is
+  given, or a record's field that is a type read off, counts as no use, a
+  type having nothing at run time but its descriptor); a subtrait's
+  methods, and a record's later fields, may name the associated type of a
+  dictionary before them (a superclass field, and a projection's `self`,
+  are what a search finds, and a trait or record holding a large record
+  lives where it does); a type stuck on a metavariable inside it (`Elem ?c
+  ?d -> Bool`), not only at its head, waits for it; and a literal whose
+  type waits on a search is read after it. Left, as limitations: an
+  instance's own methods, and the defaults it takes, see its associated
+  types only through the instance being defined, which does not unfold
+  yet (give such a method in the instance); and a record's field whose
+  representation an earlier dictionary field says is `any`, as a dependent
+  pair's second field is, which wants the boxing `any` is still owed.
+  On the way, two costs: a package's definitions are exported as their
+  right-hand sides, closed over the definitions before them, not as their
+  normal forms (Std's parsers had made Std 18 MB that way, and the test
+  suites six times slower); and a top-level definition the checker found
+  pure is left out of a program that does not use it, as a value is
+  (Std's parsers had been linked into every program that used Std).
+- [x] **A data type may mention a definition**: done 2026-10-28, both
+  compilers. A data type was declared before every definition, so a
+  field could not name a type alias or a type family (`data T = T Span`
+  with `Span = (Int, Int)`). Now the SCC pass puts each data type after
+  the definitions it mentions, and what mentions it after that
+  (`idyllic_scc::interleave`, front `Scc.interleave`); the rest come first,
+  as before. (`compiler/idyllic/tests/data.rs`)
 - [ ] **Associated data types** (later, beside associated types): a
   trait's field that is a type the instance *declares*, `data Elem =
   ListElem Int`, fresh for each instance, rather than one it names. No two
@@ -747,7 +775,12 @@ and a `Map` built with one `Ord` is rejected when used with another.
   `Result`, `Tuple`, `Function`, `Ordering`, `Cmp` (done, without traits:
   comparisons are passed along); then `String` and `Char` (done, as
   Meadow's, on the prelude's string natives and a builtin `Char`), `Bytes`
-  (done, on Meadow's four byte primitives as natives) and the parsers; then collections (`List`, `Array`, `Vector`, `Map`, `Set` done;
+  (done, on Meadow's four byte primitives as natives) and the parsers
+  (`String.Parse`, megaparsec's combinators, with `String.Parse.Char` and
+  `String.Parse.Lexer`, done: the same messages, hints and spans as
+  Meadow's; Meadow's three stream traits are one `Stream` here, its
+  `Token` an associated type, and the character and lexeme parsers are for
+  `String` streams, Idyll's traits saying no "token is a `Char`"); then collections (`List`, `Array`, `Vector`, `Map`, `Set` done;
   `Hash`, Meadow's hashes, and `Num.Bits`, the bit operations at each
   width that it combines with, and `HashMap`, Meadow's hash array mapped
   trie, done); then the effect modules (`Exn`, `State`,

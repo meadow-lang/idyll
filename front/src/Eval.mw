@@ -59,7 +59,14 @@ fun forceWith (tc : Tc) (unfolding : Bool) (v : Value) : Value ! { Mut | e } =
       else
         (match unfold tc u sp with
          | Just unfolded -> force tc unfolded
-         | None -> v)
+         | None ->
+             -- (a definition named before its value was known: the
+             -- prelude's, in a dependency's exported right-hand side)
+             if Hm.member u (getRef tc.transparent) then v
+             else
+               (match Hm.lookup u (getRef tc.globals) with
+                | Just g -> forceWith tc unfolding (applySpine tc g sp)
+                | None -> v))
   | _ -> v
 
 -- Whether a value waits on an unsolved metavariable: is one, or is a

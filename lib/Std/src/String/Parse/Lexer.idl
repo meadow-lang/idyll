@@ -1,0 +1,290 @@
+-- Lexemes, as Meadow's `Std.String.Parse.Lexer`, after megaparsec's: a
+-- space consumer with line and block comments, lexemes and symbols that
+-- skip the space after them, numbers in each base, floats, signs,
+-- character literals with their escapes, and indentation: `indentGuard`,
+-- `indentBlock`, `lineFold`.
+--
+--   sc : Parser String ()
+--   sc = L.space C.space1 (L.skipLineComment "--") (L.skipBlockCommentNested "{-" "-}")
+--
+--   P.runParser (P.skipThen sc (P.many (L.lexeme sc L.decimal))) " 1 -- one\n 2"
+--
+-- As `Std.String.Parse.Char`'s, these are for `String` streams.
+
+use Std.String.Parse as P
+use Std.String.Parse (Parser)
+use Std.String.Parse.Char as C
+use Std.Char as Ch
+use Std.Collections.Vector (Vector)
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Ordering (Ordering)
+use Std.Ordering.Ordering.*
+
+-- Skips white space and comments, any number of each, and says nothing of
+-- them in an error: `sp` for the white space, `lineComment` and
+-- `blockComment` for the comments (`P.empty` for a kind there is none of).
+@pub
+space : {a b c : Type} -> (sp : Parser String a) -> (lineComment : Parser String b) -> (blockComment : Parser String c) -> Parser String ()
+space sp lineComment blockComment = P.hidden (P.skipMany (P.choice (V.fromList (P.void sp :: P.void lineComment :: P.void blockComment :: Nil))))
+
+-- `p`, and the space after it.
+@pub
+lexeme : {a b : Type} -> (sc : Parser String a) -> (p : Parser String b) -> Parser String b
+lexeme sc p = P.thenSkip p sc
+
+-- This text, and the space after it.
+@pub
+symbol : {a : Type} -> (sc : Parser String a) -> (text : String) -> Parser String String
+symbol sc text = lexeme sc (C.string text)
+
+-- This text in any mix of cases, and the space after it.
+@pub
+symbolCI : {a : Type} -> (sc : Parser String a) -> (text : String) -> Parser String String
+symbolCI sc text = lexeme sc (C.stringCI text)
+
+-- A comment from `prefix` to the end of the line, the newline left.
+@pub
+skipLineComment : (prefix : String) -> Parser String ()
+skipLineComment prefix = P.skipThen (C.string prefix) (P.void (P.takeWhileP (\(c : Char) -> Ch.code c != 10)))
+
+-- A comment from `start` to the first `stop`.
+@pub
+skipBlockComment : (start : String) -> (stop : String) -> Parser String ()
+skipBlockComment start stop = P.skipThen (C.string start) (P.void (P.manyTill P.anySingle (C.string stop)))
+
+-- The same, with comments inside it closed one at a time.
+@pub
+@terminating
+skipBlockCommentNested : (start : String) -> (stop : String) -> Parser String ()
+skipBlockCommentNested start stop =
+  let nested = P.void (P.defer (\(u : ()) -> skipBlockCommentNested start stop)) in
+  let inside = P.alt nested (P.void P.anySingle) in
+  P.skipThen (C.string start) (P.void (P.manyTill inside (C.string stop)))
+
+-- --- numbers -------------------------------------------------------------------
+
+digitOf : (c : Char) -> Int
+digitOf c = case Ch.hexDigitToInt c of
+  Just d -> d
+  Nothing -> 0
+
+digitsIn : (base : Int) -> (chunk : String) -> Int
+digitsIn base chunk = V.foldl (\(acc : Int) (c : Char) -> acc * base + digitOf c) 0 (V.fromArray (stringToChars chunk))
+
+digits : Parser String String
+digits = P.takeWhile1P "a digit" Ch.isDigit
+
+-- A whole number, in decimal.
+@pub
+decimal : Parser String Int
+decimal = P.label "an integer" (P.map (digitsIn 10) digits)
+
+@pub
+binary : Parser String Int
+binary = P.label "a binary integer" (P.map (digitsIn 2) (P.takeWhile1P "a binary digit" (\(c : Char) -> if c == '0' then True else c == '1')))
+
+@pub
+octal : Parser String Int
+octal = P.label "an octal integer" (P.map (digitsIn 8) (P.takeWhile1P "an octal digit" (Ch.isBetween '0' '7')))
+
+@pub
+hexadecimal : Parser String Int
+hexadecimal = P.label "a hexadecimal integer" (P.map (digitsIn 16) (P.takeWhile1P "a hexadecimal digit" Ch.isHexDigit))
+
+@terminating
+powTen : (n : Int) -> Float
+powTen n = if n <= 0 then 1.0 else 10.0 * powTen (n - 1)
+
+scale : (x : Float) -> (e : Int) -> Float
+scale x e = if e >= 0 then x * powTen e else x / powTen (0 - e)
+
+fractionOf : (chunk : String) -> Float
+fractionOf chunk = toFloat (digitsIn 10 chunk) / powTen (S.charLength chunk)
+
+sign : Parser String Int
+sign = P.option 1 (P.alt (P.mapTo 1 (C.char '+')) (P.mapTo (0 - 1) (C.char '-')))
+
+exponent : Parser String Int
+exponent = P.skipThen (P.satisfy (\(c : Char) -> if c == 'e' then True else c == 'E')) (P.lift2 (\(s : Int) (n : Int) -> s * n) sign decimal)
+
+floatOf : (whole : String) -> (frac : Maybe String) -> (e : Int) -> Float
+floatOf whole frac e = scale (toFloat (digitsIn 10 whole) + fractionOr frac) e
+
+fractionOr : (frac : Maybe String) -> Float
+fractionOr (Just ds) = fractionOf ds
+fractionOr Nothing = 0.0
+
+exponentAfter : (frac : Maybe String) -> Parser String Int
+exponentAfter (Just ds) = P.option 0 exponent
+exponentAfter Nothing = exponent
+
+-- A floating-point number: digits, then a fraction, an exponent or both
+-- (a whole number alone is no float).
+@pub
+float : Parser String Float
+float =
+  let fraction = P.optional (P.skipThen (C.char '.') digits) in
+  let parts = P.lift2 (\(w : String) (f : Maybe String) -> (w, f)) digits fraction in
+  P.label "a floating-point number" (P.try (P.bind parts floatAfter))
+
+floatAfter : (wf : (String, Maybe String)) -> Parser String Float
+floatAfter (w, f) = P.map (floatOf w f) (exponentAfter f)
+
+-- `p`, with a sign before it, `+` or `-`, and maybe space between.
+@pub
+signed : {a : Type} -> (sc : Parser String a) -> (p : Parser String Int) -> Parser String Int
+signed sc p =
+  let s = P.alt (P.mapTo (\(x : Int) -> x) (C.char '+')) (P.mapTo (\(x : Int) -> 0 - x) (C.char '-')) in
+  P.apply (P.option (\(x : Int) -> x) (lexeme sc s)) p
+
+@pub
+signedFloat : {a : Type} -> (sc : Parser String a) -> (p : Parser String Float) -> Parser String Float
+signedFloat sc p =
+  let s = P.alt (P.mapTo (\(x : Float) -> x) (C.char '+')) (P.mapTo (\(x : Float) -> 0.0 - x) (C.char '-')) in
+  P.apply (P.option (\(x : Float) -> x) (lexeme sc s)) p
+
+-- --- characters ----------------------------------------------------------------
+
+byCode : (n : Int) -> Parser String Char
+byCode n = case Ch.fromCodeSafe n of
+  Just c -> P.pure c
+  Nothing -> P.fail "not a Unicode scalar value"
+
+hexEscape : Parser String Char
+hexEscape = P.skipThen (C.char 'x') (P.map (\(ds : String) -> charFromCode (digitsIn 16 ds)) (P.takeP "two hexadecimal digits" 2))
+
+unicodeEscape : Parser String Char
+unicodeEscape =
+  let code = P.thenSkip (P.takeWhile1P "a hexadecimal digit" Ch.isHexDigit) (C.char '}') in
+  P.skipThen (C.string "u{") (P.bind code (\(ds : String) -> byCode (digitsIn 16 ds)))
+
+-- `n` as the escape for code `k`.
+escape : (n : Char) -> (k : Int) -> Parser String Char
+escape n k = P.mapTo (Ch.fromCode k) (C.char n)
+
+escapes : Vector (Parser String Char)
+escapes = V.fromList (escape 'n' 10 :: escape 't' 9 :: escape 'r' 13 :: escape '0' 0 :: escape (Ch.fromCode 92) 92 :: escape (Ch.fromCode 39) 39 :: escape (Ch.fromCode 34) 34 :: hexEscape :: unicodeEscape :: Nil)
+
+escaped : Parser String Char
+escaped = P.label "an escape sequence" (P.choice escapes)
+
+-- A character as a literal writes it: itself, or a backslash and an escape
+-- (`n`, `t`, `r`, `0`, a backslash, a quote, `x41`, `u{e9}`).
+@pub
+charLiteral : Parser String Char
+charLiteral = P.label "a literal character" (P.alt (P.skipThen (C.char (Ch.fromCode 92)) escaped) P.anySingle)
+
+-- --- indentation ---------------------------------------------------------------
+
+@terminating
+lineStart : (input : String) -> (off : Int) -> Int
+lineStart input off =
+  if off <= 0 then 0
+  else case P.take1 input (off - 1) of
+    Just (c, next) -> if Ch.code c == 10 then off else lineStart input (off - 1)
+    Nothing -> off
+
+@terminating
+columnFrom : (input : String) -> (i : Int) -> (stop : Int) -> (col : Int) -> Int
+columnFrom input i stop col =
+  if i >= stop then col
+  else case P.take1 input i of
+    Just (c, next) -> columnFrom input next stop (if Ch.code c == 9 then col + 8 - (col - 1) % 8 else col + 1)
+    Nothing -> col
+
+columnAt : (input : String) -> (off : Int) -> Int
+columnAt input off = columnFrom input (lineStart input off) off 1
+
+-- The column the offset reached is at, from 1; a tab moves on to the next
+-- multiple of 8, and one.
+@pub
+indentLevel : Parser String Int
+indentLevel = P.lift2 columnAt P.getInput P.getOffset
+
+-- A failure saying the indentation is `actual` where it should be `want`
+-- of `ref`.
+@pub
+incorrectIndent : {a : Type} -> (want : Ordering) -> (ref : Int) -> (actual : Int) -> Parser String a
+incorrectIndent want ref actual = P.fail ("incorrect indentation (got " ++ S.fromInt actual ++ ", should be " ++ howOf want ++ " " ++ S.fromInt ref ++ ")")
+
+howOf : (want : Ordering) -> String
+howOf Less = "less than"
+howOf Equal = "equal to"
+howOf Greater = "greater than"
+
+sameOrdering : (a : Ordering) -> (b : Ordering) -> Bool
+sameOrdering Less Less = True
+sameOrdering Equal Equal = True
+sameOrdering Greater Greater = True
+sameOrdering a b = False
+
+compareInt : (a : Int) -> (b : Int) -> Ordering
+compareInt a b = if a < b then Less else if a == b then Equal else Greater
+
+-- The space `sc` skips, then the column it reached, if it is `want` of
+-- `ref`; a failure saying so otherwise.
+@pub
+indentGuard : {a : Type} -> (sc : Parser String a) -> (want : Ordering) -> (ref : Int) -> Parser String Int
+indentGuard sc want ref =
+  P.skipThen sc (P.bind indentLevel (\(at : Int) -> if sameOrdering (compareInt at ref) want then P.pure at else incorrectIndent want ref at))
+
+-- `p`, at the first column.
+@pub
+nonIndented : {a b : Type} -> (sc : Parser String a) -> (p : Parser String b) -> Parser String b
+nonIndented sc p = P.skipThen (indentGuard sc Equal 1) p
+
+-- What `indentBlock` is to read: nothing more (`None`); or the lines
+-- indented under the reference line, any number (`Many`) or at least one
+-- (`Some`), at the column given or at the first one's, each read by the
+-- parser, and all of them given to the function.
+@pub
+data IndentOpt (a : Type) (b : Type) = None a | Many (Maybe Int) (Vector b -> Parser String a) (Parser String b) | Some (Maybe Int) (Vector b -> Parser String a) (Parser String b)
+
+orAt : (indent : Maybe Int) -> (lvl : Int) -> Int
+orAt (Just at) lvl = at
+orAt Nothing lvl = lvl
+
+@terminating
+indentedItems : {a b : Type} -> (ref : Int) -> (lvl : Int) -> (sc : Parser String a) -> (p : Parser String b) -> Parser String (Vector b)
+indentedItems ref lvl sc p =
+  P.skipThen sc (P.bind indentLevel (\(pos : Int) -> P.bind (P.optional P.eof) (\(done : Maybe ()) -> case done of
+    Just u -> P.pure V.empty
+    Nothing -> itemsAt ref lvl sc p pos)))
+
+@terminating
+itemsAt : {a b : Type} -> (ref : Int) -> (lvl : Int) -> (sc : Parser String a) -> (p : Parser String b) -> (pos : Int) -> Parser String (Vector b)
+itemsAt ref lvl sc p pos =
+  if pos <= ref then P.pure V.empty
+  else if pos == lvl then P.lift2 (\(x : b) (xs : Vector b) -> V.pushFront xs x) p (P.defer (\(u : ()) -> indentedItems ref lvl sc p))
+  else incorrectIndent Equal lvl pos
+
+manyBlock : {a b c : Type} -> (sc : Parser String a) -> (ref : Int) -> (indent : Maybe Int) -> (f : Vector c -> Parser String b) -> (p : Parser String c) -> Parser String b
+manyBlock sc ref indent f p =
+  let next = P.optional (P.try (P.skipThen C.eol (indentGuard sc Greater ref))) in
+  P.bind next (\(lvl : Maybe Int) -> P.bind (P.optional P.eof) (\(done : Maybe ()) -> case (lvl, done) of
+    (Just at, Nothing) -> P.bind (indentedItems ref (orAt indent at) sc p) f
+    other -> P.skipThen sc (f V.empty)))
+
+someBlock : {a b c : Type} -> (sc : Parser String a) -> (ref : Int) -> (indent : Maybe Int) -> (f : Vector c -> Parser String b) -> (p : Parser String c) -> Parser String b
+someBlock sc ref indent f p =
+  P.bind (P.skipThen C.eol (indentGuard sc Greater ref)) (\(pos : Int) ->
+    let lvl = orAt indent pos in
+    let first = if pos <= ref then incorrectIndent Greater ref pos else if pos == lvl then p else incorrectIndent Equal lvl pos in
+    P.bind first (\(x : c) -> P.bind (indentedItems ref lvl sc p) (\(xs : Vector c) -> f (V.pushFront xs x))))
+
+-- A line and the lines indented under it, as `r` says to read them.
+@pub
+indentBlock : {a b c : Type} -> (sc : Parser String a) -> (r : Parser String (IndentOpt b c)) -> Parser String b
+indentBlock sc r =
+  P.skipThen sc (P.bind indentLevel (\(ref : Int) -> P.bind r (\(opt : IndentOpt b c) -> case opt of
+    IndentOpt.None x -> P.mapTo x sc
+    IndentOpt.Many indent f p -> manyBlock sc ref indent f p
+    IndentOpt.Some indent f p -> someBlock sc ref indent f p)))
+
+-- What `action` reads, where it may go on to lines indented more than the
+-- first: the space consumer it is given skips space and says whether the
+-- next line goes on.
+@pub
+lineFold : {a b : Type} -> (sc : Parser String a) -> (action : Parser String () -> Parser String b) -> Parser String b
+lineFold sc action = P.skipThen sc (P.bind indentLevel (\(lvl : Int) -> action (P.void (indentGuard sc Greater lvl))))

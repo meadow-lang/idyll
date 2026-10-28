@@ -106,6 +106,14 @@ impl Checker {
     pub(super) fn import(&mut self, ctx: &Ctx, deps: &[&CompiledPackage]) -> Ctx {
         let mut ctx = ctx.clone();
         let empty = Env::empty();
+        // the definitions already in the context (the builtins' and the
+        // primitives'), by their names: what an exported right-hand side
+        // names them by (the prelude's are as they are entered)
+        for (level, b) in ctx.binders.iter().enumerate() {
+            if let (Some(key), BinderInfo::Defined) = (b.key, b.info) {
+                self.globals.entry(key).or_insert_with(|| ctx.value(level));
+            }
+        }
         for p in deps {
             for c in &p.constants {
                 let ty = self.eval(&empty, &c.ty);
@@ -211,8 +219,18 @@ impl Checker {
                         let binder = &ctx.binders[*level];
                         base.get_or_insert(*level);
                         let ty = self.close(ctx, &self.quote(ctx.lvl, binder.ty.clone()));
+                        // its right-hand side, as it was written (closed over
+                        // the definitions before it, by their names): not what
+                        // it computes to, which takes in all it uses, and can
+                        // be many times the size (a parser of combinators)
+                        let written = match (group, wrap) {
+                            (hir::BindGroup::NonRec(_), Some((_, rhs))) => {
+                                Some(self.close_at(ctx, *level, *level, &rhs.zonked(&meta_solutions)))
+                            }
+                            _ => None,
+                        };
                         let value = (binder.info == BinderInfo::Defined)
-                            .then(|| self.close(ctx, &self.quote(ctx.lvl, ctx.value(*level))));
+                            .then(|| written.unwrap_or_else(|| self.close(ctx, &self.quote(ctx.lvl, ctx.value(*level)))));
                         constants.push(ImportedConstant { unique, name: b.name.text.clone(), ty, value, unfold: None, unfold_on_case: false });
                     }
                     _ => constants.extend(constant(self, &b.name)),
@@ -373,6 +391,9 @@ pub fn link(root: &mut TypeCheckResult, deps: &[&CompiledPackage]) {
     // the top-level `let`s: the prelude's, then each package's in order
     let prelude = root.prelude_lets.len();
     root.toplevel = root.toplevel.iter().take(prelude).copied().chain(packages.iter().flat_map(|p| p.lets.iter().map(|(u, ..)| *u))).collect();
+    // (a package's definition has a value exactly when computing it has no
+    // effects)
+    root.pure.extend(packages.iter().flat_map(|p| p.constants.iter().filter(|c| c.value.is_some()).map(|c| c.unique)));
     for p in deps.iter().copied().chain(std::iter::once(&own)) {
         root.symbols.extend(p.symbols.iter().map(|(u, pkg, path)| (*u, (pkg.clone(), path.clone()))));
     }

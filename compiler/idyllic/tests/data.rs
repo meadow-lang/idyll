@@ -225,3 +225,17 @@ fn a_field_is_linear_in_any_module() {
         &["usage mismatch: n has grade 1, but is used 2 times"],
     );
 }
+
+#[test]
+fn a_data_type_may_mention_a_definition() {
+    // a type alias, or a function that makes a type, in a field: the data
+    // type is declared after what it mentions, and what uses it after that
+    assert_eq!(
+        result("Span : Type\nSpan = (Int, Int)\n\ndata T = T Span\n\nuse T.*\n\ncase T (1, 2) of\n  T p -> p\n"),
+        "(1, 2) : (Int, Int)"
+    );
+    assert_eq!(
+        result("F : Type -> Type\nF a = a\n\ndata T = T (F Int)\n\nuse T.*\n\nfirst : T -> Int\nfirst (T n) = n\n\nfirst (T 3) + 1\n"),
+        "4 : Int"
+    );
+}

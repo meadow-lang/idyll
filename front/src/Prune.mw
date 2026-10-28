@@ -67,7 +67,7 @@ pass! {
 -- top-level definitions nothing live uses left out; and the uniques of the
 -- recursive definitions that are live. `toplevel` is the unique of each
 -- top-level `let`; `roots` live whatever uses them.
-@pub fun prepared (p : ElaboratedProgram) (toplevel : [Int]) (ctors : HashMap Int c) (roots : [Int]) : (ElaboratedProgram, [Int]) =
+@pub fun prepared (p : ElaboratedProgram) (toplevel : [Int]) (ctors : HashMap Int c) (roots : [Int]) (pure : [Int]) : (ElaboratedProgram, [Int]) =
   let a = elaboratedArena p in
   let root = elaboratedRoot p in
   let sols = V.foldl (\m s -> Hm.insert (elaboratedSolutionNumber a s) (elaboratedSolutionTerm a s) m) Hm.empty (elaboratedModuleMetas a root) in
@@ -75,7 +75,7 @@ pass! {
   match elaboratedModuleBody a root with
   | None -> (prepare (Cx { sols, dead = [], at = 0 - 1 }) p, [])
   | Just program ->
-      let (liveLets, liveRecs) = live a program toplevel recDefs ctors roots in
+      let (liveLets, liveRecs) = live a program toplevel recDefs ctors roots pure in
       (prepare (Cx { sols, dead = V.map (\b -> not b) liveLets, at = 0 - 1 }) p, liveRecs)
 
 -- Whether a term is a value without running anything.
@@ -102,12 +102,14 @@ fun spine (a : ElaboratedArena) (t : ElaboratedTerm) (args : [ElaboratedTerm]) :
 
 -- Which of the first `toplevel` `let`s around the program's expression are
 -- live, and which recursive definitions are.
-fun live (a : ElaboratedArena) (program : ElaboratedTerm) (toplevel : [Int]) (recDefs : [(Int, Int, ElaboratedTerm)]) (ctors : HashMap Int c) (roots : [Int]) : ([Bool], [Int]) =
+fun live (a : ElaboratedArena) (program : ElaboratedTerm) (toplevel : [Int]) (recDefs : [(Int, Int, ElaboratedTerm)]) (ctors : HashMap Int c) (roots : [Int]) (pure : [Int]) : ([Bool], [Int]) =
   -- the builtins and the primitive operations come first
   let base = V.len C.builtins + 8 in
   let (lets, body) = peel a program (V.len toplevel) [] in
   let recs = V.foldl (\m d -> match d with | (u, l, c) -> Hm.insert u (l, c) m) Hm.empty recDefs in
-  let pureOnes = V.map (\rhs -> isPureValue a ctors rhs) lets in
+  -- (what is no value is computed, for what it does, unless the checker
+  -- found it does nothing but compute one)
+  let pureOnes = V.map (\i -> isPureValue a ctors (V.getOr program lets i) or V.elem (V.getOr (0 - 1) toplevel i) pure) (V.range 0 (V.len lets)) in
   let liveLets0 = V.map (\i -> not (V.getOr True pureOnes i) or V.elem (V.getOr (0 - 1) toplevel i) roots) (V.range 0 (V.len lets)) in
   let work0 =
     V.append

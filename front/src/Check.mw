@@ -15,11 +15,12 @@ use Idyll.Value (Value, Row)
 use Idyll.Value as Va
 use Idyll.Hir (Icit, Literal)
 use Idyll.Tc (Tc)
+use Idyll.Scc (interleave)
 use Idyll.Tc as T
 use Idyll.Eval (force, apply, eval, quote, row, rowParts, splitComp)
 use Idyll.Unify (unify, effectsFit)
 use Idyll.Usage (Usage)
-use Idyll.Ctx (Ctx)
+use Idyll.Ctx (Ctx, Entry, Binder, Info)
 use Idyll.Ctx as X
 use Idyll.Elab (Pending, effectsOf, enterGroups, infer, retryPostponed, closeOpened, closeRows, reportHoles, reportUnsolved, keyOf, wrapLets, install)
 use Idyll.Elaborated (ElaboratedProgram, newElaboratedBuilder, freezeElaborated, moduleRow)
@@ -77,7 +78,10 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
   -- the prelude's own top-level `let`s and their uniques, which every
   -- package has the same: what a linked program starts with (`Link`)
   preludeLets : [(String, Core)],
-  preludeTop : [Int]
+  preludeTop : [Int],
+  -- the top-level definitions whose values compute with no effects, which
+  -- may be left out when nothing uses them (`Prune`)
+  pure : [Int]
 }
 
 -- The module checked, and written as the differential test compares it:
@@ -115,7 +119,9 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
   let datas = hirModuleDatas h root in
   let effects = hirModuleEffects h root in
   let natives = hirModuleNatives h root in
-  let groups = hirModuleGroups h root in
+  -- (each data type after the definitions it mentions, and what mentions
+  -- it after it: `Scc.interleave`)
+  let (datasInOrder, dataAfter, groups) = interleave h datas (hirModuleGroups h root) in
   let tc = T.new () in
   let wh = setRef tc.hir h in
   let out = newElaboratedBuilder () in
@@ -145,12 +151,15 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
   -- native operations last, as their types may mention those
   let ctx1 = declareNatives tc ctx0 natives True in
   let ctx2 = declareEffects tc ctx1 effects in
-  let ctx3 = declareDatas tc ctx2 datas in
+  -- the data types that mention no definition; the rest once what they
+  -- mention is
+  let firstDatas = V.len (V.takeWhile (\a -> a == 0) dataAfter) in
+  let ctx3 = declareDatas tc ctx2 (V.take datasInOrder firstDatas) in
   let ctx4 = declareOps tc ctx3 effects in
   let ctx5 = declareNatives tc ctx4 natives False in
   let inPrelude = \g -> V.all (\b -> bindUnique h b < m.first) (bindsOf h g) in
   let preludeGroups = V.filter inPrelude groups in
-  let (ctx, owed, lets) = enterGroups tc ctx5 groups in
+  let (ctx, owed, lets) = enterInterleaved tc ctx5 datasInOrder dataAfter groups 0 firstDatas [] [] in
   let world = worldOf tc ctx preludeGroups in
   let w1 =
     V.foldl
@@ -221,7 +230,14 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
     answer = body,
     ranMain,
     preludeLets = V.concatMap (\gw -> match gw with | (g, Just w) -> if inPrelude g then [w] else [] | _ -> []) (V.zip groups lets),
-    preludeTop = V.filter (\u -> u < m.first) toplevel
+    preludeTop = V.filter (\u -> u < m.first) toplevel,
+    pure =
+      V.filter
+        (\u ->
+          match Hm.lookup u ctx.names with
+          | Just (Entry.Local level) -> (match V.get ctx.binders level with | Just (Binder.Binder Info.Defined _ _ _ _) -> True | _ -> False)
+          | _ -> False)
+        toplevel
   }
 
 -- Declare what the packages depended on give: each constant with its
@@ -229,6 +245,19 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
 -- tree, and everything known about their data types, effects and natives,
 -- hints, traits and instances (`Checker::import`).
 fun importAll (tc : Tc) (ctx : Ctx) (deps : [Compiled]) : Ctx ! { Mut | e } =
+  -- (the definitions already in the context, the builtins' and the
+  -- primitives', by their names: what an exported right-hand side names
+  -- them by)
+  let wg =
+    V.foldl
+      (\acc level ->
+        match V.get ctx.binders level with
+        | Just (Binder.Binder Info.Defined _ _ (Just key) _) ->
+            if Hm.member key (getRef tc.globals) then () else setRef tc.globals (Hm.insert key (X.value ctx level) (getRef tc.globals))
+        | _ -> ())
+      ()
+      (V.range 0 (V.len ctx.binders))
+  in
   V.foldl
     (\c (p : Compiled) ->
       let c2 =
@@ -378,3 +407,17 @@ fun qualified (m : Renamed) (u : Int) (name : String) : String =
   match Hm.lookup u m.qualifiers with
   | Just q -> q ++ "." ++ name
   | None -> name
+
+-- The groups entered and the data types declared, each data type once the
+-- groups before it are (`dataAfter`, from `Scc.interleave`), from group `g`
+-- and data type `d` on.
+fun enterInterleaved (tc : Tc) (ctx : Ctx) (datas : [HirData]) (dataAfter : [Int]) (groups : [HirGroup]) (g : Int) (d : Int) owed lets =
+  if g >= V.len groups and d >= V.len datas then (ctx, owed, lets)
+  else
+    let upto0 = if d < V.len datas then (let a = V.getOr 0 dataAfter d in if a < V.len groups then a else V.len groups) else V.len groups in
+    let upto = if upto0 < g then g else upto0 in
+    let (ctx1, o, l) = enterGroups tc ctx (V.slice groups g upto) in
+    let stop = V.len (V.takeWhile (\a -> a <= upto) (V.drop dataAfter d)) in
+    if stop > 0 then enterInterleaved tc (declareDatas tc ctx1 (V.slice datas d (d + stop))) datas dataAfter groups upto (d + stop) (V.append owed o) (V.append lets l)
+    else if upto >= V.len groups then enterInterleaved tc (declareDatas tc ctx1 (V.drop datas d)) datas dataAfter groups upto (V.len datas) (V.append owed o) (V.append lets l)
+    else enterInterleaved tc ctx1 datas dataAfter groups upto d (V.append owed o) (V.append lets l)

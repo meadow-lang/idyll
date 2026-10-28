@@ -894,3 +894,32 @@ b : Array UInt8
 b = #[0x34; 0x12; 0xff]
 
 (bytesToHex (stringToBytes "hé!"), bytesToString (stringToBytes "hé"), bytesFromHex "0aFf", bytesFromHex "abc", bytesGetU16LE b 0, bytesGetU16BE b 0, bytesToHex (bytesSetU32BE (stringToBytes "abcd") 0 305419896), bytesGetU64LE (bytesSetU64LE (stringToBytes "12345678") 0 (toUInt64 (0 - 1))) 0)
+%%%
+-- parser combinators: what they found and wanted, and a small expression language with its lexemes
+use Std.String.Parse as P
+use Std.String.Parse (Parser, ParseError)
+use Std.String.Parse.Char as C
+use Std.String.Parse.Lexer as L
+use Std.Char (isDigit)
+use Std.String as S
+
+errorOf : {a : Type} -> (r : Result (ParseError String) a) -> String
+errorOf (Ok x) = "no error"
+errorOf (Err e) = S.trimEnd (P.parseErrorTextPretty e)
+
+sc : Parser String ()
+sc = L.space C.space1 (L.skipLineComment "--") (P.empty : Parser String ())
+
+number : Parser String Int
+number = L.lexeme sc L.decimal
+
+minus : Parser String (Int -> Int -> Int)
+minus = P.mapTo (\(a : Int) (b : Int) -> a - b) (L.symbol sc "-")
+
+times : Parser String (Int -> Int -> Int)
+times = P.mapTo (\(a : Int) (b : Int) -> a * b) (L.symbol sc "*")
+
+expr : Parser String Int
+expr = P.chainl1 (P.chainl1 number times) minus
+
+(P.runParser (P.thenSkip (P.skipThen sc expr) P.eof) " 10 - 2 * 3 -- a comment\n - 1", errorOf (P.runParser (P.alt (P.single 'a') (P.single 'b')) "c"), errorOf (P.runParser (P.thenSkip (P.many (P.label "a digit" (P.satisfy isDigit))) P.eof) "12x"), P.parse (P.skipThen (P.chunk "let x = ") (P.chunk "1")) "let x = y", P.runParser L.hexadecimal "fF", P.runParser L.float "2.5e-1")

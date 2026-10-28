@@ -19,7 +19,7 @@
 //! Nat -> Type` wants `Nat`), and the modules of a package come in no
 //! particular order.
 
-use idyllic_hir::{Bind, BindGroup, Clause, DataDecl, GradeAnn, Module, PatKind, Pattern, Rhs, Term, TermKind};
+use idyllic_hir::{Bind, BindGroup, Clause, CtorShape, DataDecl, GradeAnn, Module, PatKind, Pattern, Rhs, Term, TermKind};
 use std::collections::{HashMap, HashSet};
 
 /// Retopologize a whole module: its top-level groups, and every nested `let`
@@ -36,7 +36,106 @@ pub fn scc_module(m: Module) -> Module {
     let early: HashSet<usize> = hints.iter().copied().chain(m.supers.values().flatten().copied()).collect();
     let groups = m.groups.into_iter().flat_map(|g| scc_groups_with(vec![g], &hints, &early)).collect();
     let datas = order_datas(m.datas);
-    Module { groups, datas, body: m.body.map(scc_term), ..m }
+    let (datas, data_after, groups) = interleave(datas, groups);
+    Module { groups, datas, data_after, body: m.body.map(scc_term), ..m }
+}
+
+/// What a data type's declaration mentions: its parameters' kinds, its
+/// kind, and its constructors' types.
+fn data_uniques(d: &DataDecl) -> HashSet<usize> {
+    let mut out = HashSet::new();
+    for kind in d.params.iter().filter_map(|(_, k)| k.as_ref()).chain(d.kind.as_ref()) {
+        out.extend(free_uniques(kind));
+    }
+    for c in &d.ctors {
+        match &c.shape {
+            CtorShape::Fields(fields) => fields.iter().for_each(|f| out.extend(free_uniques(f))),
+            CtorShape::Sig(ty) => out.extend(free_uniques(ty)),
+        }
+    }
+    out
+}
+
+/// The data types and the groups in one order, each after what it
+/// mentions: a data type before every group, as the checker declared them
+/// all before, unless it mentions a definition (a type alias, a type
+/// family, a trait's associated type), when it comes after that
+/// definition's group, and every group that mentions it (its type or a
+/// constructor) after it. Otherwise everything keeps its place. What
+/// mentions itself through both (a data type and a definition that need
+/// each other) stays as it was, for the checker to report. The data types
+/// in their new order, how many groups come before each, and the groups.
+fn interleave(datas: Vec<DataDecl>, groups: Vec<BindGroup>) -> (Vec<DataDecl>, Vec<usize>, Vec<BindGroup>) {
+    let n_groups = groups.len();
+    let group_of: HashMap<usize, usize> = groups
+        .iter()
+        .enumerate()
+        .flat_map(|(g, grp)| grp.binds().iter().filter_map(|b| b.name.unique).map(move |u| (u, g)).collect::<Vec<_>>())
+        .collect();
+    let mentions: Vec<HashSet<usize>> = datas.iter().map(data_uniques).collect();
+    if !mentions.iter().any(|m| m.iter().any(|u| group_of.contains_key(u))) {
+        let after = vec![0; datas.len()];
+        return (datas, after, groups);
+    }
+    // each data type's uniques: its own and its constructors'
+    let data_of: HashMap<usize, usize> = datas
+        .iter()
+        .enumerate()
+        .flat_map(|(i, d)| std::iter::once(&d.name).chain(d.ctors.iter().map(|c| &c.name)).filter_map(|x| x.unique).map(move |u| (u, i)))
+        .collect();
+    // nodes: the data types, then the groups; an edge to what must come first
+    let n = datas.len() + n_groups;
+    let mut needs: Vec<HashSet<usize>> = vec![HashSet::new(); n];
+    for (i, m) in mentions.iter().enumerate() {
+        for u in m {
+            if let Some(&g) = group_of.get(u) {
+                needs[i].insert(datas.len() + g);
+            }
+            if let Some(&j) = data_of.get(u).filter(|&&j| j != i) {
+                needs[i].insert(j);
+            }
+        }
+    }
+    for (g, grp) in groups.iter().enumerate() {
+        for b in grp.binds() {
+            for u in free_uniques_bind(b) {
+                if let Some(&h) = group_of.get(&u).filter(|&&h| h != g) {
+                    needs[datas.len() + g].insert(datas.len() + h);
+                }
+                if let Some(&j) = data_of.get(&u) {
+                    needs[datas.len() + g].insert(j);
+                }
+            }
+        }
+    }
+    // where each would go by itself: a data type before the group after the
+    // last it mentions, a group where it is
+    let mut place: Vec<usize> = (0..n).map(|v| if v < datas.len() { 0 } else { 2 * (v - datas.len()) + 1 }).collect();
+    for (i, m) in mentions.iter().enumerate() {
+        place[i] = m.iter().filter_map(|u| group_of.get(u)).map(|&g| 2 * (g + 1)).max().unwrap_or(0);
+    }
+    // whatever is ready, the one whose place is first
+    let mut done = vec![false; n];
+    let mut order = Vec::with_capacity(n);
+    while order.len() < n {
+        let ready = (0..n).filter(|&v| !done[v] && needs[v].iter().all(|&w| done[w])).min_by_key(|&v| (place[v], v));
+        // (a cycle: what is left, in place order)
+        let next = ready.unwrap_or_else(|| (0..n).filter(|&v| !done[v]).min_by_key(|&v| (place[v], v)).expect("something left"));
+        done[next] = true;
+        order.push(next);
+    }
+    let (mut data_slots, mut group_slots): (Vec<Option<DataDecl>>, Vec<Option<BindGroup>>) =
+        (datas.into_iter().map(Some).collect(), groups.into_iter().map(Some).collect());
+    let (mut out_datas, mut after, mut out_groups) = (Vec::new(), Vec::new(), Vec::new());
+    for v in order {
+        if v < data_slots.len() {
+            out_datas.push(data_slots[v].take().expect("each data type once"));
+            after.push(out_groups.len());
+        } else {
+            out_groups.push(group_slots[v - data_slots.len()].take().expect("each group once"));
+        }
+    }
+    (out_datas, after, out_groups)
 }
 
 /// Data types, each after the ones its parameters' kinds and its own kind

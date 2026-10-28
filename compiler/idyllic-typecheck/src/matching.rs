@@ -841,7 +841,14 @@ impl Checker {
                                         u = Usage::unknown();
                                     }
                                     let whole = (!m.unnamed.contains(&k)).then(|| ctx.binders[k].name.clone());
-                                    for (_, key, hint, grade) in delta.iter().rev() {
+                                    for (lvl, key, hint, grade) in delta.iter().rev() {
+                                        // a field that is a type (an associated type) is
+                                        // read off as often as wanted: a type has nothing at
+                                        // run time but its descriptor, kept all the same
+                                        if matches!(*self.force(ctx2.binders[*lvl].ty.clone()), Value::Type(_)) {
+                                            u.take(Some(*key));
+                                            continue;
+                                        }
                                         self.leave_field(&ctx2, m.node, (*key, hint), grade.clone(), &mut u, whole.clone());
                                     }
                                     join(u);

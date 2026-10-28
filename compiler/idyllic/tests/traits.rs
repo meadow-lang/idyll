@@ -201,3 +201,47 @@ fn an_associated_type_is_declared_in_a_linear_module() {
     let src = format!("@linear\n\n{list}e : Elem (List Int)\ne = 3\n\ne\n");
     assert_eq!(value(&src), "3");
 }
+
+#[test]
+fn an_instance_may_give_its_own_parameter_as_an_associated_type() {
+    // `Elem = a`: a type passed where a type is wanted is used nowhere, so
+    // the instance's erased `a` may be it
+    let generic = "trait Container (c : Type) where\n  Elem : Type\n  toList : c -> List Elem\n\n\
+                   instance Container (List a) where\n  Elem = a\n  toList xs = xs\n\n";
+    assert_eq!(value(&format!("{generic}e : Elem (List String)\ne = \"s\"\n\n(toList (1 :: 2 :: Nil), e)\n")), "(1 :: 2 :: Nil, \"s\")");
+}
+
+#[test]
+fn a_subtrait_and_a_record_may_name_an_associated_type_of_what_they_hold() {
+    let container = "trait Container (c : Type) where\n  Elem : Type\n  toList : c -> List Elem\n\n\
+                     instance Container (List Int) where\n  Elem = Int\n  toList xs = xs\n\n";
+    // a subtrait's method, `Elem c` found through its superclass; the
+    // subtrait lives where its superclass does
+    let shown = "trait Container c => Shown (c : Type) where\n  showFirst : c -> Elem c -> String\n\n\
+                 instance Shown (List Int) where\n  showFirst xs d = case toList xs of\n    Nil -> showInt d\n    (x :: r) -> showInt x\n\n";
+    assert_eq!(value(&format!("{container}{shown}(showFirst (5 :: Nil) 0, showFirst (Nil : List Int) 7)\n")), "(\"5\", \"7\")");
+    // and a record's field, `Elem c @{box}`, read off the field before it
+    let record = "record Boxed (c : Type) = { box : Container c, fallback : Elem c @{box} }\n\n";
+    let named = "instance chars : Container (List Char) where\n  Elem = Char\n  toList xs = xs\n\n";
+    // (it checks; a field whose representation another field says is
+    // `any`, which wants a box, so it is not run here)
+    let src = format!("{container}{record}{named}b : Boxed (List Char)\nb = Boxed {{ box = chars, fallback = 'x' }}\n\nb.fallback\n");
+    let out = pipeline::compile(&src, &OPTIONS);
+    assert!(!out.has_errors(), "{src}\n{:#?}", out.diagnostics);
+}
+
+#[test]
+fn an_associated_type_waits_for_its_instance_inside_a_type() {
+    // `pick positive`: `Elem c -> Bool` is checked against `Int -> Bool`
+    // before the instance for `c` is found, and is asked again once it is
+    let src = "trait Container (c : Type) where\n  Elem : Type\n  toList : c -> List Elem\n\n\
+               instance Container (List Int) where\n  Elem = Int\n  toList xs = xs\n\n\
+               data Box (c : Type) (a : Type) = Box (c -> Maybe a)\n\nuse Box.*\n\n\
+               pick : {c : Type} -> {auto d : Container c} -> (f : Elem c -> Bool) -> Box c (Elem c)\n\
+               pick f = Box (\\(x : c) -> case toList x of\n  Nil -> Nothing\n  (y :: r) -> if f y then Just y else Nothing)\n\n\
+               positive : Int -> Bool\npositive n = n > 0\n\n\
+               b : Box (List Int) Int\nb = pick positive\n\n\
+               case b of\n  Box f -> f (3 :: Nil)\n";
+    assert_eq!(value(src), "Just 3");
+}
+

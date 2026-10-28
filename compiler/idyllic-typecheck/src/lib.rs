@@ -1353,6 +1353,9 @@ pub struct TypeCheckResult {
     /// Definitions every back end keeps, used or not (see [`prune`]): none,
     /// unless whoever lowers the program says otherwise.
     pub roots: HashSet<usize>,
+    /// The top-level definitions whose values compute with no effects,
+    /// which a back end may leave out when nothing uses them (see [`prune`])
+    pub pure: HashSet<usize>,
     /// The checker, kept to work out the types of the program's terms
     /// again for whoever lowers it (see [`typer`]).
     pub typer: typer::Typer,
@@ -1470,13 +1473,36 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
     // native operations once those are known, as their types may mention them
     let ctx = tc.declare_natives(&ctx, &m.natives, true);
     let ctx = tc.declare_effects(&ctx, &m.effects);
-    let ctx = tc.declare_datas(&ctx, &m.datas);
+    // the data types that mention no definition (see the SCC pass); the
+    // rest once what they mention is
+    let after = |i: usize| m.data_after.get(i).copied().unwrap_or(0);
+    let first = (0..m.datas.len()).take_while(|&i| after(i) == 0).count();
+    let ctx = tc.declare_datas(&ctx, &m.datas[..first]);
     let ctx = tc.declare_ops(&ctx, &m.effects);
     let ctx = tc.declare_natives(&ctx, &m.natives, false);
     // Top-level definitions are closed, so whatever they and the entry
     // expression use is only ever a definition or a primitive: there is no
     // binder left to hold the final usage to account.
-    let (ctx, owed, lets) = tc.enter_groups(&ctx, &m.groups);
+    let (mut ctx, mut owed, mut lets) = (ctx, Vec::new(), Vec::new());
+    let (mut g, mut d) = (0, first);
+    while g < m.groups.len() || d < m.datas.len() {
+        let upto = if d < m.datas.len() { after(d).min(m.groups.len()) } else { m.groups.len() };
+        let (next, o, l) = tc.enter_groups(&ctx, &m.groups[g..upto.max(g)]);
+        ctx = next;
+        owed.extend(o);
+        lets.extend(l);
+        g = upto.max(g);
+        let stop = (d..m.datas.len()).take_while(|&i| after(i) <= g).count();
+        if stop > 0 {
+            ctx = tc.declare_datas(&ctx, &m.datas[d..d + stop]);
+            d += stop;
+        } else if g >= m.groups.len() {
+            // (data types the groups do not reach, declared last)
+            ctx = tc.declare_datas(&ctx, &m.datas[d..]);
+            d = m.datas.len();
+        }
+    }
+    let ctx = ctx;
     // What is left over at the top is run there, where the runtime handles
     // the effects in the prelude's `Eff`, and nothing else.
     let world = tc.world(&ctx);
@@ -1608,6 +1634,12 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
             hir::BindGroup::Rec(_) => None,
         })
         .collect();
+    // (those a definition, not a computation with effects, binds)
+    let pure: HashSet<usize> = toplevel
+        .iter()
+        .copied()
+        .filter(|u| matches!(ctx.names.get(u), Some(Entry::Local(level)) if ctx.binders[*level].info == BinderInfo::Defined))
+        .collect();
     let decl_types = catalog.iter().filter(|d| !d.prelude).map(|d| (d.node, d.name.clone(), d.ty.clone())).collect();
     let meta_solutions: Vec<Option<Rc<Core>>> = tc
         .metas
@@ -1669,6 +1701,7 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         symbols,
         toplevel,
         roots: HashSet::new(),
+        pure,
         catalog,
         typer: typer::Typer::new(tc),
     }

@@ -711,3 +711,11 @@ sameFrom eq xs ys i = if i < arrayLen xs then (if eq (arrayGet xs i) (arrayGet y
 @pub
 compareBy : {a : Type} -> (cmp : ((x : a) -> (y : a) -> Ordering)) -> (l : Vector a) -> (r : Vector a) -> Ordering
 compareBy cmp l r = Std.Cmp.lexicographic cmp (toList l) (toList r)
+
+-- Two vectors are equal when their elements are, however they were built.
+instance PartialEq a => PartialEq (Vector a) where
+  (==) l r = equalBy (\(x : a) (y : a) -> x == y) l r
+
+-- A vector as its elements, `#[1, 2]`.
+instance Debug a => Debug (Vector a) where
+  debug v = showWith (\(x : a) -> debug x) v

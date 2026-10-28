@@ -192,3 +192,29 @@ fn a_compiled_package_survives_being_saved() {
     assert_eq!(out.printed, "42\nhello\n");
 }
 
+
+#[test]
+fn an_associated_type_is_read_off_another_packages_instance() {
+    // `Elem (List Int)` is what the library's instance says, and its method
+    // is found for the program as any other is
+    let lib = library("Coll", "@pub
+trait Container (c : Type) where
+  Elem : Type
+  first : c -> Maybe Elem
+
+instance Container (List Int) where
+  Elem = Int
+  first xs = case xs of
+    Nil -> Nothing
+    (x :: r) -> Just x
+", &[], &[], 1);
+    let out = program("use Coll (Container, Elem, first)
+
+e : Elem (List Int)
+e = 3
+
+(e, first (1 :: Nil))
+", &[&lib], &[("Coll", &lib)]);
+    assert!(out.diagnostics.is_empty(), "{:#?}", diags(&out));
+    assert_eq!(out.evaluation, Some(Evaluation::Value("(3, Just 1)".into())));
+}

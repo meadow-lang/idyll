@@ -87,9 +87,31 @@ impl Checker {
     /// The same, in the middle of a definition (`mid`): what was put off
     /// till its end waits.
     pub(super) fn settle_autos_in(&mut self, last: bool, mid: bool) -> bool {
-        // (a literal's type may be what a search waits for, and the default
-        // is taken before the search is given up on)
-        let mut progress = self.settle_literals(last);
+        // (a literal's type may be what a search waits for, `hash 5`, and
+        // the default is taken before the search is given up on; but first
+        // what can be found already is, as a literal's type may wait on
+        // that, `showFirst xs 0` with `Elem c` the type)
+        let mut progress = false;
+        if last {
+            loop {
+                let mut round = self.settle_literals(false);
+                round |= self.search_autos(false, mid);
+                round |= self.settle_free_literals();
+                if !round {
+                    break;
+                }
+                progress = true;
+            }
+        }
+        progress |= self.settle_literals(last);
+        progress |= self.search_autos(last, mid);
+        progress
+    }
+
+    /// The deferred auto arguments searched for: those whose type is known,
+    /// and with `last` the rest too (reported as unknown).
+    fn search_autos(&mut self, last: bool, mid: bool) -> bool {
+        let mut progress = false;
         for d in std::mem::take(&mut self.deferred_autos) {
             if (!self.known(&d.ctx, &d.wanted) && !last) || (mid && d.later) {
                 self.deferred_autos.push(d);

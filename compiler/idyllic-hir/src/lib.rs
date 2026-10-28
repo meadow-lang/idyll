@@ -274,6 +274,12 @@ impl BindGroup {
 pub struct Module {
     /// in source order; a data type may mention those before it, and itself
     pub datas: Vec<DataDecl>,
+    /// For each data type, how many of the groups come before it: a data
+    /// type whose fields (or kinds) mention a definition, `data T = T Span`
+    /// with `Span = (Int, Int)`, is declared after it, and what uses the
+    /// type after that; the rest come before every group (see the SCC
+    /// pass). Empty: every one first.
+    pub data_after: Vec<usize>,
     pub effects: Vec<EffectDecl>,
     /// the prelude's, then the modules' in order
     pub natives: Vec<NativeDecl>,

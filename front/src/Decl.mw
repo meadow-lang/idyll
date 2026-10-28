@@ -36,6 +36,7 @@ use Idyll.Rename
 use Idyll.Positivity (Shape, checkPositivity)
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
+use Std.Collections.HashMap (HashMap)
 use Std.Maybe as M
 use Std.Maybe.Maybe.*
 use Std.String as S
@@ -130,6 +131,7 @@ fun underParams (params : [(Ident, Maybe HirExpr)]) (ks : [Core]) (ty : Core) (g
 -- constructors, so that a constructor may mention any of them.
 @pub fun declareDatas (tc : Tc) (ctx : Ctx) (rows : [HirData]) : Ctx ! { Mut | e } =
   let datas = V.map (\d -> dataOf (hirOf tc) d) rows in
+  let inherited = inheritedLevels tc (hirOf tc) datas in
   let (ctx1, kinds) =
     V.foldl
       (\acc (d : DataDecl) ->
@@ -138,7 +140,13 @@ fun underParams (params : [(Ident, Maybe HirExpr)]) (ks : [Core]) (ty : Core) (g
             let (ks, under) = paramKinds tc c d.params in
             let (kind, indices) =
               match d.kind with
-              | None -> (Core.Type 0, 0)
+              -- one with a field that is a large record lives where it does
+              | None ->
+                  (match Hm.lookup (H.uniqueOf d.name) inherited with
+                   | Just n ->
+                       let w = setRef tc.large (Hm.insert (H.uniqueOf d.name) n (getRef tc.large)) in
+                       (Core.Type n, 0)
+                   | None -> (Core.Type 0, 0))
               | Just k ->
                   let (kC, kV) = checkType tc under k in
                   let (indices, last) = telescopeEnd tc under.lvl kV in
@@ -176,6 +184,68 @@ fun underParams (params : [(Ident, Maybe HirExpr)]) (ks : [Core]) (ty : Core) (g
   in
   let w = checkPositivity tc shapes in
   ctx2
+
+-- The data types among `datas` whose kind is not written and that have a
+-- field of a large data type (a trait whose superclass has an associated
+-- type, a record holding such a trait's record): the universe each lives
+-- in, as large as the largest such field's (`Checker::inherited_levels`).
+fun inheritedLevels (tc : Tc) (h : HirArena) (datas : [DataDecl]) : HashMap Int Int ! { Mut | e } =
+  let written =
+    V.foldl
+      (\acc (d : DataDecl) ->
+        match M.andThen (\k -> writtenLevel h k) d.kind with
+        | Just n -> Hm.insert (H.uniqueOf d.name) n acc
+        | None -> acc)
+      (getRef tc.large)
+      datas
+  in
+  inheritRound h datas written Hm.empty
+
+fun inheritRound (h : HirArena) (datas : [DataDecl]) (levels : HashMap Int Int) (out : HashMap Int Int) : HashMap Int Int =
+  let (levels2, out2, changed) =
+    V.foldl
+      (\acc (d : DataDecl) ->
+        match acc with
+        | (lv, o, ch) ->
+            if M.isSome d.kind then acc
+            else
+              let u = H.uniqueOf d.name in
+              let n = V.foldl (\m f -> match M.andThen (\x -> Hm.lookup x lv) (headUnique h f) with | Just k -> if k > m then k else m | None -> m) 0 (fieldTypes h d) in
+              if n > 0 and Hm.getOr 0 u lv < n then (Hm.insert u n lv, Hm.insert u n o, True) else acc)
+      (levels, out, False)
+      datas
+  in
+  if changed then inheritRound h datas levels2 out2 else out2
+
+-- A data type's fields' types: its constructors' fields, or the domains of
+-- their signatures.
+fun fieldTypes (h : HirArena) (d : DataDecl) : [HirExpr] =
+  V.concatMap
+    (\c ->
+      match c with
+      | CtorDecl.CtorDecl x (CtorShape.Fields ts) -> ts
+      | CtorDecl.CtorDecl x (CtorShape.Sig ty) -> domains h ty [])
+    d.ctors
+
+fun domains (h : HirArena) (t : HirExpr) (acc : [HirExpr]) : [HirExpr] =
+  match (h, t) with
+  | HirExprPi x icit g dom cod -> domains h cod (V.pushBack acc dom)
+  | _ -> acc
+
+fun headUnique (h : HirArena) (t : HirExpr) : Maybe Int =
+  match (h, t) with
+  | HirExprVar x -> V.get (hirIdentUniques h x) 0
+  | HirExprApp f a -> headUnique h f
+  | _ -> None
+
+-- `Type n`, as a kind is written.
+fun writtenLevel (h : HirArena) (k : HirExpr) : Maybe Int =
+  match (h, k) with
+  | HirExprApp f n ->
+      (match ((h, f), (h, n)) with
+       | (HirExprType, HirExprLit (Literal.Int m)) -> Just m
+       | _ -> None)
+  | _ -> None
 
 -- The constructors of a data type, and all their fields, for positivity:
 -- each with the size of the context it is in, and its type.

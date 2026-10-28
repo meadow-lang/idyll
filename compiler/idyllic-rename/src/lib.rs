@@ -465,6 +465,7 @@ pub fn rename_part(
     };
     let module = hir::Module {
         datas,
+        data_after: Vec::new(),
         effects,
         natives,
         groups,

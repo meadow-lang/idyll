@@ -761,7 +761,20 @@ fun splitData (tc : Tc) (m : Matcher) (ctx : Ctx) (problems : [Problem]) (goal :
                  let ctx3 = { ctx2 | splits = Hm.insert k (c, V.map (\dl -> match dl with | (l, _, _, _) -> l) delta) ctx2.splits } in
                  let (body, u0) = tree tc m ctx3 (resubstProblems tc (lvlOf inner) sigma problems) (refineGoal tc (lvlOf inner) sigma goal) in
                  let u = if failedNow m then U.unknown () else u0 in
-                 let u2 = V.foldl (\uu dl -> match dl with | (_, key, _, grade) -> leaveField tc ctx3 key grade uu) u (V.reverse delta) in
+                 -- (a field that is a type, an associated type, is read off as
+                 -- often as wanted: a type has nothing at run time but its
+                 -- descriptor, kept all the same)
+                 let u2 =
+                   V.foldl
+                     (\uu dl ->
+                       match dl with
+                       | (lvl, key, _, grade) ->
+                           (match force tc (X.typeAt ctx3 lvl) with
+                            | Value.Type _ -> snd (U.take uu (Just key))
+                            | _ -> leaveField tc ctx3 key grade uu))
+                     u
+                     (V.reverse delta)
+                 in
                  let vars = V.map (\dl -> match dl with | (_, _, hint, _) -> hint) delta in
                  let name = match ctorOf tc c with | CtorInfo.CtorInfo n _ _ _ _ -> n in
                  (V.pushBack alts (CaseAlt.CaseAlt (Head.Con c) name vars body), joined tc usage u2)))

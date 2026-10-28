@@ -65,6 +65,9 @@ impl Checker {
                     Some(unfolded) => unfolded,
                     None => return v,
                 },
+                // a definition named before its value was known (the
+                // prelude's, in a dependency's exported right-hand side)
+                Value::Opaque(u, _, sp) if unfold && self.globals.contains_key(u) => self.apply_spine(self.globals[u].clone(), sp),
                 _ => return v,
             };
             v = next;

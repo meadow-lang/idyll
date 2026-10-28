@@ -403,6 +403,8 @@ pub fn substitute(t: &LTerm, name: &str, by: &LTerm) -> LTerm {
             Term::Lam(p, body)
         }
         Term::App(f, a) => Term::App(go(f), go(a)),
+        Term::ImplicitApp(f, a) => Term::ImplicitApp(go(f), go(a)),
+        Term::AutoApp(f, a) => Term::AutoApp(go(f), go(a)),
         Term::Ann(e, ty) => Term::Ann(go(e), go(ty)),
         Term::BoxIntro(e) => Term::BoxIntro(go(e)),
         Term::Range(a, b) => Term::Range(go(a), go(b)),

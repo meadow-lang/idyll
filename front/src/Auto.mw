@@ -104,9 +104,27 @@ fun known (tc : Tc) (ctx : Ctx) (ty : Value) : Bool ! { Mut | e } =
 -- The same, in the middle of a definition (`mid`): what was put off till
 -- its end waits.
 @pub fun settleAutosIn (tc : Tc) (last : Bool) (mid : Bool) : Bool ! { Mut | e } =
-  -- (a literal's type may be what a search waits for, and the default is
-  -- taken before the search is given up on)
+  -- (a literal's type may be what a search waits for, `hash 5`, and the
+  -- default is taken before the search is given up on; but first what can
+  -- be found already is, as a literal's type may wait on that, `showFirst
+  -- xs 0` with `Elem c` the type)
+  let rounds = if last then finalRounds tc mid False else False in
   let read = L.settleLiterals tc last in
+  let searched = searchAutos tc last mid in
+  rounds or read or searched
+
+-- Until nothing changes: the literals whose types are known read, the
+-- searches whose types are known made, and the literals with nothing but a
+-- metavariable for a type read at their defaults.
+fun finalRounds (tc : Tc) (mid : Bool) (progress : Bool) : Bool ! { Mut | e } =
+  let a = L.settleLiterals tc False in
+  let b = searchAutos tc False mid in
+  let c = L.settleFreeLiterals tc in
+  if a or b or c then finalRounds tc mid True else progress
+
+-- The deferred auto arguments searched for: those whose type is known, and
+-- with `last` the rest too (reported as unknown).
+fun searchAutos (tc : Tc) (last : Bool) (mid : Bool) : Bool ! { Mut | e } =
   let waiting = getRef tc.deferredAutos in
   let w = setRef tc.deferredAutos [] in
   V.foldl
@@ -131,7 +149,7 @@ fun known (tc : Tc) (ctx : Ctx) (ty : Value) : Bool ! { Mut | e } =
             in
             let w4 = choose tc m ctx found in
             True)
-    read
+    False
     waiting
 
 -- What is put off, settled once a definition has been checked: round until

@@ -134,6 +134,12 @@ fun mentions (own : Compiled) (dep : Compiled) (c : Core) : Bool =
     program,
     elaborated = ElaboratedProgram (freezeElaborated out) root,
     toplevel = V.append c.preludeTop (V.concatMap (\(p : Compiled) -> V.map (\l -> match l with | TopLet.TopLet u _ _ -> u) p.lets) packages),
+    -- (a package's definition has a value exactly when computing it has no
+    -- effects)
+    pure =
+      V.append
+        c.pure
+        (V.concatMap (\(p : Compiled) -> V.concatMap (\k -> match k with | Constant.Constant u _ _ (Just _) _ -> [u] | _ -> []) p.constants) packages),
     symbols,
     bodyType = if own.main then None else M.map snd body
   }

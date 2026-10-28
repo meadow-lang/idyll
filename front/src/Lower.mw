@@ -488,7 +488,7 @@ fun opInfo (l : L s) (u : Int) : Maybe OpInfo ! { Mut, St s | e } = Hm.lookup u 
   let roots = V.map fst (vecOf showIntU) in
   -- a hole is what it was solved with: first, so that what only a solution
   -- uses is kept; and what the program never uses is left out
-  let (ready, live) = Pr.prepared (zonkedProgram checked.elaborated) checked.toplevel (getRef tc.ctors) roots in
+  let (ready, live) = Pr.prepared (zonkedProgram checked.elaborated) checked.toplevel (getRef tc.ctors) roots checked.pure in
   let a = elaboratedArena ready in
   let root = elaboratedRoot ready in
   match elaboratedModuleBody a root with

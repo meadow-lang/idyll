@@ -183,3 +183,4 @@ fn an_associated_type_is_what_a_descriptor_passed_with_the_dictionary_says() {
         assert!(all.iter().any(|(y, r)| y == x && matches!(r, Rep::Field(..))), "{x} should be a field's representation: {all:?}");
     }
 }
+

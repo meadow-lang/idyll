@@ -1430,7 +1430,7 @@ impl Lower<'_> {
                         typer::Rep::Desc => Rep::Desc,
                         _ => Rep::Any,
                     })
-                    .collect();
+                    .collect::<Vec<Rep>>();
                 out.push((c.name.clone(), fields));
             }
             rep_vars.sort();

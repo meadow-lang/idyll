@@ -81,6 +81,21 @@ impl Checker {
     /// The literals that waited for their types, read where their types are
     /// known now; with `last`, every one, an unknown type taken to be the
     /// default. Whether any was read.
+    /// The literals whose type is still nothing but a metavariable, which
+    /// nothing will say more of, read at their defaults: `5` in
+    /// `showFirst (5 :: Nil) 0`, whose list's type is what the search for
+    /// `showFirst`'s instance, and so `0`'s type, waits on. Whether any was
+    /// read.
+    pub(super) fn settle_free_literals(&mut self) -> bool {
+        let (free, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.deferred_literals)
+            .into_iter()
+            .partition(|d| matches!(&*self.force(d.ty.clone()), Value::Flex(_, sp) if sp.is_empty()));
+        self.deferred_literals = free;
+        let progress = !self.deferred_literals.is_empty() && self.settle_literals(true);
+        self.deferred_literals.extend(rest);
+        progress
+    }
+
     pub(super) fn settle_literals(&mut self, last: bool) -> bool {
         let mut progress = false;
         for d in std::mem::take(&mut self.deferred_literals) {

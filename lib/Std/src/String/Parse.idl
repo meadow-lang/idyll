@@ -1,0 +1,748 @@
+-- Parser combinators, as Meadow's `Std.String.Parse`, after Haskell's
+-- megaparsec.
+--
+--   use Std.String.Parse as P
+--   use Std.String.Parse.Char as C
+--
+--   number : P.Parser String String
+--   number = P.takeWhile1P "a digit" Std.Char.isDigit
+--
+--   P.runParser (P.thenSkip number P.eof) "123"      -- Ok "123"
+--
+-- A parser reads a stream, a `String`, a `Vector` of tokens, or any type
+-- with an instance of `Stream`, and either gives a value or a `ParseError`
+-- saying where it gave up, what it found there and what it wanted instead.
+--
+-- Streams. `Stream` says what a parser can do with its input: take a
+-- token or a run of them, whose associated type `Token` is what one token
+-- is (a `Char` of a `String`, a `t` of a `Vector t`); say what went wrong,
+-- how tokens read in a message; and say where, the span of the source a run
+-- of tokens came from. (Meadow has these as three traits, `Stream`,
+-- `VisualStream` and `TraversableStream`; here they are one, with the same
+-- methods.) Positions are offsets; lines and columns are for whoever shows
+-- the error to a person.
+-- A chunk of a stream, a run of its tokens, is a stream of the same type.
+-- The input is never cut up as it is read: a parser is given the whole of
+-- it and an offset into it, whose meaning is the stream's own.
+--
+-- Consumed input. Every parser says whether it moved the offset on, and
+-- `alt` tries its right branch only when the left failed without
+-- consuming: that keeps an error pointed at the real problem rather than
+-- at the last alternative tried, and is why a parser that must back up
+-- over what it ate says so with `try`. `chunk` is atomic: a partial match
+-- consumes nothing.
+--
+-- Hints. A parser that succeeds without taking all it could (`many digit`
+-- stopping at a letter) leaves hints, what it would also have taken there;
+-- if the next one fails at that offset without consuming, the hints join
+-- what it wanted: `thenSkip (many digit) eof` on "12x" expects a digit or
+-- the end of input, not only the end.
+--
+-- `Std.String.Parse.Char` has parsers of `Char` streams; and
+-- `Std.String.Parse.Lexer` lexemes over them.
+
+use Std.Collections.Vector (Vector)
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Bool (not)
+use Std.Num.Bits (Bits, bitAnd, shl)
+
+-- ---------------------------------------------------------------------------
+-- Streams
+-- ---------------------------------------------------------------------------
+
+-- What a parser reads. Every method takes the input and an offset into it.
+@pub
+trait Stream (s : Type) where
+  -- what one token is
+  Token : Type
+  -- the token at `off`, and the offset after it; `Nothing` at the end
+  take1 : (input : s) -> (off : Int) -> Maybe (Token, Int)
+  -- the next `n` tokens from `off` as a chunk, and the offset after them;
+  -- `Nothing` if fewer are left
+  takeN : (input : s) -> (n : Int) -> (off : Int) -> Maybe (s, Int)
+  -- the longest run of tokens from `off` that pass the test, maybe empty,
+  -- and the offset after it
+  takeWhile : (input : s) -> (f : Token -> Bool) -> (off : Int) -> (s, Int)
+  -- a chunk of one token, or of several
+  tokenToChunk : (t : Token) -> s
+  tokensToChunk : (ts : Vector Token) -> s
+  -- a chunk's tokens, and how many there are
+  chunkToTokens : (c : s) -> Vector Token
+  chunkLength : (c : s) -> Int
+  chunkEmpty : (c : s) -> Bool
+  chunkEmpty c = chunkLength c == 0
+  -- one token, as a message names it: `'x'`, `newline`, `an identifier`
+  showToken : (input : s) -> (t : Token) -> String
+  -- several, as a message names them: by default each as `showToken` says,
+  -- with spaces between
+  showTokens : (input : s) -> (ts : Vector Token) -> String
+  showTokens input ts = S.join " " (V.toList (V.map (\(t : Token s) -> showToken input t) ts))
+  -- the span of the source the tokens from offset `from` up to `to` were
+  -- read out of (from an offset up to, not including, another): what an
+  -- error needs to point at its cause; by default the offsets themselves
+  sourceSpan : (input : s) -> (from : Int) -> (to : Int) -> (Int, Int)
+  sourceSpan input from to = (from, to)
+
+-- --- a String is a stream of Chars ----------------------------------------
+
+byteAt : (s : String) -> (i : Int) -> Int
+byteAt s i = stringByteAt s i
+
+contAt : (s : String) -> (i : Int) -> Int
+contAt s i = bitAnd (byteAt s i) 63
+
+-- The character whose UTF-8 starts at byte `i`, and the byte after it; a
+-- byte that starts no whole character reads as U+FFFD.
+decodeAt : (s : String) -> (i : Int) -> (Char, Int)
+decodeAt s i =
+  let n = stringByteLength s in
+  let b = byteAt s i in
+  if b < 128 then (charFromCode b, i + 1)
+  else if b >= 192 then (if b < 224 then (if i + 1 < n then (charFromCode (shl (bitAnd b 31) 6 + contAt s (i + 1)), i + 2) else (charFromCode 65533, i + 1))
+  else if b < 240 then (if i + 2 < n then (charFromCode (shl (bitAnd b 15) 12 + shl (contAt s (i + 1)) 6 + contAt s (i + 2)), i + 3) else (charFromCode 65533, i + 1))
+  else if i + 3 < n then (charFromCode (shl (bitAnd b 7) 18 + shl (contAt s (i + 1)) 12 + shl (contAt s (i + 2)) 6 + contAt s (i + 3)), i + 4)
+  else (charFromCode 65533, i + 1))
+  else (charFromCode 65533, i + 1)
+
+@terminating
+stringWhile : (s : String) -> (f : Char -> Bool) -> (i : Int) -> Int
+stringWhile s f i =
+  if i >= stringByteLength s then i
+  else case decodeAt s i of
+    (c, j) -> if f c then stringWhile s f j else i
+
+@terminating
+stringSkip : (s : String) -> (n : Int) -> (i : Int) -> Maybe Int
+stringSkip s n i =
+  if n <= 0 then Just i
+  else if i >= stringByteLength s then Nothing
+  else case decodeAt s i of
+    (c, j) -> stringSkip s (n - 1) j
+
+instance Stream String where
+  Token = Char
+  take1 s off = if off >= stringByteLength s then Nothing else Just (decodeAt s off)
+  takeN s n off = case stringSkip s n off of
+    Nothing -> Nothing
+    Just stop -> Just (stringSlice s off stop, stop)
+  takeWhile s f off = let stop = stringWhile s f off in (stringSlice s off stop, stop)
+  tokenToChunk c = charsToString (arrayFromList (c :: Nil))
+  tokensToChunk cs = charsToString (V.toArray cs)
+  chunkToTokens s = V.fromArray (stringToChars s)
+  chunkLength s = S.charLength s
+  chunkEmpty s = stringByteLength s == 0
+  showToken input c = showChar c
+  showTokens input cs = if V.len cs == 1 then showChar (V.getOr ' ' cs 0) else debug (charsToString (V.toArray cs))
+
+-- As megaparsec shows a `Char` stream: a character hard to see by its
+-- name, one character in single quotes, several in double quotes; and a
+-- `String`'s offsets are its source's.
+showChar : (c : Char) -> String
+showChar c =
+  let n = charCode c in
+  if n == 10 then "newline"
+  else if n == 13 then "carriage return"
+  else if n == 9 then "tab"
+  else if n == 32 then "space"
+  else if n == 0 then "null"
+  else debug c
+
+-- --- a Vector is a stream of whatever it holds ------------------------------
+
+@terminating
+vectorWhile : {t : Type} -> (v : Vector t) -> (f : t -> Bool) -> (i : Int) -> Int
+vectorWhile v f i = case V.get v i of
+  Just x -> if f x then vectorWhile v f (i + 1) else i
+  Nothing -> i
+
+-- (each token as it displays; and a plain vector of tokens knows nothing of
+-- where they came from, so its spans are of its own indices)
+instance Display t => Stream (Vector t) where
+  Token = t
+  take1 v off = case V.get v off of
+    Just x -> Just (x, off + 1)
+    Nothing -> Nothing
+  takeN v n off = if off + n > V.len v then Nothing else Just (V.slice v off (off + n), off + n)
+  takeWhile v f off = let stop = vectorWhile v f off in (V.slice v off stop, stop)
+  tokenToChunk x = V.singleton x
+  tokensToChunk xs = xs
+  chunkToTokens v = v
+  chunkLength v = V.len v
+  showToken input x = display x
+  showTokens input xs = S.join " " (V.toList (V.map (\(x : t) -> display x) xs))
+
+-- ---------------------------------------------------------------------------
+-- Errors
+-- ---------------------------------------------------------------------------
+
+-- One thing that was, or was wanted, at an offset: a run of the input's
+-- tokens, a description, or the end.
+@pub
+@derive(Debug, PartialEq)
+data ErrorItem (s : Type) = Tokens s | Label String | EndOfInput
+
+use ErrorItem.*
+
+-- What went wrong, and where. A `Trivial` error is what a parser of tokens
+-- says: what it found, if anything, and what it would have taken instead.
+-- A `Fancy` one is a message of the program's own.
+@pub
+@derive(Debug, PartialEq)
+data ParseError (s : Type) = Trivial Int (Maybe (ErrorItem s)) (Vector (ErrorItem s)) | Fancy Int (Vector String)
+
+use ParseError.*
+
+@pub
+errorOffset : {s : Type} -> (e : ParseError s) -> Int
+errorOffset (Trivial o u xs) = o
+errorOffset (Fancy o ms) = o
+
+orElse : {a : Type} -> (x : Maybe a) -> (y : Maybe a) -> Maybe a
+orElse (Just v) y = Just v
+orElse Nothing y = y
+
+-- Two failures as one. The one that got further wins outright; at the same
+-- offset the two are put together, and a message of the program's own wins
+-- over a list of wishes.
+@pub
+mergeError : {s : Type} -> (a : ParseError s) -> (b : ParseError s) -> ParseError s
+mergeError a b =
+  let oa = errorOffset a in
+  let ob = errorOffset b in
+  if oa > ob then a
+  else if ob > oa then b
+  else case (a, b) of
+    (Trivial o u1 e1, Trivial o2 u2 e2) -> Trivial o (orElse u1 u2) (V.append e1 e2)
+    (Fancy o m1, Fancy o2 m2) -> Fancy o (V.append m1 m2)
+    (Fancy o m1, other) -> a
+    (other, Fancy o m2) -> b
+
+-- What an error at `off` says it wanted: hints for whatever comes next.
+hintsOf : {s : Type} -> (off : Int) -> (e : ParseError s) -> Vector (ErrorItem s)
+hintsOf off (Trivial o u xs) = if o == off then xs else V.empty
+hintsOf off (Fancy o ms) = V.empty
+
+-- An error at `off` that consumed nothing, told what the parser before it
+-- would also have taken there.
+withHints : {s : Type} -> (off : Int) -> (hints : Vector (ErrorItem s)) -> (e : ParseError s) -> ParseError s
+withHints off hints e =
+  if V.isEmpty hints then e
+  else case e of
+    Trivial o u xs -> if o == off then Trivial o u (V.append xs hints) else e
+    Fancy o ms -> e
+
+-- ---------------------------------------------------------------------------
+-- Parsers
+-- ---------------------------------------------------------------------------
+
+-- What one parser came to. The first `Bool` says whether it consumed
+-- input, which the backtracking rules rest on. A success has the value,
+-- the offset reached, and its hints.
+@pub
+data Reply (s : Type) (a : Type) = Done Bool a Int (Vector (ErrorItem s)) | Failed Bool (ParseError s)
+
+use Reply.*
+
+-- A parser: from the input and an offset, to a `Reply`.
+@pub
+data Parser (s : Type) (a : Type) = Parser ((input : s) -> (off : Int) -> Reply s a)
+
+use Parser.*
+
+-- Run a parser: the one place it is taken apart.
+@pub
+runP : {s a : Type} -> (p : Parser s a) -> (input : s) -> (off : Int) -> Reply s a
+runP (Parser f) input off = f input off
+
+-- `x`, consuming nothing.
+@pub
+pure : {s a : Type} -> (x : a) -> Parser s a
+pure x = Parser (\input off -> Done False x off V.empty)
+
+-- A failure with a message of the program's own, consuming nothing.
+@pub
+fail : {s a : Type} -> (message : String) -> Parser s a
+fail message = Parser (\input off -> Failed False (Fancy off (V.singleton message)))
+
+-- A failure with no opinion about what was wanted: what `choice` of none is.
+@pub
+empty : {s a : Type} -> Parser s a
+empty = Parser (\input off -> Failed False (Trivial off Nothing V.empty))
+
+-- `f` of whatever `p` gives.
+@pub
+map : {s a b : Type} -> (f : a -> b) -> (p : Parser s a) -> Parser s b
+map f p = Parser (\input off -> case runP p input off of
+  Done c x off2 hs -> Done c (f x) off2 hs
+  Failed c e -> Failed c e)
+
+-- What the second half of a `bind` comes to, given the first half's.
+andThen : {s b : Type} -> (c : Bool) -> (off2 : Int) -> (hs : Vector (ErrorItem s)) -> (reply : Reply s b) -> Reply s b
+andThen c off2 hs (Done c2 y off3 hs2) =
+  let hints = if c2 then hs2 else V.append hs hs2 in
+  Done (if c then True else c2) y off3 hints
+andThen c off2 hs (Failed c2 e) =
+  let e2 = if c2 then e else withHints off2 hs e in
+  Failed (if c then True else c2) e2
+
+-- `p`, then the parser `f` makes of what it gave. Consumption is the two
+-- halves', so that `alt` sees through a whole chain of them; and what the
+-- first half hinted joins what the second wanted, if it fails where the
+-- first stopped.
+@pub
+bind : {s a b : Type} -> (p : Parser s a) -> (f : a -> Parser s b) -> Parser s b
+bind p f = Parser (\input off -> case runP p input off of
+  Failed c e -> Failed c e
+  Done c x off2 hs -> andThen c off2 hs (runP (f x) input off2))
+
+-- `p` then `q`, keeping `q`'s value.
+@pub
+skipThen : {s a b : Type} -> (p : Parser s a) -> (q : Parser s b) -> Parser s b
+skipThen p q = bind p (\(x : a) -> q)
+
+-- `p` then `q`, keeping `p`'s value.
+@pub
+thenSkip : {s a b : Type} -> (p : Parser s a) -> (q : Parser s b) -> Parser s a
+thenSkip p q = bind p (\(x : a) -> map (\(y : b) -> x) q)
+
+-- The function `pf` gives, of what `pa` gives.
+@pub
+apply : {s a b : Type} -> (pf : Parser s (a -> b)) -> (pa : Parser s a) -> Parser s b
+apply pf pa = bind pf (\(f : a -> b) -> map f pa)
+
+-- Several things in a row, as the function of what they are and then each
+-- in the order read: `keep p` hands what `p` read to the function as its
+-- next argument, `skip p` reads `p` and keeps nothing of it.
+--
+--   P.skip (C.char ')') (P.keep expr (P.skip (C.char '(') (P.pure (\e -> e))))
+@pub
+keep : {s a b : Type} -> (p : Parser s a) -> (pf : Parser s (a -> b)) -> Parser s b
+keep p pf = apply pf p
+
+@pub
+skip : {s a b : Type} -> (p : Parser s a) -> (pf : Parser s b) -> Parser s b
+skip p pf = thenSkip pf p
+
+-- Both, their results put together by `f`.
+@pub
+lift2 : {s a b c : Type} -> (f : a -> b -> c) -> (p : Parser s a) -> (q : Parser s b) -> Parser s c
+lift2 f p q = bind p (\(x : a) -> map (\(y : b) -> f x y) q)
+
+-- All three, their results put together by `f`.
+@pub
+lift3 : {s a b c d : Type} -> (f : a -> b -> c -> d) -> (p : Parser s a) -> (q : Parser s b) -> (r : Parser s c) -> Parser s d
+lift3 f p q r = bind p (\(x : a) -> bind q (\(y : b) -> map (\(z : c) -> f x y z) r))
+
+-- `p`, its value replaced by `x`.
+@pub
+mapTo : {s a b : Type} -> (x : a) -> (p : Parser s b) -> Parser s a
+mapTo x p = map (\(y : b) -> x) p
+
+-- `p`, for its consuming alone.
+@pub
+void : {s a : Type} -> (p : Parser s a) -> Parser s ()
+void p = map (\(y : a) -> ()) p
+
+-- The parser `f` makes, made only when it is run: how a grammar that
+-- refers to itself is written, `P.defer (\u -> expr)`, as definitions are
+-- computed at once.
+@pub
+defer : {s a : Type} -> (f : () -> Parser s a) -> Parser s a
+defer f = Parser (\input off -> runP (f ()) input off)
+
+-- ---------------------------------------------------------------------------
+-- Running
+-- ---------------------------------------------------------------------------
+
+-- `p` over `input`: `Ok` its value or `Err` its error. Nothing says it took
+-- all of it; end `p` with `eof` where what is left is an error.
+@pub
+runParser : {s a : Type} -> (p : Parser s a) -> (input : s) -> Result (ParseError s) a
+runParser p input = case runP p input 0 of
+  Done c x off hs -> Ok x
+  Failed c e -> Err e
+
+-- As `runParser`, with the offset where it stopped.
+@pub
+runParserPartial : {s a : Type} -> (p : Parser s a) -> (input : s) -> Result (ParseError s) (a, Int)
+runParserPartial p input = case runP p input 0 of
+  Done c x off hs -> Ok (x, off)
+  Failed c e -> Err e
+
+-- `p` over `input`: `Ok` its value, or the span of the source the error is
+-- about and what went wrong there, as lines of text.
+@pub
+parse : {s a : Type} -> {auto st : Stream s} -> (p : Parser s a) -> (input : s) -> Result ((Int, Int), String) a
+parse p input = case runParser p input of
+  Ok x -> Ok x
+  Err e -> Err (errorSpan input e, parseErrorTextPretty e)
+
+-- ---------------------------------------------------------------------------
+-- Choice and backtracking
+-- ---------------------------------------------------------------------------
+
+-- `p`; if it fails without consuming, `q` instead. A branch that consumed
+-- commits: its failure is the answer. `try` is for two alternatives that
+-- share a beginning.
+@pub
+alt : {s a : Type} -> (p : Parser s a) -> (q : Parser s a) -> Parser s a
+alt p q = Parser (\input off -> case runP p input off of
+  Done c x off2 hs -> Done c x off2 hs
+  Failed True e -> Failed True e
+  Failed False e -> case runP q input off of
+    Failed False e2 -> Failed False (mergeError e e2)
+    Done False y off2 hs -> Done False y off2 (V.append (hintsOf off e) hs)
+    other -> other)
+
+-- The first of `ps` that succeeds.
+@pub
+choice : {s a : Type} -> (ps : Vector (Parser s a)) -> Parser s a
+choice ps = V.foldl (\(acc : Parser s a) (p : Parser s a) -> alt acc p) empty ps
+
+-- `p`, but saying it consumed nothing if it fails, so that `alt` still
+-- tries what comes next: looking as far ahead as it likes.
+@pub
+try : {s a : Type} -> (p : Parser s a) -> Parser s a
+try p = Parser (\input off -> case runP p input off of
+  Done c x off2 hs -> Done c x off2 hs
+  Failed c e -> Failed False e)
+
+-- What `p` gives, but where it started either way.
+@pub
+lookAhead : {s a : Type} -> (p : Parser s a) -> Parser s a
+lookAhead p = Parser (\input off -> case runP p input off of
+  Done c x off2 hs -> Done False x off V.empty
+  failed -> failed)
+
+found : {s : Type} -> {auto st : Stream s} -> (input : s) -> (off : Int) -> ErrorItem s
+found input off = case take1 input off of
+  Just (t, next) -> Tokens (tokenToChunk t)
+  Nothing -> EndOfInput
+
+-- Only if `p` does not match here; it consumes nothing.
+@pub
+notFollowedBy : {s a : Type} -> {auto st : Stream s} -> (p : Parser s a) -> Parser s ()
+notFollowedBy p = Parser (\input off -> case runP p input off of
+  Done c x off2 hs -> Failed False (Trivial off (Just (found input off)) V.empty)
+  Failed c e -> Done False () off V.empty)
+
+-- `p`, saying it wanted `what` when it fails before consuming, and hinting
+-- `what`: how "'x' or 'y' or ..." becomes "an identifier".
+@pub
+label : {s a : Type} -> (what : String) -> (p : Parser s a) -> Parser s a
+label what p = Parser (\input off -> case runP p input off of
+  Failed False (Trivial o u xs) -> if o == off then Failed False (Trivial o u (V.singleton (Label what))) else Failed False (Trivial o u xs)
+  Done False x off2 hs -> Done False x off2 (if V.isEmpty hs then hs else V.singleton (Label what))
+  other -> other)
+
+-- `p`, saying nothing of what it wanted or would have taken: for white
+-- space, and whatever else a message is better without.
+@pub
+hidden : {s a : Type} -> (p : Parser s a) -> Parser s a
+hidden p = Parser (\input off -> case runP p input off of
+  Failed False (Trivial o u xs) -> if o == off then Failed False (Trivial o u V.empty) else Failed False (Trivial o u xs)
+  Done c x off2 hs -> Done c x off2 V.empty
+  other -> other)
+
+-- `Just` what `p` gives, or `Nothing` if it fails without consuming.
+@pub
+optional : {s a : Type} -> (p : Parser s a) -> Parser s (Maybe a)
+optional p = alt (map (\(x : a) -> Just x) p) (pure Nothing)
+
+-- What `p` gives, or `x` if it fails without consuming.
+@pub
+option : {s a : Type} -> (x : a) -> (p : Parser s a) -> Parser s a
+option x p = alt p (pure x)
+
+-- `p`'s error as a value, when it fails without consuming; one that
+-- consumed is still a failure.
+@pub
+observing : {s a : Type} -> (p : Parser s a) -> Parser s (Result (ParseError s) a)
+observing p = Parser (\input off -> case runP p input off of
+  Done c x off2 hs -> Done c (Ok x) off2 hs
+  Failed False e -> Done False (Err e) off V.empty
+  Failed True e -> Failed True e)
+
+-- ---------------------------------------------------------------------------
+-- Tokens
+-- ---------------------------------------------------------------------------
+
+-- The next token, if `f` makes something of it; `expected` is what to say
+-- was wanted when it does not.
+@pub
+token : {s a : Type} -> {auto st : Stream s} -> (f : Token s -> Maybe a) -> (expected : Vector (ErrorItem s)) -> Parser s a
+token f expected = Parser (\input off -> case take1 input off of
+  Nothing -> Failed False (Trivial off (Just EndOfInput) expected)
+  Just (t, next) -> case f t of
+    Just x -> Done True x next V.empty
+    Nothing -> Failed False (Trivial off (Just (Tokens (tokenToChunk t))) expected))
+
+-- Any one token; it fails only at the end.
+@pub
+anySingle : {s : Type} -> {auto st : Stream s} -> Parser s (Token s)
+anySingle = token (\(t : Token s) -> Just t) V.empty
+
+-- A token `f` takes.
+@pub
+satisfy : {s : Type} -> {auto st : Stream s} -> (f : Token s -> Bool) -> Parser s (Token s)
+satisfy f = token (\(t : Token s) -> if f t then Just t else Nothing) V.empty
+
+-- This token.
+@pub
+single : {s : Type} -> {auto st : Stream s} -> {auto e : PartialEq (Token s)} -> (x : Token s) -> Parser s (Token s)
+single x = token (\(t : Token s) -> if t == x then Just t else Nothing) (V.singleton (Tokens (tokenToChunk x)))
+
+-- Any token but this one.
+@pub
+anySingleBut : {s : Type} -> {auto st : Stream s} -> {auto e : PartialEq (Token s)} -> (x : Token s) -> Parser s (Token s)
+anySingleBut x = satisfy (\(t : Token s) -> not (t == x))
+
+elemOf : {a : Type} -> {auto e : PartialEq a} -> (x : a) -> (xs : Vector a) -> Bool
+elemOf x xs = V.any (\(y : a) -> y == x) xs
+
+-- Any one of `xs`.
+@pub
+oneOf : {s : Type} -> {auto st : Stream s} -> {auto e : PartialEq (Token s)} -> (xs : Vector (Token s)) -> Parser s (Token s)
+oneOf xs = satisfy (\(t : Token s) -> elemOf t xs)
+
+-- Any token not among `xs`.
+@pub
+noneOf : {s : Type} -> {auto st : Stream s} -> {auto e : PartialEq (Token s)} -> (xs : Vector (Token s)) -> Parser s (Token s)
+noneOf xs = satisfy (\(t : Token s) -> not (elemOf t xs))
+
+rest : {s : Type} -> {auto st : Stream s} -> (input : s) -> (off : Int) -> s
+rest input off = case takeWhile input (\(t : Token s) -> True) off of
+  (got, next) -> got
+
+-- This run of tokens, or nothing consumed.
+@pub
+chunk : {s : Type} -> {auto st : Stream s} -> {auto e : PartialEq s} -> (want : s) -> Parser s s
+chunk want = Parser (\input off -> case takeN input (chunkLength want) off of
+  Just (got, next) ->
+    if got == want then Done (next > off) got next V.empty
+    else Failed False (Trivial off (Just (Tokens got)) (V.singleton (Tokens want)))
+  Nothing ->
+    let left = rest input off in
+    Failed False (Trivial off (Just (if chunkEmpty left then EndOfInput else Tokens left)) (V.singleton (Tokens want))))
+
+-- The end of the input.
+@pub
+eof : {s : Type} -> {auto st : Stream s} -> Parser s ()
+eof = Parser (\input off -> case take1 input off of
+  Nothing -> Done False () off V.empty
+  Just (t, next) -> Failed False (Trivial off (Just (Tokens (tokenToChunk t))) (V.singleton EndOfInput)))
+
+-- The longest run of tokens `f` takes, maybe empty; it never fails. Better
+-- than `many (satisfy f)`: the run is one chunk, not a token at a time.
+@pub
+takeWhileP : {s : Type} -> {auto st : Stream s} -> (f : Token s -> Bool) -> Parser s s
+takeWhileP f = Parser (\input off -> case takeWhile input f off of
+  (got, next) -> Done (next > off) got next V.empty)
+
+-- As `takeWhileP`, but at least one token, described as `what`; what
+-- follows the run is hinted to have been `what` as well.
+@pub
+takeWhile1P : {s : Type} -> {auto st : Stream s} -> (what : String) -> (f : Token s -> Bool) -> Parser s s
+takeWhile1P what f = Parser (\input off -> case takeWhile input f off of
+  (got, next) ->
+    if next > off then Done True got next (V.singleton (Label what))
+    else Failed False (Trivial off (Just (found input off)) (V.singleton (Label what))))
+
+-- `n` tokens, described as `what`.
+@pub
+takeP : {s : Type} -> {auto st : Stream s} -> (what : String) -> (n : Int) -> Parser s s
+takeP what n = Parser (\input off -> case takeN input n off of
+  Just (got, next) -> Done (next > off) got next V.empty
+  Nothing -> Failed False (Trivial off (Just EndOfInput) (V.singleton (Label what))))
+
+-- ---------------------------------------------------------------------------
+-- Position
+-- ---------------------------------------------------------------------------
+
+-- The offset reached.
+@pub
+getOffset : {s : Type} -> Parser s Int
+getOffset = Parser (\input off -> Done False off off V.empty)
+
+-- The whole input, which offsets are into.
+@pub
+getInput : {s : Type} -> Parser s s
+getInput = Parser (\input off -> Done False input off V.empty)
+
+-- What `p` gives, with the offsets either side of it.
+@pub
+withOffsets : {s a : Type} -> (p : Parser s a) -> Parser s (a, Int, Int)
+withOffsets p = bind getOffset (\(from : Int) -> bind p (\(x : a) -> map (\(to : Int) -> (x, from, to)) getOffset))
+
+-- What `p` gives, with the span of the source it read: what a syntax
+-- tree's nodes want to carry.
+@pub
+withSpan : {s a : Type} -> {auto st : Stream s} -> (p : Parser s a) -> Parser s (a, (Int, Int))
+withSpan p = bind getInput (\(input : s) -> map (\(r : (a, Int, Int)) -> case r of
+  (x, from, to) -> (x, sourceSpan input from to)) (withOffsets p))
+
+-- ---------------------------------------------------------------------------
+-- Repetition
+-- ---------------------------------------------------------------------------
+
+@terminating
+manyLoop : {s a : Type} -> (p : Parser s a) -> (input : s) -> (acc : Vector a) -> (off : Int) -> (consumed : Bool) -> Reply s (Vector a)
+manyLoop p input acc off consumed = case runP p input off of
+  Failed True e -> Failed True e
+  Failed False e -> Done consumed acc off (hintsOf off e)
+  Done True x off2 hs -> manyLoop p input (V.pushBack acc x) off2 True
+  Done False x off2 hs -> Failed consumed (Fancy off (V.singleton "a repeated parser that consumes nothing"))
+
+-- Any number of `p`, stopping at the first failure that consumed nothing,
+-- whose wishes it hints. A `p` that may succeed without consuming would
+-- go round for ever, so that is an error instead.
+@pub
+many : {s a : Type} -> (p : Parser s a) -> Parser s (Vector a)
+many p = Parser (\input off -> manyLoop p input V.empty off False)
+
+-- At least one `p`.
+@pub
+some : {s a : Type} -> (p : Parser s a) -> Parser s (Vector a)
+some p = lift2 (\(x : a) (xs : Vector a) -> V.pushFront xs x) p (many p)
+
+@pub
+skipMany : {s a : Type} -> (p : Parser s a) -> Parser s ()
+skipMany p = void (many p)
+
+@pub
+skipSome : {s a : Type} -> (p : Parser s a) -> Parser s ()
+skipSome p = void (some p)
+
+@terminating
+countLoop : {s a : Type} -> (n : Int) -> (p : Parser s a) -> (acc : Vector a) -> Parser s (Vector a)
+countLoop n p acc = if n <= 0 then pure acc else bind p (\(x : a) -> countLoop (n - 1) p (V.pushBack acc x))
+
+-- `n` of `p`.
+@pub
+count : {s a : Type} -> (n : Int) -> (p : Parser s a) -> Parser s (Vector a)
+count n p = countLoop n p V.empty
+
+-- At least one `p`, with `sep` between.
+@pub
+sepBy1 : {s a b : Type} -> (p : Parser s a) -> (sep : Parser s b) -> Parser s (Vector a)
+sepBy1 p sep = lift2 (\(x : a) (xs : Vector a) -> V.pushFront xs x) p (many (skipThen sep p))
+
+-- Any number of `p`, with `sep` between.
+@pub
+sepBy : {s a b : Type} -> (p : Parser s a) -> (sep : Parser s b) -> Parser s (Vector a)
+sepBy p sep = alt (sepBy1 p sep) (pure V.empty)
+
+-- Any number of `p`, each followed by `sep`.
+@pub
+endBy : {s a b : Type} -> (p : Parser s a) -> (sep : Parser s b) -> Parser s (Vector a)
+endBy p sep = many (thenSkip p sep)
+
+-- At least one `p`, each followed by `sep`.
+@pub
+endBy1 : {s a b : Type} -> (p : Parser s a) -> (sep : Parser s b) -> Parser s (Vector a)
+endBy1 p sep = some (thenSkip p sep)
+
+-- Any number of `p` with `sep` between, and maybe one after.
+@pub
+sepEndBy : {s a b : Type} -> (p : Parser s a) -> (sep : Parser s b) -> Parser s (Vector a)
+sepEndBy p sep = thenSkip (sepBy p sep) (optional sep)
+
+-- `p` between `open` and `close`, keeping only what `p` gave.
+@pub
+between : {s a b c : Type} -> (open : Parser s a) -> (close : Parser s b) -> (p : Parser s c) -> Parser s c
+between open close p = skipThen open (thenSkip p close)
+
+@terminating
+tillLoop : {s a b : Type} -> (p : Parser s a) -> (stop : Parser s b) -> (input : s) -> (acc : Vector a) -> (off : Int) -> (consumed : Bool) -> Reply s (Vector a)
+tillLoop p stop input acc off consumed = case runP stop input off of
+  Done c x off2 hs -> Done (if consumed then True else c) acc off2 hs
+  Failed True e -> Failed True e
+  Failed False e1 -> case runP p input off of
+    Failed c2 e2 -> Failed (if consumed then True else c2) (mergeError e1 e2)
+    Done True y off2 hs -> tillLoop p stop input (V.pushBack acc y) off2 True
+    Done False y off2 hs -> Failed consumed (Fancy off (V.singleton "a repeated parser that consumes nothing"))
+
+-- `p` again and again until `stop` matches, whose value is dropped.
+@pub
+manyTill : {s a b : Type} -> (p : Parser s a) -> (stop : Parser s b) -> Parser s (Vector a)
+manyTill p stop = Parser (\input off -> tillLoop p stop input V.empty off False)
+
+@terminating
+restL : {s a : Type} -> (p : Parser s a) -> (op : Parser s (a -> a -> a)) -> (acc : a) -> Parser s a
+restL p op acc = alt (bind op (\(f : a -> a -> a) -> bind p (\(y : a) -> restL p op (f acc y)))) (pure acc)
+
+-- `x`, then as many `op y` as follow, put together from the left:
+-- `chainl1 term (P.mapTo (\a b -> a - b) (C.char '-'))` reads `1-2-3` as
+-- `(1-2)-3`.
+@pub
+chainl1 : {s a : Type} -> (p : Parser s a) -> (op : Parser s (a -> a -> a)) -> Parser s a
+chainl1 p op = bind p (\(x : a) -> restL p op x)
+
+-- `x`, then as many `op y` as follow, put together from the right.
+@pub
+@terminating
+chainr1 : {s a : Type} -> (p : Parser s a) -> (op : Parser s (a -> a -> a)) -> Parser s a
+chainr1 p op = bind p (\(x : a) -> alt (bind op (\(f : a -> a -> a) -> map (\(y : a) -> f x y) (chainr1 p op))) (pure x))
+
+-- ---------------------------------------------------------------------------
+-- Writing an error out
+-- ---------------------------------------------------------------------------
+
+-- An item as a message names it; a chunk of tokens stands for its own
+-- stream.
+@pub
+showItem : {s : Type} -> {auto st : Stream s} -> (item : ErrorItem s) -> String
+showItem (Tokens c) = showTokens c (chunkToTokens c)
+showItem (Label l) = l
+showItem EndOfInput = "end of input"
+
+dedupe : (xs : Vector String) -> Vector String
+dedupe xs = V.foldl (\(acc : Vector String) (x : String) -> if elemOf x acc then acc else V.pushBack acc x) V.empty xs
+
+-- `a`, `a or b`, `a, b, or c`.
+orList : (xs : Vector String) -> String
+orList xs =
+  let n = V.len xs in
+  if n == 0 then ""
+  else if n == 1 then V.getOr "" xs 0
+  else if n == 2 then V.getOr "" xs 0 ++ " or " ++ V.getOr "" xs 1
+  else S.join ", " (V.toList (V.take xs (n - 1))) ++ ", or " ++ V.getOr "" xs (n - 1)
+
+-- What went wrong, as lines of text: `unexpected 'x'` and `expecting ...`,
+-- or the program's own messages.
+@pub
+parseErrorTextPretty : {s : Type} -> {auto st : Stream s} -> (e : ParseError s) -> String
+parseErrorTextPretty (Fancy o messages) = S.join "\n" (V.toList (dedupe messages)) ++ "\n"
+parseErrorTextPretty (Trivial o unexpected expected) =
+  let u = unexpectedLine unexpected in
+  let wants = dedupe (V.map (\(i : ErrorItem s) -> showItem i) expected) in
+  let x = if V.isEmpty wants then "" else "expecting " ++ orList wants ++ "\n" in
+  let text = u ++ x in
+  if S.isEmpty text then "unknown parse error\n" else text
+
+unexpectedLine : {s : Type} -> {auto st : Stream s} -> (item : Maybe (ErrorItem s)) -> String
+unexpectedLine (Just item) = "unexpected " ++ showItem item ++ "\n"
+unexpectedLine Nothing = ""
+
+-- A line: the offset, and what went wrong there.
+@pub
+showError : {s : Type} -> {auto st : Stream s} -> (e : ParseError s) -> String
+showError e = "at offset " ++ S.fromInt (errorOffset e) ++ ": " ++ S.join "; " (S.lines (S.trimEnd (parseErrorTextPretty e)))
+
+-- The span of the source an error is about: the tokens it found there, or
+-- where it stopped if it found none.
+@pub
+errorSpan : {s : Type} -> {auto st : Stream s} -> (input : s) -> (e : ParseError s) -> (Int, Int)
+errorSpan input e =
+  let off = errorOffset e in
+  sourceSpan input off (stopAfter input (foundWidth e) off)
+
+foundWidth : {s : Type} -> {auto st : Stream s} -> (e : ParseError s) -> Int
+foundWidth (Trivial o (Just (Tokens c)) xs) = chunkLength c
+foundWidth other = 0
+
+stopAfter : {s : Type} -> {auto st : Stream s} -> (input : s) -> (width : Int) -> (off : Int) -> Int
+stopAfter input width off = case takeN input width off of
+  Just (got, next) -> next
+  Nothing -> off

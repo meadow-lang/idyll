@@ -13,6 +13,7 @@ use Idyll.Eval (eval, quote)
 use Idyll.Ctx (Ctx, Binder, Entry, Info)
 use Idyll.Ctx as X
 use Idyll.Check (Checked)
+use Idyll.Scc (interleave)
 use Idyll.Rename
 use Idyll.Interface
 use Std.Collections.Vector as V
@@ -95,7 +96,16 @@ fun bindsOf (h : HirArena) (g : HirGroup) : [HirBind] =
   let fromNatives = V.concatMap (\n -> constantNamed (hirNativeName h n)) (V.filter (\n -> own (uniqueOf h (hirNativeName h n))) (hirModuleNatives h root)) in
   -- the definitions: one with a slot has a value the types may see unless
   -- computing it has effects; a recursive one is a constant already
-  let groups = V.zip (hirModuleGroups h root) c.lets in
+  let placeholders = getRef tc.placeholders in
+  let metas = getRef tc.metas in
+  let solutions =
+    V.map
+      (\i -> match V.get metas i with | Just (Meta.Solved v _) -> if V.elem i placeholders then None else Just (quote tc 0 v) | _ -> None)
+      (V.range 0 (V.len metas))
+  in
+  -- (in the order they were checked: `Scc.interleave`)
+  let (inOrder, after, checkedGroups) = interleave h (hirModuleDatas h root) (hirModuleGroups h root) in
+  let groups = V.zip checkedGroups c.lets in
   let (defs, code, base) =
     V.foldl
       (\acc gw ->
@@ -115,7 +125,16 @@ fun bindsOf (h : HirArena) (g : HirGroup) : [HirBind] =
                          | Just (Entry.Local level) ->
                              (match V.get ctx.binders level with
                               | Just (Binder.Binder info _ ty _ _) ->
-                                  let value = if info == Info.Defined then Just (close ctx (quote tc ctx.lvl (X.value ctx level))) else None in
+                                  -- its right-hand side, as it was written (closed over the
+                                  -- definitions before it, by their names): not what it
+                                  -- computes to, which takes in all it uses, and can be many
+                                  -- times the size
+                                  let written =
+                                    match (wrap, (h, g)) with
+                                    | (Just (n, rhs), HirGroupNonRec bd0) -> Just (closeAt ctx level level (C.zonked rhs solutions))
+                                    | _ -> None
+                                  in
+                                  let value = if info == Info.Defined then Just (M.unwrapOr (close ctx (quote tc ctx.lvl (X.value ctx level))) written) else None in
                                   (V.pushBack ks2 (Constant.Constant u text (close ctx (quote tc ctx.lvl ty)) value None), if b2 < 0 then level else b2)
                               | None -> (ks2, b2))
                          | _ -> (V.append ks2 (M.unwrapOr [] (M.map (\k -> [k]) (constantOf u text))), b2)))
@@ -142,13 +161,6 @@ fun bindsOf (h : HirArena) (g : HirGroup) : [HirBind] =
     V.concatMap
       (\d -> match d with | (u, l, core) -> if own u then [RecDef.RecDef u (Hm.getOr "" u recNames) l core (V.elem u locals)] else [])
       (getRef tc.recDefs)
-  in
-  let placeholders = getRef tc.placeholders in
-  let metas = getRef tc.metas in
-  let solutions =
-    V.map
-      (\i -> match V.get metas i with | Just (Meta.Solved v _) -> if V.elem i placeholders then None else Just (quote tc 0 v) | _ -> None)
-      (V.range 0 (V.len metas))
   in
   let nativeInfo = getRef tc.nativeInfo in
   let isType = getRef tc.natives in
