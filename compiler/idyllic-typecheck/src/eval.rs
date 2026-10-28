@@ -16,8 +16,19 @@ use crate::grade::Grade;
 use std::rc::Rc;
 
 impl Checker {
+    /// `force`, but a definition that would unfold stays by its name: what
+    /// a solution is read off (`Checker::solve`).
+    pub(super) fn force_named(&self, v: Rc<Value>) -> Rc<Value> {
+        self.force_head(v, false)
+    }
+
     /// Expand the head of a value until it is no longer a solved metavariable.
-    pub fn force(&self, mut v: Rc<Value>) -> Rc<Value> {
+    pub fn force(&self, v: Rc<Value>) -> Rc<Value> {
+        self.force_head(v, true)
+    }
+
+    /// `force`, unfolding definitions or not.
+    fn force_head(&self, mut v: Rc<Value>, unfold: bool) -> Rc<Value> {
         loop {
             let next = match &*v {
                 Value::Flex(m, sp) => match &self.metas[*m] {
@@ -50,7 +61,7 @@ impl Checker {
                 },
                 // a recursive definition that terminates, applied to enough
                 // to choose a right-hand side
-                Value::Opaque(u, _, sp) if self.transparent.contains_key(u) => match self.unfold(*u, sp) {
+                Value::Opaque(u, _, sp) if unfold && self.transparent.contains_key(u) => match self.unfold(*u, sp) {
                     Some(unfolded) => unfolded,
                     None => return v,
                 },

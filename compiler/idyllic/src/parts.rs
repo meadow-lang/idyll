@@ -56,6 +56,17 @@ pub fn parts(package: &str, paths: &[Vec<String>], texts: &[&str]) -> Vec<Part> 
         })
         .collect();
     let mut comps = tarjan(&edges);
+    // each module's place in an order where it comes after those it imports,
+    // which is how a part's modules are checked: the root first, then each
+    // after those it uses, so that a module's instances are there for the
+    // searches of the modules that use it
+    // (modules that import each other alike, by where they come)
+    let mut rank = vec![0; n];
+    for (i, c) in comps.iter().enumerate() {
+        for &m in c {
+            rank[m] = i;
+        }
+    }
     // the root's part takes in every part that reaches it
     let reaches_root = reaching(&edges, 0);
     let root = comps.iter().position(|c| c.contains(&0)).expect("the root is somewhere");
@@ -87,7 +98,7 @@ pub fn parts(package: &str, paths: &[Vec<String>], texts: &[&str]) -> Vec<Part> 
             all.extend(out[d].imports.iter().copied());
         }
         let mut modules = c.clone();
-        modules.sort_unstable();
+        modules.sort_unstable_by_key(|&m| (!paths[m].is_empty(), rank[m], m));
         out.push(Part { modules, imports: all.into_iter().collect(), root: k == comps.len() - 1 });
     }
     out

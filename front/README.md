@@ -70,6 +70,9 @@ compiler's own. The link puts the program together from the compiled packages
 Inside a package the unit of work is a *part*: the modules that import each
 other, in a circle or not, as `idyllic::parts` has them in the Rust
 compiler (`Parts.mw` is that, for compiling a package's parts in one go).
+A part's modules, and a package checked whole, are checked the root first
+and then each after the modules it imports, so that a module's instances
+are there for the searches of the modules that use it.
 `make!`'s `parts` is told each module's imports (`partsOf`); it takes the
 import graph's SCCs, compiles each with `compileScc` once the parts it
 imports are done, the parts that do not import each other at once, and each
@@ -699,7 +702,12 @@ of its own:
   `display`), what each takes and gives, and what each computes, for the
   CEK machine: a sized integer is an `Int` wrapped to its width (`wrap`),
   a `UInt64` past `Int`'s largest the `Int` with its bits, read with
-  Meadow's own `UInt64`.
+  Meadow's own `UInt64`. The bit operations (`int8BitAnd`, `uint32Shl`,
+  `intPopCount`, a shift's amount an `Int` whatever is shifted) and each
+  number type's hash (`floatHash`) are Meadow's primitives (`bitAnd`,
+  `shl`, `popCount`, `hash`), which the CEK machine computes with at the
+  type's own width (`onBits`); `stringHash`, `charHash` and `boolHash` are
+  Meadow's `hash` too.
 - **`Tc.mw`**: the checker's state: the metacontext (each metavariable
   unsolved or solved, with where it came from and its type), the errors,
   the holes, the kept questions, and the tables of what is declared.
@@ -712,6 +720,10 @@ of its own:
   grades compare as polynomials; two open rows meet through a fresh tail;
   and `subtype`, which lets a smaller universe, a function using its
   argument less, or one with fewer effects stand where more is allowed.
+  A metavariable is solved with the other side as it was given, a
+  definition by its name (`forceNamed`), so that a solution holds
+  `instance Hash Int` and not what it unfolds to; only if that mentions
+  what the solution may not is the unfolded form read instead.
 
 ### The CEK machine
 
@@ -779,7 +791,21 @@ object called with `resume`.
 Every binder needs a representation, which comes from its type. The
 elaborated program does not say the types, so `Typer.mw` (`typer.rs`)
 works them out again from the checker's state, by normalisation by
-evaluation, as checking did. Before lowering, each solved metavariable is
+evaluation, as checking did. An associated type is held the same way a
+type parameter is: a record's field that is a type holds its descriptor
+(the record's Cut field is a `desc`), and a parameter that is such a
+record, a trait's dictionary, brings a descriptor for each of those fields
+after it, `<'d_Elem = d_d_Elem>`, so that a value of `Elem c` there has
+the representation variable `'d_Elem` (`TRep.Field`: a type that unfolds
+to a `case` on a variable reading such a field). A caller passes what that
+field of the dictionary it gives is (`Typer.fieldRep`): a constant for a
+known instance, its own descriptor for one it was given.
+
+A lambda read back from a value (a solved metavariable's, say) has no
+types on its binders; passed as an argument, it takes those of the
+parameter it is passed for (`Ty.annotateArgs`, kept in `noted` for
+`lambda` to find), so that `\x -> 7` passed for `hash : Int -> Int` takes
+an `i64`, not an `any`. Before lowering, each solved metavariable is
 made its solution (`Core.zonked`, `Core::zonked`), so that what only a
 solution uses is kept; a solution applied to the variables it was made a
 function of is applied to them then, rather than lowered as a closure.

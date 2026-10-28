@@ -399,3 +399,83 @@ fn sets_hold_each_value_once_in_order() {
     );
     assert_eq!(value(&format!("{ORDERED}Set.toList (Set.fromList @{{down}} (1 :: 3 :: 2 :: Nil))\n")), "3 :: 2 :: 1 :: Nil");
 }
+
+const HASHED: &str = "use Std.Collections.HashMap (HashMap, HashMapBy)\nuse Std.Collections.HashMap as HashMap\n\
+                      use Std.Collections.List as L\nuse Std.Collections.Vector as V\nuse Std.Sort (sort)\n\
+                      use Std.Hash (Hash, hash)\n\n\
+                      instance same : Hash Int where\n  hash x = 12345\n\n\
+                      sample : HashMap String Int\nsample = HashMap.fromList ((\"one\", 1) :: (\"two\", 2) :: (\"three\", 3) :: Nil)\n\n";
+
+#[test]
+fn hash_maps_find_what_was_put_in() {
+    assert_eq!(
+        value(&format!(
+            "{HASHED}(HashMap.lookup \"two\" sample, HashMap.lookup \"four\" sample, HashMap.member \"one\" sample, \
+             HashMap.getOr 0 \"four\" sample, HashMap.size sample)\n"
+        )),
+        "(Just 2, Nothing, True, 0, 3)"
+    );
+    // replaced rather than duplicated, the old map untouched; deleted
+    assert_eq!(
+        value(&format!(
+            "{HASHED}(HashMap.lookup \"one\" (HashMap.insert \"one\" 100 sample), HashMap.size (HashMap.insert \"one\" 100 sample), \
+             HashMap.lookup \"one\" sample, HashMap.lookup \"two\" (HashMap.delete \"two\" sample), HashMap.size (HashMap.delete \"two\" sample), \
+             HashMap.size (HashMap.delete \"nine\" sample), HashMap.isEmpty (HashMap.delete \"one\" (HashMap.singleton \"one\" 1)))\n"
+        )),
+        "(Just 100, 3, Just 1, Nothing, 2, 3, True)"
+    );
+    // changed in place, and whole maps
+    assert_eq!(
+        value(&format!(
+            "{HASHED}(HashMap.lookup \"one\" (HashMap.adjust \"one\" (\\v -> v + 1) sample), \
+             HashMap.lookup \"one\" (HashMap.insertWith (\\new old -> new + old) \"one\" 10 sample), \
+             HashMap.lookup \"nine\" (HashMap.alter (\\o -> Just 9) \"nine\" sample), HashMap.member \"one\" (HashMap.alter (\\o -> Nothing) \"one\" sample), \
+             sort (V.toList (HashMap.values sample)), HashMap.foldl (\\acc k v -> acc + v) 0 sample, HashMap.lookup \"two\" (HashMap.map (\\v -> v * 10) sample), \
+             HashMap.size (HashMap.filter (\\k v -> v > 1) sample), V.len (HashMap.toVec sample))\n"
+        )),
+        "(Just 2, Just 11, Just 9, False, 1 :: 2 :: 3 :: Nil, 6, Just 20, 2, 3)"
+    );
+    let u = "u : HashMap String Int\nu = HashMap.union sample (HashMap.fromList ((\"two\", 22) :: (\"four\", 4) :: Nil))\n\n";
+    assert_eq!(value(&format!("{HASHED}{u}(HashMap.size u, HashMap.lookup \"two\" u)\n")), "(4, Just 22)");
+}
+
+#[test]
+fn a_hash_map_grows_and_shrinks_through_its_levels() {
+    // two thousand keys is several levels deep
+    let full = "full : HashMap Int Int\nfull = V.foldl (\\m i -> HashMap.insert i (i * i) m) HashMap.empty (V.range 0 2000)\n\n\
+                half : HashMap Int Int\nhalf = V.foldl (\\m i -> HashMap.delete (i * 2) m) full (V.range 0 1000)\n\n";
+    assert_eq!(
+        value(&format!(
+            "{HASHED}{full}(HashMap.size full, V.all (\\i -> HashMap.lookup i full == Just (i * i)) (V.range 0 2000), HashMap.lookup 2000 full, \
+             HashMap.size half, V.all (\\i -> HashMap.member i half == (i % 2 == 1)) (V.range 0 2000))\n"
+        )),
+        "(2000, True, Nothing, 1000, True)"
+    );
+    // the same entries, the same shape: built forwards, backwards, or with
+    // keys added and taken away again, the fold's order is the same
+    let shapes = "forwards : HashMap Int Int\nforwards = V.foldl (\\m i -> HashMap.insert i i m) HashMap.empty (V.range 0 300)\n\n\
+                  backwards : HashMap Int Int\nbackwards = V.foldl (\\m i -> HashMap.insert (299 - i) (299 - i) m) HashMap.empty (V.range 0 300)\n\n\
+                  detour : HashMap Int Int\ndetour = V.foldl (\\m i -> HashMap.delete (i + 1000) m) (V.foldl (\\m i -> HashMap.insert (i + 1000) 0 m) forwards (V.range 0 300)) (V.range 0 300)\n\n";
+    assert_eq!(
+        value(&format!("{HASHED}{shapes}(HashMap.toList forwards == HashMap.toList backwards, HashMap.toList forwards == HashMap.toList detour)\n")),
+        "(True, True)"
+    );
+}
+
+#[test]
+fn keys_whose_hashes_collide_are_told_apart_and_the_hash_is_in_the_type() {
+    // every key hashed to one number by an instance of its own: a collision
+    // node, searched with `==`, collapsed again as keys go
+    let m = "m : HashMapBy Int same Int\nm = V.foldl (\\acc i -> HashMap.insert @{same} i (i * 10) acc) (HashMap.empty @{same}) (V.range 0 5)\n\n\
+             few : HashMapBy Int same Int\nfew = V.foldl (\\acc i -> HashMap.delete @{same} i acc) m (V.range 1 5)\n\n";
+    assert_eq!(
+        value(&format!(
+            "{HASHED}{m}(HashMap.size m, V.toList (V.map (\\i -> HashMap.lookup i m) (V.range 0 5)), HashMap.lookup 9 m, \
+             HashMap.lookup 3 (HashMap.insert @{{same}} 3 99 m), HashMap.size (HashMap.insert @{{same}} 3 99 m), HashMap.size few, HashMap.toList few)\n"
+        )),
+        "(5, (Just 0) :: (Just 10) :: (Just 20) :: (Just 30) :: (Just 40) :: Nil, Nothing, Just 99, 5, 1, (0, 0) :: Nil)"
+    );
+    // and what wants a map hashed the usual way does not take it
+    let usual = "count : HashMap Int Int -> Int\ncount h = HashMap.size h\n\n";
+    assert!(rejected(&format!("{HASHED}{m}{usual}count m\n")).iter().any(|e| e == "type mismatch"));
+}

@@ -94,6 +94,11 @@ enum Param {
     Value(Rep),
     /// a descriptor, for a type parameter
     Desc,
+    /// a record with fields that are types (a trait's dictionary with
+    /// associated types): the record, with its representation, and then a
+    /// descriptor for each of those fields, of the constructor's fields at
+    /// these places (see `Typer::type_fields`)
+    Dict(Rep, usize, Vec<usize>),
     /// nothing: erased
     Skip,
 }
@@ -120,6 +125,11 @@ enum Slot {
 struct Env {
     slots: Vec<Slot>,
     scope: Scope,
+    /// the fields that are types of the records bound at these levels: the
+    /// variable at that level, the field's place, and the descriptor
+    /// variable passed for it, if there is one, and the representation
+    /// variable it is (`typer::Rep::Field`)
+    fields: Vec<(usize, usize, Option<String>, String)>,
 }
 
 struct Lower<'t> {
@@ -233,7 +243,7 @@ fn lower_with(tc: &mut TypeCheckResult, package: &str, mark: Option<&str>) -> Re
     };
     l.show_int = show_int.and_then(|u| l.symbol(u));
     // the context every program starts in: the builtins, then the primitives
-    let mut env = Env { slots: Vec::new(), scope: l.typer.scope() };
+    let mut env = Env { slots: Vec::new(), scope: l.typer.scope(), fields: Vec::new() };
     env.slots.extend(Builtin::ALL.iter().map(|_| Slot::Erased));
     env.slots.extend(Prim::ALL.iter().map(|p| Slot::Prim(*p)));
     // the top-level definitions, and the scope at each level they reach,
@@ -426,8 +436,13 @@ impl Lower<'_> {
             typer::Rep::Char => Rep::Char,
             typer::Rep::Ptr => Rep::Ptr,
             typer::Rep::Any => Rep::Any,
+            typer::Rep::Desc => Rep::Desc,
             typer::Rep::Var(lvl) => match env.slots.get(lvl) {
                 Some(Slot::TypeVar(Some(_), a)) => Rep::Var(a.clone()),
+                _ => Rep::Any,
+            },
+            typer::Rep::Field(lvl, i) => match env.fields.iter().find(|f| f.0 == lvl && f.1 == i) {
+                Some((_, _, Some(_), a)) => Rep::Var(a.clone()),
                 _ => Rep::Any,
             },
         }
@@ -465,10 +480,17 @@ impl Lower<'_> {
         let mut c = c.clone();
         while let Some((x, grade, ty, body)) = lambda(&c) {
             let (mut params, mut rep_vars) = (Vec::new(), Vec::new());
+            let lvl = env.slots.len();
             self.bind_param(&mut env, &x, grade, ty.as_ref(), &mut params, &mut rep_vars);
-            out.push(match (params.pop(), rep_vars.is_empty()) {
+            let fields: Vec<usize> = env.fields.iter().filter(|f| f.0 == lvl).map(|f| f.1).collect();
+            out.push(match (params.first(), rep_vars.is_empty()) {
+                (Some(b), _) if !fields.is_empty() => {
+                    let ty = self.typer.var_type(&env.scope, lvl);
+                    let ctor = self.typer.record_type_fields(&ty).map_or(0, |(c, _)| c);
+                    Param::Dict(b.rep.clone(), ctor, fields)
+                }
                 (Some(_), false) => Param::Desc,
-                (Some(b), true) => Param::Value(b.rep),
+                (Some(b), true) => Param::Value(b.rep.clone()),
                 (None, _) => Param::Skip,
             });
             c = body;
@@ -511,7 +533,7 @@ impl Lower<'_> {
             return None;
         }
         // where it was defined, with only what it uses of it
-        let mut at = Env { slots: base.slots.clone(), scope: env.scope.prefix(d.lvl) };
+        let mut at = Env { slots: base.slots.clone(), scope: env.scope.prefix(d.lvl), fields: base.fields.clone() };
         let (mut binders, mut rep_vars, mut params, mut captured) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for lvl in top..d.lvl {
             let slot = match &env.slots[lvl] {
@@ -523,7 +545,22 @@ impl Lower<'_> {
                     let ty = self.typer.var_type(&env.scope, lvl);
                     let r = self.typer.rep(&env.scope, &ty);
                     binders.push(Binder { name: v.clone(), rep: self.rep(&at, r) });
-                    params.push(Param::Value(self.rep(&at, r)));
+                    // a record with fields that are types: their descriptors too
+                    let fields: Vec<(usize, Option<String>, String)> =
+                        env.fields.iter().filter(|f| f.0 == lvl).map(|f| (f.1, f.2.clone(), f.3.clone())).collect();
+                    match self.typer.record_type_fields(&ty) {
+                        Some((ctor, _)) if !fields.is_empty() && fields.iter().all(|f| f.1.is_some()) => {
+                            for (i, _, a) in &fields {
+                                let hint = a.rsplit_once('_').map_or(a.as_str(), |(h, _)| h).to_string();
+                                let (dv, av) = (self.name(&format!("d_{hint}")), self.name(&hint));
+                                binders.push(Binder { name: dv.clone(), rep: Rep::Desc });
+                                rep_vars.push((av.clone(), dv.clone()));
+                                at.fields.push((lvl, *i, Some(dv), av));
+                            }
+                            params.push(Param::Dict(self.rep(&at, r), ctor, fields.iter().map(|f| f.0).collect()));
+                        }
+                        _ => params.push(Param::Value(self.rep(&at, r))),
+                    }
                     captured.push(lvl);
                     Slot::Var(v)
                 }
@@ -611,10 +648,23 @@ impl Lower<'_> {
             env.slots.push(Slot::Erased);
         } else {
             let v = self.name(x);
-            let ty = self.typer.var_type(&env.scope, env.scope.len() - 1);
+            let lvl = env.scope.len() - 1;
+            let ty = self.typer.var_type(&env.scope, lvl);
             let r = self.typer.rep(&env.scope, &ty);
             params.push(Binder { name: v.clone(), rep: self.rep(env, r) });
             env.slots.push(Slot::Var(v));
+            // a record with fields that are types, a dictionary with
+            // associated types: a descriptor for each, which the types of
+            // what comes after may read (`Elem c`)
+            if let Some((_, fields)) = self.typer.record_type_fields(&ty) {
+                for (i, name) in fields {
+                    let hint = format!("{x}_{name}");
+                    let (d, a) = (self.name(&format!("d_{hint}")), self.name(&hint));
+                    params.push(Binder { name: d.clone(), rep: Rep::Desc });
+                    rep_vars.push((a.clone(), d.clone()));
+                    env.fields.push((lvl, i, Some(d), a));
+                }
+            }
         }
     }
 
@@ -633,11 +683,20 @@ impl Lower<'_> {
         rep_vars: &mut Vec<(String, String)>,
     ) {
         let before = rep_vars.len();
+        let (params_before, lvl) = (params.len(), env.slots.len());
         self.bind_param(env, x, grade, ty, params, rep_vars);
         if rep_vars.len() > before {
             rep_vars.truncate(before);
             if let Some(Slot::TypeVar(_, a)) = env.slots.last().cloned() {
                 *env.slots.last_mut().expect("just bound") = Slot::TypeVar(None, a);
+            }
+            // a record's descriptors are not passed to a method: what its
+            // fields that are types hold is `any` there
+            if env.fields.iter().any(|f| f.0 == lvl) {
+                params.truncate(params_before + 1);
+                for f in env.fields.iter_mut().filter(|f| f.0 == lvl) {
+                    f.2 = None;
+                }
             }
         }
     }
@@ -811,6 +870,9 @@ impl Lower<'_> {
             head = f.clone();
         }
         args.reverse();
+        // (a lambda read back from a value, its binders' types from where
+        // it is passed)
+        let args = self.typer.annotate_args(&env.scope, &head, &args);
         match &*head {
             Core::Prim(p) => return self.prim(env, c, *p, &args, k),
             Core::Var(i, _) => {
@@ -893,9 +955,21 @@ impl Lower<'_> {
 
     /// The descriptor for a type argument.
     fn descriptor(&mut self, env: &Env, ty: &Rc<Core>) -> Producer {
-        match self.typer.rep_of_type(&env.scope, ty) {
+        let r = self.typer.rep_of_type(&env.scope, ty);
+        self.descriptor_of(env, r)
+    }
+
+    /// The descriptor of a representation the typer gave.
+    fn descriptor_of(&mut self, env: &Env, r: typer::Rep) -> Producer {
+        match r {
             typer::Rep::Var(lvl) => match env.slots.get(lvl) {
                 Some(Slot::TypeVar(Some(d), _)) => Producer::Var(d.clone()),
+                // a record's field that is a type, which holds its descriptor
+                Some(Slot::Var(d)) => Producer::Var(d.clone()),
+                _ => Producer::Desc(Rep::Any),
+            },
+            typer::Rep::Field(lvl, i) => match env.fields.iter().find(|f| f.0 == lvl && f.1 == i) {
+                Some((_, _, Some(d), _)) => Producer::Var(d.clone()),
                 _ => Producer::Desc(Rep::Any),
             },
             r => Producer::Desc(self.rep(env, r)),
@@ -906,6 +980,8 @@ impl Lower<'_> {
     fn arguments(&mut self, env: &Env, params: &[Param], args: &[Rc<Core>], rest: &mut dyn FnMut(&mut Self, Vec<Producer>) -> Statement) -> Statement {
         let mut values = Vec::new();
         let mut descs: HashMap<usize, Producer> = HashMap::new();
+        // the descriptors that come after a record, for its fields that are types
+        let mut after: HashMap<usize, Vec<Producer>> = HashMap::new();
         for (i, (p, a)) in params.iter().zip(args).enumerate() {
             match p {
                 Param::Skip => {}
@@ -917,6 +993,15 @@ impl Lower<'_> {
                     descs.insert(i, self.descriptor(env, &ty));
                 }
                 Param::Value(_) => values.push((i, a.clone())),
+                Param::Dict(_, ctor, fields) => {
+                    values.push((i, a.clone()));
+                    let mut ds = Vec::new();
+                    for f in fields {
+                        let r = self.typer.field_rep(&env.scope, a, *ctor, *f);
+                        ds.push(self.descriptor_of(env, r));
+                    }
+                    after.insert(i, ds);
+                }
             }
         }
         let cores: Vec<Rc<Core>> = values.iter().map(|(_, a)| a.clone()).collect();
@@ -925,7 +1010,11 @@ impl Lower<'_> {
         self.atoms(env, &cores, &mut |this, ps| {
             let mut by_position: HashMap<usize, Producer> = positions.iter().copied().zip(ps).collect();
             by_position.extend(descs.clone());
-            let ordered = (0..n).filter_map(|i| by_position.remove(&i)).collect();
+            let mut ordered = Vec::new();
+            for i in 0..n {
+                ordered.extend(by_position.remove(&i));
+                ordered.extend(after.get(&i).cloned().unwrap_or_default());
+            }
             rest(this, ordered)
         })
     }
@@ -967,11 +1056,14 @@ impl Lower<'_> {
     /// The object a partial application is: one `apply` for each parameter
     /// still to come (a descriptor for a type, nothing for one erased), the
     /// last doing what `head` does with all of them.
-    fn waiting(&mut self, env: &Env, head: &Head2, given: Vec<Producer>, remaining: &[(typer::Rep, bool, bool)]) -> Producer {
+    fn waiting(&mut self, env: &Env, head: &Head2, given: Vec<Producer>, remaining: &[(typer::Rep, bool, bool, bool)]) -> Producer {
+        if remaining.iter().any(|p| p.3) {
+            self.errors.push("a partial application that waits for a record with fields that are types is not lowered yet".into());
+        }
         let names: Vec<(Rep, String)> = remaining
             .iter()
-            .filter(|(_, is_type, erased)| *is_type || !*erased)
-            .map(|(r, is_type, _)| (if *is_type { Rep::Desc } else { self.rep(env, *r) }, self.name("a")))
+            .filter(|(_, is_type, erased, _)| *is_type || !*erased)
+            .map(|(r, is_type, _, _)| (if *is_type { Rep::Desc } else { self.rep(env, *r) }, self.name("a")))
             .collect();
         let k = self.name("k");
         let all: Vec<Producer> = given.into_iter().chain(names.iter().map(|(_, n)| Producer::Var(n.clone()))).collect();
@@ -1031,7 +1123,7 @@ impl Lower<'_> {
             return self.call(env, whole, symbol, &params, args, k);
         }
         let reps: Vec<Rep> = match n {
-            Native::Num(op, ty) => vec![Rep::number(op.takes(ty)); op.arity()],
+            Native::Num(op, ty) => op.takes_each(ty).into_iter().map(Rep::number).collect(),
             _ => self.native_reps(n).to_vec(),
         };
         if reps.is_empty() && n.arity() > 0 {
@@ -1041,6 +1133,7 @@ impl Lower<'_> {
         let params: Vec<Param> = (0..info.params).map(|_| Param::Skip).chain(reps.iter().cloned().map(Param::Value)).collect();
         let op = match n {
             Native::Num(op, ty) => op.prim(ty),
+            Native::StringHash | Native::CharHash | Native::BoolHash => "hash".to_string(),
             _ => n.name().to_string(),
         };
         self.native_prim(env, whole, info, args, k, params, op)
@@ -1064,6 +1157,9 @@ impl Lower<'_> {
             Native::CharsToString => &[Rep::Ptr],
             Native::CharCode => &[Rep::Char],
             Native::CharFromCode => &[Rep::I64],
+            Native::StringHash => &[Rep::Str],
+            Native::CharHash => &[Rep::Char],
+            Native::BoolHash => &[Rep::Bool],
             _ => &[],
         }
     }
@@ -1133,13 +1229,16 @@ impl Lower<'_> {
         let reps: Vec<Rep> = shape.map(|(_, f)| f.into_iter().map(|r| self.rep(env, r)).collect()).unwrap_or_default();
         let params: Vec<Param> = (0..info.params)
             .map(|_| Param::Skip)
-            .chain((0..info.fields).map(|i| Param::Value(reps.get(i).cloned().unwrap_or(Rep::Any))))
+            // a field that is a type holds its descriptor
+            .chain((0..info.fields).map(|i| match reps.get(i) {
+                Some(Rep::Desc) => Param::Desc,
+                r => Param::Value(r.cloned().unwrap_or(Rep::Any)),
+            }))
             .collect();
         if args.len() < params.len() {
             return self.partial(env, whole, Head2::Con(s), &params[..args.len()], args, k);
         }
-        let fields: Vec<Rc<Core>> = args[info.params..info.params + info.fields].to_vec();
-        self.atoms(env, &fields, &mut |_, ps| Statement::Cut(Producer::Con(s.clone(), ps), k.clone()))
+        self.arguments(env, &params, &args[..params.len()], &mut |_, ps| Statement::Cut(Producer::Con(s.clone(), ps), k.clone()))
     }
 
     fn perform(&mut self, env: &Env, whole: &Rc<Core>, u: usize, info: &idyllic_typecheck::handlers::OpInfo, args: &[Rc<Core>], k: Consumer) -> Statement {
@@ -1206,14 +1305,20 @@ impl Lower<'_> {
             let params = info.as_ref().map_or(0, |i| i.params);
             let types = self.typer.alt_types(&env.scope, scrutinee, alt);
             let inner_scope = self.typer.alt_scope(&env.scope, scrutinee, alt);
-            let mut inner = Env { slots: env.slots.clone(), scope: inner_scope };
+            let mut inner = Env { slots: env.slots.clone(), scope: inner_scope, fields: env.fields.clone() };
             let mut fields = Vec::new();
+            let held = self.typer.type_fields(u);
             for (i, x) in alt.vars.iter().enumerate() {
                 if i < params {
                     inner.slots.push(Slot::Erased);
                 } else {
                     let v = self.name(x);
-                    let r = types.get(i).map_or(typer::Rep::Any, |t| self.typer.rep(&inner.scope, t));
+                    // a field that is a type holds its descriptor
+                    let r = if held.iter().any(|(f, _)| *f == i) {
+                        typer::Rep::Desc
+                    } else {
+                        types.get(i).map_or(typer::Rep::Any, |t| self.typer.rep(&inner.scope, t))
+                    };
                     fields.push(Binder { name: v.clone(), rep: self.rep(&inner, r) });
                     inner.slots.push(Slot::Var(v));
                 }
@@ -1320,6 +1425,7 @@ impl Lower<'_> {
                         typer::Rep::Str => Rep::Str,
             typer::Rep::Char => Rep::Char,
                         typer::Rep::Ptr => Rep::Ptr,
+                        typer::Rep::Desc => Rep::Desc,
                         _ => Rep::Any,
                     })
                     .collect();

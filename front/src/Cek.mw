@@ -436,7 +436,7 @@ fun nativeArity (name : String) : Int =
   if M.isSome (N.ofName name) then M.unwrapOr 0 (M.map (\p -> N.arity (fst p)) (N.ofName name))
   else if name == "Array" or name == "MArray" then 0
   else if V.elem name ["arrayLen", "arrayPop", "arrayFromList", "arrayToList", "marrayLen", "marrayFreeze", "marrayThaw"] then 1
-  else if V.elem name ["stringByteLength", "stringToChars", "charsToString", "charCode", "charFromCode"] then 1
+  else if V.elem name ["stringByteLength", "stringToChars", "charsToString", "charCode", "charFromCode", "stringHash", "charHash", "boolHash"] then 1
   else if V.elem name ["arrayGet", "arrayPush", "arrayConcat", "marrayNew", "marrayGet", "stringByteAt", "stringCompare"] then 2
   else 3
 
@@ -562,6 +562,16 @@ fun native (n : String) (args : [Value]) : Result Halt Value =
           | Just c -> Ok (Value.Char c)
           | None -> Err (Halt.Stopped (show k ++ " is not a Unicode scalar value")))
      | Err h -> Err h)
+  -- (Meadow's `hash` is the runtimes')
+  else if n == "stringHash" then (match text 0 with | Ok s -> Ok (Value.Int (hash s)) | Err h -> Err h)
+  else if n == "charHash" then
+    (match arg 0 with
+     | Value.Char c -> Ok (Value.Int (hash c))
+     | _ -> Err (Halt.Stuck "charHash is given something that is not a character"))
+  else if n == "boolHash" then
+    (match arg 0 with
+     | Value.Bool b -> Ok (Value.Int (hash b))
+     | _ -> Err (Halt.Stuck "boolHash is given something that is not a truth value"))
   else Ok (arg 0)
 
 fun fromList (list : Value) (acc : [Value]) : Result Halt Value =

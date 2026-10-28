@@ -600,8 +600,15 @@ from what `idyll.lock` pinned.
   searched for at the end of the definition, once unification has had its
   say, rather than as soon as its type is known, so that which instance it
   is does not depend on the order things are checked in; and an auto
-  binder of a signature is what a search later in it finds. `HashMap`,
-  which wants a `Hash` trait, is left.
+  binder of a signature is what a search later in it finds. `HashMap`
+  done 2026-10-28 the same way, `HashMapBy k h v` keeping the `Hash k` it
+  was built with: a map built with another hash is looked in with that
+  one. For it, a metavariable unification solves takes the other side as
+  it was given, an instance by its name, rather than what that unfolds to
+  (`instance Hash Int` is passed, not a copy of its record); and a lambda
+  read back from a value, which says no binder types, takes those of the
+  parameter it is passed for, rather than `any`, which Silo cannot be
+  given an unboxed value in (`compiler/idyllic/tests/cut.rs`).
 - [x] **Associated types**: a trait's field may be a type, `Elem : Type`,
   since a trait is a record and a record's fields may be types; an
   instance gives it (`Elem = a`), and `Elem c` is the field of the
@@ -616,7 +623,14 @@ from what `idyll.lock` pinned.
   field a type may compute with off it, an associated type or a
   superclass, and a dependency's instances the same; its methods stay
   calls. A goal blocked on a metavariable (`T.Elem ?p`, its instance still
-  to be found) waits as one that is a metavariable does.
+  to be found) waits as one that is a metavariable does. At run time a
+  record's field that is a type holds its descriptor, and a parameter that
+  is such a record (a dictionary) brings a descriptor for each of those
+  fields with it, so a value of `Elem c` in code generic over `c` has the
+  representation that descriptor says, as a value of a type variable has
+  its descriptor's (`compiler/idyllic/tests/reps.rs`); a closure, which
+  binds no representation variable, holds one as `any`, as it does a type
+  variable's.
 - [ ] **Associated data types** (later, beside associated types): a
   trait's field that is a type the instance *declares*, `data Elem =
   ListElem Int`, fresh for each instance, rather than one it names. No two
@@ -734,7 +748,9 @@ and a `Map` built with one `Ord` is rejected when used with another.
   comparisons are passed along); then `String` and `Char` (done, as
   Meadow's, on the prelude's string natives and a builtin `Char`), `Bytes`
   and the parsers; then collections (`List`, `Array`, `Vector`, `Map`, `Set` done;
-  `HashMap` waits for a `Hash` trait); then the effect modules (`Exn`, `State`,
+  `Hash`, Meadow's hashes, and `Num.Bits`, the bit operations at each
+  width that it combines with, and `HashMap`, Meadow's hash array mapped
+  trie, done); then the effect modules (`Exn`, `State`,
   `Yield`, `Fs`, `Process` done; `Stream`, `Random`, `Time`, `Test` left);
   then `Json`. (The prelude already declares `Maybe`, `Result`
   and the world's effects themselves; what is left of those modules is

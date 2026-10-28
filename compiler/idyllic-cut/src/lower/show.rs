@@ -61,7 +61,8 @@ impl Lower<'_> {
             typer::Rep::Str => Rep::Str,
             typer::Rep::Char => Rep::Char,
             typer::Rep::Ptr => Rep::Ptr,
-            typer::Rep::Var(_) | typer::Rep::Any => Rep::Any,
+            typer::Rep::Desc => Rep::Desc,
+            typer::Rep::Var(_) | typer::Rep::Field(..) | typer::Rep::Any => Rep::Any,
         }
     }
 

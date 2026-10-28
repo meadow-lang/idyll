@@ -1,0 +1,21 @@
+-- | -- a hash map: a trie of the keys' hashes, and keys whose hashes collide told apart with `==`
+-- | use Std.Collections.HashMap (HashMap, HashMapBy)
+-- | use Std.Collections.HashMap as HashMap
+-- | use Std.Collections.Vector as V
+-- | use Std.Hash (Hash, hash)
+-- | 
+-- | instance same : Hash Int where
+-- |   hash x = 7
+-- | 
+-- | ages : HashMap String Int
+-- | ages = HashMap.fromList (("ada", 36) :: ("grace", 45) :: ("alan", 41) :: Nil)
+-- | 
+-- | squares : HashMap Int Int
+-- | squares = V.foldl (\m i -> HashMap.insert i (i * i) m) HashMap.empty (V.range 0 100)
+-- | 
+-- | clash : HashMapBy Int same String
+-- | clash = HashMap.insert @{same} 2 "two" (HashMap.insert @{same} 1 "one" (HashMap.empty @{same}))
+-- | 
+-- | (HashMap.lookup "ada" ages, HashMap.lookup "bob" ages, HashMap.size (HashMap.delete "alan" ages), HashMap.lookup 9 squares, HashMap.size squares, HashMap.foldl (\acc k v -> acc + v) 0 squares, HashMap.lookup 2 clash, HashMap.toList (HashMap.delete @{same} 2 clash))
+answer: (Just 36, Nothing, 2, Just 81, 100, 328350, Just "two", (1, "one") :: Nil)
+exit: 0

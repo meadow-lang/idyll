@@ -1964,7 +1964,10 @@ fun traitDecl out (cx : Cx) (d : IdyllTraitDecl) =
                     V.foldr
                       (\i acc ->
                         let k = match V.getOr None kinds i with | Just k -> k | None -> newSurfaceExprType out m in
-                        newSurfaceExprPi out m (Just (nameAt out m (V.getOr "_" paramNames i))) Icit.Explicit None k acc)
+                        -- (the parameters only say which instance: erased, as a
+                        -- linear module would otherwise have them used once)
+                        let erased = newSurfaceGrade out m (lit out m (Literal.Int 0)) None in
+                        newSurfaceExprPi out m (Just (nameAt out m (V.getOr "_" paramNames i))) Icit.Explicit (Just erased) k acc)
                       found
                       (V.range 0 (V.len paramNames))
                   in

@@ -6,6 +6,7 @@
 //! same uniques, which is what lets the two passes agree without threading a
 //! table between them.
 
+pub mod hash;
 pub mod num;
 pub mod strings;
 
@@ -325,6 +326,11 @@ pub enum Native {
     /// `Int -> Char`: the character of a code point (one that is no
     /// character, no Unicode scalar value, is an error at run time)
     CharFromCode,
+    /// `String -> Int`, `Char -> Int`, `Bool -> Int`: Meadow's `hash`
+    /// primitive at each (see [`hash`])
+    StringHash,
+    CharHash,
+    BoolHash,
     /// An operation on numbers of one type, `int8Add : Int8 -> Int8 ->
     /// Int8`: what the prelude's instances for the sized integers and
     /// the floats are made of (see [`num`]).
@@ -333,7 +339,7 @@ pub enum Native {
 
 impl Native {
     /// The natives with a name of their own, which are not [`Native::Num`].
-    pub const NAMED: [Native; 27] = [
+    pub const NAMED: [Native; 30] = [
         Native::Array,
         Native::ArrayLen,
         Native::ArrayGet,
@@ -361,6 +367,9 @@ impl Native {
         Native::CharsToString,
         Native::CharCode,
         Native::CharFromCode,
+        Native::StringHash,
+        Native::CharHash,
+        Native::BoolHash,
     ];
 
     /// Every native there is.
@@ -400,6 +409,9 @@ impl Native {
             Native::CharsToString => "charsToString",
             Native::CharCode => "charCode",
             Native::CharFromCode => "charFromCode",
+            Native::StringHash => "stringHash",
+            Native::CharHash => "charHash",
+            Native::BoolHash => "boolHash",
         }
     }
 
@@ -428,7 +440,10 @@ impl Native {
             | Native::StringToChars
             | Native::CharsToString
             | Native::CharCode
-            | Native::CharFromCode => 1,
+            | Native::CharFromCode
+            | Native::StringHash
+            | Native::CharHash
+            | Native::BoolHash => 1,
             Native::ArrayGet
             | Native::ArrayPush
             | Native::ArrayConcat

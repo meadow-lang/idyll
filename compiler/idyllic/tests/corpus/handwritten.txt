@@ -831,3 +831,49 @@ e : Elem Bag
 e = "an element"
 
 (toList (insert 1 (insert 2 (empty : List Int))), toList (insert "a" (empty : Bag)), firstOr 0 (empty : List Int), e)
+%%%
+-- hashes as Meadow's `hash` gives them, and bits at each width
+use Std.Hash (Hash, hash)
+use Std.Num.Bits (Bits, bitAnd, bitOr, bitXor, bitNot, shl, shr, ushr, popCount)
+
+(hash 5, hash "ab", hash 'x', hash True, hash 2.5, hash (toUInt8 5), hash (toUInt64 (0 - 1)), hash (1 :: 2 :: Nil), shl 1 3, popCount 255, ushr (0 - 1) 60, bitAnd (toUInt8 300) (toUInt8 15), shr (toInt8 (0 - 128)) 7, ushr (toInt8 (0 - 128)) 7, bitNot (toUInt16 0), shl (toUInt8 129) 1, shl 1 65)
+%%%
+-- a hash map: a trie of the keys' hashes, and keys whose hashes collide told apart with `==`
+use Std.Collections.HashMap (HashMap, HashMapBy)
+use Std.Collections.HashMap as HashMap
+use Std.Collections.Vector as V
+use Std.Hash (Hash, hash)
+
+instance same : Hash Int where
+  hash x = 7
+
+ages : HashMap String Int
+ages = HashMap.fromList (("ada", 36) :: ("grace", 45) :: ("alan", 41) :: Nil)
+
+squares : HashMap Int Int
+squares = V.foldl (\m i -> HashMap.insert i (i * i) m) HashMap.empty (V.range 0 100)
+
+clash : HashMapBy Int same String
+clash = HashMap.insert @{same} 2 "two" (HashMap.insert @{same} 1 "one" (HashMap.empty @{same}))
+
+(HashMap.lookup "ada" ages, HashMap.lookup "bob" ages, HashMap.size (HashMap.delete "alan" ages), HashMap.lookup 9 squares, HashMap.size squares, HashMap.foldl (\acc k v -> acc + v) 0 squares, HashMap.lookup 2 clash, HashMap.toList (HashMap.delete @{same} 2 clash))
+%%%
+@linear
+
+-- an associated type declared in a linear module: its accessor's parameters only say which instance
+trait Container (c : Type) where
+  Elem : Type
+  empty : c
+  insert : Elem -> c -> c
+  toList : c -> List Elem
+
+instance Container (List Int) where
+  Elem = Int
+  empty = Nil
+  insert x xs = x :: xs
+  toList xs = xs
+
+e : Elem (List Int)
+e = 3
+
+toList (insert e (empty : List Int))

@@ -171,6 +171,25 @@ impl Checker {
         Some(self.apply_spine(v, &sp[f.arity..]))
     }
 
+    /// A transparent definition applied to `sp`, unfolded even where its
+    /// case tree cannot choose, its `case`s left waiting: `Elem c @{d}` at a
+    /// dictionary `d` the context binds is `case d of Container _ e .. -> e`,
+    /// a type a variable's field holds, which the typer reads a
+    /// representation off.
+    pub(super) fn unfold_stuck(&self, u: usize, sp: &Spine) -> Option<Rc<Value>> {
+        let f = self.transparent.get(&u)?;
+        if sp.len() < f.arity {
+            return None;
+        }
+        let mut env = f.env.clone();
+        for elim in &sp[..f.arity] {
+            let Elim::App(a) = elim else { return None };
+            env = env.push(a.clone());
+        }
+        let v = self.eval(&env, &f.body);
+        Some(self.force(self.apply_spine(v, &sp[f.arity..])))
+    }
+
     /// An instance a `case` waits on, unfolded (see [`Unfold::on_case`]):
     /// when the case reads a field a type may compute with, a type or a
     /// superclass (a method stays a call of the instance's).

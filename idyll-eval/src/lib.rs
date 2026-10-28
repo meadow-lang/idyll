@@ -828,6 +828,15 @@ fn native(n: Native, args: &[Rc<Value>]) -> Result<Value, EvalError> {
                     .ok_or_else(|| EvalError::Stopped(format!("{code} is not a Unicode scalar value")))?,
             )
         }
+        Native::StringHash => Value::Int(idyllic_builtins::hash::string(&text(&args[0])?)),
+        Native::CharHash => match *args[0] {
+            Value::Char(c) => Value::Int(idyllic_builtins::hash::char(c)),
+            _ => return stuck("charHash is given something that is not a character"),
+        },
+        Native::BoolHash => match *args[0] {
+            Value::Bool(b) => Value::Int(idyllic_builtins::hash::bool(b)),
+            _ => return stuck("boolHash is given something that is not a truth value"),
+        },
     })
 }
 

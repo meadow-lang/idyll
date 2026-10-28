@@ -49,7 +49,7 @@ impl Width {
         matches!(self, Width::I8 | Width::I16 | Width::I32)
     }
 
-    const fn mask(self) -> u64 {
+    pub const fn mask(self) -> u64 {
         if self.bits() == 64 { u64::MAX } else { (1u64 << self.bits()) - 1 }
     }
 
@@ -118,10 +118,26 @@ pub enum NumOp {
     ToFloat32,
     /// a float, rounded toward negative infinity, as an `Int`
     Floor,
+    /// an integer's bits, as Meadow's `bitAnd`, `bitOr`, `bitXor` and
+    /// `bitNot` have them
+    BitAnd,
+    BitOr,
+    BitXor,
+    BitNot,
+    /// shifted by an `Int` taken modulo the width: `shl` left, `shr`
+    /// arithmetic on a signed type and logical on an unsigned one, `ushr`
+    /// logical on both
+    Shl,
+    Shr,
+    Ushr,
+    /// how many bits are set, as an `Int`
+    PopCount,
+    /// its hash, Meadow's `hash` primitive (see [`crate::hash`])
+    Hash,
 }
 
 impl NumOp {
-    pub const ALL: [NumOp; 13] = [
+    pub const ALL: [NumOp; 22] = [
         NumOp::Add,
         NumOp::Sub,
         NumOp::Mul,
@@ -135,7 +151,23 @@ impl NumOp {
         NumOp::ToFloat,
         NumOp::ToFloat32,
         NumOp::Floor,
+        NumOp::BitAnd,
+        NumOp::BitOr,
+        NumOp::BitXor,
+        NumOp::BitNot,
+        NumOp::Shl,
+        NumOp::Shr,
+        NumOp::Ushr,
+        NumOp::PopCount,
+        NumOp::Hash,
     ];
+
+    fn is_bits(self) -> bool {
+        matches!(
+            self,
+            NumOp::BitAnd | NumOp::BitOr | NumOp::BitXor | NumOp::BitNot | NumOp::Shl | NumOp::Shr | NumOp::Ushr | NumOp::PopCount
+        )
+    }
 
     fn suffix(self) -> &'static str {
         match self {
@@ -152,6 +184,15 @@ impl NumOp {
             NumOp::ToFloat => "ToFloat",
             NumOp::ToFloat32 => "ToFloat32",
             NumOp::Floor => "Floor",
+            NumOp::BitAnd => "BitAnd",
+            NumOp::BitOr => "BitOr",
+            NumOp::BitXor => "BitXor",
+            NumOp::BitNot => "BitNot",
+            NumOp::Shl => "Shl",
+            NumOp::Shr => "Shr",
+            NumOp::Ushr => "Ushr",
+            NumOp::PopCount => "PopCount",
+            NumOp::Hash => "Hash",
         }
     }
 
@@ -159,8 +200,11 @@ impl NumOp {
     /// comparisons are primitives of their own, and its text the prelude's.
     pub fn at(self, ty: NumTy) -> bool {
         match ty {
-            NumTy::Int => self == NumOp::ToFloat,
+            _ if self == NumOp::Hash => true,
+            NumTy::Int => self == NumOp::ToFloat || self.is_bits(),
             NumTy::Word(_) => !matches!(self, NumOp::ToFloat32 | NumOp::Floor),
+            NumTy::Float if self.is_bits() => false,
+            NumTy::Float32 if self.is_bits() => false,
             NumTy::Float => matches!(self, NumOp::Add | NumOp::Sub | NumOp::Mul | NumOp::Div | NumOp::Eq | NumOp::Lt | NumOp::Show | NumOp::ToFloat32 | NumOp::Floor),
             NumTy::Float32 => matches!(self, NumOp::Add | NumOp::Sub | NumOp::Mul | NumOp::Div | NumOp::Eq | NumOp::Lt | NumOp::Show | NumOp::ToFloat | NumOp::Floor),
         }
@@ -170,6 +214,7 @@ impl NumOp {
     pub fn arity(self) -> usize {
         match self {
             NumOp::Add | NumOp::Sub | NumOp::Mul | NumOp::Div | NumOp::Mod | NumOp::Eq | NumOp::Lt => 2,
+            NumOp::BitAnd | NumOp::BitOr | NumOp::BitXor | NumOp::Shl | NumOp::Shr | NumOp::Ushr => 2,
             _ => 1,
         }
     }
@@ -202,6 +247,15 @@ impl NumOp {
             NumOp::ToFloat => "toFloat".into(),
             NumOp::ToFloat32 => "toFloat32".into(),
             NumOp::Floor => "floor".into(),
+            NumOp::BitAnd => "bitAnd".into(),
+            NumOp::BitOr => "bitOr".into(),
+            NumOp::BitXor => "bitXor".into(),
+            NumOp::BitNot => "bitNot".into(),
+            NumOp::Shl => "shl".into(),
+            NumOp::Shr => "shr".into(),
+            NumOp::Ushr => "ushr".into(),
+            NumOp::PopCount => "popCount".into(),
+            NumOp::Hash => "hash".into(),
         }
     }
 
@@ -213,10 +267,21 @@ impl NumOp {
         }
     }
 
+    /// The types of each thing it takes, at `ty`: a shift's amount is an
+    /// `Int` whatever is shifted.
+    pub fn takes_each(self, ty: NumTy) -> Vec<NumTy> {
+        match self {
+            NumOp::Shl | NumOp::Shr | NumOp::Ushr => vec![ty, NumTy::Int],
+            _ => vec![self.takes(ty); self.arity()],
+        }
+    }
+
     /// What it gives, at `ty`: a number of this type, or a `Bool`, or text.
     pub fn gives(self, ty: NumTy) -> Gives {
         match self {
             NumOp::Add | NumOp::Sub | NumOp::Mul | NumOp::Div | NumOp::Mod | NumOp::FromInt => Gives::Num(ty),
+            NumOp::BitAnd | NumOp::BitOr | NumOp::BitXor | NumOp::BitNot | NumOp::Shl | NumOp::Shr | NumOp::Ushr => Gives::Num(ty),
+            NumOp::PopCount | NumOp::Hash => Gives::Num(NumTy::Int),
             NumOp::Eq | NumOp::Lt => Gives::Bool,
             NumOp::Show => Gives::Text,
             NumOp::ToInt | NumOp::Floor => Gives::Num(NumTy::Int),
@@ -296,6 +361,9 @@ pub fn apply(op: NumOp, ty: NumTy, args: &[Number]) -> Result<Answer, String> {
     let wrong = || format!("`{}` was given {}", op.name(ty), args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(" and "));
     let a = *args.first().ok_or_else(wrong)?;
     let num = |n| Ok(Answer::Num(n));
+    if op.is_bits() {
+        return bits(op, ty, args).map(Answer::Num).ok_or_else(wrong);
+    }
     match op {
         NumOp::Add | NumOp::Sub | NumOp::Mul | NumOp::Div | NumOp::Mod | NumOp::Eq | NumOp::Lt => {
             let b = *args.get(1).ok_or_else(wrong)?;
@@ -355,6 +423,69 @@ pub fn apply(op: NumOp, ty: NumTy, args: &[Number]) -> Result<Answer, String> {
             }
             num(Number::Int(f as i64))
         }
+        NumOp::Hash => num(Number::Int(crate::hash::number(a))),
+        // (done above)
+        NumOp::BitAnd | NumOp::BitOr | NumOp::BitXor | NumOp::BitNot | NumOp::Shl | NumOp::Shr | NumOp::Ushr | NumOp::PopCount => Err(wrong()),
+    }
+}
+
+/// A bitwise native, as `meadow_rt::num::int_bits`, `int_not` and
+/// `pop_count` compute it; `None` if it was given the wrong numbers.
+fn bits(op: NumOp, ty: NumTy, args: &[Number]) -> Option<Number> {
+    let amount = |n: &Number| match n {
+        Number::Int(y) => Some(*y),
+        _ => None,
+    };
+    match (ty, args) {
+        (NumTy::Int, [Number::Int(x)]) => Some(Number::Int(match op {
+            NumOp::BitNot => !x,
+            NumOp::PopCount => i64::from(x.count_ones()),
+            _ => return None,
+        })),
+        (NumTy::Int, [Number::Int(x), y]) => {
+            let y = amount(y)?;
+            Some(Number::Int(match op {
+                NumOp::BitAnd => x & y,
+                NumOp::BitOr => x | y,
+                NumOp::BitXor => x ^ y,
+                NumOp::Shl => x.wrapping_shl(y as u32),
+                NumOp::Shr => x.wrapping_shr(y as u32),
+                NumOp::Ushr => (*x as u64).wrapping_shr(y as u32) as i64,
+                _ => return None,
+            }))
+        }
+        (NumTy::Word(w), [Number::Word(_, x)]) => {
+            let x = x & w.mask();
+            match op {
+                NumOp::BitNot => Some(Number::Word(w, !x & w.mask())),
+                NumOp::PopCount => Some(Number::Int(i64::from(x.count_ones()))),
+                _ => None,
+            }
+        }
+        (NumTy::Word(w), [Number::Word(_, x), y]) => {
+            let x = x & w.mask();
+            let word = |y: &Number| match y {
+                Number::Word(_, b) => Some(b & w.mask()),
+                Number::Int(n) => Some(w.wrap(i128::from(*n))),
+                _ => None,
+            };
+            let y = word(y)?;
+            // (a shift amount is taken modulo the width, as Meadow's is)
+            let s = (w.value(y) as u64 % u64::from(w.bits())) as u32;
+            Some(Number::Word(
+                w,
+                match op {
+                    NumOp::BitAnd => x & y,
+                    NumOp::BitOr => x | y,
+                    NumOp::BitXor => x ^ y,
+                    NumOp::Shl => w.wrap(i128::from(x << s)),
+                    NumOp::Shr if w.signed() => w.wrap(w.value(x) >> s),
+                    NumOp::Shr | NumOp::Ushr => x >> s,
+                    _ => return None,
+                },
+            ))
+        }
+        _ => None,
     }
 }
 

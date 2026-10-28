@@ -185,6 +185,9 @@ use Std.Maybe.Maybe.*
   onCase : Ref [Int],
   opens : Ref (HashMap Int [Bool]),
   opening : Ref [Int],
+  -- that a solution is being read off what it was equated with keeping
+  -- definitions by their names (`Unify.solveMeta`)
+  naming : Ref Bool,
   -- the data types that live above `Type`, and where
   large : Ref (HashMap Int Int),
   -- that the application being inferred is the head of `f x @{d}`
@@ -249,6 +252,7 @@ use Std.Maybe.Maybe.*
     onCase = newRef [],
     opens = newRef Hm.empty,
     opening = newRef [],
+    naming = newRef False,
     large = newRef Hm.empty,
     autoGiven = newRef False,
     forced = newRef Hm.empty,
@@ -310,6 +314,7 @@ use Std.Maybe.Maybe.*
     onCase = newRef (getRef tc.onCase),
     opens = newRef (getRef tc.opens),
     opening = newRef (getRef tc.opening),
+    naming = newRef False,
     large = newRef (getRef tc.large),
     autoGiven = newRef (getRef tc.autoGiven),
     forced = newRef (getRef tc.forced),

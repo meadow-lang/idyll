@@ -1,0 +1,113 @@
+-- Hashing: `Hash`, a type whose values have an `Int` that equal ones share,
+-- which a `HashMap` keys by. The primitive types hash as Meadow's `hash`
+-- primitive does (each by a native of its own), so that every engine gives
+-- the same number for the same value; a list, a `Maybe` or a pair combines
+-- its parts' hashes, `combine` folding one into another as Meadow's hasher
+-- does a word.
+
+use Std.Num.Bits (Bits, bitXor, bitOr, shl, ushr)
+
+@pub
+trait PartialEq a => Hash (a : Type) where
+  hash : (x : [] a) -> Int
+
+-- `h` with `x` folded in: FxHash's step.
+@pub
+combine : (h : [] Int) -> (x : [] Int) -> Int
+combine h x = bitXor (bitOr (shl h 5) (ushr h 59)) x * 5871781006564002453
+
+instance Hash Int where
+  hash = intHash
+
+@native
+intHash : (x : [] Int) -> Int
+
+instance Hash Int8 where
+  hash = int8Hash
+
+@native
+int8Hash : (x : [] Int8) -> Int
+
+instance Hash Int16 where
+  hash = int16Hash
+
+@native
+int16Hash : (x : [] Int16) -> Int
+
+instance Hash Int32 where
+  hash = int32Hash
+
+@native
+int32Hash : (x : [] Int32) -> Int
+
+instance Hash UInt8 where
+  hash = uint8Hash
+
+@native
+uint8Hash : (x : [] UInt8) -> Int
+
+instance Hash UInt16 where
+  hash = uint16Hash
+
+@native
+uint16Hash : (x : [] UInt16) -> Int
+
+instance Hash UInt32 where
+  hash = uint32Hash
+
+@native
+uint32Hash : (x : [] UInt32) -> Int
+
+instance Hash UInt64 where
+  hash = uint64Hash
+
+@native
+uint64Hash : (x : [] UInt64) -> Int
+
+instance Hash Float where
+  hash = floatHash
+
+@native
+floatHash : (x : [] Float) -> Int
+
+instance Hash Float32 where
+  hash = float32Hash
+
+@native
+float32Hash : (x : [] Float32) -> Int
+
+instance Hash String where
+  hash = stringHash
+
+@native
+stringHash : (x : [] String) -> Int
+
+instance Hash Char where
+  hash = charHash
+
+@native
+charHash : (x : [] Char) -> Int
+
+instance Hash Bool where
+  hash = boolHash
+
+@native
+boolHash : (x : [] Bool) -> Int
+
+instance Hash () where
+  hash u = 7
+
+instance Hash a => Hash (List a) where
+  hash xs = hashList 9 xs
+
+-- A list's elements folded into `h`, its length with them.
+hashList : {a : Type} -> Hash a => (h : [] Int) -> (xs : [] List a) -> Int
+hashList h Nil = h
+hashList h (x :: rest) = hashList (combine h (hash x)) rest
+
+instance Hash a => Hash (Maybe a) where
+  hash Nothing = 11
+  hash (Just x) = combine 12 (hash x)
+
+instance Hash a => Hash b => Hash (a, b) where
+  hash (x, y) = combine (combine 13 (hash x)) (hash y)

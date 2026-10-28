@@ -170,3 +170,16 @@ fn every_program_in_the_corpora_has_representations() {
     assert!(anys.is_empty(), "{} binders of unknown representation:\n\n{}", anys.len(), anys.join("\n\n"));
 }
 
+
+#[test]
+fn an_associated_type_is_what_a_descriptor_passed_with_the_dictionary_says() {
+    // `Elem c` at the dictionary `d`: the field of `d` that is a type,
+    // whose descriptor comes with `d`
+    let src = "trait Container (c : Type) where\n  Elem : Type\n  toList : c -> List Elem\n\nfirstOr : {c : Type} -> {auto d : Container c} -> Elem c -> c -> Elem c\nfirstOr e xs = case toList xs of\n  Nil -> e\n  (x :: rest) -> x\n\n1\n";
+    // (the program's own `let`s include the prelude's effects, which bind
+    // an `e` of their own)
+    let all = binders(src);
+    for x in ["e", "x"] {
+        assert!(all.iter().any(|(y, r)| y == x && matches!(r, Rep::Field(..))), "{x} should be a field's representation: {all:?}");
+    }
+}

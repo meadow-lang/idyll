@@ -654,12 +654,13 @@ pub(crate) fn front(package: &PackageSource, deps: Deps<'_>, opts: &Options, ent
     if parts.len() > 1 && !crate::parts::clash(&paths, &asts) {
         return Ok(parted(package, deps, &asts, &prelude, &parts, entry, diagnostics, sources));
     }
-    let modules: Vec<rename::ModuleSource<'_>> = package
-        .modules
-        .iter()
-        .zip(&asts)
-        .map(|(m, program)| rename::ModuleSource { path: m.path.clone(), program })
-        .collect();
+    // (in the one part's order: each module after those it uses)
+    let order: Vec<usize> = match &parts[..] {
+        [one] if one.modules.len() == package.modules.len() => one.modules.clone(),
+        _ => (0..package.modules.len()).collect(),
+    };
+    let modules: Vec<rename::ModuleSource<'_>> =
+        order.iter().map(|&i| rename::ModuleSource { path: package.modules[i].path.clone(), program: &asts[i] }).collect();
     let direct: Vec<(&str, &idyllic_hir::PackageNames)> = deps.direct.iter().map(|(n, p)| (*n, &p.names)).collect();
     let first_unique = deps.first_unique.max(idyllic_builtins::FIRST_USER_UNIQUE);
     let mut renamed = rename::rename_package(&package.name, &modules, &prelude, &direct, first_unique, package.linear);

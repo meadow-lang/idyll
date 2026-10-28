@@ -82,9 +82,12 @@ def roles : [(String, String)] =
 def concatOp = "concatStrings"
 
 -- What a parameter of a function becomes: a value, a descriptor (for a
--- type parameter), or nothing.
+-- type parameter), or nothing; or a record with fields that are types (a
+-- trait's dictionary with associated types), with its representation, and
+-- then a descriptor for each of those fields, of its constructor's fields
+-- at these places (`Ty.typeFields`).
 @derive(PartialEq)
-data Param = PValue Rep | PDesc | PSkip
+data Param = PValue Rep | PDesc | PSkip | PDict Rep Int [Int]
 
 -- What a variable of Core's context is, in Cut.
 data Slot
@@ -99,16 +102,31 @@ data Slot
   -- a handler clause's resumption
   | SResume String
 
--- The slots of Core's context, and the typer's scope.
-data LEnv = LEnv [Slot] Ctx
+-- The slots of Core's context, the typer's scope, and the fields that are
+-- types of the records bound at levels of it: the level, the field's
+-- place, and the descriptor variable passed for it, if there is one, and
+-- the representation variable it is (`TRep.Field`).
+data LEnv = LEnv [Slot] Ctx [(Int, Int, Maybe String, String)]
 
-fun slotsOf (e : LEnv) : [Slot] = match e with | LEnv.LEnv s _ -> s
+fun slotsOf (e : LEnv) : [Slot] = match e with | LEnv.LEnv s _ _ -> s
 
-fun scopeOf (e : LEnv) : Ctx = match e with | LEnv.LEnv _ c -> c
+fun scopeOf (e : LEnv) : Ctx = match e with | LEnv.LEnv _ c _ -> c
 
-fun pushSlot (e : LEnv) (s : Slot) : LEnv = match e with | LEnv.LEnv ss c -> LEnv.LEnv (V.pushBack ss s) c
+fun fieldsOf (e : LEnv) : [(Int, Int, Maybe String, String)] = match e with | LEnv.LEnv _ _ fs -> fs
 
-fun withScope (e : LEnv) (c : Ctx) : LEnv = match e with | LEnv.LEnv ss _ -> LEnv.LEnv ss c
+fun pushSlot (e : LEnv) (s : Slot) : LEnv = match e with | LEnv.LEnv ss c fs -> LEnv.LEnv (V.pushBack ss s) c fs
+
+fun withScope (e : LEnv) (c : Ctx) : LEnv = match e with | LEnv.LEnv ss _ fs -> LEnv.LEnv ss c fs
+
+fun pushField (e : LEnv) (f : (Int, Int, Maybe String, String)) : LEnv = match e with | LEnv.LEnv ss c fs -> LEnv.LEnv ss c (V.pushBack fs f)
+
+-- The field of the record at level `lvl` at place `i`, if one is known.
+fun fieldAt (env : LEnv) (lvl : Int) (i : Int) : Maybe (Int, Int, Maybe String, String) =
+  V.find (\f -> match f with | (fl, fi, _, _) -> fl == lvl and fi == i) (fieldsOf env)
+
+-- The fields of the record at level `lvl`.
+fun fieldsAt (env : LEnv) (lvl : Int) : [(Int, Int, Maybe String, String)] =
+  V.filter (\f -> match f with | (fl, _, _, _) -> fl == lvl) (fieldsOf env)
 
 fun lenOf (e : LEnv) : Int = V.len (slotsOf e)
 
@@ -152,7 +170,10 @@ record L s = {
   nativesMade : Ref [String],
   atoms : Ref [String],
   showDefs : Ref [CDef],
-  showInt : Ref (Maybe Sym)
+  showInt : Ref (Maybe Sym),
+  -- the lambdas with no note on their binders, each with the grades and
+  -- types the parameter it is passed for gives them (`noteLambdas`)
+  noted : Ref [(Tm, [(Maybe Grade, Core)])]
 }
 
 -- A term of the program: a row of its tables (`Elaborated`).
@@ -371,9 +392,14 @@ fun rep (env : LEnv) (r : TRep) : Rep =
   | TRep.Number n -> Rep.Number n
   | TRep.Ptr -> Rep.Ptr
   | TRep.Any -> Rep.Any
+  | TRep.Desc -> Rep.Desc
   | TRep.Var lvl ->
       (match V.get (slotsOf env) lvl with
        | Just (Slot.STypeVar (Just _) a) -> Rep.Var a
+       | _ -> Rep.Any)
+  | TRep.Field lvl i ->
+      (match fieldAt env lvl i with
+       | Just (_, _, Just _, a) -> Rep.Var a
        | _ -> Rep.Any)
 
 fun repOf (l : L s) (env : LEnv) (c : Tm) : Rep ! { Mut, St s | e } = rep env (Ty.repOf l.tc (scopeOf env) (dataOf l c))
@@ -397,19 +423,46 @@ fun erasedInner (l : L s) (c : Tm) : Tm =
   | _ -> c
 
 -- A lambda's variable, its grade if a constant, its type if noted, and its
--- body, through the note on it.
-fun lambda (l : L s) (c : Tm) : Maybe (String, Maybe Grade, Maybe Tm, Tm) =
+-- body, through the note on it; or, for one with no note, what the
+-- parameter it is passed for says (`noteLambdas`).
+fun lambda (l : L s) (c : Tm) : Maybe (String, Maybe Grade, Maybe Core, Tm) ! { St s | e } =
   let a = l.a in
   match (a, c) with
-  | ElaboratedTermLam x body -> Just (x, None, None, body)
+  | ElaboratedTermLam x body ->
+      (match V.find (\n -> fst n == c) (getRef l.noted) with
+       | Just (_, ns) ->
+           (match V.head ns with
+            | Just (g, t) ->
+                let w = if V.len ns > 1 then setRef l.noted (V.pushBack (getRef l.noted) (body, V.drop ns 1)) else () in
+                Just (x, g, Just t, body)
+            | None -> Just (x, None, None, body))
+       | None -> Just (x, None, None, body))
   | ElaboratedTermRuntime n inner ->
       (match (a, n) with
        | ElaboratedNoteBinds grade ty ->
            (match (a, inner) with
-            | ElaboratedTermLam x body -> Just (x, grade, ty, body)
+            | ElaboratedTermLam x body -> Just (x, grade, M.map (\t -> dataOf l t) ty, body)
             | _ -> None)
        | _ -> None)
   | _ -> None
+
+-- `head`'s arguments: each lambda among them whose binders the program does
+-- not say the types of (one read back from a value, as a solved
+-- metavariable's is) noted with the types of the parameter it is passed
+-- for (`Ty.annotateArgs`).
+fun noteLambdas (l : L s) (env : LEnv) (head : Tm) (args : [Tm]) : () ! { Mut, St s | e } =
+  let a = l.a in
+  let bare = \t -> match (a, t) with | ElaboratedTermLam _ _ -> True | _ -> False in
+  if not (V.any bare args) then ()
+  else
+    let ns = Ty.annotateArgs l.tc (scopeOf env) (dataOf l head) (V.map (\t -> dataOf l t) args) in
+    V.foldl
+      (\u p ->
+        match p with
+        | (t, Just n) -> if V.isEmpty n then () else setRef l.noted (V.pushBack (getRef l.noted) (t, n))
+        | _ -> ())
+      ()
+      (V.zip args ns)
 
 fun spine (l : L s) (c : Tm) (args : [Tm]) : (Tm, [Tm]) =
   match (l.a, c) with
@@ -476,14 +529,15 @@ fun opInfo (l : L s) (u : Int) : Maybe OpInfo ! { Mut, St s | e } = Hm.lookup u 
           nativesMade = newRef [],
           atoms = newRef [],
           showDefs = newRef [],
-          showInt = newRef None
+          showInt = newRef None,
+          noted = newRef []
         }
       in
       let w0 = setRef l.showInt (M.andThen (\kv -> symbol l (fst kv)) showIntU) in
       -- the context every program starts in: the builtins, then the
       -- primitives
       let prims = [Prim.IntAdd, Prim.IntMul, Prim.IntSub, Prim.IntLt, Prim.IntEq, Prim.IntDiv, Prim.IntMod, Prim.StrAppend] in
-      let env0 = LEnv.LEnv (V.append (V.replicate (V.len IC.builtins) Slot.SErased) (V.map (\p -> Slot.SPrim p) prims)) (Ty.scope tc) in
+      let env0 = LEnv.LEnv (V.append (V.replicate (V.len IC.builtins) Slot.SErased) (V.map (\p -> Slot.SPrim p) prims)) (Ty.scope tc) [] in
       let base = V.len IC.builtins + V.len prims in
       let w1 = setRef l.local (localFreeLevels l recs (owners l program (V.len checked.toplevel) base recs)) in
       let w2 = setRef l.levels [env0] in
@@ -678,11 +732,16 @@ fun paramsOf (l : L s) (env : LEnv) (c : Tm) : [Param] ! { Mut, St s | e } =
   match lambda l c with
   | None -> []
   | Just (x, grade, ty, body) ->
-      let (env2, b, rv) = bindParam l env x grade ty in
+      let (env1, b, rv) = bindParam l env x grade ty in
+      let (env2, descs, _) = dictDescs l env1 x in
+      let lvl = lenOf env in
       let p =
         match (b, rv) with
-        | (Just _, Just _) -> Param.PDesc
-        | (Just (Binder.Binder _ r), None) -> Param.PValue r
+        | (Just (Binder.Binder _ r), _) ->
+            if not (V.isEmpty descs) then
+              let ctor = match Ty.recordTypeFields l.tc (Ty.varType (scopeOf env2) lvl) with | Just (c, _) -> c | None -> 0 in
+              Param.PDict r ctor (V.map (\f -> match f with | (_, i, _, _) -> i) (fieldsAt env2 lvl))
+            else (match rv with | Just _ -> Param.PDesc | None -> Param.PValue r)
         | (None, _) -> Param.PSkip
       in
       V.append [p] (paramsOf l env2 body)
@@ -726,7 +785,7 @@ fun lift (l : L s) (u : Int) (env : LEnv) : Maybe (Sym, [Param], [Int]) ! { Mut,
                   let w = err l (nm ++ " is used outside where it is defined") in
                   None
                 else
-                  let at0 = LEnv.LEnv (slotsOf baseEnv) (X.prefix (scopeOf env) lvl) in
+                  let at0 = LEnv.LEnv (slotsOf baseEnv) (X.prefix (scopeOf env) lvl) (fieldsOf baseEnv) in
                   let (at, binders, repVars, params, captured) =
                     V.foldl
                       (\acc lv ->
@@ -742,7 +801,30 @@ fun lift (l : L s) (u : Int) (env : LEnv) : Maybe (Sym, [Param], [Int]) ! { Mut,
                                      let v = name l (hintOf x) in
                                      let ty = Ty.varType (scopeOf env) lv in
                                      let r = Ty.rep l.tc (scopeOf env) ty in
-                                     (pushSlot a (Slot.SVar v), V.pushBack bs (Binder.Binder v (rep a r)), rvs, V.pushBack ps (Param.PValue (rep a r)), V.pushBack cs lv)
+                                     let bs1 = V.pushBack bs (Binder.Binder v (rep a r)) in
+                                     -- a record with fields that are types: their descriptors too
+                                     let fields = fieldsAt env lv in
+                                     let passed = V.all (\f -> match f with | (_, _, d, _) -> M.isSome d) fields in
+                                     (match Ty.recordTypeFields l.tc ty with
+                                      | Just (ctor, _) ->
+                                          if V.isEmpty fields or not passed then
+                                            (pushSlot a (Slot.SVar v), bs1, rvs, V.pushBack ps (Param.PValue (rep a r)), V.pushBack cs lv)
+                                          else
+                                            let (a2, bs2, rvs2) =
+                                              V.foldl
+                                                (\acc2 f ->
+                                                  match (acc2, f) with
+                                                  | ((ea, eb, er), (_, i, _, av0)) ->
+                                                      let hint = hintOf av0 in
+                                                      let dv = name l ("d_" ++ hint) in
+                                                      let av = name l hint in
+                                                      (pushField ea (lv, i, Just dv, av), V.pushBack eb (Binder.Binder dv Rep.Desc), V.pushBack er (av, dv)))
+                                                (a, bs1, rvs)
+                                                fields
+                                            in
+                                            let positions = V.map (\f -> match f with | (_, i, _, _) -> i) fields in
+                                            (pushSlot a2 (Slot.SVar v), bs2, rvs2, V.pushBack ps (Param.PDict (rep a r) ctor positions), V.pushBack cs lv)
+                                      | None -> (pushSlot a (Slot.SVar v), bs1, rvs, V.pushBack ps (Param.PValue (rep a r)), V.pushBack cs lv))
                                | Slot.STypeVar (Just _) av ->
                                    let hint = hintOf av in
                                    let dv = name l ("d_" ++ hint) in
@@ -792,20 +874,21 @@ fun defParams (l : L s) (env : LEnv) (c : Tm) (params : [Binder]) (rvs : [(Strin
   | Just (x, grade, ty, body) ->
       -- an effect variable: declared, `<e: Effect>`, and erased
       let evs2 =
-        match M.andThen (\t -> Ty.effectBinderKind l.tc (scopeOf env) (dataOf l t)) ty with
+        match M.andThen (\t -> Ty.effectBinderKind l.tc (scopeOf env) t) ty with
         | Just many -> V.pushBack evs (name l x, if many then "ManyEffect" else "Effect")
         | None -> evs
       in
-      let (env2, b, rv) = bindParam l env x grade ty in
-      defParams l env2 body (V.append params (vecOf b)) (V.append rvs (vecOf rv)) evs2
+      let (env1, b, rv) = bindParam l env x grade ty in
+      let (env2, descs, drvs) = dictDescs l env1 x in
+      defParams l env2 body (V.concat [params, vecOf b, descs]) (V.concat [rvs, vecOf rv, drvs]) evs2
 
 -- A lambda's variable bound: a value parameter, a descriptor parameter for
 -- a type, or nothing for anything else erased.
-fun bindParam (l : L s) (env : LEnv) (x : String) (grade : Maybe Grade) (ty : Maybe Tm) : (LEnv, Maybe Binder, Maybe (String, String)) ! { Mut, St s | e } =
-  let isType = match ty with | Just t -> Ty.isTypeBinder l.tc (scopeOf env) (dataOf l t) | None -> False in
+fun bindParam (l : L s) (env : LEnv) (x : String) (grade : Maybe Grade) (ty : Maybe Core) : (LEnv, Maybe Binder, Maybe (String, String)) ! { Mut, St s | e } =
+  let isType = match ty with | Just t -> Ty.isTypeBinder l.tc (scopeOf env) t | None -> False in
   let scope2 =
     match ty with
-    | Just t -> Ty.bind l.tc (scopeOf env) x (dataOf l t)
+    | Just t -> Ty.bind l.tc (scopeOf env) x t
     | None -> Ty.bindUnknown (scopeOf env) x
   in
   let env1 = withScope env scope2 in
@@ -821,17 +904,39 @@ fun bindParam (l : L s) (env : LEnv) (x : String) (grade : Maybe Grade) (ty : Ma
     let b = Binder.Binder v (rep env1 r) in
     (pushSlot env1 (Slot.SVar v), Just b, None)
 
+-- After a value parameter `x` (just bound): if it is a record with fields
+-- that are types, a dictionary with associated types, a descriptor for
+-- each, which the types of what comes after may read (`Elem c`).
+fun dictDescs (l : L s) (env : LEnv) (x : String) : (LEnv, [Binder], [(String, String)]) ! { Mut, St s | e } =
+  let lvl = lenOf env - 1 in
+  match V.last (slotsOf env) with
+  | Just (Slot.SVar _) ->
+      (match Ty.recordTypeFields l.tc (Ty.varType (scopeOf env) lvl) with
+       | Just (_, fields) ->
+           V.foldl
+             (\acc f ->
+               match (acc, f) with
+               | ((e, bs, rvs), (i, nm)) ->
+                   let hint = x ++ "_" ++ nm in
+                   let d = name l ("d_" ++ hint) in
+                   let a = name l hint in
+                   (pushField e (lvl, i, Just d, a), V.pushBack bs (Binder.Binder d Rep.Desc), V.pushBack rvs (a, d)))
+             (env, [], [])
+             fields
+       | None -> (env, [], []))
+  | _ -> (env, [], [])
+
 -- A method's parameter (a closure's, or a handler clause's): as
 -- `bindParam`, but a method binds no representation variable of its own
 -- (`docs/CUT.md`: only a `def`'s signature does), so a type parameter's
 -- values are boxed, `any`, and what it is a descriptor of is passed on as
 -- `desc(any)`.
-fun bindMethodParam (l : L s) (env : LEnv) (x : String) (grade : Maybe Grade) (ty : Maybe Tm) : (LEnv, Maybe Binder, Maybe (String, String)) ! { Mut, St s | e } =
+fun bindMethodParam (l : L s) (env : LEnv) (x : String) (grade : Maybe Grade) (ty : Maybe Core) : (LEnv, Maybe Binder, Maybe (String, String)) ! { Mut, St s | e } =
   let (env2, b, rv) = bindParam l env x grade ty in
   match rv with
   | Just (a, _) ->
       (match env2 with
-       | LEnv.LEnv slots scope -> (LEnv.LEnv (V.set slots (V.len slots - 1) (Slot.STypeVar None a)) scope, b, None))
+       | LEnv.LEnv slots scope fs -> (LEnv.LEnv (V.set slots (V.len slots - 1) (Slot.STypeVar None a)) scope fs, b, None))
   | None -> (env2, b, rv)
 
 -- --- terms -----------------------------------------------------------------------------
@@ -971,6 +1076,9 @@ fun closure (l : L s) (env : LEnv) (c : Tm) : CutProd ! { Mut, St s | e } =
 fun application (l : L s) (env : LEnv) (c : Tm) (k : CutCons) : CutStmt ! { Mut, St s | e } =
   let a = l.a in
   let (head, args) = spine l c [] in
+  -- (a lambda read back from a value, its binders' types from where it is
+  -- passed)
+  let w = noteLambdas l env head args in
   let generic =
     \u ->
       match value l env head with
@@ -1040,17 +1148,29 @@ fun applyOne (l : L s) (env : LEnv) (f : CutProd) (x : CutProd) (rest : [Tm]) (k
     sCut l f (kCall l "apply" [x] [kMuT l (Binder.Binder g Rep.Ptr) next])
 
 -- The descriptor for a type argument.
-fun descriptor (l : L s) (env : LEnv) (ty : Core) : CutProd ! { Mut, St s | e } =
-  match Ty.repOfType l.tc (scopeOf env) ty with
+fun descriptor (l : L s) (env : LEnv) (ty : Core) : CutProd ! { Mut, St s | e } = descriptorOf l env (Ty.repOfType l.tc (scopeOf env) ty)
+
+-- The descriptor of a representation the typer gave.
+fun descriptorOf (l : L s) (env : LEnv) (r : TRep) : CutProd ! { Mut, St s | e } =
+  match r with
   | TRep.Var lvl ->
       (match V.get (slotsOf env) lvl with
        | Just (Slot.STypeVar (Just d) _) -> pVar l d
+       -- a record's field that is a type, which holds its descriptor
+       | Just (Slot.SVar d) -> pVar l d
        | _ -> pDesc l Rep.Any)
-  | r -> pDesc l (rep env r)
+  | TRep.Field lvl i ->
+      (match fieldAt env lvl i with
+       | Just (_, _, Just d, _) -> pVar l d
+       | _ -> pDesc l Rep.Any)
+  | other -> pDesc l (rep env other)
 
 -- A known function's arguments, as its parameters take them.
 fun arguments (l : L s) (env : LEnv) (params : [Param]) (args : [Arg]) rest : CutStmt ! { Mut, St s | e } =
   let pairs = V.zip (V.range 0 (V.len params)) (V.zip params args) in
+  let core = \x -> match x with | Arg.Of t -> dataOf l t | Arg.Level lv -> Core.Var (lenOf env - 1 - lv) "captured" in
+  -- (the descriptors that come after a record, for its fields that are
+  -- types, are at its place too, after it)
   let (values, descs) =
     V.foldl
       (\acc ipa ->
@@ -1065,7 +1185,10 @@ fun arguments (l : L s) (env : LEnv) (params : [Param]) (args : [Arg]) rest : Cu
                    | Arg.Level lv -> Core.Var (lenOf env - 1 - lv) "captured"
                  in
                  (vs, V.pushBack ds (i, descriptor l env ty))
-             | Param.PValue _ -> (V.pushBack vs (i, x), ds)))
+             | Param.PValue _ -> (V.pushBack vs (i, x), ds)
+             | Param.PDict _ ctor fields ->
+                 let fds = V.map (\f -> (i, descriptorOf l env (Ty.fieldRep l.tc (scopeOf env) (core x) ctor f))) fields in
+                 (V.pushBack vs (i, x), V.append ds fds)))
       ([], [])
       pairs
   in
@@ -1107,11 +1230,12 @@ fun partial (l : L s) (env : LEnv) (whole : Tm) (head : Head2) (given : [Param])
 
 -- The object a partial application is: one `apply` for each parameter still
 -- to come, the last doing what `head` does with all of them.
-fun waiting (l : L s) (env : LEnv) (head : Head2) (given : [CutProd]) (remaining : [(TRep, Bool, Bool)]) : CutProd ! { Mut, St s | e } =
+fun waiting (l : L s) (env : LEnv) (head : Head2) (given : [CutProd]) (remaining : [(TRep, Bool, Bool, Bool)]) : CutProd ! { Mut, St s | e } =
+  let w = if V.any (\x -> match x with | (_, _, _, dict) -> dict) remaining then err l "a partial application that waits for a record with fields that are types is not lowered yet" else () in
   let names =
     V.map
-      (\x -> match x with | (r, isTy, _) -> (if isTy then Rep.Desc else rep env r, name l "a"))
-      (V.filter (\x -> match x with | (_, isTy, erased) -> isTy or not erased) remaining)
+      (\x -> match x with | (r, isTy, _, _) -> (if isTy then Rep.Desc else rep env r, name l "a"))
+      (V.filter (\x -> match x with | (_, isTy, erased, _) -> isTy or not erased) remaining)
   in
   let k = name l "k" in
   let all = V.append given (V.map (\n -> pVar l (snd n)) names) in
@@ -1166,7 +1290,7 @@ fun nativeArity (n : String) : Int =
   if M.isSome (N.ofName n) then M.unwrapOr 0 (M.map (\p -> N.arity (fst p)) (N.ofName n))
   else if n == "Array" or n == "MArray" then 0
   else if V.elem n ["arrayLen", "arrayPop", "arrayFromList", "arrayToList", "marrayLen", "marrayFreeze", "marrayThaw"] then 1
-  else if V.elem n ["stringByteLength", "stringToChars", "charsToString", "charCode", "charFromCode"] then 1
+  else if V.elem n ["stringByteLength", "stringToChars", "charsToString", "charCode", "charFromCode", "stringHash", "charHash", "boolHash"] then 1
   else if V.elem n ["arrayGet", "arrayPush", "arrayConcat", "marrayNew", "marrayGet", "stringByteAt", "stringCompare"] then 2
   else 3
 
@@ -1188,7 +1312,7 @@ fun nativeApp (l : L s) (env : LEnv) (whole : Tm) (ni : (String, Int)) (args : [
        | None ->
            let number = N.ofName n in
            let reps =
-             if M.isSome number then M.map (\p -> match p with | (op, t) -> V.replicate (N.arity op) (numberRep (N.takes op t))) number
+             if M.isSome number then M.map (\p -> match p with | (op, t) -> V.map numberRep (N.takesEach op t)) number
              else if n == "arrayLen" or n == "arrayPop" then Just [Rep.Ptr]
              else if n == "arrayGet" then Just [Rep.Ptr, Rep.I64]
              else if n == "arrayGetOr" then Just [Rep.Any, Rep.Ptr, Rep.I64]
@@ -1204,6 +1328,9 @@ fun nativeApp (l : L s) (env : LEnv) (whole : Tm) (ni : (String, Int)) (args : [
              else if n == "charsToString" then Just [Rep.Ptr]
              else if n == "charCode" then Just [Rep.Char]
              else if n == "charFromCode" then Just [Rep.I64]
+             else if n == "stringHash" then Just [Rep.Str]
+             else if n == "charHash" then Just [Rep.Char]
+             else if n == "boolHash" then Just [Rep.Bool]
              else None
            in
            (match reps with
@@ -1212,7 +1339,7 @@ fun nativeApp (l : L s) (env : LEnv) (whole : Tm) (ni : (String, Int)) (args : [
                 sError l n
             | Just rs ->
                 let params = V.append (V.replicate nparams Param.PSkip) (V.map (\r -> Param.PValue r) rs) in
-                let op = match number with | Just (o, t) -> N.prim o t | None -> n in
+                let op = match number with | Just (o, t) -> N.prim o t | None -> if V.elem n ["stringHash", "charHash", "boolHash"] then "hash" else n in
                 if V.len args < all then partial l env whole (Head2.HPrim op) (V.take params (V.len args)) (V.map (\x -> Arg.Of x) args) k
                 else
                   let values = V.slice args nparams all in
@@ -1267,9 +1394,10 @@ fun construct (l : L s) (env : LEnv) (whole : Tm) (u : Int) (info : CtorInfo) (a
       let w = note l.datas dt in
       let s = symbolOr l u nm in
       let reps = match Ty.ctorShape l.tc u with | Just (_, fs) -> V.map (\r -> rep env r) fs | None -> [] in
-      let params = V.append (V.replicate nparams Param.PSkip) (V.map (\i -> Param.PValue (V.getOr Rep.Any reps i)) (V.range 0 nfields)) in
+      -- a field that is a type holds its descriptor
+      let params = V.append (V.replicate nparams Param.PSkip) (V.map (\i -> match V.getOr Rep.Any reps i with | Rep.Desc -> Param.PDesc | r -> Param.PValue r) (V.range 0 nfields)) in
       if V.len args < V.len params then partial l env whole (Head2.HCon s) (V.take params (V.len args)) (V.map (\x -> Arg.Of x) args) k
-      else atoms l env (V.slice args nparams (nparams + nfields)) (\ps -> sCut l (pCon l s ps) k)
+      else arguments l env params (V.map (\x -> Arg.Of x) (V.take args (V.len params))) (\ps -> sCut l (pCon l s ps) k)
 
 fun performed (l : L s) (env : LEnv) (whole : Tm) (u : Int) (info : OpInfo) (args : [Tm]) (k : CutCons) : CutStmt ! { Mut, St s | e } =
   match info with
@@ -1337,6 +1465,7 @@ fun caseNamed (l : L s) (env : LEnv) (scrutinee : Tm) (alts : [ElaboratedAlt]) (
               let nparams = match info with | Just (CtorInfo.CtorInfo _ _ _ p _) -> p | None -> 0 in
               let types = Ty.altTypes l.tc (scopeOf env) (dataOf l scrutinee) (altOf a alt) in
               let innerScope = Ty.altScope l.tc (scopeOf env) (dataOf l scrutinee) (altOf a alt) in
+              let held = Ty.typeFields l.tc u in
               let (inner, fields) =
                 V.foldl
                   (\acc ix ->
@@ -1345,9 +1474,13 @@ fun caseNamed (l : L s) (env : LEnv) (scrutinee : Tm) (alts : [ElaboratedAlt]) (
                         if i < nparams then (pushSlot e Slot.SErased, fs)
                         else
                           let v = name l x in
-                          let r = match V.get types i with | Just t -> Ty.rep l.tc (scopeOf e) t | None -> TRep.Any in
+                          -- a field that is a type holds its descriptor
+                          let r =
+                            if V.any (\f -> fst f == i) held then TRep.Desc
+                            else match V.get types i with | Just t -> Ty.rep l.tc (scopeOf e) t | None -> TRep.Any
+                          in
                           (pushSlot e (Slot.SVar v), V.pushBack fs (Binder.Binder v (rep e r))))
-                  (LEnv.LEnv (slotsOf env) innerScope, [])
+                  (LEnv.LEnv (slotsOf env) innerScope (fieldsOf env), [])
                   (V.zip (V.range 0 (V.len vars)) vars)
               in
               [arm l (symbol l u) fields (term l inner (elaboratedAltBody a alt) k)]
@@ -1379,7 +1512,7 @@ fun handled (l : L s) (env : LEnv) (body : Tm) (ret : Tm) (clauses : [Elaborated
              []
          | Just (x, _, ty, cbody) ->
              let r = name l "r" in
-             let scope3 = match ty with | Just t -> Ty.bind l.tc (scopeOf inner2) x (dataOf l t) | None -> Ty.bindUnknown (scopeOf inner2) x in
+             let scope3 = match ty with | Just t -> Ty.bind l.tc (scopeOf inner2) x t | None -> Ty.bindUnknown (scopeOf inner2) x in
              let inner3 = pushSlot (withScope inner2 scope3) (Slot.SResume r) in
              let kc = name l "k" in
              let s = term l inner3 cbody (kVar l kc) in
@@ -1410,7 +1543,7 @@ fun erasedArgs (l : L s) (env : LEnv) (lam : Tm) (n : Int) : (LEnv, Tm) ! { Mut,
     match lambda l lam with
     | None -> (env, lam)
     | Just (x, _, ty, body) ->
-        let scope2 = match ty with | Just t -> Ty.bind l.tc (scopeOf env) x (dataOf l t) | None -> Ty.bindUnknown (scopeOf env) x in
+        let scope2 = match ty with | Just t -> Ty.bind l.tc (scopeOf env) x t | None -> Ty.bindUnknown (scopeOf env) x in
         erasedArgs l (pushSlot (withScope env scope2) (Slot.STypeVar None x)) body (n - 1)
 
 fun opArgs (l : L s) (env : LEnv) (lam : Tm) (n : Int) (params : [Binder]) : (LEnv, Tm, [Binder]) ! { Mut, St s | e } =
@@ -1432,6 +1565,7 @@ fun conv (r : TRep) : Rep =
   | TRep.Char -> Rep.Char
   | TRep.Number n -> Rep.Number n
   | TRep.Ptr -> Rep.Ptr
+  | TRep.Desc -> Rep.Desc
   | _ -> Rep.Any
 
 fun symLess (a : Sym) (b : Sym) : Bool = S.lessThan (sortKey a) (sortKey b)

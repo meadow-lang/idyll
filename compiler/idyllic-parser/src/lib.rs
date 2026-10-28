@@ -901,10 +901,13 @@ fn trait_parts(
         if associated.iter().any(|g| g.node == m.node) {
             // `(c : Type) -> {auto self : Container c} -> Type`, and
             // `Elem c @{self} = Container.Elem self`
+            // (the parameters only say which instance: erased, as a linear
+            // module would otherwise have them used once)
             let found = at(Term::Pi(Some(Spanned::new("self".into(), span)), Icit::Auto, None, Box::new(whole.clone()), Box::new(read_off(ty))));
             let sig = params.iter().rev().fold(found, |acc, (p, k)| {
                 let kind = k.clone().unwrap_or_else(|| at(Term::Type));
-                at(Term::Pi(Some(p.clone()), Icit::Explicit, None, Box::new(kind), Box::new(acc)))
+                let erased = GradeAnn { subject: Box::new(at(Term::Lit(Lit::Int(0)))), in_type: None };
+                at(Term::Pi(Some(p.clone()), Icit::Explicit, Some(erased), Box::new(kind), Box::new(acc)))
             });
             decls.push(Spanned::new(Decl::Sig(m.clone(), sig), m.span));
             let bind = |x: &str| Spanned::new(Pat::Bind(Param { name: Spanned::new(x.to_string(), span), unbox: false, grade: None, ty: None }), span);

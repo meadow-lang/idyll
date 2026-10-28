@@ -202,8 +202,12 @@ fn the_std_package_agrees() {
             (path, program(text).expect("a Std module parses"))
         })
         .collect();
+    // (each module after those it uses, as the package's parts have them)
+    let paths: Vec<Vec<String>> = programs.iter().map(|(p, _)| p.clone()).collect();
+    let texts: Vec<&str> = idyllic::stdlib::MODULES.iter().map(|(_, t)| *t).collect();
+    let order: Vec<usize> = idyllic::parts::parts("Std", &paths, &texts).into_iter().flat_map(|p| p.modules).collect();
     let modules: Vec<idyllic_rename::ModuleSource<'_>> =
-        programs.iter().map(|(path, program)| idyllic_rename::ModuleSource { path: path.clone(), program }).collect();
+        order.iter().map(|&i| idyllic_rename::ModuleSource { path: programs[i].0.clone(), program: &programs[i].1 }).collect();
     let result = idyllic_rename::rename_package("Std", &modules, &prelude, &[], idyllic_builtins::FIRST_USER_UNIQUE, false);
     assert!(result.errors.is_empty(), "Std renames");
     let module = idyllic_scc::scc_module(result.module);

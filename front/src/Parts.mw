@@ -79,6 +79,19 @@ fun components (edges : [[Int]]) : [[Int]] =
   let comps = V.foldl (\acc v -> if V.any (\c -> V.elem v c) acc then acc else V.pushBack acc (sameAs v)) [] (V.range 0 n) in
   ordered comps edges []
 
+-- The modules in an order where each comes after those it imports (those
+-- that import each other together): how a package checked whole is put in
+-- order, so that a module's instances are there for the searches of the
+-- modules that use it.
+@pub fun dependencyOrder (package : String) (paths : [String]) (texts : [String]) : [Int] =
+  V.concat (components (imports package paths texts))
+
+-- `modules` (of a package whose modules are `paths`), as a part checks them:
+-- the root first, then each after those it imports.
+fun inOrder (paths : [String]) (rank : [Int]) (modules : [Int]) : [Int] =
+  let key = \m -> (if V.getOr "" paths m == "" then 0 else 1) * 1000000 + V.getOr 0 rank m * 1000 + m in
+  sortOn key modules
+
 -- Every node reachable from `from`, itself included.
 fun reachable (edges : [[Int]]) (from : [Int]) : [Int] =
   let next = V.foldl (\acc v -> V.foldl (\a w -> if V.elem w a then a else V.pushBack a w) acc (V.getOr [] edges v)) from from in
@@ -99,6 +112,9 @@ fun ordered (comps : [[Int]]) (edges : [[Int]]) (done : [[Int]]) : [[Int]] =
 @pub fun parts (package : String) (paths : [String]) (texts : [String]) : [Part] =
   let edges = imports package paths texts in
   let comps = components edges in
+  -- each module's place in an order where it comes after those it imports
+  -- (modules that import each other alike, by where they come)
+  let rank = V.map (\m -> M.unwrapOr 0 (V.find (\k -> V.elem m (V.getOr [] comps k)) (V.range 0 (V.len comps)))) (V.range 0 (V.len paths)) in
   let root = M.unwrapOr 0 (V.find (\i -> V.getOr "" paths i == "") (V.range 0 (V.len paths))) in
   -- the root's part takes in every part that reaches it
   let reaches = \v -> V.elem root (reachable edges [v]) in
@@ -111,7 +127,7 @@ fun ordered (comps : [[Int]]) (edges : [[Int]]) (done : [[Int]]) : [[Int]] =
       let mods = V.getOr [] all k in
       let direct = V.foldl (\ds m -> V.foldl (\d2 j -> let p = partOf j in if p == k or V.elem p d2 then d2 else V.pushBack d2 p) ds (V.getOr [] edges m)) [] mods in
       let every = V.foldl (\es d -> V.foldl (\e2 x -> if V.elem x e2 then e2 else V.pushBack e2 x) (if V.elem d es then es else V.pushBack es d) (match V.get acc d with | Just p -> partImports p | None -> [])) [] direct in
-      V.pushBack acc (Part.Part mods (sortOn (\x -> x) every) (V.elem root mods)))
+      V.pushBack acc (Part.Part (inOrder paths rank mods) (sortOn (\x -> x) every) (V.elem root mods)))
     []
     (V.range 0 (V.len all))
 

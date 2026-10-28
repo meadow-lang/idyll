@@ -357,3 +357,26 @@ fn what_only_a_solution_calls_is_kept() {
     );
     has(&lowered(&src), "def idyll:Main/twice");
 }
+
+#[test]
+fn an_instance_a_type_names_is_passed_by_its_name() {
+    // `size`'s `Hash Int` is what `s`'s type says it is, `instance Hash
+    // Int`: the instance itself is passed, not a copy of what it unfolds to
+    let src = "use Std.Collections.HashMap (HashMap)\nuse Std.Collections.HashMap as HashMap\n\n\
+               s : HashMap Int Int\ns = HashMap.insert 1 2 HashMap.empty\n\nHashMap.size s\n";
+    let text = lowered(src);
+    let entry = &text[text.find("def idyll:Main/\"#entry\"").expect("the entry")..];
+    assert!(!entry.contains("Hash.Hash.Hash("), "the instance rebuilt in the entry:\n{entry}");
+}
+
+#[test]
+fn a_lambda_read_back_from_a_value_takes_what_its_parameter_does() {
+    // the program's own instance, unfolded where `m`'s type names it: its
+    // method `\x -> 7`, which says no type of its own, takes an `i64` as
+    // `hash` does, not `any`
+    let src = "use Std.Collections.HashMap (HashMapBy)\nuse Std.Collections.HashMap as HashMap\nuse Std.Hash (Hash)\n\n\
+               instance same : Hash Int where\n  hash x = 7\n\n\
+               m : HashMapBy Int same Int\nm = HashMap.insert @{same} 1 2 (HashMap.empty @{same})\n\nHashMap.lookup 1 m\n";
+    let text = lowered(src);
+    assert!(!text.contains(": any"), "a parameter of no known representation:\n{text}");
+}

@@ -38,6 +38,7 @@ use Std.Path as Path
 use Std.Fs (writeString, readDir, isDir, exists, readToStringOr, createDirAll)
 use Std.Process (runInherit, getEnv)
 use Std.Sort (sortOn)
+use Idyll.Parts as Pa
 use Std.Maybe.Maybe.*
 use Std.Result.Result.*
 
@@ -372,7 +373,7 @@ fun compileScc (x : Part Interface PartOut) : Result String PartOut ! { Mut, Fs 
     -- whether the package says how visible things are: as far as this part
     -- and the parts it imports show
     let visibility = V.any (\m -> S.contains "@pub" (snd m)) own or V.any (\b -> visibleIn (builtNames b)) siblings in
-    match (Surface.parsed prelude, parsedModules (rootFirst own)) with
+    match (Surface.parsed prelude, parsedModules (rootFirst (dependencyFirst name own))) with
     | (Err _, _) -> Err "the prelude does not parse"
     | (_, Err why) -> Err why
     | (Ok pre, Ok modules) ->
@@ -455,6 +456,11 @@ fun modulePath (dir : String) (path : String) : [String] =
   let named = V.pushBack (V.take segs (V.len segs - 1)) (S.take last (S.byteLength last - 4)) in
   if V.len named == 1 and (V.getOr "" named 0 == "Main" or V.getOr "" named 0 == "Lib") then [] else named
 
+-- A part's modules, each after those it imports (`idyllic::parts`).
+fun dependencyFirst (name : String) (modules : [(String, String)]) : [(String, String)] =
+  let order = Pa.dependencyOrder name (V.map fst modules) (V.map snd modules) in
+  V.concatMap (\i -> match V.get modules i with | Just m -> [m] | None -> []) order
+
 -- A package's modules, the root (whose path is empty) first: the renamer
 -- takes the first for the root.
 fun rootFirst (modules : [(String, String)]) : [(String, String)] =
@@ -488,6 +494,7 @@ def stdModules : [(String, String)] =
     ("Char", includeStr "../../lib/Std/src/Char.idl"),
     ("Cmp", includeStr "../../lib/Std/src/Cmp.idl"),
     ("Collections.Array", includeStr "../../lib/Std/src/Collections/Array.idl"),
+    ("Collections.HashMap", includeStr "../../lib/Std/src/Collections/HashMap.idl"),
     ("Collections.List", includeStr "../../lib/Std/src/Collections/List.idl"),
     ("Collections.Map", includeStr "../../lib/Std/src/Collections/Map.idl"),
     ("Collections.MArray", includeStr "../../lib/Std/src/Collections/MArray.idl"),
@@ -501,7 +508,9 @@ def stdModules : [(String, String)] =
     ("Exn", includeStr "../../lib/Std/src/Exn.idl"),
     ("Fs", includeStr "../../lib/Std/src/Fs.idl"),
     ("Function", includeStr "../../lib/Std/src/Function.idl"),
+    ("Hash", includeStr "../../lib/Std/src/Hash.idl"),
     ("Maybe", includeStr "../../lib/Std/src/Maybe.idl"),
+    ("Num.Bits", includeStr "../../lib/Std/src/Num/Bits.idl"),
     ("Num.Fin", includeStr "../../lib/Std/src/Num/Fin.idl"),
     ("Num.Int", includeStr "../../lib/Std/src/Num/Int.idl"),
     ("Num.Nat", includeStr "../../lib/Std/src/Num/Nat.idl"),

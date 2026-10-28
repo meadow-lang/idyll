@@ -97,6 +97,9 @@ impl Checker {
     /// Returns `false` on failure; the caller turns that into a diagnostic,
     /// so one failed unification does not abort the whole module.
     pub fn unify(&mut self, l: Lvl, t: Rc<Value>, u: Rc<Value>) -> bool {
+        // (a metavariable is solved with the other side as it was given, a
+        // definition by its name, which `solve` reads it off)
+        let (given_t, given_u) = (t.clone(), u.clone());
         let t = self.force(t);
         let u = self.force(u);
         let fresh = || vvar(l, "_");
@@ -176,11 +179,11 @@ impl Checker {
             }
             (Value::Flex(m, sp), _) => {
                 let (m, sp) = (*m, sp.clone());
-                self.solve(l, m, &sp, u.clone())
+                self.solve(l, m, &sp, given_u)
             }
             (_, Value::Flex(m, sp)) => {
                 let (m, sp) = (*m, sp.clone());
-                self.solve(l, m, &sp, t.clone())
+                self.solve(l, m, &sp, given_t)
             }
             // a pure type where one with effects is wanted, or the other way
             (Value::Comp(a, e), _) => {
@@ -348,8 +351,20 @@ impl Checker {
             }
         }
         let Some(pren) = self.invert(gamma, sp) else { return false };
+        // what it was equated with as it was written, a definition by its
+        // name (`instance Hash Int`) rather than what that unfolds to, so
+        // that what is solved keeps it, as a type shows it and code calls
+        // it; and if that mentions what the solution may not, as
+        // `const x y` with `y` out of scope does, what it unfolds to
+        self.prunes.borrow_mut().clear();
+        self.naming.set(true);
+        let named = self.rename(m, &pren, rhs.clone());
+        self.naming.set(false);
         self.prunes.borrow_mut().clear();
         let body = loop {
+            if let Some(body) = named.clone() {
+                break body;
+            }
             if let Some(body) = self.rename(m, &pren, rhs.clone()) {
                 break body;
             }
@@ -394,7 +409,12 @@ impl Checker {
         let (m, ctx) = (self.deferred_autos[i].meta, self.deferred_autos[i].ctx.clone());
         let lvl = ctx.lvl;
         let pren = PartialRenaming { dom: lvl, cod: gamma, map: (0..lvl.min(gamma)).map(|k| (k, k)).collect(), names: Vec::new() };
-        let body = self.rename(m, &pren, rhs);
+        // (an instance by its name, as `solve` reads one)
+        self.naming.set(true);
+        let named = self.rename(m, &pren, rhs.clone());
+        self.naming.set(false);
+        self.prunes.borrow_mut().clear();
+        let body = named.or_else(|| self.rename(m, &pren, rhs));
         self.prunes.borrow_mut().clear();
         let Some(body) = body else { return false };
         let value = self.eval(&ctx.env, &body);
@@ -550,7 +570,7 @@ impl Checker {
     /// Quote a value into the meta's context, renaming variables through
     /// `pren`.  `None` if the occurs check or the scope check fails.
     fn rename(&self, m: MetaVar, pren: &PartialRenaming, v: Rc<Value>) -> Option<Rc<Core>> {
-        let v = self.force(v);
+        let v = if self.naming.get() { self.force_named(v) } else { self.force(v) };
         Some(Rc::new(match &*v {
             Value::Type(n) => Core::Type(*n),
             Value::LitTy(b) => Core::LitTy(*b),

@@ -190,3 +190,14 @@ fn an_associated_type_is_what_its_instance_says() {
     let named = "instance chars : Container (List Char) where\n  Elem = Char\n  empty = Nil\n  insert x xs = x :: xs\n  toList xs = xs\n\n";
     assert_eq!(value(&format!("{CONTAINER}{named}e : Elem (List Char) @{{chars}}\ne = 'x'\n\ne\n")), "'x'");
 }
+
+#[test]
+fn an_associated_type_is_declared_in_a_linear_module() {
+    // its accessor's parameters only say which instance, so they are
+    // erased rather than, in a linear module, to be used once
+    // (the list's instance alone: a `Bag`'s reads `b.items`, which uses `b`
+    // at most once, not once)
+    let list = &CONTAINER[..CONTAINER.find("record Bag").expect("the list's instance first")];
+    let src = format!("@linear\n\n{list}e : Elem (List Int)\ne = 3\n\ne\n");
+    assert_eq!(value(&src), "3");
+}

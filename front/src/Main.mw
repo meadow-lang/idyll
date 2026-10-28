@@ -416,8 +416,8 @@ fun packageTypes prelude (name : String) (modules : [([String], SurfaceProgram)]
 -- A package's modules, read from its source directory: each `.idl` file
 -- under it, its path the file's (`Collections/List.idl` is
 -- `Collections.List`), `Main.idl` or `Lib.idl` the root, as the Rust driver
--- has it; the root first, then the rest
--- by path.
+-- has it; the root first, then the rest each after the modules it imports
+-- (`Parts`).
 fun packageModules (dir : String) : Result String [([String], SurfaceProgram)] ! { Fs, Mut | e } =
   let files = idlFiles dir [] in
   let modules =
@@ -431,19 +431,32 @@ fun packageModules (dir : String) : Result String [([String], SurfaceProgram)] !
       files
   in
   let sorted = V.foldl (\acc m -> V.concat [V.filter (\x -> not (S.lessThan (key m) (key x))) acc, [m], V.filter (\x -> S.lessThan (key m) (key x)) acc]) [] modules in
-  V.foldl
-    (\acc m ->
-      match acc with
-      | Err why -> Err why
-      | Ok done ->
-          (match readToString (dir ++ "/" ++ snd m) with
-           | Err e -> Err e
-           | Ok text ->
-               (match Surface.parsed text with
-                | Ok prog -> Ok (V.pushBack done (fst m, prog))
-                | Err _ -> Err "${snd m} does not parse")))
-    (Ok [])
-    sorted
+  let read =
+    V.foldl
+      (\acc m ->
+        match acc with
+        | Err why -> Err why
+        | Ok done ->
+            (match readToString (dir ++ "/" ++ snd m) with
+             | Err e -> Err e
+             | Ok text ->
+                 (match Surface.parsed text with
+                  | Ok prog -> Ok (V.pushBack done (fst m, text, prog))
+                  | Err _ -> Err "${snd m} does not parse")))
+      (Ok [])
+      sorted
+  in
+  -- each after the modules it imports, so that a module's instances are
+  -- there for the searches of those that use it
+  match read with
+  | Err why -> Err why
+  | Ok ms ->
+      let paths = V.map (\m -> match m with | (p, _, _) -> S.join "." p) ms in
+      let texts = V.map (\m -> match m with | (_, t, _) -> t) ms in
+      -- (the root still first, which the renamer takes for the root)
+      let parted = V.concatMap Parts.partModules (Parts.parts "Std" paths texts) in
+      let order = V.append (V.filter (\i -> V.getOr "" paths i == "") parted) (V.filter (\i -> V.getOr "" paths i != "") parted) in
+      Ok (V.concatMap (\i -> match V.get ms i with | Just (p, _, prog) -> [(p, prog)] | None -> []) order)
 
 -- How modules sort: the root first, then by path.
 fun key (m : ([String], String)) : String = if V.isEmpty (fst m) then "" else S.join "." (fst m)

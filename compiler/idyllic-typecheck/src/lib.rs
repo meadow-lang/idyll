@@ -1194,6 +1194,9 @@ pub struct Checker {
     /// the instances being unfolded (see `Checker::opened`): one whose
     /// default reads another of its fields reads it once it is there
     opening: std::cell::RefCell<Vec<usize>>,
+    /// that a metavariable's solution is being read off what it was
+    /// equated with keeping definitions by their names (see `Checker::solve`)
+    naming: std::cell::Cell<bool>,
     /// the data types that live above `Type`, and where
     large: HashMap<usize, core::Level>,
     /// that the application being inferred is the head of `f x @{d}`, so
@@ -1418,6 +1421,7 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         instance_fields: HashMap::new(),
         quantified: Vec::new(),
         opening: Default::default(),
+        naming: Default::default(),
         large: HashMap::new(),
         auto_given: false,
     };

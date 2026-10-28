@@ -24,7 +24,7 @@ use Idyll.Grade as G
 use Idyll.Tc (Tc, Meta, MetaInfo, MetaTy, Origin)
 use Idyll.Tc as T
 use Idyll.Ctx (Ctx)
-use Idyll.Eval (force, apply, vapp, eval, quote, row, rowParts, toPoly, effectKey, renormalise)
+use Idyll.Eval (force, forceNamed, apply, vapp, eval, quote, row, rowParts, toPoly, effectKey, renormalise)
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
 use Std.Collections.HashMap (HashMap)
@@ -101,8 +101,10 @@ use Std.Maybe.Maybe.*
   | (Value.Stuck h sp, Value.Stuck h2 sp2) -> unify tc l h h2 and unifySpine tc l sp sp2
   | (Value.Prim p args, Value.Prim p2 args2) if p == p2 and V.len args == V.len args2 ->
       V.all (\pr -> match pr with | (x, y) -> unify tc l x y) (V.zip args args2)
-  | (Value.Flex m sp, _) -> solve tc l m sp u
-  | (_, Value.Flex m sp) -> solve tc l m sp t
+  -- (solved with the other side as it was given, a definition by its name,
+  -- which `solveMeta` reads it off)
+  | (Value.Flex m sp, _) -> solve tc l m sp u0
+  | (_, Value.Flex m sp) -> solve tc l m sp t0
   -- a pure type where one with effects is wanted, or the other way
   | (Value.Comp a e, _) -> unify tc l a u and unify tc l e (Va.emptyRow ())
   | (_, Value.Comp b f) -> unify tc l t b and unify tc l (Va.emptyRow ()) f
@@ -374,7 +376,10 @@ fun solveDeferredAuto (tc : Tc) (gamma : Int) (m : Int) (ctx : Ctx) (rhs : Value
   let lvl = ctx.lvl in
   let keep = if lvl < gamma then lvl else gamma in
   let pren = Renaming.Renaming lvl gamma (V.foldl (\mp k -> Hm.insert k k mp) Hm.empty (V.range 0 keep)) [] in
-  let body = rename tc m pren rhs in
+  -- (an instance by its name, as `solveMeta` reads one)
+  let named = renameNamed tc m pren rhs in
+  let w1 = setRef tc.prunes [] in
+  let body = match named with | Just b -> Just b | None -> rename tc m pren rhs in
   let w0 = setRef tc.prunes [] in
   match body with
   | None -> False
@@ -389,8 +394,15 @@ fun solveMeta (tc : Tc) (gamma : Int) (m : Int) (sp : [Elim]) (rhs : Value) : Bo
   match invert tc gamma sp with
   | None -> False
   | Just pren ->
+      -- what it was equated with as it was written, a definition by its
+      -- name (`instance Hash Int`) rather than what that unfolds to, so that
+      -- what is solved keeps it, as a type shows it and code calls it; and
+      -- if that mentions what the solution may not, as `const x y` with `y`
+      -- out of scope does, what it unfolds to
       let w0 = setRef tc.prunes [] in
-      match renamePruning tc m pren rhs with
+      let named = renameNamed tc m pren rhs in
+      let w1 = setRef tc.prunes [] in
+      match (match named with | Just b -> Just b | None -> renamePruning tc m pren rhs) with
       | None -> False
       | Just body ->
           match pren with
@@ -409,6 +421,13 @@ fun solveMeta (tc : Tc) (gamma : Int) (m : Int) (sp : [Elim]) (rhs : Value) : Bo
               | None ->
                   let v = T.solve tc m value in
                   True
+
+-- `rename`, definitions kept by their names.
+fun renameNamed (tc : Tc) (m : Int) (pren : Renaming) (rhs : Value) : Maybe Core ! { Mut | e } =
+  let w = setRef tc.naming True in
+  let named = rename tc m pren rhs in
+  let w2 = setRef tc.naming False in
+  named
 
 -- `rename`, pruning what it asks to be pruned and trying again.
 fun renamePruning (tc : Tc) (m : Int) (pren : Renaming) (rhs : Value) : Maybe Core ! { Mut | e } =
@@ -556,7 +575,7 @@ fun rename (tc : Tc) (m : Int) (pren : Renaming) (v : Value) : Maybe Core ! { Mu
   let go = \x -> rename tc m pren x in
   match pren with
   | Renaming.Renaming dom cod mp _ ->
-      match force tc v with
+      match (if getRef tc.naming then forceNamed tc v else force tc v) with
       | Value.Type n -> Just (Core.Type n)
       | Value.LitTy b -> Just (Core.LitTy b)
       | Value.Lit x -> Just (Core.Lit x)

@@ -22,20 +22,27 @@ use Std.Maybe.Maybe.*
 
 -- Expand a value's head until it is no longer a solved metavariable, a
 -- primitive that can now compute, or arithmetic that can be redone.
-@pub fun force (tc : Tc) (v : Value) : Value ! { Mut | e } =
+@pub fun force (tc : Tc) (v : Value) : Value ! { Mut | e } = forceWith tc True v
+
+-- `force`, but a definition that would unfold stays by its name: what a
+-- solution is read off (`Unify.solveMeta`).
+@pub fun forceNamed (tc : Tc) (v : Value) : Value ! { Mut | e } = forceWith tc False v
+
+-- `force`, unfolding definitions or not.
+fun forceWith (tc : Tc) (unfolding : Bool) (v : Value) : Value ! { Mut | e } =
   match v with
   | Value.Flex m sp ->
       (match T.meta tc m with
-       | Just (Meta.Solved sol _) -> force tc (applySpine tc sol sp)
+       | Just (Meta.Solved sol _) -> forceWith tc unfolding (applySpine tc sol sp)
        | _ -> v)
   | Value.Prim p args ->
       (match reducePrim tc p args with
-       | Just r -> force tc r
+       | Just r -> forceWith tc unfolding r
        | None -> v)
   | Value.Stuck h sp ->
       (match force tc h with
        | Value.Prim _ _ -> v
-       | _ -> force tc (applySpine tc h sp))
+       | _ -> forceWith tc unfolding (applySpine tc h sp))
   | Value.Grade p -> if isStale tc p then Va.polyValue (renormalise tc p) else v
   | Value.GradeRange lo hi -> gradeRange tc lo hi
   | Value.Row (Row.Row ls ts) ->
@@ -48,9 +55,11 @@ use Std.Maybe.Maybe.*
   -- a recursive definition that terminates, applied to enough to choose a
   -- right-hand side
   | Value.Opaque u _ sp ->
-      (match unfold tc u sp with
-       | Just unfolded -> force tc unfolded
-       | None -> v)
+      if not unfolding then v
+      else
+        (match unfold tc u sp with
+         | Just unfolded -> force tc unfolded
+         | None -> v)
   | _ -> v
 
 -- Whether a value waits on an unsolved metavariable: is one, or is a
@@ -76,6 +85,19 @@ fun unfold (tc : Tc) (u : Int) (sp : [Elim]) : Maybe Value ! { Mut | e } =
         let args = V.concatMap (\e -> match e with | Elim.App a -> [a] | _ -> []) (V.take sp arity) in
         if V.len args < arity then None
         else M.map (\v -> applySpine tc v (V.drop sp arity)) (evalTree tc (V.foldl Va.push env0 args) body)
+
+-- A transparent definition applied to `sp`, unfolded even where its case
+-- tree cannot choose, its `case`s left waiting (`Checker::unfold_stuck`):
+-- `Elem c @{d}` at a dictionary `d` the context binds is `case d of
+-- Container _ e .. -> e`, a type a variable's field holds, which the typer
+-- reads a representation off.
+@pub fun unfoldStuck (tc : Tc) (u : Int) (sp : [Elim]) : Maybe Value ! { Mut | e } =
+  match Hm.lookup u (getRef tc.transparent) with
+  | None -> None
+  | Just (env0, arity, body) ->
+      let args = V.concatMap (\e -> match e with | Elim.App a -> [a] | _ -> []) (V.take sp arity) in
+      if V.len sp < arity or V.len args < arity then None
+      else Just (force tc (applySpine tc (eval tc (V.foldl Va.push env0 args) body) (V.drop sp arity)))
 
 -- A case tree evaluated, or nothing where it cannot choose.
 fun evalTree (tc : Tc) (env : Env) (c : Core) : Maybe Value ! { Mut | e } =
