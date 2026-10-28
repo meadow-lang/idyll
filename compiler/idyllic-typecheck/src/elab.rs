@@ -381,6 +381,19 @@ impl Checker {
         }
     }
 
+    /// Whether what a binder's `cod` comes to mentions its variable.
+    fn mentioned_after(&self, ctx: &Ctx, cod: &Closure, name: &str) -> bool {
+        let rest = self.quote(ctx.lvl + 1, self.apply(cod, vvar(ctx.lvl, name.to_string())));
+        let found = std::cell::Cell::new(false);
+        rest.rewrite(0, &|c, d| {
+            if matches!(c, Core::Var(i, _) if *i == d) {
+                found.set(true);
+            }
+            None
+        });
+        found.get()
+    }
+
     /// The auto arguments a type begins with, found.
     fn insert_autos(&mut self, ctx: &Ctx, node: NodeId, mut core: Rc<Core>, mut ty: VTy) -> (Rc<Core>, VTy) {
         loop {
@@ -399,7 +412,8 @@ impl Checker {
             let Value::Pi { name, icit: icit @ (Icit::Implicit | Icit::Auto), grade, dom, cod, .. } = &*ty else { return (core, ty) };
             // an auto argument is found by search; an implicit one, worked out
             let arg = if *icit == Icit::Auto {
-                self.auto_argument(ctx, node, dom.clone())
+                let later = self.mentioned_after(ctx, cod, name);
+                self.auto_argument_in(ctx, node, dom.clone(), later)
             } else {
                 let desc = MetaOrigin::Inferred(format!("the implicit argument {name}"));
                 self.fresh_meta_with(ctx, node, desc, Some(dom.clone()))
@@ -1167,7 +1181,7 @@ impl Checker {
                         // type computes, rather than waiting for the end of
                         // the definition
                         if !self.deferred_autos.is_empty() || !self.deferred_literals.is_empty() {
-                            self.settle_autos(false);
+                            self.settle_autos_in(false, true);
                         }
                         (core, ty, usage)
                     }
@@ -1237,6 +1251,9 @@ impl Checker {
                     _ => self.infer_type(ctx, dom),
                 };
                 let ctx2 = ctx.bind(mx.as_ref(), &name, dom_v);
+                // an auto binder is what a search in the rest of the type may
+                // find: `{auto o : Ord k} -> Map k v` is `MapBy k o v`'s
+                let ctx2 = if *icit == Icit::Auto { ctx2.auto_bound() } else { ctx2 };
                 // the codomain goes on with the spine, one parameter fewer
                 self.infer_spine = if *icit == Icit::Explicit { spine.saturating_sub(1) } else { spine };
                 let (cod_c, cod_level, mut cod_usage) = match &cod.kind {

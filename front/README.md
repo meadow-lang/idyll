@@ -526,7 +526,14 @@ type could come to the one wanted (by its head and its first argument's)
 are tried. A search whose type still has a metavariable in it waits
 behind a placeholder until the definition is checked (`settle`), and is
 `UnknownInstance` if it never becomes known; what is found is written over
-the placeholder in the definition's Core (`resolve`). Once a definition is
+the placeholder in the definition's Core (`resolve`). One the rest of its
+function's type mentions (`{auto o : Ord k} -> k -> MapBy k o v -> ..`)
+waits so till the end of the definition even if its type is known, and a
+placeholder met by unification is solved there and searched for no more
+(`Unify.solveDeferredAuto`): which instance it is is then what the
+arguments' types say, whatever order they are checked in. An auto binder
+of a type is what a search later in that type finds, so a signature may
+say `Map k v` after `{auto o : Ord k}`. Once a definition is
 checked, a call of a method at an instance with no parameters, whose
 field is a constant or a primitive, is made a call of that field
 (`specialize`), so that `plus2 n n` at `Int` lowers to `prim add`. At the

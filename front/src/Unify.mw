@@ -23,6 +23,7 @@ use Idyll.Grade (Grade)
 use Idyll.Grade as G
 use Idyll.Tc (Tc, Meta, MetaInfo, MetaTy, Origin)
 use Idyll.Tc as T
+use Idyll.Ctx (Ctx)
 use Idyll.Eval (force, apply, vapp, eval, quote, row, rowParts, toPoly, effectKey, renormalise)
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
@@ -359,6 +360,32 @@ fun invert (tc : Tc) (gamma : Int) (sp : [Elim]) : Maybe Renaming ! { Mut | e } 
 -- what `?m` may mention, and the solution tried again. So a metavariable
 -- made inside a lambda, or a handler's clause, can meet one made outside it.
 fun solve (tc : Tc) (gamma : Int) (m : Int) (sp : [Elim]) (rhs : Value) : Bool ! { Mut | e } =
+  let waiting = getRef tc.deferredAutos in
+  match V.find (\d -> match d with | (n, _, _, _) -> n == m) waiting with
+  | Just (_, ctx, _, _) if V.isEmpty sp -> solveDeferredAuto tc gamma m ctx rhs
+  | _ -> solveMeta tc gamma m sp rhs
+
+-- An auto argument still waiting for its search, met by unification: what
+-- it is equated with is what it is, in the context the search would have
+-- been made in, which it may mention (as a found instance may); and there
+-- is nothing left to search for. So `size l`, with `l : MapBy k o v`, is
+-- given `o`.
+fun solveDeferredAuto (tc : Tc) (gamma : Int) (m : Int) (ctx : Ctx) (rhs : Value) : Bool ! { Mut | e } =
+  let lvl = ctx.lvl in
+  let keep = if lvl < gamma then lvl else gamma in
+  let pren = Renaming.Renaming lvl gamma (V.foldl (\mp k -> Hm.insert k k mp) Hm.empty (V.range 0 keep)) [] in
+  let body = rename tc m pren rhs in
+  let w0 = setRef tc.prunes [] in
+  match body with
+  | None -> False
+  | Just b ->
+      let value = eval tc ctx.env b in
+      let w = T.solve tc m value in
+      let w2 = setRef tc.chosen (Hm.insert m (b, lvl) (getRef tc.chosen)) in
+      let w3 = setRef tc.deferredAutos (V.filter (\d -> match d with | (n, _, _, _) -> n != m) (getRef tc.deferredAutos)) in
+      True
+
+fun solveMeta (tc : Tc) (gamma : Int) (m : Int) (sp : [Elim]) (rhs : Value) : Bool ! { Mut | e } =
   match invert tc gamma sp with
   | None -> False
   | Just pren ->

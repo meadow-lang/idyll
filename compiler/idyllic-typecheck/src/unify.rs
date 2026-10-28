@@ -342,6 +342,11 @@ impl Checker {
     /// and the solution tried again. So a meta made inside a lambda, or a
     /// handler's clause, can meet one made outside it.
     fn solve(&mut self, gamma: Lvl, m: MetaVar, sp: &Spine, rhs: Rc<Value>) -> bool {
+        if sp.is_empty() {
+            if let Some(i) = self.deferred_autos.iter().position(|d| d.meta == m) {
+                return self.solve_deferred_auto(gamma, i, rhs);
+            }
+        }
         let Some(pren) = self.invert(gamma, sp) else { return false };
         self.prunes.borrow_mut().clear();
         let body = loop {
@@ -377,6 +382,27 @@ impl Checker {
             return true;
         }
         self.metas[m] = MetaEntry::Solved(value, info);
+        true
+    }
+
+    /// An auto argument still waiting for its search (the `i`th), met by
+    /// unification: what it is equated with is what it is, in the context
+    /// the search would have been made in, which it may mention (as a found
+    /// instance may); and there is nothing left to search for. So
+    /// `size l`, with `l : MapBy k o v`, is given `o`.
+    fn solve_deferred_auto(&mut self, gamma: Lvl, i: usize, rhs: Rc<Value>) -> bool {
+        let (m, ctx) = (self.deferred_autos[i].meta, self.deferred_autos[i].ctx.clone());
+        let lvl = ctx.lvl;
+        let pren = PartialRenaming { dom: lvl, cod: gamma, map: (0..lvl.min(gamma)).map(|k| (k, k)).collect(), names: Vec::new() };
+        let body = self.rename(m, &pren, rhs);
+        self.prunes.borrow_mut().clear();
+        let Some(body) = body else { return false };
+        let value = self.eval(&ctx.env, &body);
+        let MetaEntry::Unsolved(info) = &self.metas[m] else { return false };
+        let info = info.clone();
+        self.metas[m] = MetaEntry::Solved(value, info);
+        self.chosen.insert(m, (body, lvl));
+        self.deferred_autos.remove(i);
         true
     }
 

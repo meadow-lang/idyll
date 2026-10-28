@@ -347,3 +347,55 @@ fn a_std_value_only_a_solved_argument_carries_still_links_std() {
                pick : {n : [] Nat} -> Is n -> Nat\npick {n} _ = n\n\npick Is.It\n";
     assert_eq!(value(src), "S Z");
 }
+
+/// Maps and sets, and an order other than the usual one, for `Int`.
+const ORDERED: &str = "use Std.Collections.Map (Map, MapBy)\nuse Std.Collections.Map as Map\n\
+                       use Std.Collections.Set (Set, SetBy)\nuse Std.Collections.Set as Set\n\
+                       use Std.Cmp (Ord, compare)\nuse Std.Collections.Vector as V\n\n\
+                       instance down : Ord Int where\n  compare x y = compare y x\n\n";
+
+#[test]
+fn maps_keep_their_keys_in_order() {
+    let m = "m : Map String Int\nm = Map.fromList ((\"b\", 2) :: (\"a\", 1) :: (\"c\", 3) :: Nil)\n\n";
+    assert_eq!(
+        value(&format!("{ORDERED}{m}(Map.toList m, Map.lookup \"b\" m, Map.lookup \"z\" m, Map.size m, Map.member \"c\" m)\n")),
+        "((\"a\", 1) :: (\"b\", 2) :: (\"c\", 3) :: Nil, Just 2, Nothing, 3, True)"
+    );
+    // replaced, not duplicated; deleted; changed in place
+    assert_eq!(
+        value(&format!(
+            "{ORDERED}{m}(Map.toList (Map.insert \"a\" 9 m), Map.toList (Map.delete \"b\" m), \
+             Map.toList (Map.adjust \"c\" (\\v -> v * 10) m), Map.toList (Map.insertWith (\\new old -> new + old) \"a\" 5 m))\n"
+        )),
+        "((\"a\", 9) :: (\"b\", 2) :: (\"c\", 3) :: Nil, (\"a\", 1) :: (\"c\", 3) :: Nil, \
+         (\"a\", 1) :: (\"b\", 2) :: (\"c\", 30) :: Nil, (\"a\", 6) :: (\"b\", 2) :: (\"c\", 3) :: Nil)"
+    );
+    assert_eq!(
+        value(&format!("{ORDERED}{m}(V.toList (Map.keys m), V.toList (Map.values m), Map.minEntry m, Map.maxEntry m, Map.getOr 0 \"q\" m)\n")),
+        "(\"a\" :: \"b\" :: \"c\" :: Nil, 1 :: 2 :: 3 :: Nil, Just (\"a\", 1), Just (\"c\", 3), 0)"
+    );
+}
+
+#[test]
+fn a_map_keeps_the_order_it_was_built_with_in_its_type() {
+    let d = "d : MapBy Int down String\nd = Map.insert @{down} 1 \"a\" (Map.insert @{down} 2 \"b\" (Map.empty @{down}))\n\n";
+    // its keys in its order, and its own order used to look in it: what it
+    // is is said by its type, whether or not the key's type is known first
+    assert_eq!(value(&format!("{ORDERED}{d}(Map.toList d, Map.lookup 1 d, Map.lookup (1 : Int) d)\n")), "((2, \"b\") :: (1, \"a\") :: Nil, Just \"a\", Just \"a\")");
+    // and what wants a map in the usual order does not take it
+    let usual = "count : Map Int String -> Int\ncount m = Map.size m\n\n";
+    assert!(rejected(&format!("{ORDERED}{d}{usual}count d\n")).iter().any(|e| e == "type mismatch"));
+}
+
+#[test]
+fn sets_hold_each_value_once_in_order() {
+    let s = "a : Set Int\na = Set.fromList (3 :: 1 :: 2 :: 1 :: Nil)\n\nb : Set Int\nb = Set.fromList (3 :: 4 :: Nil)\n\n";
+    assert_eq!(
+        value(&format!(
+            "{ORDERED}{s}(Set.toList a, Set.size a, Set.member 2 a, Set.toList (Set.union a b), Set.toList (Set.diff a b), \
+             Set.toList (Set.intersect a b), Set.subset (Set.fromList (1 :: Nil)) a, Set.minElem a, Set.maxElem (Set.delete 3 a))\n"
+        )),
+        "(1 :: 2 :: 3 :: Nil, 3, True, 1 :: 2 :: 3 :: 4 :: Nil, 1 :: 2 :: Nil, 3 :: Nil, True, Just 1, Just 2)"
+    );
+    assert_eq!(value(&format!("{ORDERED}Set.toList (Set.fromList @{{down}} (1 :: 3 :: 2 :: Nil))\n")), "3 :: 2 :: 1 :: Nil");
+}

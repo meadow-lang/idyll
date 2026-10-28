@@ -55,10 +55,17 @@ fun named (u : Int) : Ident = Ident.Ident [u] ""
 fun errorCount (tc : Tc) : Int ! { Mut | e } = V.len (getRef tc.errors)
 
 -- The auto argument of type `wanted`.
-@pub fun autoArgument (tc : Tc) (ctx : Ctx) (wanted : Value) : Core ! { Mut | e } =
-  if not (known tc ctx wanted) then
+@pub fun autoArgument (tc : Tc) (ctx : Ctx) (wanted : Value) : Core ! { Mut | e } = autoArgumentIn tc ctx wanted False
+
+-- The same; put off till the end of the definition if `later`, when the
+-- rest of the function's type mentions the argument (`MapBy k o v` after
+-- `{auto o : Ord k}`): then what it is applied to says which it is, as
+-- unification finds, whatever order it comes in, and a search is made only
+-- if nothing does.
+@pub fun autoArgumentIn (tc : Tc) (ctx : Ctx) (wanted : Value) (later : Bool) : Core ! { Mut | e } =
+  if later or not (known tc ctx wanted) then
     let m = placeholder tc in
-    let w = setRef tc.deferredAutos (V.pushBack (getRef tc.deferredAutos) (m, ctx, wanted)) in
+    let w = setRef tc.deferredAutos (V.pushBack (getRef tc.deferredAutos) (m, ctx, wanted, later)) in
     Core.Meta m
   else
     match search tc ctx wanted 0 with
@@ -92,7 +99,11 @@ fun known (tc : Tc) (ctx : Ctx) (ty : Value) : Bool ! { Mut | e } =
 
 -- The searches that waited for their types, tried again; with `last`, what
 -- still cannot be told is an error. Whether any was settled.
-@pub fun settleAutos (tc : Tc) (last : Bool) : Bool ! { Mut | e } =
+@pub fun settleAutos (tc : Tc) (last : Bool) : Bool ! { Mut | e } = settleAutosIn tc last False
+
+-- The same, in the middle of a definition (`mid`): what was put off till
+-- its end waits.
+@pub fun settleAutosIn (tc : Tc) (last : Bool) (mid : Bool) : Bool ! { Mut | e } =
   -- (a literal's type may be what a search waits for, and the default is
   -- taken before the search is given up on)
   let read = L.settleLiterals tc last in
@@ -101,9 +112,9 @@ fun known (tc : Tc) (ctx : Ctx) (ty : Value) : Bool ! { Mut | e } =
   V.foldl
     (\progress d ->
       match d with
-      | (m, ctx, wanted) ->
+      | (m, ctx, wanted, later) ->
           let k = known tc ctx wanted in
-          if not k and not last then
+          if (not k and not last) or (mid and later) then
             let w2 = setRef tc.deferredAutos (V.pushBack (getRef tc.deferredAutos) d) in
             progress
           else

@@ -1,0 +1,22 @@
+-- | -- maps and sets keyed in order, one of them by an order of its own
+-- | use Std.Collections.Map (Map, MapBy)
+-- | use Std.Collections.Map as Map
+-- | use Std.Collections.Set (Set)
+-- | use Std.Collections.Set as Set
+-- | use Std.Cmp (Ord, compare)
+-- | 
+-- | instance down : Ord Int where
+-- |   compare x y = compare y x
+-- | 
+-- | ages : Map String Int
+-- | ages = Map.fromList (("grace", 45) :: ("ada", 36) :: ("alan", 41) :: Nil)
+-- | 
+-- | d : MapBy Int down String
+-- | d = Map.insert @{down} 1 "one" (Map.insert @{down} 3 "three" (Map.insert @{down} 2 "two" (Map.empty @{down})))
+-- | 
+-- | seen : Set Int
+-- | seen = Set.fromList (5 :: 1 :: 5 :: 3 :: Nil)
+-- | 
+-- | (Map.toList ages, Map.lookup "alan" ages, Map.toList (Map.delete "ada" ages), Map.toList d, Map.lookup 3 d, Set.toList seen, Set.member 4 seen)
+answer: (("ada", 36) :: ("alan", 41) :: ("grace", 45) :: Nil, Just 41, ("alan", 41) :: ("grace", 45) :: Nil, (3, "three") :: (2, "two") :: (1, "one") :: Nil, Just "three", 1 :: 3 :: 5 :: Nil, False)
+exit: 0

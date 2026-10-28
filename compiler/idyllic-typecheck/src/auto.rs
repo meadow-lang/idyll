@@ -28,19 +28,30 @@ const DEPTH: usize = 16;
 /// An auto argument whose type was not known yet.
 #[derive(Clone)]
 pub(super) struct DeferredAuto {
-    meta: MetaVar,
+    pub(super) meta: MetaVar,
     node: NodeId,
-    ctx: Ctx,
+    pub(super) ctx: Ctx,
     wanted: VTy,
+    /// put off till the end of the definition (see `auto_argument_in`)
+    later: bool,
 }
 
 impl Checker {
     /// The auto argument of type `wanted`, for the term at `node`.
     pub(super) fn auto_argument(&mut self, ctx: &Ctx, node: NodeId, wanted: VTy) -> Rc<Core> {
-        if !self.known(ctx, &wanted) {
+        self.auto_argument_in(ctx, node, wanted, false)
+    }
+
+    /// The same; put off till the end of the definition if `later`, when
+    /// the rest of the function's type mentions the argument (`MapBy k o v`
+    /// after `{auto o : Ord k}`): then what it is applied to says which it
+    /// is, as unification finds, whatever order it comes in, and a search
+    /// is made only if nothing does.
+    pub(super) fn auto_argument_in(&mut self, ctx: &Ctx, node: NodeId, wanted: VTy, later: bool) -> Rc<Core> {
+        if later || !self.known(ctx, &wanted) {
             let meta = self.new_meta(node, MetaOrigin::Inferred("an auto argument".into()), None);
             self.placeholders.insert(meta);
-            self.deferred_autos.push(DeferredAuto { meta, node, ctx: ctx.clone(), wanted });
+            self.deferred_autos.push(DeferredAuto { meta, node, ctx: ctx.clone(), wanted, later });
             return Rc::new(Core::Meta(meta));
         }
         match self.search(ctx, node, &wanted, 0) {
@@ -70,11 +81,17 @@ impl Checker {
     /// The searches that waited for their types, tried again; with `last`,
     /// what still cannot be told is reported. Whether any was settled.
     pub(super) fn settle_autos(&mut self, last: bool) -> bool {
+        self.settle_autos_in(last, false)
+    }
+
+    /// The same, in the middle of a definition (`mid`): what was put off
+    /// till its end waits.
+    pub(super) fn settle_autos_in(&mut self, last: bool, mid: bool) -> bool {
         // (a literal's type may be what a search waits for, and the default
         // is taken before the search is given up on)
         let mut progress = self.settle_literals(last);
         for d in std::mem::take(&mut self.deferred_autos) {
-            if !self.known(&d.ctx, &d.wanted) && !last {
+            if (!self.known(&d.ctx, &d.wanted) && !last) || (mid && d.later) {
                 self.deferred_autos.push(d);
                 continue;
             }

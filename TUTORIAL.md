@@ -2985,6 +2985,8 @@ is nothing to install.
 | `Std.Collections.Array` | the rest of [arrays](#arrays): `get`, `set`, `map`, `foldl`, `filter`, `range`, `zip`, ..., and `checkIndex`, `at`, `indices`, for indices of type `Fin (size xs)` |
 | `Std.Collections.MArray` | `MArray a`, an array used linearly: `new`, `read`, `write`, `modify`, `swap`, `generate`, `freeze`, `thaw` |
 | `Std.Collections.Vector` | `Vector a`, Meadow's persistent RRB vector: `get`, `set`, `pushBack`, `pushFront`, `popBack`, `popFront`, `append`, `splitAt`, `map`, `filter`, folds, ... |
+| `Std.Collections.Map` | `Map k v`, keys in order by an `Ord k` its type keeps (`MapBy k o v`): `insert`, `lookup`, `member`, `getOr`, `delete`, `adjust`, `insertWith`, `map`, `foldr`, `keys`, `values`, `minEntry`, `toList`, `fromList`, ... |
+| `Std.Collections.Set` | `Set a`, the same for sets (`SetBy a o`): `insert`, `member`, `delete`, `union`, `diff`, `intersect`, `subset`, `minElem`, `toList`, `fromList`, ... |
 | `Std.Sort` | a stable merge sort: `sortBy`, `sort`, `sortOn`, `sortArrayBy`, `sortVectorBy`, `isSortedBy` |
 | `Std.String` | as Meadow's, by bytes: `byteLength`, `slice`, `take`, `drop`, `byteAt`, `indexOf`, `contains`, `startsWith`, `split`, `lines`, `words`, `trim`, `toUpper`, `toInt`, `equal`, `compare`; by characters: `chars`, `fromChars`, `charAt`, `charLength`; and `join`, `concatAll`, `unlines`, `unwords`, `repeat`, `fromList` |
 | `Std.Char` | `code`, `fromCode`, `fromCodeSafe`, `isDigit`, `isAlpha`, `isSpace`, `isUpper`, `toUpper`, `toLower`, `digitToInt`, `hexDigitToInt`, `equal`, `compare` (the classes ASCII only, as Meadow's are) |

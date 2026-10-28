@@ -318,7 +318,8 @@ fun fitsMeta (tc : Tc) (ctx : Ctx) (m : Int) (ty : Value) : Bool ! { Mut | e } =
       let argV = eval tc ctx.env arg in
       insert tc ctx (Core.App core (argument tc grade arg)) (fst (splitComp tc (apply tc cod argV)))
   | Value.Pi name Icit.Auto grade _ dom cod ->
-      let arg = A.autoArgument tc ctx dom in
+      let later = mentions (quote tc (ctx.lvl + 1) (apply tc cod (Va.vvar ctx.lvl name))) 0 in
+      let arg = A.autoArgumentIn tc ctx dom later in
       let argV = eval tc ctx.env arg in
       insert tc ctx (Core.App core (argument tc grade arg)) (fst (splitComp tc (apply tc cod argV)))
   | fty -> (core, fty)
@@ -352,7 +353,7 @@ fun autosAfter (tc : Tc) (ctx : Ctx) (r : (Core, Value, Usage)) : (Core, Value, 
       -- application's instances once its arguments are elaborated: so that
       -- `2 + 2` in a type computes, rather than waiting for the end of the
       -- definition
-      let w = if V.isEmpty (getRef tc.deferredAutos) and V.isEmpty (getRef tc.deferredLiterals) then False else A.settleAutos tc False in
+      let w = if V.isEmpty (getRef tc.deferredAutos) and V.isEmpty (getRef tc.deferredLiterals) then False else A.settleAutosIn tc False True in
       (c2, t2, usage)
 
 -- --- usage against grades ----------------------------------------------------------
@@ -1348,7 +1349,10 @@ fun inferPi (tc : Tc) (ctx : Ctx) (mx : Maybe Ident) (icit : Icit) (ann : Maybe 
       (c, eval tc ctx.env c, 0, U.none ())
     else inferType tc ctx dom
   in
-  let ctx2 = X.bind ctx mx name domV in
+  let ctx1 = X.bind ctx mx name domV in
+  -- an auto binder is what a search in the rest of the type may find:
+  -- `{auto o : Ord k} -> Map k v` is `MapBy k o v`'s
+  let ctx2 = if icit == Icit.Auto then X.autoBound ctx1 else ctx1 in
   -- the codomain goes on with the spine, one parameter fewer
   let w0 = setRef tc.inferSpine (if icit == Icit.Explicit then (if spine > 0 then spine - 1 else 0) else spine) in
   let (codC, codLevel, codU) =

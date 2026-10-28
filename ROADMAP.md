@@ -591,8 +591,24 @@ from what `idyll.lock` pinned.
   argument a type binds next, so a type keeps the instance it was made
   with, `SortedBy a @{o} = Sorted a o`, and one shown in a type is shown by
   its name, or an unnamed one as `instance Ord Int`
-  (`compiler/idyllic/tests/matching.rs`, `auto.rs`). Std's `Map`, `Set` and
-  `HashMap`, built that way, are next.
+  (`compiler/idyllic/tests/matching.rs`, `auto.rs`). Std's `Map` and `Set`
+  done 2026-10-28, both compilers: `MapBy k o v` and `SetBy a o`, `Map k v`
+  and `Set a` for the `Ord` a search finds. A map built with another order
+  is used by its own (`lookup 1 d` takes `d`'s `Ord`), and what wants a
+  `Map Int String` does not take it (`compiler/idyllic/tests/std.rs`). For
+  that, an auto argument the rest of its function's type mentions is
+  searched for at the end of the definition, once unification has had its
+  say, rather than as soon as its type is known, so that which instance it
+  is does not depend on the order things are checked in; and an auto
+  binder of a signature is what a search later in it finds. `HashMap`,
+  which wants a `Hash` trait, is left.
+- [ ] **Associated types**: a trait's field may be a type, `Elem : Type`,
+  since a trait is a record and a record's fields may be types; an
+  instance gives it (`Elem = a`), and `Elem c` is the field of the
+  instance found for `c`. A type a function of another is said that way,
+  rather than with functional dependencies. For it to compute, a field of a
+  known instance has to unfold in types, a dependency's instances too
+  (today a dependency's definitions are constants to the checker).
 - [x] **Integer types, floating point, `Show`/`Eq`/`Ord`, and string
   interpolation**, which all wait on traits. `Display` and `Debug` (Meadow's
   `Show`), and interpolation, done 2026-10-21 in both compilers: the
@@ -698,8 +714,8 @@ and a `Map` built with one `Ord` is rejected when used with another.
   `Result`, `Tuple`, `Function`, `Ordering`, `Cmp` (done, without traits:
   comparisons are passed along); then `String` and `Char` (done, as
   Meadow's, on the prelude's string natives and a builtin `Char`), `Bytes`
-  and the parsers; then collections (`List`, `Array`, `Vector` done; `Map`, `Set`,
-  `HashMap` wait for traits); then the effect modules (`Exn`, `State`,
+  and the parsers; then collections (`List`, `Array`, `Vector`, `Map`, `Set` done;
+  `HashMap` waits for a `Hash` trait); then the effect modules (`Exn`, `State`,
   `Yield`, `Fs`, `Process` done; `Stream`, `Random`, `Time`, `Test` left);
   then `Json`. (The prelude already declares `Maybe`, `Result`
   and the world's effects themselves; what is left of those modules is
