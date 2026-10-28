@@ -1,7 +1,7 @@
 -- Idyll's command line, written with Lingua: `idyll build`, `idyll run` and
 -- `idyll check` on a package, as the Rust driver (`idyll-driver`) has them.
 --
--- The command line is a `cli!`, and the build a `make!` over packages: a
+-- The build is a `make!` over packages (the command line is `Main`'s `cli!`): a
 -- package is a unit, a directory with an `Idyll.toml` naming its
 -- `[dependencies]` (`Util = { path = "../util" }`) and a `src/` of modules.
 -- Inside a package the unit of work is a part, the modules that import each
@@ -15,7 +15,7 @@
 -- packages (`Link.linked`) and lowers it to Cut, its `main` the entry, into
 -- `target/link/program.cut`, which `run` hands to `meadow cut`.
 
-use Lingua (cli!, make!)
+use Lingua (make!)
 use Lingua.Make (Given, Linking, Part, unitDir, unitSources, unitImports, linkRoot, linkUnits, linkOut, linkDir)
 use Lingua.Make (partDir, partSources, partImports, partUnitImports, partUnitPaths)
 use Lingua.Diagnostic (renderAll)
@@ -41,24 +41,6 @@ use Std.Sort (sortOn)
 use Idyll.Parts as Pa
 use Std.Maybe.Maybe.*
 use Std.Result.Result.*
-
-cli! {
-  pub Tool "idyll" "Idyll, built by its compiler written in Meadow"
-    options {
-      offline : Flag "Never fetch a dependency: build from what is cached"
-      locked : Flag "Refuse a build that would change idyll.lock"
-    }
-    | build "Build a package into Cut, which Meadow runs" { path : Maybe String "the package (here, if left out)" }
-    | run "Build a package and run it on Meadow" {
-        path : Maybe String "the package (here, if left out)"
-        release : Flag "Run it as native code, built by Silo"
-      }
-    | check "Check a package and what it depends on" { path : Maybe String "the package (here, if left out)" }
-    | update "Move git dependencies forward to what their references name now" {
-        names : [String] "just these dependencies (every one, if none)"
-        dryRun : Flag "Say what would change, and change nothing"
-      }
-}
 
 -- A package is compiled a part at a time: the modules that import each
 -- other, in a circle or not, are one part, as `idyllic::parts` has them
@@ -111,29 +93,37 @@ fun union (done : [Built]) (more : [Built]) : [Built] =
 
 -- --- the command line ---------------------------------------------------------
 
-@pub fun drive () =
-  match argsTool () with
-  | (every, Tool.Build r) -> (let ok = built every (here r.path) in if ok then writeOutput "${cutOf (here r.path)}\n" else exit 1)
-  | (every, Tool.Check r) -> if built every (here r.path) then () else exit 1
-  | (every, Tool.Update r) -> if updateUnits "." r.names r.dryRun then () else exit 1
-  | (every, Tool.Run r) ->
-      let root = here r.path in
-      if not (built every root) then exit 1
-      else
-        let args = if r.release then ["cut", "--runtime", "silo", cutOf root] else ["cut", cutOf root] in
-        (match runInherit "meadow" args with
-         | Ok 0 -> ()
-         | Ok code -> exit code
-         | Err why ->
-             let w = writeError "could not run meadow: ${why}\n" in
-             exit 1)
+-- `idyll build`: the package built, and where its Cut is, said.
+@pub fun buildCommand (offline : Bool) (locked : Bool) (path : Maybe String) =
+  if built offline locked (here path) then writeOutput "${cutOf (here path)}\n" else exit 1
+
+-- `idyll check`: the package checked, and what it depends on.
+@pub fun checkCommand (offline : Bool) (locked : Bool) (path : Maybe String) =
+  if built offline locked (here path) then () else exit 1
+
+-- `idyll update`: git dependencies moved forward.
+@pub fun updateCommand (names : [String]) (dryRun : Bool) =
+  if updateUnits "." names dryRun then () else exit 1
+
+-- `idyll run`: the package built, and run on Meadow.
+@pub fun runCommand (offline : Bool) (locked : Bool) (path : Maybe String) (release : Bool) =
+  let root = here path in
+  if not (built offline locked root) then exit 1
+  else
+    let args = if release then ["cut", "--runtime", "silo", cutOf root] else ["cut", cutOf root] in
+    match runInherit "meadow" args with
+    | Ok 0 -> ()
+    | Ok code -> exit code
+    | Err why ->
+        let w = writeError "could not run meadow: ${why}\n" in
+        exit 1
 
 fun here (path : Maybe String) : String = M.unwrapOr "." path
 
 -- Build the package at `root`, Std written out first.
-fun built (every : ToolOptions) (root : String) : Bool ! { Fs, Process | e } =
+fun built (offline : Bool) (locked : Bool) (root : String) : Bool ! { Fs, Process | e } =
   let w = writtenStd () in
-  buildUnitsWith every.offline every.locked root
+  buildUnitsWith offline locked root
 
 -- Where the link put a package's Cut.
 fun cutOf (root : String) : String = Path.join (linkDir root) "program.cut"

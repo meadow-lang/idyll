@@ -52,162 +52,128 @@ use Idyll.World as W
 use Idyll.Core as C
 use Idyll.Hir (Literal)
 use Idyll.Driver as D
+use Lingua (cli!)
+use Idyll.Format as Fmt
 use Lingua.Green (dump)
 use Lingua.Diagnostic (renderAll)
 use Std.Collections.Vector as V
 use Std.Result.Result.*
 use Std.Maybe.Maybe.*
 
+-- The command line: the driver's commands, on packages, and the passes'
+-- dumps, which the differential tests compare with the Rust compiler's
+-- (`--prelude` and `--std` say what a program is checked after). For a
+-- dump of `build` or `run`, `--prelude` says it is one.
+cli! {
+  pub Tool "idyll" "Idyll, built by its compiler written in Meadow"
+    options {
+      offline : Flag "Never fetch a dependency: build from what is cached"
+      locked : Flag "Refuse a build that would change idyll.lock"
+    }
+    options Dump {
+      prelude : Option String "The prelude each program is checked after: a pass's dump, not a build" value "FILE"
+      std : Option String "Std's sources, for a program that names Std" value "DIR"
+    }
+    | build "Build a package into Cut, which Meadow runs" { path : Maybe String "the package (here, if left out)" } with Dump
+    | run "Build a package and run it on Meadow; with --prelude, run each file on the CEK machine" {
+        paths : [String] "the package (here, if left out); with --prelude, the files"
+        release : Flag "Run it as native code, built by Silo"
+      } with Dump
+    | check "Check a package and what it depends on" { path : Maybe String "the package (here, if left out)" }
+    | update "Move git dependencies forward to what their references name now" {
+        names : [String] "just these dependencies (every one, if none)"
+        dryRun : Flag "Say what would change, and change nothing"
+      }
+    | fmt "Set each file out, as idyll fmt does" { files : [String] "the files" }
+    | tokens "Each file's tokens, laid out" { files : [String] "the files" }
+    | tree "Each file's lossless tree" { files : [String] "the files" }
+    | parse "Each file's syntax tree, as S-expressions" { files : [String] "the files" }
+    | errors "What is wrong with each file's syntax, drawn where it is" { files : [String] "the files" }
+    | rename "Each file renamed: its HIR" { files : [String] "the files" } with Dump
+    | types "Each file's declarations' types, and its errors" { files : [String] "the files" } with Dump
+    | cut "Each file lowered to Cut" { files : [String] "the files" } with Dump
+    | parted "A package's parts, and their dumps" { name : String "the package's name"  dir : String "its sources" } with Dump
+    | compiled "A package compiled: its interface" { name : String "the package's name"  dir : String "its sources" } with Dump
+    | package "A package checked whole: its declarations' types" { name : String "the package's name"  dir : String "its sources" } with Dump
+}
+
 fun main () =
-  let args = argv () in
-  -- `idyll build`, `run` and `check` on a package (`Driver`); the passes'
-  -- dumps, which the differential tests compare, are given `--prelude`
-  let testing = V.get args 1 == Just "--prelude" in
-  match V.get args 0 with
-  | Just "build" if not testing -> D.drive ()
-  | Just "run" if not testing -> D.drive ()
-  | Just "check" -> D.drive ()
-  | Just "update" -> D.drive ()
-  -- (a flag every command of the driver takes may come before the command)
-  | Just "--offline" -> D.drive ()
-  | Just "--locked" -> D.drive ()
-  | Just "help" -> D.drive ()
-  | Just "--help" -> D.drive ()
-  | Just "tokens" -> V.foldl (\u f -> each f dumpTokens) () (V.drop args 1)
-  | Just "tree" -> V.foldl (\u f -> each f dumpTree) () (V.drop args 1)
-  | Just "parse" -> V.foldl (\u f -> each f Surface.dumped) () (V.drop args 1)
-  | Just "errors" -> V.foldl (\u f -> each f (errorsIn f)) () (V.drop args 1)
-  | Just "rename" ->
-      (match (V.get args 1, V.get args 2) with
-       | (Just "--prelude", Just path) ->
-           (match readToString path with
-            | Ok text ->
-                (match Surface.parsed text with
-                 | Ok prelude -> V.foldl (\u f -> each f (renamed prelude)) () (V.drop args 3)
-                 | Err _ -> writeError "the prelude does not parse\n")
-            | Err e -> writeError "could not read the prelude: ${e}\n")
-       | _ -> writeError "usage: Idyll rename --prelude <file> <file>...\n")
-  | Just "cut" ->
-      (match (V.get args 1, V.get args 2) with
-       | (Just "--prelude", Just path) ->
-           (match readToString path with
-            | Ok text ->
-                (match Surface.parsed text with
-                 | Ok prelude ->
-                     (match (V.get args 3, V.get args 4) with
-                      | (Just "--std", Just dir) ->
-                          (match packageModules dir with
-                           | Ok std ->
-                               (match compiledPackage prelude "Std" std [] with
-                                | Ok (names, compiled) -> V.foldl (\u f -> each f (cutAgainst prelude names compiled)) () (V.drop args 5)
-                                | Err why -> writeError "Std: ${why}\n")
-                           | Err why -> writeError "Std: ${why}\n")
-                      | _ -> V.foldl (\u f -> each f (cutOf prelude)) () (V.drop args 3))
-                 | Err _ -> writeError "the prelude does not parse\n")
-            | Err e -> writeError "could not read the prelude: ${e}\n")
-       | _ -> writeError "usage: Idyll cut --prelude <file> [--std <dir>] <file>...\n")
-  | Just "run" ->
-      (match (V.get args 1, V.get args 2) with
-       | (Just "--prelude", Just path) ->
-           (match readToString path with
-            | Ok text ->
-                (match Surface.parsed text with
-                 | Ok prelude ->
-                     (match (V.get args 3, V.get args 4) with
-                      | (Just "--std", Just dir) ->
-                          (match packageModules dir with
-                           | Ok std ->
-                               (match compiledPackage prelude "Std" std [] with
-                                | Ok (names, compiled) -> V.foldl (\u f -> each f (ranAgainst prelude names compiled)) () (V.drop args 5)
-                                | Err why -> writeError "Std: ${why}\n")
-                           | Err why -> writeError "Std: ${why}\n")
-                      | _ -> V.foldl (\u f -> each f (ran prelude)) () (V.drop args 3))
-                 | Err _ -> writeError "the prelude does not parse\n")
-            | Err e -> writeError "could not read the prelude: ${e}\n")
-       | _ -> writeError "usage: Idyll run --prelude <file> [--std <dir>] <file>...\n")
-  | Just "types" ->
-      (match (V.get args 1, V.get args 2) with
-       | (Just "--prelude", Just path) ->
-           (match readToString path with
-            | Ok text ->
-                (match Surface.parsed text with
-                 | Ok prelude ->
-                     -- `--std <dir>`: the standard library's sources, which a
-                     -- program that names `Std` depends on
-                     (match (V.get args 3, V.get args 4) with
-                      | (Just "--std", Just dir) ->
-                          (match packageModules dir with
-                           | Ok std ->
-                               -- (Std compiled once, as the Rust compiler
-                               -- compiles it, and every program checked
-                               -- against that)
-                               (match compiledPackage prelude "Std" std [] with
-                                | Ok (names, compiled) -> V.foldl (\u f -> each f (typedAgainst prelude names compiled)) () (V.drop args 5)
-                                | Err why -> writeError "Std: ${why}\n")
-                           | Err why -> writeError "Std: ${why}\n")
-                      | _ -> V.foldl (\u f -> each f (typed prelude)) () (V.drop args 3))
-                 | Err _ -> writeError "the prelude does not parse\n")
-            | Err e -> writeError "could not read the prelude: ${e}\n")
-       | _ -> writeError "usage: Idyll types --prelude <file> [--std <dir>] <file>...\n")
-  | Just "parted" ->
-      (match (V.get args 1, V.get args 2, V.get args 3, V.get args 4) with
-       | (Just "--prelude", Just path, Just name, Just dir) ->
-           (match readToString path with
-            | Ok text ->
-                (match (Surface.parsed text, packageModules dir) with
-                 | (Ok prelude, Ok modules) ->
-                     let texts = V.map (\m -> readToStringOr "" (dir ++ "/" ++ moduleFile (fst m))) modules in
-                     let u = writeOutput "== ${name}\n" in
-                     writeOutput "${partedDump prelude name modules texts}\n"
-                 | (Err _, _) -> writeError "the prelude does not parse\n"
-                 | (_, Err why) -> writeError "${name}: ${why}\n")
-            | Err e -> writeError "could not read the prelude: ${e}\n")
-       | _ -> writeError "usage: Idyll parted --prelude <file> <name> <dir>\n")
-  | Just "compiled" ->
-      (match (V.get args 1, V.get args 2, V.get args 3, V.get args 4) with
-       | (Just "--prelude", Just path, Just name, Just dir) ->
-           (match readToString path with
-            | Ok text ->
-                (match (Surface.parsed text, packageModules dir) with
-                 | (Ok prelude, Ok modules) ->
-                     let u = writeOutput "== ${name}\n" in
-                     writeOutput "${compiledDump prelude name modules}\n"
-                 | (Err _, _) -> writeError "the prelude does not parse\n"
-                 | (_, Err why) -> writeError "${name}: ${why}\n")
-            | Err e -> writeError "could not read the prelude: ${e}\n")
-       | _ -> writeError "usage: Idyll compiled --prelude <file> <name> <dir>\n")
-  | Just "package" ->
-      (match (V.get args 1, V.get args 2, V.get args 3, V.get args 4) with
-       | (Just "--prelude", Just path, Just name, Just dir) ->
-           (match readToString path with
-            | Ok text ->
-                (match (Surface.parsed text, packageModules dir) with
-                 | (Ok prelude, Ok modules) ->
-                     let u = writeOutput "== ${name}\n" in
-                     writeOutput "${packageTypes prelude name modules}\n"
-                 | (Err _, _) -> writeError "the prelude does not parse\n"
-                 | (_, Err why) -> writeError "${name}: ${why}\n")
-            | Err e -> writeError "could not read the prelude: ${e}\n")
-       | _ -> writeError "usage: Idyll package --prelude <file> <name> <dir>\n")
-  -- a package built to run: its modules, with Std, lowered to Cut, its
-  -- `main` the entry; the Cut `meadow cut` runs
-  | Just "build" ->
-      (match (V.get args 1, V.get args 2, V.get args 3, V.get args 4, V.get args 5) with
-       | (Just "--prelude", Just path, Just "--std", Just stdDir, Just dir) ->
-           (match readToString path with
-            | Ok text ->
-                (match (Surface.parsed text, packageModules stdDir, packageModules (dir ++ "/src")) with
-                 | (Ok prelude, Ok std, Ok modules) ->
-                     -- Std only if the package uses it, which it does by naming it, as
-                     -- the Rust compiler links it only then
-                     let named = V.any (\f -> match readToString (dir ++ "/src/" ++ f) with | Ok t -> S.contains "Std" t | Err _ -> False) (idlFiles (dir ++ "/src") []) in
-                     writeOutput "${built prelude (if named then [("Std", std)] else []) (packageName dir) modules}\n"
-                 | (Err _, _, _) -> writeError "the prelude does not parse\n"
-                 | (_, Err why, _) -> writeError "Std: ${why}\n"
-                 | (_, _, Err why) -> writeError "${dir}: ${why}\n")
-            | Err e -> writeError "could not read the prelude: ${e}\n")
-       | _ -> writeError "usage: Idyll build --prelude <file> --std <dir> <package>\n")
-  | _ -> writeError "usage: Idyll (tokens | tree | parse | errors | rename --prelude <file> | types --prelude <file>) <file>...\n"
+  match argsTool () with
+  | (every, Tool.Build r) ->
+      (match r.dump.prelude with
+       | None -> D.buildCommand every.offline every.locked r.path
+       | Just path -> withPrelude path (\prelude -> builtDump prelude r.dump.std (M.unwrapOr "." r.path)))
+  | (every, Tool.Run r) ->
+      (match r.dump.prelude with
+       | None -> D.runCommand every.offline every.locked (V.get r.paths 0) r.release
+       | Just path -> withPrelude path (\prelude -> eachAgainstStd prelude r.dump.std r.paths ran ranAgainst))
+  | (every, Tool.Check r) -> D.checkCommand every.offline every.locked r.path
+  | (every, Tool.Update r) -> D.updateCommand r.names r.dryRun
+  | (every, Tool.Fmt r) -> V.foldl (\u f -> each f Fmt.formatted) () r.files
+  | (every, Tool.Tokens r) -> V.foldl (\u f -> each f dumpTokens) () r.files
+  | (every, Tool.Tree r) -> V.foldl (\u f -> each f dumpTree) () r.files
+  | (every, Tool.Parse r) -> V.foldl (\u f -> each f Surface.dumped) () r.files
+  | (every, Tool.Errors r) -> V.foldl (\u f -> each f (errorsIn f)) () r.files
+  | (every, Tool.Rename r) -> withPreludeOf r.dump.prelude (\prelude -> V.foldl (\u f -> each f (renamed prelude)) () r.files)
+  | (every, Tool.Types r) -> withPreludeOf r.dump.prelude (\prelude -> eachAgainstStd prelude r.dump.std r.files typed typedAgainst)
+  | (every, Tool.Cut r) -> withPreludeOf r.dump.prelude (\prelude -> eachAgainstStd prelude r.dump.std r.files cutOf cutAgainst)
+  | (every, Tool.Parted r) -> withPreludeOf r.dump.prelude (\prelude -> packageDump prelude r.name r.dir (\modules texts -> partedDump prelude r.name modules texts))
+  | (every, Tool.Compiled r) -> withPreludeOf r.dump.prelude (\prelude -> packageDump prelude r.name r.dir (\modules texts -> compiledDump prelude r.name modules))
+  | (every, Tool.Package r) -> withPreludeOf r.dump.prelude (\prelude -> packageDump prelude r.name r.dir (\modules texts -> packageTypes prelude r.name modules))
+
+-- The prelude at `path`, read and parsed, to `k`; or why not, said.
+fun withPrelude (path : String) k =
+  match readToString path with
+  | Ok text ->
+      (match Surface.parsed text with
+       | Ok prelude -> k prelude
+       | Err _ -> writeError "the prelude does not parse\n")
+  | Err e -> writeError "could not read the prelude: ${e}\n"
+
+-- The same, the prelude being one a dump needs.
+fun withPreludeOf (path : Maybe String) k =
+  match path with
+  | Just p -> withPrelude p k
+  | None -> writeError "this dump needs --prelude <file>\n"
+
+-- Each file's dump: `alone` of it, or, with Std's sources (`--std`),
+-- `against` Std compiled once, as the Rust compiler compiles it, every
+-- program checked against that.
+fun eachAgainstStd prelude (std : Maybe String) (files : [String]) alone against =
+  match std with
+  | None -> V.foldl (\u f -> each f (alone prelude)) () files
+  | Just dir ->
+      (match packageModules dir with
+       | Ok mods ->
+           (match compiledPackage prelude "Std" mods [] with
+            | Ok (names, compiled) -> V.foldl (\u f -> each f (against prelude names compiled)) () files
+            | Err why -> writeError "Std: ${why}\n")
+       | Err why -> writeError "Std: ${why}\n")
+
+-- A package's dump: its modules read from `dir`, and their texts, to
+-- `dumpOf`, under a line `== <name>`.
+fun packageDump prelude (name : String) (dir : String) dumpOf =
+  match packageModules dir with
+  | Ok modules ->
+      let texts = V.map (\m -> readToStringOr "" (dir ++ "/" ++ moduleFile (fst m))) modules in
+      let u = writeOutput "== ${name}\n" in
+      writeOutput "${dumpOf modules texts}\n"
+  | Err why -> writeError "${name}: ${why}\n"
+
+-- A package built to run, as the build differential compares it: its
+-- modules, with Std if it names it, lowered to Cut, its `main` the entry.
+fun builtDump prelude (std : Maybe String) (dir : String) =
+  match (std, packageModules (dir ++ "/src")) with
+  | (Just stdDir, Ok modules) ->
+      (match packageModules stdDir with
+       | Ok stdMods ->
+           -- Std only if the package uses it, which it does by naming it, as
+           -- the Rust compiler links it only then
+           let named = V.any (\f -> match readToString (dir ++ "/src/" ++ f) with | Ok t -> S.contains "Std" t | Err _ -> False) (idlFiles (dir ++ "/src") []) in
+           writeOutput "${built prelude (if named then [("Std", stdMods)] else []) (packageName dir) modules}\n"
+       | Err why -> writeError "Std: ${why}\n")
+  | (None, _) -> writeError "a build's dump needs --std <dir>\n"
+  | (_, Err why) -> writeError "${dir}: ${why}\n"
 
 -- A package built to run, as Cut: `(error)` if it does not rename or check.
 fun built prelude deps (name : String) (modules : [([String], SurfaceProgram)]) : String ! { Mut | e } =

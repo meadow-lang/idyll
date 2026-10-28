@@ -1,0 +1,17 @@
+-- How Idyll is set out: `idyll fmt`, Lingua's `format!` over the grammar
+-- (`Syntax`), within 100 columns, a level two spaces.
+--
+-- Idyll's layout is part of its meaning: a block's items start at its
+-- column, a line further right goes on with the line before. So a block's
+-- items each start a line of their own, a level in from where the node
+-- holding the block began (`Sep`, a layout `;`, breaks the line), and a
+-- node broken over lines has what follows its first line further in than
+-- it. What formatting changes is the space between tokens, and nothing
+-- else: the tokens, comments among them, are the source's, in its order.
+
+use Idyll.Syntax (parseIdyll, formatStyle)
+
+-- `text` set out, or the errors that stop it being read, each with where.
+@pub fun formatted (text : String) : String =
+  match parseIdyll text with
+  | (g, _) -> formatStyle g

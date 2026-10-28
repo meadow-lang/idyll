@@ -27,12 +27,13 @@
 -- `record` is a keyword only before a capital (`context`): it is a name
 -- anywhere else, as it is to the Rust lexer.
 
-use Lingua (syntax!)
+use Lingua (syntax!, format!)
 use Idyll.Layout (Token, foldToken)
 
 @pub syntax! {
   pub Idyll
   lexer Token
+  trivia { Whitespace, Comment }
   tokens {
     "mod" = Mod,
     "module" = Module,
@@ -230,4 +231,16 @@ use Idyll.Layout (Token, foldToken)
     Row = EmptyRow | App
     EmptyRow = "{" "}"
   }
+}
+
+-- How Idyll is set out, `idyll fmt` (see `Format`): within 100 columns, a
+-- level two spaces.
+@pub format! {
+  pub Style for Idyll
+  indent 2
+  width 100
+    | Sep = newline sep tight
+    | LetE = "let" open indent(entries) close "in" body
+    | CaseE = "case" scrutinee "of" open indent(entries) close
+    | Plain = "=" indent(line body)
 }

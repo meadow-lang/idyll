@@ -97,6 +97,10 @@ use Std.Result.Result.*
   | VRBrace
   -- what the lexer could not read, as written
   | Error String
+  -- spaces and line ends, and a comment: trivia, which the parser looks past
+  -- and the tree keeps (see `foldToken`)
+  | Whitespace
+  | Comment
 
 -- The grammar's token for a lexer's one; nothing for a space, a newline or
 -- a comment.
@@ -225,6 +229,8 @@ use Std.Result.Result.*
   | Token.VLBrace -> "«{»"
   | Token.VSemi -> "«;»"
   | Token.VRBrace -> "«}»"
+  | Token.Whitespace -> "«space»"
+  | Token.Comment -> "«comment»"
   | Token.Error text -> text
 
 -- A laid-out token, and the bytes it covers.
@@ -541,9 +547,31 @@ fun closeAll (st : State) : State =
       Layout { tokens = st.out, problems = st.problems }
 
 -- The tokens of `input`, to `f` in turn with the bytes each covers: the
--- lexer `syntax!` reads Idyll with.
+-- lexer `syntax!` reads Idyll with. The laid-out ones, and between them its
+-- spaces, line ends and comments, as trivia: so the tree has every byte of
+-- the source, comments too, which the formatter (`Format`) keeps. A virtual
+-- token covers none, and comes before trivia that starts where it stands.
 @pub fun foldToken f acc (input : String) =
-  Ok (V.foldl (\a (t : Laid) -> f a t.token t.from t.to) acc (layout input).tokens)
+  let trivia =
+    V.concatMap
+      (\l ->
+        match token l with
+        | Ok Raw.Space -> [Laid { token = Token.Whitespace, from = start l, to = stop l }]
+        | Ok Raw.Newline -> [Laid { token = Token.Whitespace, from = start l, to = stop l }]
+        | Ok Raw.Comment -> [Laid { token = Token.Comment, from = start l, to = stop l }]
+        | _ -> [])
+      (lexed input)
+  in
+  Ok (V.foldl (\a (t : Laid) -> f a t.token t.from t.to) acc (merged (layout input).tokens trivia 0 0 []))
+
+-- Two runs of tokens, each in order of where they start, as one; on a tie,
+-- the first's first.
+fun merged (a : [Laid]) (b : [Laid]) (i : Int) (j : Int) (acc : [Laid]) : [Laid] =
+  match (V.get a i, V.get b j) with
+  | (Just x, Just y) -> if y.from < x.from then merged a b i (j + 1) (V.pushBack acc y) else merged a b (i + 1) j (V.pushBack acc x)
+  | (Just x, None) -> merged a b (i + 1) j (V.pushBack acc x)
+  | (None, Just y) -> merged a b i (j + 1) (V.pushBack acc y)
+  | (None, None) -> acc
 
 -- `input`'s tokens, laid out, as `:ir tokens` shows them, on one line.
 @pub fun dumped (input : String) : String =
