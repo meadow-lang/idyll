@@ -789,11 +789,26 @@ and a `Map` built with one `Ord` is rejected when used with another.
   times; a stream's producer gives back `()`, as `Yield`'s `collect`
   takes one, and `nextFloat` is a function of `nextInt`, as the runtimes
   compute it);
-  then `Json`. (The prelude already declares `Maybe`, `Result`
-  and the world's effects themselves; what is left of those modules is
-  their functions, and the operations phase 2 left out.)
-- [ ] **Adapt rather than copy**: `Ref`, `Mut` and `St` become linear mutable
-  references and arrays rather than effects. `Compact` is specific to
+  then `Json` (done, as Meadow's: its byte scanner first, its grammar
+  where the scanner gives up, and the same errors; its constructors named
+  as types are, `Json.Int`, are written qualified, a type and a
+  constructor sharing Idyll's one namespace). (The prelude already
+  declares `Maybe`, `Result` and the world's effects themselves; what is
+  left of those modules is their functions, and the operations phase 2
+  left out.)
+  Meadow's other modules are not placed yet: `Bench`, `Collections.Tree`
+  and `Collections.HashTable`, `Num.Float`, `Ops`, `Path`, `Log`,
+  `Terminal`, `Test.Fuzz` and `Test.Property`, `Eff`, and those on the
+  runtimes' larger natives (`Thread`, `Stm`, `Net`, `Http`, `Tls`, `Ffi`,
+  `Macro`).
+- [ ] **Adapt rather than copy**: `St` becomes linear mutable references
+  and arrays (`MArray`, and a cell beside it) rather than an effect: a
+  linear value is never shared, so changing it in place is never seen, and
+  no `runSt` is needed to keep it from escaping. `Ref` and `Mut` stay as
+  Meadow has them as well (Chris, 2026-10-28), for cells that are shared:
+  MiniML's type variables are `Ref`s held all over the type tree, a
+  union-find, and its `let rec` ties the knot through a `Ref` closures
+  hold, which no linear reference can be. `Compact` is specific to
   Meadow's garbage collector and is not ported.
 
 *Done when:* Meadow's `examples/Tour`, `examples/MiniML` and

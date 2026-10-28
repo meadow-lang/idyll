@@ -526,6 +526,18 @@ impl Core {
     /// Every node, outermost first: what `f` answers for one is put in its
     /// place, and what it answers nothing for is gone into. `f` takes the
     /// node and how many binders are around it.
+    /// Whether an error is anywhere in the term.
+    pub fn mentions_error(self: &Rc<Core>) -> bool {
+        let found = std::cell::Cell::new(false);
+        self.transform(0, &|c, _| {
+            if matches!(**c, Core::Error) {
+                found.set(true);
+            }
+            found.get().then(|| c.clone())
+        });
+        found.get()
+    }
+
     pub fn transform(self: &Rc<Core>, depth: usize, f: &dyn Fn(&Rc<Core>, usize) -> Option<Rc<Core>>) -> Rc<Core> {
         if let Some(replaced) = f(self, depth) {
             return replaced;

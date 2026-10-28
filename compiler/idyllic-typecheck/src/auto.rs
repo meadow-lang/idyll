@@ -148,6 +148,12 @@ impl Checker {
         if depth > DEPTH {
             return Err(TypeErrorKind::NoInstance { wanted: shown(), deep: true });
         }
+        // what is wanted of a type an error is in was reported where the
+        // error is; every instance of the trait could fit it, and each be
+        // tried, its own wants too, which could take as long as it likes
+        if quoted.mentions_error() {
+            return Ok(Rc::new(Core::Error));
+        }
         // the auto binders in scope, innermost first, and what each has
         // inside it of its trait's superclasses
         let locals: Vec<Lvl> = (0..ctx.lvl).rev().filter(|&l| ctx.binders[l].auto).collect();

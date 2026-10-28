@@ -552,7 +552,11 @@ impl TypeError {
                     .help(format!("give it a signature, as in {name} : .. = .."))
             }
             TypeErrorKind::UnknownVariable(name) => {
-                Diagnostic::error(format!("not in scope: {name}")).label(here, "unbound here")
+                // (the renamer found it, so it is declared, but not yet where
+                // this is checked)
+                Diagnostic::error(format!("not in scope: {name}")).label(here, "unbound here").help(format!(
+                    "{name} is declared, but after this needs it: a data type's own constructor in its fields is one, and a `use` of its constructors hides any type of the same name, so bring in only those it does not clash with, as in `use T (A, B)`"
+                ))
             }
             TypeErrorKind::NoMeaning { name, wanted, candidates } => {
                 let needed = match wanted {

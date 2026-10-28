@@ -624,3 +624,82 @@ fn assertions_fail_when_they_should_and_say_what_failed() {
          True, \"maybes: expected Nothing, got Just(\\\"a\\\")\")"
     );
 }
+
+const JSON: &str = r#"use Std.Json as J
+use Std.Json (Json)
+use Std.Collections.Vector as V
+use Std.Collections.Vector (Vector)
+
+parsed : (text : String) -> Json
+parsed text = case J.parse text of
+  Ok v -> v
+  Err e -> Json.String ("parse failed: " ++ e)
+
+vec : {a : Type} -> (xs : List a) -> Vector a
+vec xs = V.fromList xs
+
+"#;
+
+#[test]
+fn json_values_are_read_as_meadows_are() {
+    // the atoms, numbers as `Int` or `Float`, containers, white space and
+    // escapes (two layers of them: the Idyll literal, and the JSON in it)
+    let src = format!(
+        "{JSON}(parsed \"null\", parsed \"true\", parsed \"-7\", parsed \"\\\"hi\\\"\", parsed \"2e3\", parsed \"-2.5E-1\", parsed \"1.5\", \
+         J.render (parsed \"[1,2]\"), J.render (parsed \"{{\\\"a\\\":1}}\"), J.render (parsed \"[[1],[2]]\"), J.render (parsed \"[ ]\"), \
+         parsed \"  {{ \\\"a\\\" : [ 1 , 2 ] }}  \" == parsed \"{{\\\"a\\\":[1,2]}}\", \
+         parsed \"\\\"a\\\\nb\\\\t\\\\\\\"c\\\\\\\\d\\\\/e\\\"\", parsed \"\\\"\\\\u0041\\\\ud83d\\\\ude00\\\"\", parsed \"123456789012345678\")\n"
+    );
+    assert_eq!(
+        value(&src),
+        "(Null, Bool True, Int -7, String \"hi\", Float 2000.0, Float -0.25, Float 1.5, \"[1,2]\", \"{\\\"a\\\":1}\", \"[[1],[2]]\", \"[]\", True, \
+         String \"a\\nb\\t\\\"c\\\\d/e\", String \"A😀\", Int 123456789012345678)"
+    );
+}
+
+#[test]
+fn json_errors_say_where_and_what() {
+    // what the scanner gives up on, the grammar still reads, or says what
+    // is wrong with
+    let src = format!(
+        "{JSON}isBad : (text : String) -> Bool\nisBad text = case J.parse text of\n  Ok v -> False\n  Err e -> True\n\n\
+         (J.parse \"{{\\\"a\\\": [1, 2,\\n  ]}}\", J.parseSpanned \"{{\\\"a\\\": [1, 2,\\n  ]}}\", \
+         V.all isBad (vec (\"\" :: \" \" :: \"[1,\" :: \"[1,]\" :: \"{{\\\"a\\\"}}\" :: \"{{\\\"a\\\":}}\" :: \"{{a:1}}\" :: \"tru\" :: \"truex\" :: \"nul\" :: \"1 2\" :: \
+         \"1.\" :: \"1e\" :: \"-\" :: \"--1\" :: \"\\\"open\" :: \"\\\"bad \\\\q escape\\\"\" :: \"\\\"\\\\ud800\\\"\" :: \"[1 2]\" :: \"{{\\\"a\\\":1,}}\" :: \"]\" :: \"1.5.2\" :: Nil)), \
+         J.parse \"{{\\\"k\\\" 1}}\", parsed \"1234567890123456789012\" == parsed \"1234567890123456789012\")\n"
+    );
+    assert_eq!(
+        value(&src),
+        "(Err \"at offset 15: unexpected \\\"]}\\\"; expecting \\\"null\\\", \\\"true\\\", \\\"false\\\", a string, an array, an object, or a number\", Err ((15, 17), \"unexpected \\\"]}\\\"\\nexpecting \\\"null\\\", \\\"true\\\", \\\"false\\\", a string, an array, an object, or a number\\n\"), True, Err \"at offset 5: unexpected '1'; expecting ':'\", True)"
+    );
+}
+
+#[test]
+fn json_is_written_and_read_back() {
+    let src = format!(
+        "{JSON}awkward : Json\nawkward = Json.String \"tricky \\\" \\\\ \\n\\t\\x1b\"\n\n\
+         (J.render Json.Null, J.render (Json.Int (0 - 7)), J.render (Json.Float 2.5), J.render (Json.Array (vec (Json.Int 1 :: Json.Bool False :: Nil))), \
+         J.render (Json.Object (vec ((\"a\", Json.Int 1) :: Nil))), J.render (parsed \"{{\\\"a\\\":[1,2,3],\\\"b\\\":null,\\\"c\\\":\\\"x\\\"}}\"), \
+         J.render awkward, parsed (J.render awkward) == awkward, J.quote \"say \\\"hi\\\"\", \
+         J.renderIndented (Json.Array V.empty), J.renderIndented (Json.Object V.empty), J.renderIndented (Json.Array (vec (Json.Int 1 :: Nil))), \
+         J.renderIndented (parsed \"{{\\\"a\\\":1,\\\"b\\\":[true,{{}}]}}\"))\n"
+    );
+    assert_eq!(
+        value(&src),
+        "(\"null\", \"-7\", \"2.500000\", \"[1,false]\", \"{\\\"a\\\":1}\", \"{\\\"a\\\":[1,2,3],\\\"b\\\":null,\\\"c\\\":\\\"x\\\"}\", \"\\\"tricky \\\\\\\" \\\\\\\\ \\\\n\\\\t\\\\u001b\\\"\", True, \"\\\"say \\\\\\\"hi\\\\\\\"\\\"\", \"[]\", \"{}\", \"[\\n  1\\n]\", \"{\\n  \\\"a\\\": 1,\\n  \\\"b\\\": [\\n    true,\\n    {}\\n  ]\\n}\")"
+    );
+}
+
+#[test]
+fn json_trees_are_looked_into() {
+    let src = format!(
+        "{JSON}v : Json\nv = parsed \"{{\\\"n\\\":{{\\\"deep\\\":true}},\\\"xs\\\":[10,20]}}\"\n\n\
+         (J.path (vec (\"n\" :: \"deep\" :: Nil)) v, J.path (vec (\"n\" :: \"missing\" :: Nil)) v, J.index 1 (parsed \"[10,20]\"), J.index 9 (parsed \"[10]\"), \
+         J.asInt (Json.Int 1), J.asInt (Json.String \"1\"), J.asString (Json.String \"x\"), J.asBool (Json.Bool True), J.isNull Json.Null, \
+         J.asFloat (Json.Int 2), J.isNull (J.jInt 3), J.asArray (J.jString \"no\"), J.render (J.jObject (vec ((\"k\", J.jNull ()) :: Nil))))\n"
+    );
+    assert_eq!(
+        value(&src),
+        "(Just (Bool True), Nothing, Just (Int 20), Nothing, Just 1, Nothing, Just \"x\", Just True, True, Just 2.0, False, Nothing, \"{\\\"k\\\":null}\")"
+    );
+}

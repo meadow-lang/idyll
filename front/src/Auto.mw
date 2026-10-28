@@ -164,6 +164,10 @@ fun searchAutos (tc : Tc) (last : Bool) (mid : Bool) : Bool ! { Mut | e } =
 -- What there is of type `wanted`: an auto binder in scope, or a hint.
 fun search (tc : Tc) (ctx : Ctx) (wanted : Value) (depth : Int) : Result String Core ! { Mut | e } =
   if depth > searchDepth then Err "NoInstance"
+  -- what is wanted of a type an error is in was reported where the error
+  -- is; every instance of the trait could fit it, and each be tried, its
+  -- own wants too, which could take as long as it likes
+  else if C.anyNode (quote tc ctx.lvl wanted) (\c -> match c with | Core.Error -> True | _ -> False) then Ok Core.Error
   else
     match searchLocals tc ctx wanted depth (V.reverse ctx.autos) with
     | Just found -> found

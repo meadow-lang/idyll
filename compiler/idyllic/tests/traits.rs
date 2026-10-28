@@ -158,6 +158,10 @@ fn derive_writes_display_debug_partial_eq_and_partial_ord() {
     assert_eq!(value("let x = Just 3 in (\"${x}\", x == Just 3, x < Just 4)\n"), "(\"Just(3)\", True, True)");
     // and only the four can be
     assert!(rejected("@derive(Ord)\ndata T = A\n\n1\n").iter().any(|m| m.contains("parse error")));
+    // a field of a type with an error in it says so, once: what is wanted
+    // of it is not looked for (every instance would fit, and its wants be
+    // looked for in turn, which had taken as long as it liked)
+    assert_eq!(rejected("@derive(Debug, PartialEq)\ndata J = N | O (Maybe Foo) | P (List (Foo, Int))\n\n1\n"), ["name not in scope: Foo", "name not in scope: Foo"]);
 }
 
 /// A trait with an associated type, and two instances.

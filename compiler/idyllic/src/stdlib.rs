@@ -45,6 +45,7 @@ pub const MODULES: &[(&str, &str)] = &[
     ("Fs", include_str!("../../../lib/Std/src/Fs.idl")),
     ("Function", include_str!("../../../lib/Std/src/Function.idl")),
     ("Hash", include_str!("../../../lib/Std/src/Hash.idl")),
+    ("Json", include_str!("../../../lib/Std/src/Json.idl")),
     ("Maybe", include_str!("../../../lib/Std/src/Maybe.idl")),
     ("Num.Bits", include_str!("../../../lib/Std/src/Num/Bits.idl")),
     ("Num.Fin", include_str!("../../../lib/Std/src/Num/Fin.idl")),

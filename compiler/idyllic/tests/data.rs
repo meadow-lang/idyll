@@ -239,3 +239,15 @@ fn a_data_type_may_mention_a_definition() {
         "4 : Int"
     );
 }
+
+#[test]
+fn a_constructor_named_as_a_type_hides_it() {
+    // types and constructors share one namespace: `use J.*` brings `J.Int`
+    // in as `Int`, the type no longer, even in J's own fields; bringing in
+    // only the constructors that do not clash is what is wanted
+    let src = "data J = N | Int Int\n\nuse J.*\n\n1\n";
+    let out = run(src);
+    assert_eq!(diags(&out), ["not in scope: Int: unbound here"]);
+    assert!(out.diagnostics[0].help.iter().any(|h| h.contains("use T (A, B)")), "{:?}", out.diagnostics[0].help);
+    assert_eq!(result("data J = N | Int Int\n\nuse J (N)\n\nf : J -> Int\nf N = 0\nf (J.Int n) = n\n\nf (J.Int 4)\n"), "4 : Int");
+}

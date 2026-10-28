@@ -521,7 +521,10 @@ what each holds of its trait's superclasses (the paths of `#super`
 projections); then among the hints, a trait's instances. A candidate is
 tried by applying it to new metavariables for its implicit arguments,
 unifying what it comes to with the type wanted, and searching for its own
-auto arguments in turn, 16 deep. Each trial is made on the checker itself
+auto arguments in turn, 16 deep. A goal with an error in it (`Debug ?!`,
+for a field whose type named nothing) is not searched for: its error has
+been reported, and every instance would fit it, each one's own goals
+tried in turn, exponentially many. Each trial is made on the checker itself
 and undone: `T.save` copies every table of `Tc` (each a value, so the copy
 is cheap) and `T.restore` puts them back. The innermost auto binder that
 fits is taken; of the hints, exactly one must fit, and only those whose

@@ -1,0 +1,16 @@
+-- | -- JSON: read (by the scanner, or by the grammar where the scanner gives up), looked into, and written out
+-- | use Std.Json as J
+-- | use Std.Json (Json)
+-- | use Std.Collections.Vector as V
+-- | 
+-- | parsed : (text : String) -> Json
+-- | parsed text = case J.parse text of
+-- |   Ok v -> v
+-- |   Err e -> Json.String e
+-- | 
+-- | doc : Json
+-- | doc = parsed " {\"name\": \"Idyll\", \"tags\": [\"graded\", \"dependent\"], \"version\": 0.1, \"big\": 1234567890123456789012, \"esc\": \"tab\\there \\u00e9\\ud83d\\ude00\"} "
+-- | 
+-- | (J.render doc, J.path (V.fromList ("tags" :: Nil)) doc == Just (parsed "[\"graded\",\"dependent\"]"), J.asString (parsed "\"a\\\"b\""), J.parse "[1, 2,]", J.parseSpanned "{\"k\" 1}", J.renderIndented (parsed "{\"a\":[1,{}],\"b\":null}"))
+answer: ("{\"name\":\"Idyll\",\"tags\":[\"graded\",\"dependent\"],\"version\":0.100000,\"big\":-1363962815083169260,\"esc\":\"tab\\there é😀\"}", True, Just "a\"b", Err "at offset 6: unexpected ']'; expecting \"null\", \"true\", \"false\", a string, an array, an object, or a number", Err ((5, 6), "unexpected '1'\nexpecting ':'\n"), "{\n  \"a\": [\n    1,\n    {}\n  ],\n  \"b\": null\n}")
+exit: 0
