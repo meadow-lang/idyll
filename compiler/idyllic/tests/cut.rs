@@ -380,3 +380,16 @@ fn a_lambda_read_back_from_a_value_takes_what_its_parameter_does() {
     let text = lowered(src);
     assert!(!text.contains(": any"), "a parameter of no known representation:\n{text}");
 }
+
+#[test]
+fn a_cell_is_the_runtimes_own() {
+    // `newRef`, `getRef` and `setRef` are the runtime's primitives, no
+    // operations performed; what a cell holds is bound at its
+    // representation, which the primitive does not say
+    let text = lowered("bump : (r : Ref Int) -> Int ! Mut\nbump r = let u = setRef r (getRef r + 1) in getRef r\n\nbump (newRef 41)\n");
+    assert!(text.contains("prim newRef(41;"), "{text}");
+    assert!(text.contains("prim setRef(r_"), "{text}");
+    assert!(text.contains("prim getRef(r_"), "{text}");
+    assert!(text.contains(": i64."), "{text}");
+    assert!(!text.contains("perform"), "{text}");
+}

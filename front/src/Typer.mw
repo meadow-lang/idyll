@@ -82,7 +82,7 @@ use Std.Maybe.Maybe.*
 
 fun isTypeNative (tc : Tc) (u : Int) : Bool ! { Mut | e } =
   match Hm.lookup u (getRef tc.nativeInfo) with
-  | Just (name, _) -> name == "Array" or name == "MArray"
+  | Just (name, _) -> name == "Array" or name == "MArray" or name == "Ref"
   | None -> False
 
 fun isUniverse (tc : Tc) (v : Value) : Bool ! { Mut | e } = match force tc v with | Value.Type _ -> True | _ -> False

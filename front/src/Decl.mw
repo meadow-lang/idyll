@@ -519,7 +519,8 @@ fun native (name : String) : Maybe (Bool, Int) =
       ("arraySet", False, 3), ("arrayPush", False, 2), ("arrayPop", False, 1), ("arraySlice", False, 3),
       ("arrayConcat", False, 2), ("arrayFromList", False, 1), ("arrayToList", False, 1), ("MArray", True, 0),
       ("marrayNew", False, 2), ("marrayLen", False, 1), ("marrayGet", False, 2), ("marraySet", False, 3),
-      ("marrayFreeze", False, 1), ("marrayThaw", False, 1), ("stringByteLength", False, 1), ("stringByteAt", False, 2),
+      ("marrayFreeze", False, 1), ("marrayThaw", False, 1), ("Ref", True, 0), ("newRef", False, 1), ("getRef", False, 1),
+      ("setRef", False, 2), ("stringByteLength", False, 1), ("stringByteAt", False, 2),
       ("stringSlice", False, 3), ("stringCompare", False, 2), ("stringIndexOf", False, 3), ("stringToChars", False, 1),
       ("charsToString", False, 1), ("charCode", False, 1), ("charFromCode", False, 1),
       ("stringHash", False, 1), ("charHash", False, 1), ("boolHash", False, 1),
@@ -550,7 +551,9 @@ fun native (name : String) : Maybe (Bool, Int) =
                else
                  let (sig, _) = checkType tc c ty in
                  let (params, ar) = shape sig 0 0 in
-                 let fits = if isType then endsInUniverse sig else ar == arity and not (endsInEffects sig) in
+                 -- (a cell's operations end in `Mut`, and only they)
+                 let mutation = V.elem (H.textOf x) ["newRef", "getRef", "setRef"] in
+                 let fits = if isType then endsInUniverse sig else ar == arity and endsInEffects sig == mutation in
                  let w = match sig with | Core.Error -> () | _ -> if fits then () else T.error tc "NativeSignature" in
                  let u = H.uniqueOf x in
                  let w2 = setRef tc.natives (Hm.insert u True (getRef tc.natives)) in

@@ -1,0 +1,59 @@
+-- The shared mutable cell, as Meadow's `Std.Ref`:
+--
+--   use Std.Ref (modify)
+--
+--   countUp : (n : Int) -> Int ! Mut
+--   countUp n =
+--     let r = newRef 0 in
+--     let ignored = repeatN n (\(u : ()) -> modify r (\(x : Int) -> x + 1)) in
+--     getRef r
+--
+-- `Ref`, `newRef`, `getRef` and `setRef` are the prelude's, and always in
+-- scope; this module is the handful of things made of them.
+--
+-- Every one of them is the effect `Mut`, so a function that changes a cell
+-- says so in its type, and one that does not still reads as pure. A cell may
+-- be held in many places at once, and what is put in it is seen through all
+-- of them: what a union-find of type variables wants, or a `let rec` tied
+-- through a cell. A cell only one place ever holds is better a linear one,
+-- changed with no effect at all: see `Std.St`.
+
+-- `f` of what the cell holds, put in it.
+@pub
+modify : {a : Type} -> (r : Ref a) -> (f : (x : a) -> a ! {Mut | e}) -> () ! {Mut | e}
+modify r f = setRef r (f (getRef r))
+
+-- `x` put in the cell, and what it held given back.
+@pub
+swap : {a : Type} -> (r : Ref a) -> (x : [] a) -> a ! Mut
+swap r x =
+  let old = getRef r in
+  let ignored = setRef r x in
+  old
+
+-- `f` of what the cell holds, put in it, and what it held given back.
+@pub
+getAndModify : {a : Type} -> (r : Ref a) -> (f : (x : a) -> a ! {Mut | e}) -> a ! {Mut | e}
+getAndModify r f =
+  let old = getRef r in
+  let ignored = setRef r (f old) in
+  old
+
+-- `f` of what the cell holds, put in it, and given back.
+@pub
+modifyAndGet : {a : Type} -> (r : Ref a) -> (f : (x : a) -> a ! {Mut | e}) -> a ! {Mut | e}
+modifyAndGet r f =
+  let next = f (getRef r) in
+  let ignored = setRef r next in
+  next
+
+-- `n` added to a counter, and the new total given back.
+@pub
+bump : {a : Type} -> Add a => (r : Ref a) -> (n : a) -> a ! Mut
+bump r n = modifyAndGet r (\(x : a) -> x + n)
+
+-- `act` done `n` times, for what it does: the loop a cell usually wants.
+@pub
+@terminating
+repeatN : {a : Type} -> (n : Int) -> (act : (u : ()) -> a ! e) -> () ! e
+repeatN n act = if n <= 0 then () else let ignored = act () in repeatN (n - 1) act

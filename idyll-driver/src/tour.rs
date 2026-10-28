@@ -982,6 +982,23 @@ halve n = if n % 2 == 0 then n / 2 else abort \"odd\""),
         ],
     },
     Step {
+        title: "Cells",
+        section: Section::Effects,
+        text: &[
+            "A `Ref` is a cell that may be shared: held in many places, and",
+            "changed through any of them. Making, reading and writing one is",
+            "the effect `Mut`, which the runtime does itself, with no",
+            "operations a handler could take. A union-find of type",
+            "variables, or a function tied to itself through a cell, wants",
+            "one; `Std.Ref` has `modify`, `swap` and the rest.",
+        ],
+        examples: &[
+            ok("counter : () -> Int ! Mut
+counter u = let r = newRef 0 in let w = setRef r 41 in getRef r + 1"),
+            ok("counter ()"),
+        ],
+    },
+    Step {
         title: "main",
         section: Section::Effects,
         text: &[

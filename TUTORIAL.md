@@ -2545,7 +2545,7 @@ The effects a program's top level may still have are the ones the
 runtime handles itself: everything in `Eff`, which the prelude declares as
 
 ```
-effect Eff = {Console, Fs, Process, Random, Time, Test, Abort, Div}
+effect Eff = {Console, Fs, Process, Random, Time, Test, Abort, Mut, Div}
 ```
 
 with these operations (and `Maybe` and `Result` declared alongside,
@@ -2560,6 +2560,7 @@ with these operations (and `Maybe` and `Result` declared alongside,
 | `Time` | `now : () -> Int` (milliseconds since 1970), `monotonic : () -> Int` (nanoseconds, for measuring), `sleep : Int -> ()` (milliseconds; `Std.Time` has clocks of your own, timing and dates) |
 | `Test` | `fail : String -> ()`, which stops the program (`Std.Test` has the assertions) |
 | `Abort` | `abort : {a : Type} -> String -> a`, which gives up: unhandled, it writes its message to standard error and exits with status 1 |
+| `Mut` | no operations a handler could take: `newRef : {a : Type} -> a -> Ref a ! Mut`, `getRef : {a : Type} -> Ref a -> a ! Mut` and `setRef : {a : Type} -> Ref a -> a -> () ! Mut` are the runtime's own, on cells (`Ref a`) that may be shared, held in many places and changed through any of them (`Std.Ref` has the rest: `modify`, `swap`, `bump`, ...) |
 
 The runtime prints only strings. `putStrLn` and `printInt` are ordinary
 prelude functions over `putStr`, not operations, so a handler of
@@ -2647,7 +2648,7 @@ ask : () -> Int ! Ask
 main () = printInt (ask ())
 
 Error: effects not allowed
-   │ ╰── this has the effects {Console, Ask}, but its type allows {Div, Console, Fs, Process, Random, Time, Test, Abort}
+   │ ╰── this has the effects {Console, Ask}, but its type allows {Div, Console, Fs, Process, Random, Time, Test, Abort, Mut}
 ```
 
 A file with a `main` is run with `idyllic hello.idl` (in `compiler/`); what comes after
@@ -3031,6 +3032,7 @@ is nothing to install.
 | `Std.Console` | `printLines`, `printList`, `printBool`, `readLines` |
 | `Std.Fs`, `Std.Process` | `readToStringOr`, `tryReadDir`, `writeLines`, `existsAll`; `argCount`, `arg`, `envOr`, `exitFailure`, ... |
 | `Std.Exn` | an effect: `throw`, and `toResult`, `catch`, `withDefault`, `toMaybe`, `ofResult`, `ensure` |
+| `Std.Ref` | shared mutable cells, as Meadow's: `modify`, `swap`, `getAndModify`, `modifyAndGet`, `bump`, `repeatN`, over the prelude's `Ref`, `newRef`, `getRef`, `setRef` (the effect `Mut`) |
 | `Std.State` | an effect: `get`, `put`, `modify`, and `runState` from a first state |
 | `Std.Yield` | an effect: `yield`, `each`, and `collect` into a list |
 | `Std.Stream` | consumers and transformers of what is yielded: `toVec`, `toList`, `forEach`, `fold`, `sum`, `count`, `take`, `takeWhile`, `first`, `any`, `all`, `find`, `map`, `filter`; and producers, `range`, `repeat`, `iterate`, `ofList`, `ofVec` |

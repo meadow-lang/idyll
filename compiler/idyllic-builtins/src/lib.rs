@@ -303,6 +303,14 @@ pub enum Native {
     MArrayFreeze,
     /// `{a : Type} -> (xs : [] Array a) -> MArray a`
     MArrayThaw,
+    /// `Ref : Type -> Type`: a mutable cell, which may be shared
+    Ref,
+    /// `{a : Type} -> (x : [] a) -> Ref a ! Mut`: a new cell holding `x`
+    NewRef,
+    /// `{a : Type} -> Ref a -> a ! Mut`: what a cell holds
+    GetRef,
+    /// `{a : Type} -> Ref a -> (x : [] a) -> () ! Mut`: put `x` in a cell
+    SetRef,
     /// `String -> Int`: how many bytes of UTF-8 it is
     StringByteLength,
     /// `String -> Int -> Int`: the byte at an index, `0` to `255` (outside
@@ -349,7 +357,7 @@ pub enum Native {
 
 impl Native {
     /// The natives with a name of their own, which are not [`Native::Num`].
-    pub const NAMED: [Native; 34] = [
+    pub const NAMED: [Native; 38] = [
         Native::Array,
         Native::ArrayLen,
         Native::ArrayGet,
@@ -368,6 +376,10 @@ impl Native {
         Native::MArraySet,
         Native::MArrayFreeze,
         Native::MArrayThaw,
+        Native::Ref,
+        Native::NewRef,
+        Native::GetRef,
+        Native::SetRef,
         Native::StringByteLength,
         Native::StringByteAt,
         Native::StringSlice,
@@ -414,6 +426,10 @@ impl Native {
             Native::MArraySet => "marraySet",
             Native::MArrayFreeze => "marrayFreeze",
             Native::MArrayThaw => "marrayThaw",
+            Native::Ref => "Ref",
+            Native::NewRef => "newRef",
+            Native::GetRef => "getRef",
+            Native::SetRef => "setRef",
             Native::StringByteLength => "stringByteLength",
             Native::StringByteAt => "stringByteAt",
             Native::StringSlice => "stringSlice",
@@ -439,14 +455,20 @@ impl Native {
 
     /// A type constructor, rather than an operation: erased at run time.
     pub fn is_type(self) -> bool {
-        matches!(self, Native::Array | Native::MArray)
+        matches!(self, Native::Array | Native::MArray | Native::Ref)
+    }
+
+    /// An operation on cells, whose type ends in the effect `Mut`: what
+    /// it does is seen, so it is no function of its arguments.
+    pub fn is_mutation(self) -> bool {
+        matches!(self, Native::NewRef | Native::GetRef | Native::SetRef)
     }
 
     /// How many arguments it takes at run time (after its erased ones).
     pub fn arity(self) -> usize {
         match self {
             Native::Num(op, _) => op.arity(),
-            Native::Array | Native::MArray => 0,
+            Native::Array | Native::MArray | Native::Ref => 0,
             Native::ArrayLen
             | Native::ArrayPop
             | Native::ArrayFromList
@@ -454,6 +476,8 @@ impl Native {
             | Native::MArrayLen
             | Native::MArrayFreeze
             | Native::MArrayThaw
+            | Native::NewRef
+            | Native::GetRef
             | Native::StringByteLength
             | Native::StringToChars
             | Native::CharsToString
@@ -471,6 +495,7 @@ impl Native {
             | Native::ArrayConcat
             | Native::MArrayNew
             | Native::MArrayGet
+            | Native::SetRef
             | Native::StringByteAt
             | Native::StringCompare => 2,
             Native::ArrayGetOr

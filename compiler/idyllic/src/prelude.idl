@@ -926,4 +926,27 @@ effect Test where
 effect Abort where
   abort : {a : Type} -> String -> a
 
-effect Eff = {Console, Fs, Process, Random, Time, Test, Abort, Div}
+-- Mutable cells, as Meadow's: a `Ref` is a cell that may be shared, held
+-- in many places at once, and what is put in it is seen through every one
+-- of them. Making, reading and writing one is the effect `Mut`, which the
+-- runtime does itself: it has no operations a handler could take, its
+-- cells being the runtime's own. (A cell no one else holds is a linear
+-- one instead, with no effect: `Std.Collections.MArray`.)
+effect Mut where
+
+@native
+Ref : Type -> Type
+
+-- A new cell holding `x`.
+@native
+newRef : {a : Type} -> (x : [] a) -> Ref a ! Mut
+
+-- What a cell holds.
+@native
+getRef : {a : Type} -> Ref a -> a ! Mut
+
+-- Put `x` in a cell, in place of what it held.
+@native
+setRef : {a : Type} -> Ref a -> (x : [] a) -> () ! Mut
+
+effect Eff = {Console, Fs, Process, Random, Time, Test, Abort, Mut, Div}

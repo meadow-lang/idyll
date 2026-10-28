@@ -1,0 +1,41 @@
+-- | -- shared cells: a union-find of type variables, a knot tied through a cell, and Std.Ref's helpers
+-- | use Std.Ref (modify, swap, bump, repeatN)
+-- | 
+-- | data Ty = TInt | TArrow Ty Ty | TVar (Ref Tv)
+-- | 
+-- | data Tv = Unbound Int | Link Ty
+-- | 
+-- | use Ty.*
+-- | use Tv.*
+-- | 
+-- | @terminating
+-- | shown : (t : Ty) -> String ! Mut
+-- | shown TInt = "Int"
+-- | shown (TArrow a b) = "(" ++ shown a ++ " -> " ++ shown b ++ ")"
+-- | shown (TVar r) = case getRef r of
+-- |   Unbound n -> "t" ++ showInt n
+-- |   Link t -> shown t
+-- | 
+-- | tied : (n : Int) -> Int ! Mut
+-- | tied n =
+-- |   let cell = newRef {Int -> Int ! Mut} (\(k : Int) -> 0) in
+-- |   let f = \(k : Int) -> if k <= 0 then 0 else k + (getRef cell) (k - 1) in
+-- |   let u = setRef cell f in
+-- |   f n
+-- | 
+-- | check : () -> (String, String, Int, Int, Int, Int) ! Mut
+-- | check u =
+-- |   let a = newRef (Unbound 0) in
+-- |   let b = newRef (Unbound 1) in
+-- |   let t = TArrow (TVar a) (TArrow (TVar b) (TVar a)) in
+-- |   let before = shown t in
+-- |   let x = setRef a (Link TInt) in
+-- |   let y = setRef b (Link (TVar a)) in
+-- |   let c = newRef 1 in
+-- |   let ignored = repeatN 5 (\(v : ()) -> modify c (\(k : Int) -> k * 2)) in
+-- |   let old = swap c 100 in
+-- |   (before, shown t, tied 10, old, bump c 1, getRef c)
+-- | 
+-- | check ()
+answer: ("(t0 -> (t1 -> t0))", "(Int -> (Int -> Int))", 55, 32, 101, 101)
+exit: 0

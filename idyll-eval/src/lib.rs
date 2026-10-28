@@ -114,6 +114,9 @@ pub enum Value {
     /// The rest of a handled computation, from where it performed an
     /// operation up to and including its handler: frames to put back.
     Resumption(Rc<Vec<Frame>>),
+    /// A mutable cell (`newRef`), which may be shared: every value that is
+    /// it sees what is put in it.
+    Ref(Rc<std::cell::RefCell<Rc<Value>>>),
     /// A type, a grade, or something never used: nothing at run time.
     Erased,
 }
@@ -223,8 +226,18 @@ impl Value {
             }
             Value::Box(inner) => out.push(Garbage::Value(std::mem::replace(inner, hollow()))),
             Value::Closure { env, .. } => out.extend(env.0.take().map(Garbage::Cell)),
-            // (a resumption's frames are few, and dropped the ordinary way)
-            Value::Int(_) | Value::Num(_) | Value::Str(_) | Value::Char(_) | Value::Bool(_) | Value::Unit | Value::Erased | Value::Resumption(_) => {}
+            // (a resumption's frames are few, and dropped the ordinary way;
+            // and a cell, which may be shared, when its last holder is: one
+            // that holds itself, a knot tied through it, is never dropped)
+            Value::Int(_)
+            | Value::Num(_)
+            | Value::Str(_)
+            | Value::Char(_)
+            | Value::Bool(_)
+            | Value::Unit
+            | Value::Erased
+            | Value::Resumption(_)
+            | Value::Ref(_) => {}
         }
     }
 }
@@ -734,7 +747,19 @@ fn native(n: Native, args: &[Rc<Value>]) -> Result<Value, EvalError> {
                 num::Answer::Text(s) => Value::Str(s.into()),
             }
         }
-        Native::Array | Native::MArray => Value::Erased,
+        Native::Array | Native::MArray | Native::Ref => Value::Erased,
+        Native::NewRef => Value::Ref(Rc::new(std::cell::RefCell::new(args[0].clone()))),
+        Native::GetRef => match &*args[0] {
+            Value::Ref(cell) => cell.borrow().as_ref().clone(),
+            _ => return stuck("getRef is given something that is not a cell"),
+        },
+        Native::SetRef => match &*args[0] {
+            Value::Ref(cell) => {
+                *cell.borrow_mut() = args[1].clone();
+                Value::Unit
+            }
+            _ => return stuck("setRef is given something that is not a cell"),
+        },
         Native::ArrayLen => Value::Int(array(&args[0])?.len() as i64),
         Native::ArrayGet => {
             let items = array(&args[0])?;
@@ -934,6 +959,7 @@ pub fn show(v: &Value) -> Option<String> {
         | Value::Op { .. }
         | Value::Native { .. }
         | Value::Resumption(_)
+        | Value::Ref(_)
         | Value::Erased => None,
     }
 }

@@ -53,7 +53,8 @@ impl Checker {
             let fits = match native.is_type() {
                 // a type constructor: its kind ends in a universe
                 true => ends_in_universe(&sig),
-                false => arity == native.arity() && !ends_in_effects(&sig),
+                // (a cell's operations end in `Mut`, and only they)
+                false => arity == native.arity() && ends_in_effects(&sig) == native.is_mutation(),
             };
             if !fits && !matches!(*sig, Core::Error) {
                 let why = if native.is_type() {
@@ -61,7 +62,8 @@ impl Checker {
                 } else {
                     let n = native.arity();
                     let s = if n == 1 { "" } else { "s" };
-                    format!("it takes {n} argument{s} at run time, after any implicit ones, and has no effects")
+                    let effects = if native.is_mutation() { "ends in the effect Mut" } else { "has no effects" };
+                    format!("it takes {n} argument{s} at run time, after any implicit ones, and {effects}")
                 };
                 self.error(n.id, TypeErrorKind::NativeSignature(n.name.text.clone(), why));
             }

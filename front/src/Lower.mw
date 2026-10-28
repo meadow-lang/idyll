@@ -1288,10 +1288,10 @@ fun numberRep (t : String) : Rep = if t == "Int" then Rep.I64 else Rep.Number t
 
 fun nativeArity (n : String) : Int =
   if M.isSome (N.ofName n) then M.unwrapOr 0 (M.map (\p -> N.arity (fst p)) (N.ofName n))
-  else if n == "Array" or n == "MArray" then 0
-  else if V.elem n ["arrayLen", "arrayPop", "arrayFromList", "arrayToList", "marrayLen", "marrayFreeze", "marrayThaw"] then 1
+  else if n == "Array" or n == "MArray" or n == "Ref" then 0
+  else if V.elem n ["arrayLen", "arrayPop", "arrayFromList", "arrayToList", "marrayLen", "marrayFreeze", "marrayThaw", "newRef", "getRef"] then 1
   else if V.elem n ["stringByteLength", "stringToChars", "charsToString", "charCode", "charFromCode", "stringHash", "charHash", "boolHash", "stringToBytes", "bytesToString", "bytesToHex", "bytesFromHex"] then 1
-  else if V.elem n ["arrayGet", "arrayPush", "arrayConcat", "marrayNew", "marrayGet", "stringByteAt", "stringCompare"] then 2
+  else if V.elem n ["arrayGet", "arrayPush", "arrayConcat", "marrayNew", "marrayGet", "setRef", "stringByteAt", "stringCompare"] then 2
   else 3
 
 -- A native: an array's operation is the runtime's primitive of the same
@@ -1333,6 +1333,9 @@ fun nativeApp (l : L s) (env : LEnv) (whole : Tm) (ni : (String, Int)) (args : [
              else if n == "bytesToString" or n == "bytesToHex" then Just [Rep.Ptr]
              else if n == "charHash" then Just [Rep.Char]
              else if n == "boolHash" then Just [Rep.Bool]
+             else if n == "newRef" then Just [Rep.Any]
+             else if n == "getRef" then Just [Rep.Ptr]
+             else if n == "setRef" then Just [Rep.Ptr, Rep.Any]
              else None
            in
            (match reps with
@@ -1346,13 +1349,13 @@ fun nativeApp (l : L s) (env : LEnv) (whole : Tm) (ni : (String, Int)) (args : [
                 else
                   let values = V.slice args nparams all in
                   let later = V.drop args all in
-                  -- What an array holds comes out as whatever was stored,
-                  -- which only a binder can say how it is represented: given
-                  -- straight to a continuation, it would be taken for a
-                  -- pointer (`docs/CUT.md`).
+                  -- What an array or a cell holds comes out as whatever was
+                  -- stored, which only a binder can say how it is
+                  -- represented: given straight to a continuation, it would
+                  -- be taken for a pointer (`docs/CUT.md`).
                   let isBinder = kindCutCons l.out k == CutConsKind.MuT in
                   let stored =
-                    if (n == "arrayGet" or n == "arrayGetOr") and V.isEmpty later and not isBinder then
+                    if (n == "arrayGet" or n == "arrayGetOr" or n == "getRef") and V.isEmpty later and not isBinder then
                       (let r = repOf l env whole in if r == Rep.Ptr then None else Just r)
                     else None
                   in

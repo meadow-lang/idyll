@@ -107,7 +107,7 @@ def idyll:Prelude/toUInt64 <'a_106 = d_a_105> (d_a_105: desc, v__107: ptr, x_108
       prim toUInt64(v_110; k_109))>)
 
 def idyll:Std/Bytes.at (b_114: ptr, i_115: i64; k_116: ptr) =
-  idyll:Prelude/"#instance@6378"(; μ̃ v_119: ptr.
+  idyll:Prelude/"#instance@6640"(; μ̃ v_119: ptr.
     idyll:Prelude/toUInt8(desc(i64), v_119, 0; μ̃ v_118: u8.
       prim arrayGetOr(v_118, b_114, i_115; μ̃ v_117: u8.
         prim toInt(v_117; k_116))))
@@ -116,17 +116,17 @@ def idyll:Std/Bytes.big (b_123: ptr, i_124: i64, n_125: i64; k_126: ptr) =
   idyll:Std/Bytes.bigFrom(b_123, i_124, n_125, 0; k_126)
 
 def idyll:Std/Bytes.bytesGetU16LE (b_133: ptr, i_134: i64; k_135: ptr) =
-  idyll:Prelude/"#instance@6378"(; μ̃ v_136: ptr.
+  idyll:Prelude/"#instance@6640"(; μ̃ v_136: ptr.
     idyll:Std/Bytes.little(b_133, i_134, 2; μ̃ v_137: i64.
       idyll:Prelude/toUInt16(desc(i64), v_136, v_137; k_135)))
 
 def idyll:Std/Bytes.bytesGetU16BE (b_143: ptr, i_144: i64; k_145: ptr) =
-  idyll:Prelude/"#instance@6378"(; μ̃ v_146: ptr.
+  idyll:Prelude/"#instance@6640"(; μ̃ v_146: ptr.
     idyll:Std/Bytes.big(b_143, i_144, 2; μ̃ v_147: i64.
       idyll:Prelude/toUInt16(desc(i64), v_146, v_147; k_145)))
 
 def idyll:Std/Bytes.bytesGetU64LE (b_150: ptr, i_151: i64; k_152: ptr) =
-  idyll:Prelude/"#instance@6378"(; μ̃ v_153: ptr.
+  idyll:Prelude/"#instance@6640"(; μ̃ v_153: ptr.
     idyll:Std/Bytes.little(b_150, i_151, 8; μ̃ v_154: i64.
       idyll:Prelude/toUInt64(desc(i64), v_153, v_154; k_152)))
 
@@ -146,7 +146,7 @@ def idyll:Prelude/Integer.toInt <'a_197 = d_a_196> (d_a_196: desc, self_198: ptr
       <toInt_200 | k_199>
   }>
 
-def idyll:Prelude/"#instance@6378" (; k_202: ptr) =
+def idyll:Prelude/"#instance@6640" (; k_202: ptr) =
   <cocase {
     apply(a_206: i64; k_207: ptr) =>
       prim toFloat(a_206; k_207)
@@ -156,7 +156,7 @@ def idyll:Prelude/"#instance@6378" (; k_202: ptr) =
         <n_203 | k_204>
     }, v_205) | k_202>>
 
-def idyll:Prelude/"#instance@14009" (; k_208: ptr) =
+def idyll:Prelude/"#instance@14743" (; k_208: ptr) =
   <cocase {
     apply(a_213: u64; k_214: ptr) =>
       prim toInt(a_213; k_214)
@@ -210,7 +210,7 @@ def idyll:Std/Bytes.bigFrom (b_241: ptr, i_242: i64, n_243: i64, acc_244: i64; k
 def idyll:Std/Bytes.putLittle (b_254: ptr, i_255: i64, n_256: i64, v_257: i64; k_258: ptr) =
   idyll:Prelude/intLe(n_256, 0; μ̃ v__259: bool.
     prim if(v__259; μ̃ u_266: unit.
-      idyll:Prelude/"#instance@6378"(; μ̃ v_265: ptr.
+      idyll:Prelude/"#instance@6640"(; μ̃ v_265: ptr.
         idyll:Prelude/toUInt8(desc(i64), v_265, v_257; μ̃ v_264: u8.
           prim arraySet(b_254, i_255, v_264; μ̃ v_260: ptr.
             prim add(i_255, 1; μ̃ v_261: i64.
@@ -224,7 +224,7 @@ def idyll:Std/Bytes.putBig (b_268: ptr, i_269: i64, n_270: i64, v_271: i64; k_27
     prim if(v__273; μ̃ u_281: unit.
       prim add(i_269, n_270; μ̃ v_280: i64.
         prim sub(v_280, 1; μ̃ v_277: i64.
-          idyll:Prelude/"#instance@6378"(; μ̃ v_279: ptr.
+          idyll:Prelude/"#instance@6640"(; μ̃ v_279: ptr.
             idyll:Prelude/toUInt8(desc(i64), v_279, v_271; μ̃ v_278: u8.
               prim arraySet(b_268, v_277, v_278; μ̃ v_274: ptr.
                 prim sub(n_270, 1; μ̃ v_275: i64.
@@ -408,13 +408,13 @@ def idyll:Main/"#entry" (; k_283: ptr) =
             prim bytesFromHex("abc"; μ̃ v_425: ptr.
               idyll:Std/Bytes.bytesGetU16LE(idyll:Main/b, 0; μ̃ v_427: u16.
                 idyll:Std/Bytes.bytesGetU16BE(idyll:Main/b, 0; μ̃ v_429: u16.
-                  idyll:Prelude/"#instance@6378"(; μ̃ v_440: ptr.
+                  idyll:Prelude/"#instance@6640"(; μ̃ v_440: ptr.
                     prim stringToBytes("abcd"; μ̃ v_441: ptr.
                       idyll:Std/Bytes.bytesSetU32BE(desc(i64), v_440, v_441, 0, 305419896; μ̃ v_439: ptr.
                         prim bytesToHex(v_439; μ̃ v_431: str.
-                          idyll:Prelude/"#instance@14009"(; μ̃ v_434: ptr.
+                          idyll:Prelude/"#instance@14743"(; μ̃ v_434: ptr.
                             prim stringToBytes("12345678"; μ̃ v_435: ptr.
-                              idyll:Prelude/"#instance@6378"(; μ̃ v_437: ptr.
+                              idyll:Prelude/"#instance@6640"(; μ̃ v_437: ptr.
                                 prim sub(0, 1; μ̃ v_438: i64.
                                   idyll:Prelude/toUInt64(desc(i64), v_437, v_438; μ̃ v_436: u64.
                                     idyll:Std/Bytes.bytesSetU64LE(desc(u64), v_434, v_435, 0, v_436; μ̃ v_433: ptr.

@@ -54,6 +54,7 @@ pub const MODULES: &[(&str, &str)] = &[
     ("Ordering", include_str!("../../../lib/Std/src/Ordering.idl")),
     ("Process", include_str!("../../../lib/Std/src/Process.idl")),
     ("Random", include_str!("../../../lib/Std/src/Random.idl")),
+    ("Ref", include_str!("../../../lib/Std/src/Ref.idl")),
     ("Result", include_str!("../../../lib/Std/src/Result.idl")),
     ("Sigma", include_str!("../../../lib/Std/src/Sigma.idl")),
     ("Sort", include_str!("../../../lib/Std/src/Sort.idl")),

@@ -808,8 +808,22 @@ and a `Map` built with one `Ord` is rejected when used with another.
   Meadow has them as well (Chris, 2026-10-28), for cells that are shared:
   MiniML's type variables are `Ref`s held all over the type tree, a
   union-find, and its `let rec` ties the knot through a `Ref` closures
-  hold, which no linear reference can be. `Compact` is specific to
+  hold, which no linear reference can be. `Ref` and `Mut` are done: the
+  prelude's `Ref`, `newRef`, `getRef` and `setRef` are natives, Meadow's
+  primitives, the only ones whose types end in an effect, `Mut`, which has
+  no operations and so no handler; `Std.Ref` has Meadow's helpers. The
+  linear `St` waits on linear types (below). `Compact` is specific to
   Meadow's garbage collector and is not ported.
+- [ ] **Linear types** (Chris, 2026-10-28): `MArray` is linear only on
+  the binders of its own `@linear` module, so code elsewhere may alias one
+  and see it written in place: `let m = new 2 0 in (freeze (write m 0
+  1), freeze m)` is `(#[1; 0], #[1; 0])` on the runtimes, and the spec
+  copies. A type is to be linear itself: `MArray`, and a data type that
+  holds a linear one (`St`'s cell). A binder of one is at most `[1]` in
+  every module, by default too; it is never boxed (`[e]`) or given to an
+  unrestricted parameter; and it instantiates only a type parameter its
+  callee uses at most once (`Pair`'s, whose fields are linear, but not
+  that of a function taking `(x : [] a)`).
 
 *Done when:* Meadow's `examples/Tour`, `examples/MiniML` and
 `examples/RockPaperScissors` run, the last tested by feeding it input.

@@ -703,3 +703,37 @@ fn json_trees_are_looked_into() {
         "(Just (Bool True), Nothing, Just (Int 20), Nothing, Just 1, Nothing, Just \"x\", Just True, True, Just 2.0, False, Nothing, \"{\\\"k\\\":null}\")"
     );
 }
+
+#[test]
+fn cells_are_shared_and_changed_as_meadows_are() {
+    let src = "use Std.Ref (modify, swap, bump, repeatN, getAndModify, modifyAndGet)\nuse Std.Tuple (fst)\n\n\
+               countUp : (n : Int) -> Int ! Mut\ncountUp n =\n  let r = newRef 0 in\n  let ignored = repeatN n (\\(u : ()) -> modify r (\\(x : Int) -> x + 1)) in\n  getRef r\n\n\
+               check : () -> (Int, Int, Int, Int, String, Int) ! Mut\ncheck u =\n  let r = newRef 10 in\n  let s = newRef \"a\" in\n  let old = swap r 20 in\n  let b = bump r 5 in\n  \
+               let g = getAndModify s (\\(t : String) -> t ++ \"b\") in\n  let both = (r, r) in\n  let m = modifyAndGet (fst both) (\\(x : Int) -> x * 2) in\n  (countUp 7, old, b, getRef r, getRef s, m)\n\n\
+               check ()\n";
+    assert_eq!(value(src), "(7, 10, 25, 50, \"ab\", 50)");
+}
+
+#[test]
+fn cells_make_a_union_find_and_tie_a_knot() {
+    // MiniML's uses: type variables as cells linked as unification goes,
+    // and a function that calls itself through a cell it is put in
+    let src = "data Ty = TInt | TArrow Ty Ty | TVar (Ref Tv)\n\ndata Tv = Unbound Int | Link Ty\n\nuse Ty.*\nuse Tv.*\n\n\
+               @terminating\nprune : (t : Ty) -> Ty ! Mut\nprune (TVar r) = case getRef r of\n  Link t -> prune t\n  Unbound n -> TVar r\nprune t = t\n\n\
+               @terminating\nshown : (t : Ty) -> String ! Mut\nshown t = case prune t of\n  TInt -> \"Int\"\n  TArrow a b -> \"(\" ++ shown a ++ \" -> \" ++ shown b ++ \")\"\n  \
+               TVar r -> case getRef r of\n    Unbound n -> \"t\" ++ showInt n\n    Link u -> \"?\"\n\n\
+               tied : (n : Int) -> Int ! Mut\ntied n =\n  let cell = newRef {Int -> Int ! Mut} (\\(k : Int) -> 0) in\n  \
+               let f = \\(k : Int) -> if k <= 0 then 0 else k + (getRef cell) (k - 1) in\n  let u = setRef cell f in\n  f n\n\n\
+               check : () -> (String, String, Int) ! Mut\ncheck u =\n  let a = newRef (Unbound 0) in\n  let b = newRef (Unbound 1) in\n  \
+               let t = TArrow (TVar a) (TArrow (TVar b) (TVar a)) in\n  let x = shown t in\n  let y = setRef a (Link TInt) in\n  let z = setRef b (Link (TVar a)) in\n  (x, shown t, tied 10)\n\n\
+               check ()\n";
+    assert_eq!(value(src), "(\"(t0 -> (t1 -> t0))\", \"(Int -> (Int -> Int))\", 55)");
+}
+
+#[test]
+fn a_cell_is_seen_in_a_type() {
+    // making, reading or writing one is the effect `Mut`: a function that
+    // says nothing of it may not
+    let out = pipeline::run("peek : (n : Int) -> Int\npeek n = getRef (newRef n)\n\npeek 1\n", &OPTS);
+    assert!(out.diagnostics.iter().any(|d| d.message.contains("effect")), "{:#?}", out.diagnostics);
+}
