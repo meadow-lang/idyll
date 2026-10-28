@@ -898,6 +898,15 @@ package has no type of its own for: the representations (`Rep`: `i64`,
 `u8`, `bool`, `char`, `unit`, `str`, `ptr`, ...), symbols, and the
 declarations made before they are written.
 
+An operation's slot of a type its effect or itself is generic in is
+declared `any`, and Cut's `any` holds a box (`docs/CUT.md`, open question
+2): what goes there travels in `#Box`, a data type of one field of any
+representation, declared when used. It is put in at the `perform` and
+taken out where a clause binds it; and what the operation gives back is
+put in where a clause resumes (`resume`, or `apply` for a resumption
+applied to more) and taken out at the `perform`'s continuation
+(`opBoxes`, `boxing`, `unboxing`).
+
 A method (a closure's `apply`, a handler clause) binds no representation
 variable of its own, as `docs/CUT.md` has it, so a closure taking a type
 parameter boxes that type's values (`any`) and passes `desc(any)` on.

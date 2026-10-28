@@ -167,6 +167,12 @@ struct Lower<'t> {
     handled_by_entry: Option<usize>,
     /// the natives with no primitive whose `def`s have been made
     natives_made: std::collections::HashSet<Native>,
+    /// whether a value has been put in a box to go where an operation takes
+    /// or gives `any` (see [`Lower::boxed`]), so the box's type is declared
+    boxes_used: bool,
+    /// the resumptions of clauses whose operation gives `any`: what they
+    /// resume with goes in a box
+    boxed_resumes: std::collections::HashSet<String>,
     /// the types whose `#atom` has been made
     atoms: std::collections::HashSet<String>,
     show_defs: Vec<Def>,
@@ -237,6 +243,8 @@ fn lower_with(tc: &mut TypeCheckResult, package: &str, mark: Option<&str>) -> Re
         shows: HashMap::new(),
         atoms: std::collections::HashSet::new(),
         natives_made: std::collections::HashSet::new(),
+        boxes_used: false,
+        boxed_resumes: std::collections::HashSet::new(),
         handled_by_entry: None,
         show_defs: Vec::new(),
         show_int: None,
@@ -880,8 +888,23 @@ impl Lower<'_> {
                 match slot {
                     Some(Slot::Prim(p)) => return self.prim(env, c, p, &args, k),
                     Some(Slot::Def(s, params)) => return self.call(env, c, s, &params, &args, k),
+                    // (resumed and applied to more, `k s s` in a handler
+                    // giving back a function: what it is resumed with is
+                    // boxed all the same)
+                    Some(Slot::Resume(r)) if args.len() > 1 && self.boxed_resumes.contains(&r) => {
+                        let (rest, env2) = (args[1..].to_vec(), env.clone());
+                        return self.atom(env, &args[0], &mut |this, v| {
+                            let g = this.name("g");
+                            let then = this.apply_args(&env2, Producer::Var(g.clone()), &rest, k.clone());
+                            let v = Producer::Con(this.box_ctor(), vec![v]);
+                            let after = Consumer::MuTilde(Binder { name: g, rep: Rep::Ptr }, Box::new(then));
+                            Statement::Cut(Producer::Var(r.clone()), Consumer::Method("apply".into(), vec![v], vec![after]))
+                        });
+                    }
                     Some(Slot::Resume(r)) if args.len() == 1 => {
-                        return self.atom(env, &args[0], &mut |_, v| {
+                        let boxed = self.boxed_resumes.contains(&r);
+                        return self.atom(env, &args[0], &mut |this, v| {
+                            let v = if boxed { Producer::Con(this.box_ctor(), vec![v]) } else { v };
                             Statement::Cut(Producer::Var(r.clone()), Consumer::Method("resume".into(), vec![v], vec![k.clone()]))
                         });
                     }
@@ -1070,7 +1093,11 @@ impl Lower<'_> {
         let done = match head {
             Head2::Call(s) => Statement::Call(s.clone(), all, vec![Consumer::Var(k.clone())]),
             Head2::Con(s) => Statement::Cut(Producer::Con(s.clone(), all), Consumer::Var(k.clone())),
-            Head2::Perform(s) => Statement::Perform(s.clone(), all, Consumer::Var(k.clone())),
+            Head2::Perform(s, slots, result) => {
+                let all = self.boxing(all, slots);
+                let k = if *result { self.unboxing(Rep::Any, Consumer::Var(k.clone())) } else { Consumer::Var(k.clone()) };
+                Statement::Perform(s.clone(), all, k)
+            }
             Head2::Prim(op) => Statement::Prim(op.clone(), prim_args(op, all), vec![Consumer::Var(k.clone())]),
         };
         // innermost first: the last parameter's object does it
@@ -1257,20 +1284,58 @@ impl Lower<'_> {
                 .map(|_| Param::Skip)
                 .chain(reps.into_iter().map(|r| Param::Value(self.rep(env, r))))
                 .collect();
-            return self.partial(env, whole, Head2::Perform(s), &params[..args.len()], args, k);
+            let (slots, result) = self.op_boxes(u);
+            return self.partial(env, whole, Head2::Perform(s, slots, result), &params[..args.len()], args, k);
         }
         let values = args[info.erased..n].to_vec();
         let later = args[n..].to_vec();
         let env2 = env.clone();
+        // what goes to and comes from an `any` slot is boxed
+        let (slots, result) = self.op_boxes(u);
+        let result_rep = if later.is_empty() { self.rep_of(env, whole) } else { Rep::Ptr };
         self.atoms(env, &values, &mut |this, ps| {
-            if later.is_empty() {
-                Statement::Perform(s.clone(), ps, k.clone())
+            let ps = this.boxing(ps, &slots);
+            let k = if later.is_empty() {
+                k.clone()
             } else {
                 let r = this.name("r");
                 let then = this.apply_args(&env2, Producer::Var(r.clone()), &later, k.clone());
-                Statement::Perform(s.clone(), ps, Consumer::MuTilde(Binder { name: r, rep: Rep::Ptr }, Box::new(then)))
-            }
+                Consumer::MuTilde(Binder { name: r, rep: Rep::Ptr }, Box::new(then))
+            };
+            let k = if result { this.unboxing(result_rep.clone(), k) } else { k };
+            Statement::Perform(s.clone(), ps, k)
         })
+    }
+
+    /// Which of operation `u`'s arguments go in a box, and whether what it
+    /// gives back comes in one: those its declaration says are `any`, a
+    /// type its effect or itself is generic in. Cut's `any` holds a box
+    /// (`docs/CUT.md`, open question 2), and a box is a constructor's field.
+    fn op_boxes(&mut self, u: usize) -> (Vec<bool>, bool) {
+        let (params, result) = self.typer.op_shape(u).unwrap_or((Vec::new(), typer::Rep::Any));
+        (params.iter().map(|r| declared_rep(r) == Rep::Any).collect(), declared_rep(&result) == Rep::Any)
+    }
+
+    /// The box a value goes in where `any` is wanted: `#Box`, a data type of
+    /// one field of any representation.
+    fn box_ctor(&mut self) -> Symbol {
+        self.boxes_used = true;
+        Symbol::idyll("Prelude", "#Box").child("Box")
+    }
+
+    /// `ps`, each whose slot says so in a box.
+    fn boxing(&mut self, ps: Vec<Producer>, slots: &[bool]) -> Vec<Producer> {
+        ps.into_iter()
+            .enumerate()
+            .map(|(i, p)| if slots.get(i) == Some(&true) { Producer::Con(self.box_ctor(), vec![p]) } else { p })
+            .collect()
+    }
+
+    /// `k`, given what a box holds, at `rep`.
+    fn unboxing(&mut self, rep: Rep, k: Consumer) -> Consumer {
+        let (b, v) = (self.name("b"), self.name("v"));
+        let arm = Arm { ctor: Some(self.box_ctor()), fields: vec![Binder { name: v.clone(), rep }], body: Statement::Cut(Producer::Var(v), k) };
+        Consumer::MuTilde(Binder { name: b.clone(), rep: Rep::Ptr }, Box::new(Statement::Cut(Producer::Var(b), Consumer::Case(vec![arm]))))
     }
 
     /// A `case`: on data, a `case` consumer; on a `Bool`, `prim if`.  The
@@ -1342,6 +1407,7 @@ impl Lower<'_> {
                 self.effects.insert(info.effect);
             }
             let arity = self.ops.get(&c.op).map_or(1, |i| i.arity);
+            let (slots, result) = self.op_boxes(c.op);
             let mut inner = env.clone();
             let mut lam = c.body.clone();
             // the operation's erased arguments, then its arguments, then the
@@ -1356,9 +1422,17 @@ impl Lower<'_> {
                 inner.slots.push(Slot::TypeVar(None, x.clone()));
                 lam = body;
             }
-            for _ in 0..arity {
+            // (an argument in a box is taken out of it first)
+            let mut unboxed = Vec::new();
+            for i in 0..arity {
                 let Some((x, grade, ty, body)) = lambda(&lam) else { break };
+                let at = params.len();
                 self.bind_method_param(&mut inner, &x, grade, ty.as_ref(), &mut params, &mut rep_vars);
+                if slots.get(i) == Some(&true) && at < params.len() {
+                    let b = self.name("b");
+                    let held = std::mem::replace(&mut params[at], Binder { name: b.clone(), rep: Rep::Ptr });
+                    unboxed.push((b, held));
+                }
                 lam = body;
             }
             let Some((x, _, ty, body)) = lambda(&lam) else {
@@ -1371,8 +1445,15 @@ impl Lower<'_> {
                 None => self.typer.bind_unknown(&inner.scope, &x),
             };
             inner.slots.push(Slot::Resume(r.clone()));
+            if result {
+                self.boxed_resumes.insert(r.clone());
+            }
             let kc = self.name("k");
-            let s = self.term(&inner, &body, Consumer::Var(kc.clone()));
+            let mut s = self.term(&inner, &body, Consumer::Var(kc.clone()));
+            for (b, held) in unboxed.into_iter().rev() {
+                let arm = Arm { ctor: Some(self.box_ctor()), fields: vec![held], body: s };
+                s = Statement::Cut(Producer::Var(b), Consumer::Case(vec![arm]));
+            }
             let op = self.symbol(c.op).unwrap_or_else(|| Symbol::idyll("", &c.name));
             cut_clauses.push(Clause { op, params, resumption: r, cont: kc, body: s });
         }
@@ -1439,6 +1520,14 @@ impl Lower<'_> {
             rep_vars.sort();
             datas.push(DataDecl { symbol, rep_vars, ctors: out });
         }
+        // the box of what goes where an operation takes or gives `any`
+        if self.boxes_used {
+            datas.push(DataDecl {
+                symbol: Symbol::idyll("Prelude", "#Box"),
+                rep_vars: vec!["a0".into()],
+                ctors: vec![("Box".into(), vec![Rep::Var("a0".into())])],
+            });
+        }
         // the roles, for the prelude's types the program uses
         let mut roles = Vec::new();
         let declared: BTreeSet<Symbol> = datas.iter().map(|d| d.symbol.clone()).collect();
@@ -1459,19 +1548,7 @@ impl Lower<'_> {
             let mut out = Vec::new();
             for (u, o) in ops {
                 let (params, result) = self.typer.op_shape(u).unwrap_or((Vec::new(), typer::Rep::Any));
-                let conv = |r: typer::Rep| match r {
-                    typer::Rep::I64 => Rep::I64,
-                    typer::Rep::Word(w) => Rep::Word(w),
-                    typer::Rep::F64 => Rep::F64,
-                    typer::Rep::F32 => Rep::F32,
-                    typer::Rep::Bool => Rep::Bool,
-                    typer::Rep::Unit | typer::Rep::Erased => Rep::Unit,
-                    typer::Rep::Str => Rep::Str,
-            typer::Rep::Char => Rep::Char,
-                    typer::Rep::Ptr => Rep::Ptr,
-                    _ => Rep::Any,
-                };
-                out.push(OpDecl { name: o.name.clone(), many: o.many, params: params.into_iter().map(conv).collect(), result: conv(result) });
+                out.push(OpDecl { name: o.name.clone(), many: o.many, params: params.iter().map(declared_rep).collect(), result: declared_rep(&result) });
             }
             effects.push(EffectDecl { symbol, ops: out });
         }
@@ -1506,6 +1583,24 @@ impl Lower<'_> {
     }
 }
 
+/// What an operation's slot of representation `r` is declared to take or
+/// give: `any` for anything not known when it is declared, which a value
+/// goes to in a box (see `Lower::op_boxes`).
+fn declared_rep(r: &typer::Rep) -> Rep {
+    match r {
+        typer::Rep::I64 => Rep::I64,
+        typer::Rep::Word(w) => Rep::Word(*w),
+        typer::Rep::F64 => Rep::F64,
+        typer::Rep::F32 => Rep::F32,
+        typer::Rep::Bool => Rep::Bool,
+        typer::Rep::Unit | typer::Rep::Erased => Rep::Unit,
+        typer::Rep::Str => Rep::Str,
+        typer::Rep::Char => Rep::Char,
+        typer::Rep::Ptr => Rep::Ptr,
+        _ => Rep::Any,
+    }
+}
+
 /// The runtime's primitive that joins strings: `concatStrings`, given an
 /// array of them.
 const CONCAT: &str = "concatStrings";
@@ -1524,7 +1619,7 @@ fn prim_args(op: &str, args: Vec<Producer>) -> Vec<Producer> {
 enum Head2 {
     Call(Symbol),
     Con(Symbol),
-    Perform(Symbol),
+    Perform(Symbol, Vec<bool>, bool),
     Prim(String),
 }
 

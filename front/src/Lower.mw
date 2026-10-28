@@ -138,7 +138,7 @@ data Uses = Uses [Int] [Int]
 data ShowDefs = ShowDefs Sym (Maybe Sym) (Maybe Sym)
 
 -- What a partial application is of.
-data Head2 = HCall Sym | HCon Sym | HPerform Sym | HPrim String
+data Head2 = HCall Sym | HCon Sym | HPerform Sym [Bool] Bool | HPrim String
 
 record L s = {
   tc : Tc,
@@ -173,7 +173,12 @@ record L s = {
   showInt : Ref (Maybe Sym),
   -- the lambdas with no note on their binders, each with the grades and
   -- types the parameter it is passed for gives them (`noteLambdas`)
-  noted : Ref [(Tm, [(Maybe Grade, Core)])]
+  noted : Ref [(Tm, [(Maybe Grade, Core)])],
+  -- whether a value has been put in a box to go where an operation takes or
+  -- gives `any` (`boxed`), so the box's type is declared; and the
+  -- resumptions of clauses whose operation gives `any`
+  boxesUsed : Ref Bool,
+  boxedResumes : Ref [String]
 }
 
 -- A term of the program: a row of its tables (`Elaborated`).
@@ -530,7 +535,9 @@ fun opInfo (l : L s) (u : Int) : Maybe OpInfo ! { Mut, St s | e } = Hm.lookup u 
           atoms = newRef [],
           showDefs = newRef [],
           showInt = newRef None,
-          noted = newRef []
+          noted = newRef [],
+          boxesUsed = newRef False,
+          boxedResumes = newRef []
         }
       in
       let w0 = setRef l.showInt (M.andThen (\kv -> symbol l (fst kv)) showIntU) in
@@ -1097,8 +1104,20 @@ fun application (l : L s) (env : LEnv) (c : Tm) (k : CutCons) : CutStmt ! { Mut,
        | Just (Slot.SPrim p) -> primApp l env c p args k
        | Just (Slot.SDef s params) -> call l env c s params given k
        | Just (Slot.SResume r) ->
+           let boxed = V.elem r (getRef l.boxedResumes) in
            (match (V.head args, V.len args) with
-            | (Just x, 1) -> atom l env x (\v -> sCut l (pVar l r) (kCall l "resume" [v] [k]))
+            | (Just x, 1) -> atom l env x (\v -> sCut l (pVar l r) (kCall l "resume" [if boxed then pCon l (boxCtor l) [v] else v] [k]))
+            -- (resumed and applied to more, `k s s` in a handler giving
+            -- back a function: what it is resumed with is boxed all the same)
+            | (Just x, n) ->
+                if n > 1 and boxed then
+                  let rest = V.drop args 1 in
+                  atom l env x (\v ->
+                    let g = name l "g" in
+                    let next = applyArgs l env (pVar l g) rest k in
+                    let bv = pCon l (boxCtor l) [v] in
+                    sCut l (pVar l r) (kCall l "apply" [bv] [kMuT l (Binder.Binder g Rep.Ptr) next]))
+                else generic ()
             | _ -> generic ())
        | _ -> generic ())
   | ElaboratedTermOpaque u nm ->
@@ -1243,7 +1262,7 @@ fun waiting (l : L s) (env : LEnv) (head : Head2) (given : [CutProd]) (remaining
     match head with
     | Head2.HCall s -> sInvoke l s all [kVar l k]
     | Head2.HCon s -> sCut l (pCon l s all) (kVar l k)
-    | Head2.HPerform s -> sPerform l s all (kVar l k)
+    | Head2.HPerform s slots result -> sPerform l s (boxing l all slots) (if result then unboxing l Rep.Any (kVar l k) else kVar l k)
     | Head2.HPrim op -> sPrim l op (primArgs l op all) [kVar l k]
   in
   -- innermost first: the last parameter's object does it
@@ -1414,20 +1433,51 @@ fun performed (l : L s) (env : LEnv) (whole : Tm) (u : Int) (info : OpInfo) (arg
       if V.len args < n then
         let reps = match Ty.opShape l.tc u with | Just (ps, _) -> ps | None -> [] in
         let params = V.append (V.replicate erased Param.PSkip) (V.map (\r -> Param.PValue (rep env r)) reps) in
-        partial l env whole (Head2.HPerform s) (V.take params (V.len args)) (V.map (\x -> Arg.Of x) args) k
+        let (slots, result) = opBoxes l u in
+        partial l env whole (Head2.HPerform s slots result) (V.take params (V.len args)) (V.map (\x -> Arg.Of x) args) k
       else
         let values = V.slice args erased n in
         let later = V.drop args n in
+        -- what goes to and comes from an `any` slot is boxed
+        let (slots, result) = opBoxes l u in
+        let resultRep = if V.isEmpty later then repOf l env whole else Rep.Ptr in
         atoms
           l
           env
           values
-          (\ps ->
-            if V.isEmpty later then sPerform l s ps k
-            else
-              let r = name l "r" in
-              let next = applyArgs l env (pVar l r) later k in
-              sPerform l s ps (kMuT l (Binder.Binder r Rep.Ptr) next))
+          (\ps0 ->
+            let ps = boxing l ps0 slots in
+            let k2 =
+              if V.isEmpty later then k
+              else
+                let r = name l "r" in
+                let next = applyArgs l env (pVar l r) later k in
+                kMuT l (Binder.Binder r Rep.Ptr) next
+            in
+            sPerform l s ps (if result then unboxing l resultRep k2 else k2))
+
+-- Which of operation `u`'s arguments go in a box, and whether what it gives
+-- back comes in one: those its declaration says are `any` (`op_boxes`).
+-- Cut's `any` holds a box, and a box is a constructor's field.
+fun opBoxes (l : L s) (u : Int) : ([Bool], Bool) ! { Mut, St s | e } =
+  let (ps, r) = M.unwrapOr ([], TRep.Any) (Ty.opShape l.tc u) in
+  (V.map (\p -> conv p == Rep.Any) ps, conv r == Rep.Any)
+
+-- The box a value goes in where `any` is wanted: `#Box`.
+fun boxCtor (l : L s) : Sym ! { Mut, St s | e } =
+  let w = setRef l.boxesUsed True in
+  A.child (A.idyll "Prelude" "#Box") "Box"
+
+-- `ps`, each whose slot says so in a box.
+fun boxing (l : L s) (ps : [CutProd]) (slots : [Bool]) : [CutProd] ! { Mut, St s | e } =
+  V.map (\ip -> match ip with | (i, p) -> if V.getOr False slots i then pCon l (boxCtor l) [p] else p) (V.zip (V.range 0 (V.len ps)) ps)
+
+-- `k`, given what a box holds, at `r`.
+fun unboxing (l : L s) (r : Rep) (k : CutCons) : CutCons ! { Mut, St s | e } =
+  let b = name l "b" in
+  let v = name l "v" in
+  let a = arm l (Just (boxCtor l)) [Binder.Binder v r] (sCut l (pVar l v) k) in
+  kMuT l (Binder.Binder b Rep.Ptr) (sCut l (pVar l b) (kCase l [a]))
 
 fun isBoolAlt (l : L s) (alt : ElaboratedAlt) : Bool =
   match elaboratedAltHead l.a alt with
@@ -1509,8 +1559,10 @@ fun handled (l : L s) (env : LEnv) (body : Tm) (ret : Tm) (clauses : [Elaborated
         let arity = match info with | Just (OpInfo.OpInfo _ _ _ _ ar _) -> ar | None -> 1 in
         -- the operation's erased arguments, then its arguments, then the
         -- resumption
+        let (slots, result) = opBoxes l op in
         let (inner1, lam1) = erasedArgs l env lam0 erased in
-        let (inner2, lam2, params) = opArgs l inner1 lam1 arity [] in
+        -- (an argument in a box is taken out of it first)
+        let (inner2, lam2, params, unboxed) = opArgs l inner1 lam1 arity [] slots 0 [] in
         (match lambda l lam2 with
          | None ->
              let w2 = err l (opName ++ "'s clause has no resumption") in
@@ -1519,8 +1571,10 @@ fun handled (l : L s) (env : LEnv) (body : Tm) (ret : Tm) (clauses : [Elaborated
              let r = name l "r" in
              let scope3 = match ty with | Just t -> Ty.bind l.tc (scopeOf inner2) x t | None -> Ty.bindUnknown (scopeOf inner2) x in
              let inner3 = pushSlot (withScope inner2 scope3) (Slot.SResume r) in
+             let w3 = if result then setRef l.boxedResumes (V.pushBack (getRef l.boxedResumes) r) else () in
              let kc = name l "k" in
-             let s = term l inner3 cbody (kVar l kc) in
+             let s0 = term l inner3 cbody (kVar l kc) in
+             let s = V.foldl (\acc bh -> match bh with | (b, held) -> sCut l (pVar l b) (kCase l [arm l (Just (boxCtor l)) [held] acc])) s0 (V.reverse unboxed) in
              [clause l (symbolOr l op opName) params r kc s]))
       clauses
   in
@@ -1551,14 +1605,20 @@ fun erasedArgs (l : L s) (env : LEnv) (lam : Tm) (n : Int) : (LEnv, Tm) ! { Mut,
         let scope2 = match ty with | Just t -> Ty.bind l.tc (scopeOf env) x t | None -> Ty.bindUnknown (scopeOf env) x in
         erasedArgs l (pushSlot (withScope env scope2) (Slot.STypeVar None x)) body (n - 1)
 
-fun opArgs (l : L s) (env : LEnv) (lam : Tm) (n : Int) (params : [Binder]) : (LEnv, Tm, [Binder]) ! { Mut, St s | e } =
-  if n <= 0 then (env, lam, params)
+fun opArgs (l : L s) (env : LEnv) (lam : Tm) (n : Int) (params : [Binder]) (slots : [Bool]) (i : Int) (unboxed : [(String, Binder)]) : (LEnv, Tm, [Binder], [(String, Binder)]) ! { Mut, St s | e } =
+  if n <= 0 then (env, lam, params, unboxed)
   else
     match lambda l lam with
-    | None -> (env, lam, params)
+    | None -> (env, lam, params, unboxed)
     | Just (x, grade, ty, body) ->
         let (env2, b, rv) = bindMethodParam l env x grade ty in
-        opArgs l env2 body (n - 1) (V.append params (vecOf b))
+        (match b with
+         | Just held ->
+             if V.getOr False slots i then
+               let bx = name l "b" in
+               opArgs l env2 body (n - 1) (V.pushBack params (Binder.Binder bx Rep.Ptr)) slots (i + 1) (V.pushBack unboxed (bx, held))
+             else opArgs l env2 body (n - 1) (V.pushBack params held) slots (i + 1) unboxed
+         | None -> opArgs l env2 body (n - 1) params slots (i + 1) unboxed)
 
 fun conv (r : TRep) : Rep =
   match r with
@@ -1586,7 +1646,7 @@ fun declarations (l : L s) (entry : Maybe Sym) (answer : Bool) : String ! { Mut,
       let tag = \kv -> match snd kv with | CtorInfo.CtorInfo _ _ t _ _ -> t in
       V.foldl (\acc c -> V.concat [V.filter (\x -> tag x <= tag c) acc, [c], V.filter (\x -> tag x > tag c) acc]) [] cs
   in
-  let datas =
+  let datas0 =
     V.concatMap
       (\d ->
         match symbol l d with
@@ -1621,6 +1681,11 @@ fun declarations (l : L s) (entry : Maybe Sym) (answer : Bool) : String ! { Mut,
             let sortedVars = V.foldl (\acc x -> V.concat [V.filter (\y -> not (S.lessThan x y)) acc, [x], V.filter (\y -> S.lessThan x y) acc]) [] repVars in
             [CData.CData s sortedVars out])
       (getRef l.datas)
+  in
+  -- the box of what goes where an operation takes or gives `any`
+  let datas =
+    if getRef l.boxesUsed then V.pushBack datas0 (CData.CData (A.idyll "Prelude" "#Box") ["a0"] [("Box", [Rep.Var "a0"])])
+    else datas0
   in
   -- the roles, for the prelude's types the program uses
   let declared = V.map (\d -> match d with | CData.CData s _ _ -> s) datas in

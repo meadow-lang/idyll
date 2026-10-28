@@ -393,3 +393,21 @@ fn a_cell_is_the_runtimes_own() {
     assert!(text.contains(": i64."), "{text}");
     assert!(!text.contains("perform"), "{text}");
 }
+
+#[test]
+fn a_value_at_an_operations_any_is_boxed() {
+    // an operation generic in its effect's parameter takes and gives `any`,
+    // which holds a box: what is performed with goes in one, what a clause
+    // is given comes out of one, and so do what it resumes with and what
+    // the perform is given back (`docs/CUT.md`, open question 2)
+    let src = "effect Cell (s : Type) where\n  get : () -> s\n  put : (x : [] s) -> ()\n\n\
+               bump : () -> Int ! Cell Int\nbump u = let v = put (get () + 1) in get ()\n\n\
+               run : (s : [] Int) -> Int\nrun = handle bump () with\n  return x -> \\(s : [] Int) -> x\n  get _ k -> \\(s : [] Int) -> k s s\n  put s2 k -> \\(s : [] Int) -> k () s2\n\n\
+               run 41\n";
+    let text = lowered(src);
+    has(&text, "data idyll:Prelude/\"#Box\" <'a0> { Box('a0) }");
+    has(&text, "effect idyll:Main/Cell { get(unit) -> any; put(any) -> unit }");
+    has(&text, "perform idyll:Main/Cell.put(idyll:Prelude/\"#Box\".Box(");
+    has(&text, "idyll:Prelude/\"#Box\".Box(s2_N: i64) =>");
+    has(&text, "apply(idyll:Prelude/\"#Box\".Box(s_N)");
+}
