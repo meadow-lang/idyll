@@ -908,7 +908,12 @@ accepted when what it does fits within what resuming was found to.
     module's after its alias), not only the program's top level;
   - hover, definitions and completion kept in the session, rather than
     the file checked again for each.
-- [ ] **The VS Code extension** (`editors/vscode`).
+- [~] **The VS Code extension** (`editors/vscode`), as Meadow's is: a
+  client that starts front/'s `Idyll lsp`, with a TextMate grammar and
+  indentation rules for `.idl` that work without it. `build.sh` packages
+  it (`idyll-<version>.vsix`). Still to come: finding the server without
+  `idyll.server.path` (Meadow's extension searches its install
+  directories), and a release that ships the `.vsix`.
 - [ ] **Named holes, for type-driven development** (Chris, 2026-10-16), as
   Idris and Agda have them. `_` is a hole the checker fills in, as it does
   today. `?name` is a goal left for later:
