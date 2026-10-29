@@ -53,6 +53,7 @@ use Idyll.Core as C
 use Idyll.Hir (Literal)
 use Idyll.Driver as D
 use Lingua (cli!)
+use Std.Fs (writeString)
 use Idyll.Format as Fmt
 use Lingua.Green (dump)
 use Lingua.Diagnostic (renderAll)
@@ -84,7 +85,10 @@ cli! {
         names : [String] "just these dependencies (every one, if none)"
         dryRun : Flag "Say what would change, and change nothing"
       }
-    | fmt "Set each file out, as idyll fmt does" { files : [String] "the files" }
+    | fmt "Set each file out, in place" {
+        files : [String] "the files"
+        check : Flag "Change nothing: say which files are not set out, and fail if any is not"
+      }
     | tokens "Each file's tokens, laid out" { files : [String] "the files" }
     | tree "Each file's lossless tree" { files : [String] "the files" }
     | parse "Each file's syntax tree, as S-expressions" { files : [String] "the files" }
@@ -109,7 +113,7 @@ fun main () =
        | Just path -> withPrelude path (\prelude -> eachAgainstStd prelude r.dump.std r.paths ran ranAgainst))
   | (every, Tool.Check r) -> D.checkCommand every.offline every.locked r.path
   | (every, Tool.Update r) -> D.updateCommand r.names r.dryRun
-  | (every, Tool.Fmt r) -> V.foldl (\u f -> each f Fmt.formatted) () r.files
+  | (every, Tool.Fmt r) -> if V.foldl (\ok f -> fmtFile r.check f and ok) True r.files then () else exit 1
   | (every, Tool.Tokens r) -> V.foldl (\u f -> each f dumpTokens) () r.files
   | (every, Tool.Tree r) -> V.foldl (\u f -> each f dumpTree) () r.files
   | (every, Tool.Parse r) -> V.foldl (\u f -> each f Surface.dumped) () r.files
@@ -120,6 +124,30 @@ fun main () =
   | (every, Tool.Parted r) -> withPreludeOf r.dump.prelude (\prelude -> packageDump prelude r.name r.dir (\modules texts -> partedDump prelude r.name modules texts))
   | (every, Tool.Compiled r) -> withPreludeOf r.dump.prelude (\prelude -> packageDump prelude r.name r.dir (\modules texts -> compiledDump prelude r.name modules))
   | (every, Tool.Package r) -> withPreludeOf r.dump.prelude (\prelude -> packageDump prelude r.name r.dir (\modules texts -> packageTypes prelude r.name modules))
+
+-- `idyll fmt` of `file`: set out in place, or with `check` only said if it
+-- is not. Whether it is set out now; a file with errors is left as it is.
+fun fmtFile (check : Bool) (file : String) : Bool ! { Fs | e } =
+  match readToString file with
+  | Err e ->
+      let w = writeError "${file}: could not read it: ${e}\n" in
+      False
+  | Ok text ->
+      (match Fmt.formatted text with
+       | Err ds ->
+           let w = writeError (renderAll file text ds) in
+           False
+       | Ok out ->
+           if out == text then True
+           else if check then
+             let w = writeError "${file}: not set out\n" in
+             False
+           else
+             (match writeString (file, out) with
+              | Ok _ -> True
+              | Err e ->
+                  let w = writeError "${file}: could not write it: ${e}\n" in
+                  False))
 
 -- The prelude at `path`, read and parsed, to `k`; or why not, said.
 fun withPrelude (path : String) k =

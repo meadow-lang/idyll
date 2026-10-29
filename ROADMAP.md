@@ -873,8 +873,21 @@ accepted when what it does fits within what resuming was found to.
   Rust driver's. Still to come: a test's own panic (dividing by zero)
   stops the rest, as it is no `Test` failure, and what a test prints is not
   kept apart.
-- [ ] **The formatter** (`meadow-fmt`, adapted to Idyll's layout rules),
-  breaking a long signature as the principles above set it out.
+- [~] **The formatter**, written with Lingua's `format!` over front/'s
+  grammar (Chris, 2026-10-28: the build tools are Lingua's eDSLs, and so
+  is this), as `meadow fmt` is over Meadow's. `Idyll fmt [--check]
+  files` (front/'s driver) sets files out in place, within 100 columns, a
+  level two spaces. A block's items each start a line at its column, after
+  what opens it or under it a level in. A body that does not fit after its
+  `=` or `->` goes under it, and guards go a line each. Comments and one
+  blank line are kept. A program with errors is left as it is. The trivia
+  is in front/'s lossless tree for it, and a block's virtual close stands
+  where its last token ends. Every corpus program comes out as the same
+  program, and formatting it again changes nothing
+  (`front_formats_every_program_as_the_same_program`). A long signature
+  is broken as the principles above set it out (`format!`'s `indent N(..)`
+  and `nogroup`, which Lingua added for it). Still to come: `idyll fmt` in
+  the Rust driver.
 - [ ] **The language server** (`meadow-lsp`). Joining the renamer's span
   table with the checker's type table gives type-on-hover almost for free.
 - [ ] **The VS Code extension** (`editors/vscode`).

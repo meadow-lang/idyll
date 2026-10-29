@@ -105,7 +105,12 @@ use Idyll.Layout (Token, foldToken)
   grammar {
     File = "vlbrace" entries:Entry* "vrbrace"
     Entry = Item | Sep
-    Sep = sep:(";" | "vsemi")
+    -- a `;` written, or the layout's: set out apart, as a written one keeps
+    -- the next item on its line (a line break would make the layout put its
+    -- own `;` after it)
+    Sep = WrittenSemi | LaidSemi
+    WrittenSemi = ";"
+    LaidSemi = "vsemi"
 
     -- --- items ---
 
@@ -239,8 +244,46 @@ use Idyll.Layout (Token, foldToken)
   pub Style for Idyll
   indent 2
   width 100
-    | Sep = newline sep tight
-    | LetE = "let" open indent(entries) close "in" body
-    | CaseE = "case" scrutinee "of" open indent(entries) close
-    | Plain = "=" indent(line body)
+    -- the layout's `;` is a line break; a written one keeps the next item on
+    -- its line
+    | LaidSemi = tight "vsemi" newline
+    | WrittenSemi = tight ";"
+    -- a body after its `=` or `->`, or under it a level in
+    | Plain = "=" indent(line group(body))
+    -- guards a line each, a level in
+    | Line = lhs eff rhs
+    | Guards = indent(guards)
+    | Guard = newline "|" group(cond) "=" indent(line group(body))
+    | AltPlain = "->" indent(line group(body))
+    | Alt = pat rhs
+    | AltGuards = indent(guards)
+    | AltGuard = newline "|" group(cond) "->" indent(line group(body))
+    | Clause = op params "->" indent(line group(body))
+    | Lam = "\\" tight binders "->" indent(line group(body))
+    | IfE = "if" group(cond) indent(line "then" group(yes)) indent(line "else" group(no))
+    -- a block's items after what opens it, or under it a level in, each a
+    -- line of its own; a `let`'s `in` under the `let`. A block of
+    -- declarations always under it.
+    | LetE = "let" open indent(line entries) close line "in" group(body)
+    | CaseE = "case" group(scrutinee) "of" open indent(line entries) close
+    | HandleE = "handle" group(body) "with" open indent(line entries) close
+    | CtorSigs = "where" open indent(newline entries) close
+    | TraitDecl = "trait" group(head) "where" open indent(newline entries) close
+    | InstanceDecl = kw name group(head) "where" open indent(newline entries) close
+    | OpBlock = "where" open indent(newline entries) close
+    | ModuleDecl = "module" name "where" open indent(newline entries) close
+    -- a signature that does not fit an entry a line: the name alone, the
+    -- colon three spaces in and each arrow two, so every type starts in one
+    -- column. A chain of arrows breaks as one (`nogroup`: an arrow's line
+    -- breaks with the group around it).
+    | Annot = indent 2(line indent 1(":") ty)
+    -- elsewhere a type is a group of its own, so that its arrows break only
+    -- if it does not fit
+    | OpSig = attr name ":" group(ty)
+    | CtorSig = name ":" group(ty)
+    | Kind = ":" group(ty)
+    | FieldDecl = name ":" group(ty)
+    | Op = nogroup chain tail
+    | Arrow = nogroup line "->" result eff
+    | Constraint = nogroup line "=>" result eff
 }

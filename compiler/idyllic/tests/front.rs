@@ -51,6 +51,79 @@ fn the_parses_agree() {
     agree("parse", parsed);
 }
 
+/// A parse dump with what is named after where it is in the text -- an
+/// instance with no name of its own, `#instance@<offset>` -- named alike.
+fn unplaced(dump: &str) -> String {
+    let mut out = String::with_capacity(dump.len());
+    let mut rest = dump;
+    while let Some(at) = rest.find("#instance@") {
+        let (head, tail) = rest.split_at(at + "#instance@".len());
+        out.push_str(head);
+        rest = tail.trim_start_matches(|c: char| c.is_ascii_digit());
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `Idyll fmt` sets every program out as the same program: this compiler
+/// parses what it wrote as it parsed what was written (layout and all), and
+/// formatting it again changes nothing. Each program this compiler parses
+/// is written to a file, formatted in place, and formatted again.
+#[test]
+fn front_formats_every_program_as_the_same_program() {
+    let exe = match front() {
+        Ok(exe) => exe,
+        Err(why) if why.starts_with("no meadow") => {
+            eprintln!("{why}: front/ was not checked");
+            return;
+        }
+        Err(why) => panic!("{why}"),
+    };
+    let programs: Vec<(String, String)> = corpus().into_iter().filter(|(_, src)| parsed(src) != "(error)").collect();
+    let dir = std::env::temp_dir().join(format!("idyll-front-fmt-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a directory for the programs");
+    let files: Vec<String> = programs.iter().map(|(name, _)| format!("{name}.idl")).collect();
+    for ((_, src), file) in programs.iter().zip(&files) {
+        std::fs::write(dir.join(file), src).expect("a program written");
+    }
+    // a few hundred at a time, as a command line has a length it may not
+    // pass; a program front/ will not set out (one with errors it finds
+    // and this compiler's parser does not) is left as it is, and said
+    let format = || {
+        for batch in files.chunks(200) {
+            std::process::Command::new(&exe).arg("fmt").args(batch).current_dir(&dir).output().expect("front/ runs");
+        }
+        files.iter().map(|f| std::fs::read_to_string(dir.join(f)).expect("a program read").replace("\r\n", "\n")).collect::<Vec<_>>()
+    };
+    let once = format();
+    let twice = format();
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut differ = Vec::new();
+    let mut changed = 0;
+    for (((name, src), once), twice) in programs.iter().zip(&once).zip(&twice) {
+        if once != src {
+            changed += 1;
+        }
+        if std::env::var("IDYLL_FRONT_SHOW").is_ok_and(|v| v.split(',').any(|n| n == name)) {
+            eprintln!("--- {name}, as written:\n{src}\n--- set out:\n{once}");
+        }
+        let (before, after) = (unplaced(&parsed(src)), unplaced(&parsed(once)));
+        if before != after {
+            differ.push(format!("{name}: read as another program, {}", first_difference(&before, &after)));
+        } else if once != twice {
+            differ.push(format!("{name}: set out again, it changes:\n{}", first_difference(once, twice)));
+        }
+    }
+    eprintln!("fmt: {} programs, {changed} of them changed, {} not the same", programs.len(), differ.len());
+    assert!(
+        differ.is_empty(),
+        "{} of {} programs are not set out as the same program:\n{}",
+        differ.len(),
+        programs.len(),
+        differ.iter().take(20).cloned().collect::<Vec<_>>().join("\n")
+    );
+}
+
 #[test]
 fn the_renames_agree() {
     let source = idyllic::pipeline::PRELUDE;

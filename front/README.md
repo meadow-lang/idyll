@@ -93,6 +93,25 @@ share a unique.
 `front_builds_and_runs_a_package_with_a_dependency` and
 `front_runs_every_example_itself` hold it to that.
 
+`Idyll fmt files` sets files out in place (`--check` changes nothing, and
+fails if one is not set out). It is a `format!` (`Syntax.mw`, `Style`)
+over the lossless tree, which holds the lexer's spaces, line ends and
+comments as `syntax!`'s trivia. Idyll's layout is part of its meaning, and
+`format!` writes a layout token, which has no text, as nothing. So `Sep`
+(the layout's `;`) is one line break, and a block's items each start a
+line at its column, after what opens the block or under it a level in. A
+body that does not fit after its `=` or `->` goes under it a level in, and
+guards go a line each. The layout puts a block's virtual close where its
+last token ends (`Layout.closedEarly`), so the blank lines and comments
+after a block are around it, not in it. One blank line is kept where there
+were any, and a line that goes on with the one before keeps how far further
+in it was. A long signature is an entry a line, the colon three spaces in and
+each arrow two (`indent N(..)`, and `nogroup` so that a chain of arrows
+breaks as one). A program with errors is left as it is (`Format.formatted`).
+`front_formats_every_program_as_the_same_program` formats every corpus
+program and checks two things: the Rust parser reads it as the same
+program, and formatting again changes nothing.
+
 The same executable, given a pass and some files, writes what that pass
 made of each file, after a line `== <file>`:
 
@@ -395,6 +414,16 @@ literals, ...) it copies.
 - `let` takes its declarations `raw`, to bind and pair them, and calls the
   pass's own functions inside the scope that makes; so does a definition's
   equation (`renameClause`), its result type around each body.
+
+What collects something from a tree rather than writing one is a `pass!`
+with `fold`: an empty answer and a way to put two together, which every
+production without a case answers of its children. There are five such folds:
+- Rename's `unbound`: a signature's free lower-case names, in order;
+- Scc's `free`: what a term uses and does not bind;
+- Prune's `refs`: the levels and constants a term refers to;
+- Lower's `mentions` and `used`.
+
+Each has cases only for the names and binders it cares about.
 
 What is around the pass is ordinary code that hands each term and pattern
 to it: a package's modules, their `use`s, and each module's declarations,
