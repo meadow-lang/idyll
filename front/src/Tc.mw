@@ -7,6 +7,8 @@
 
 use Std.St (StRef, newRef, getRef, setRef)
 use Std.Macro (Reflect)
+use Lingua.Lang as Lang
+use Lingua.Lang (spanMeta)
 use Idyll.Rename (HirArena, HirExpr, freezeHir, newHirBuilder)
 use Idyll.Elab (Cx)
 use Idyll.Usage (Usage)
@@ -106,6 +108,10 @@ use Std.Maybe.Maybe.*
   spineHere : StRef s Int,
   -- what was wrong, by the name the Rust checker gives the kind of error
   errors : StRef s [String],
+  -- the same, each where it was found: the node being checked then (`at`,
+  -- which `Elab.elaborate` keeps), for the language server
+  placed : StRef s [(Lang.Meta, String)],
+  at : StRef s Lang.Meta,
   holes : StRef s [HoleAt],
   postponed : StRef s [Postponed],
   -- whether the definition being checked is in a linear module, where an
@@ -231,6 +237,8 @@ use Std.Maybe.Maybe.*
     inferSpine = newRef 0,
     spineHere = newRef 0,
     errors = newRef [],
+    placed = newRef [],
+    at = newRef (spanMeta 0 0),
     holes = newRef [],
     postponed = newRef [],
     linear = newRef False,
@@ -297,6 +305,8 @@ use Std.Maybe.Maybe.*
     inferSpine = newRef (getRef tc.inferSpine),
     spineHere = newRef (getRef tc.spineHere),
     errors = newRef (getRef tc.errors),
+    placed = newRef (getRef tc.placed),
+    at = newRef (getRef tc.at),
     holes = newRef (getRef tc.holes),
     postponed = newRef (getRef tc.postponed),
     linear = newRef (getRef tc.linear),
@@ -360,6 +370,8 @@ use Std.Maybe.Maybe.*
   let w9 = setRef tc.inferSpine (getRef saved.inferSpine) in
   let w10 = setRef tc.spineHere (getRef saved.spineHere) in
   let w11 = setRef tc.errors (getRef saved.errors) in
+  let w11a = setRef tc.placed (getRef saved.placed) in
+  let w11b = setRef tc.at (getRef saved.at) in
   let w12 = setRef tc.holes (getRef saved.holes) in
   let w13 = setRef tc.postponed (getRef saved.postponed) in
   let w14 = setRef tc.linear (getRef saved.linear) in
@@ -398,8 +410,10 @@ use Std.Maybe.Maybe.*
 
 @pub fun problem (tc : Tc s) (why : String) = setRef tc.problems (V.pushBack (getRef tc.problems) why)
 
--- An error, by its kind's name.
-@pub fun error (tc : Tc s) (kind : String) = setRef tc.errors (V.pushBack (getRef tc.errors) kind)
+-- An error, by its kind's name, found at the node being checked.
+@pub fun error (tc : Tc s) (kind : String) =
+  let w = setRef tc.placed (V.pushBack (getRef tc.placed) (getRef tc.at, kind)) in
+  setRef tc.errors (V.pushBack (getRef tc.errors) kind)
 
 -- Something this checker cannot check yet.
 @pub fun cannot (tc : Tc s) (what : String) = setRef tc.unsupported (V.pushBack (getRef tc.unsupported) what)

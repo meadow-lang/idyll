@@ -13,9 +13,9 @@
 # another, they outgrew a job's time. Meadow is the nightly build: front/ and
 # the runtimes are what `master` of Meadow has. The front/ comparisons build
 # front/ with it, and so do the reference interpreter's, which also run
-# front/'s Cut on Glade and Silo. The Rust compiler's own tests run without
-# Meadow, so its front/ comparisons say so and pass there, and run in the job
-# of their own.
+# front/'s Cut on Glade and Silo. The Rust compiler's own tests run programs
+# on Meadow's runtimes too, and leave front/'s comparisons (IDYLL_FRONT_SKIP)
+# to the job of their own.
 
 name: ci
 
@@ -54,9 +54,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
         with:
-          meadow: "false"
           token: ${{ github.token }}
+      # front/'s comparisons are the job below's
       - working-directory: compiler
+        env:
+          IDYLL_FRONT_SKIP: "1"
         run: cargo test --workspace --no-fail-fast
 
   differentials:

@@ -61,5 +61,23 @@ fun published (said : [Json]) : Maybe Int =
 @test fun aSyntaxErrorIsPublished () =
   assertEq (M.map (\n -> n > 0) (published (told [opening "file:///a.idl" "x = (1 +\n"] serveServer))) (Just True) "what the parser said"
 
+-- Where the first diagnostic published starts: its line and column.
+fun firstAt (said : [Json]) : Maybe (Json, Json) =
+  match V.get said 0 with
+  | Just m ->
+      (match (J.path ["params", "diagnostics"] m) with
+       | Just (J.Json.Array ds) ->
+           (match V.get ds 0 with
+            | Just d ->
+                (match (J.path ["range", "start", "line"] d, J.path ["range", "start", "character"] d) with
+                 | (Just l, Just c) -> Just (l, c)
+                 | _ -> None)
+            | None -> None)
+       | _ -> None)
+  | None -> None
+
+@test fun aTypeErrorIsWhereItWasFound () =
+  assertEq (firstAt (told [opening "file:///a.idl" "x : Bool\nx = 1\n"] serveServer)) (Just (J.jInt 1, J.jInt 4)) "at the 1, not the start of the file"
+
 @test fun aTypeErrorIsPublished () =
   assertEq (M.map (\n -> n > 0) (published (told [opening "file:///a.idl" "x : Bool\nx = 1\n"] serveServer))) (Just True) "what the checker said"

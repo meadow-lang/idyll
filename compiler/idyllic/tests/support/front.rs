@@ -30,10 +30,16 @@ pub fn meadow() -> PathBuf {
 }
 
 /// `front/`, built natively, once: its executable, or why there is none.
+/// `IDYLL_FRONT_SKIP` says there is none: CI runs these comparisons in a job
+/// of their own, and the compiler's other tests, which run programs on
+/// Meadow's runtimes, in another.
 pub fn front() -> Result<PathBuf, String> {
     static BUILT: OnceLock<Result<PathBuf, String>> = OnceLock::new();
     BUILT
         .get_or_init(|| {
+            if std::env::var_os("IDYLL_FRONT_SKIP").is_some() {
+                return Err("no meadow wanted here (IDYLL_FRONT_SKIP): front/ is compared in a job of its own".to_string());
+            }
             let dir = repo().join("front");
             let out = Command::new(meadow())
                 .arg("build")

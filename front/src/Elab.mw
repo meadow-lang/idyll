@@ -1216,6 +1216,14 @@ fun leaveGroups (usage : Usage) (pending : [Pending]) : Usage =
 -- A term headed by a name with several meanings is the one that fits (once
 -- an implicit function wanted has bound its argument: see `within`).
 fun elaborate (tc : Tc s) (cx : Cx s) (t : HirExpr) : (Core, Value, Usage) ! { St s | e } =
+  -- what is found wrong meanwhile is found at `t`
+  let before = getRef tc.at in
+  let w = setRef tc.at (metaHirExpr (hirOf tc) t) in
+  let answer = elaborateAt tc cx t in
+  let w2 = setRef tc.at before in
+  answer
+
+fun elaborateAt (tc : Tc s) (cx : Cx s) (t : HirExpr) : (Core, Value, Usage) ! { St s | e } =
   match O.overloadedHead tc t with
   | None -> (getRef tc.elab) cx t
   | Just head ->

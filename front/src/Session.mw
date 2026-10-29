@@ -13,7 +13,7 @@
 use Lingua (database!)
 use Lingua.Green (Green)
 use Lingua.Diagnostic (Diagnostic, errorAt, warningAt)
-use Lingua.Lang (spanMeta)
+use Lingua.Lang (Meta, spanMeta)
 use Idyll.Syntax (Idyll, parseIdyll)
 use Idyll.Surface (SurfaceProgram)
 use Idyll.Surface as Surface
@@ -65,7 +65,7 @@ database! {
              runSt (\() ->
                let c = checkedAgainst (sccModule m) False (V.map (\d -> match d with | (_, _, cp) -> cp) deps) in
                V.append
-                 (V.map (\k -> errorAt nowhere k) (distinct (St.getRef c.tc.errors)))
+                 (placedOnce (St.getRef c.tc.placed))
                  (V.map (\k -> warningAt nowhere "this compiler cannot check this yet: ${k}") (distinct (St.getRef c.tc.unsupported)))))
 
 -- Std compiled, after the prelude: its modules as this program holds them.
@@ -109,5 +109,42 @@ database! {
 @pub fun formattedOf (text : String) : String = match Fmt.formatted text with | Ok out -> out | Err _ -> text
 
 fun nowhere = spanMeta 0 0
+
+-- The checker's errors, each once where it was found, said in words.
+fun placedOnce (placed : [(Meta, String)]) : [Diagnostic] =
+  V.map (\p -> match p with | (at, kind) -> errorAt at (said kind)) (V.foldl (\acc p -> if V.elem p acc then acc else V.pushBack acc p) [] placed)
+
+-- An error's kind, said in words: the commonest in a sentence, the rest by
+-- the name the Rust checker gives the kind, its words apart
+-- (`NotAConstructorOf`, "not a constructor of").
+fun said (kind : String) : String =
+  match V.find (\p -> fst p == kind) errorWords with
+  | Just (_, words) -> words
+  | None -> wordsOf kind
+
+def errorWords : [(String, String)] =
+  [
+    ("Mismatch", "this has a type other than the one wanted"),
+    ("UnknownVariable", "nothing of this name is in scope"),
+    ("NotAFunction", "this is applied, but it is not a function"),
+    ("UsageMismatch", "this is used other than as its grade allows"),
+    ("UnsolvedMeta", "what this is could not be worked out"),
+    ("MissingCases", "these patterns do not cover every case"),
+    ("UnreachableClause", "this clause can never be reached"),
+    ("AmbiguousName", "this name has more than one meaning here"),
+    ("MayNotTerminate", "this may not terminate"),
+    ("UnhandledEffects", "this performs effects nothing here handles")
+  ]
+
+-- `NotAConstructorOf` as "not a constructor of".
+fun wordsOf (name : String) : String =
+  let n = S.byteLength name in
+  let step =
+    \acc i ->
+      let c = S.slice name i (i + 1) in
+      let lower = S.toLower c in
+      if i > 0 and c != lower then acc ++ " " ++ lower else acc ++ lower
+  in
+  V.foldl step "" (V.range 0 n)
 
 fun distinct (xs : [String]) : [String] = V.foldl (\acc x -> if V.elem x acc then acc else V.pushBack acc x) [] xs
