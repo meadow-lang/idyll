@@ -38,6 +38,8 @@ use Std.Path as Path
 use Std.Fs (writeString, readDir, isDir, exists, readToStringOr, createDirAll)
 use Std.Process (runInherit, getEnv)
 use Std.Sort (sortOn)
+use Std.St as St
+use Std.St (runSt)
 use Idyll.Parts as Pa
 use Std.Maybe.Maybe.*
 use Std.Result.Result.*
@@ -304,7 +306,7 @@ fun plainName (name : String) : String = V.getOr name (S.split "@" name) 0
 -- Check a part: its modules, against the compiled packages its package
 -- depends on and the compiled parts it imports. Its interface: what it
 -- compiled to, after those parts.
-fun compileScc (x : Part Interface PartOut) : Result String PartOut ! { Mut, Fs | e } =
+fun compileScc (x : Part Interface PartOut) : Result String PartOut ! { Fs | e } =
   let dir = partDir x in
   let name = nameOfManifest dir (readToStringOr "" (Path.join dir "Idyll.toml")) in
   let own = V.map (\s -> (S.join "." (modulePath dir (fst s)), snd s)) (V.filter (\s -> S.endsWith ".idl" (fst s)) (partSources x)) in
@@ -334,13 +336,14 @@ fun compileScc (x : Part Interface PartOut) : Result String PartOut ! { Mut, Fs 
              if not (V.isEmpty problems) then Err (S.join "\n" problems)
              else
                let grouped = sccModule m in
-               let c = checkedAgainst grouped root (V.append (V.map builtCompiled packages) (V.map builtCompiled siblings)) in
-               let errors = getRef c.tc.errors in
-               if not (V.isEmpty errors) then Err ("${name} (${S.join ", " (V.map fst own)}) does not check: ${S.join ", " errors}")
-               else
-                 let compiled = compiledOf c grouped names in
-                 if compiled.high > first + slot then Err "${name}: a part has more names than its room, ${show slot}"
-                 else Ok (PartOut.PartOut (V.pushBack siblings (Built.Built (S.join "+" (V.map fst own)) names compiled))))
+               runSt (\() ->
+                 let c = checkedAgainst grouped root (V.append (V.map builtCompiled packages) (V.map builtCompiled siblings)) in
+                 let errors = St.getRef c.tc.errors in
+                 if not (V.isEmpty errors) then Err ("${name} (${S.join ", " (V.map fst own)}) does not check: ${S.join ", " errors}")
+                 else
+                   let compiled = compiledOf c grouped names in
+                   if compiled.high > first + slot then Err "${name}: a part has more names than its room, ${show slot}"
+                   else Ok (PartOut.PartOut (V.pushBack siblings (Built.Built (S.join "+" (V.map fst own)) names compiled)))))
 
 -- A package, once its parts are compiled: its parts made one, after every
 -- package it reaches.
@@ -358,7 +361,7 @@ fun assembleUnit (u : Given Interface) (parts : [PartOut]) : Result String Inter
 
 -- Put the program together: the root package and every package it reaches,
 -- linked, and lowered to Cut, its `main` the entry.
-fun linkProgram (l : Linking Interface) : Result String () ! { Mut, Fs | e } =
+fun linkProgram (l : Linking Interface) : Result String () ! { Fs | e } =
   let root = linkRoot l in
   match V.find (\u -> match u with | (d, _, _) -> d == root) (linkUnits l) with
   | None -> Err "the root package was not built"
@@ -445,10 +448,10 @@ fun parsedModules (modules : [(String, String)]) : Result String [([String], Sur
 -- --- what this program holds ------------------------------------------------------
 
 -- The prelude, the Rust compiler's own (`compiler/idyllic/src/prelude.idl`).
-def prelude = includeStr "../../compiler/idyllic/src/prelude.idl"
+@pub def prelude = includeStr "../../compiler/idyllic/src/prelude.idl"
 
 -- Std's modules, as the Rust compiler embeds them (`stdlib::MODULES`).
-def stdModules : [(String, String)] =
+@pub def stdModules : [(String, String)] =
   [
     ("", includeStr "../../lib/Std/src/Lib.idl"),
     ("Bool", includeStr "../../lib/Std/src/Bool.idl"),

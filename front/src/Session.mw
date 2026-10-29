@@ -1,0 +1,113 @@
+-- The compiler as queries (`database!`), for the language server (`Server`)
+-- and the prompt to come: each open file's text is an input, and what is
+-- worked out from it -- its tree, what is wrong with it, how it is set out
+-- -- is worked out again only when something it read changed. A file is
+-- checked as a lone program after the prelude, as `idyllic file.idl`
+-- checks one, against Std compiled if it names Std; Std is compiled once
+-- a session.
+--
+-- A query may perform nothing but asking other queries, which is why the
+-- renamer and the checker keep their state in `St` (each run in a
+-- `runSt` of its own), never in a `Mut` cell.
+
+use Lingua (database!)
+use Lingua.Green (Green)
+use Lingua.Diagnostic (Diagnostic, errorAt, warningAt)
+use Lingua.Lang (spanMeta)
+use Idyll.Syntax (Idyll, parseIdyll)
+use Idyll.Surface (SurfaceProgram)
+use Idyll.Surface as Surface
+use Idyll.Rename (PackageNames)
+use Idyll.Rename as Rename
+use Idyll.Scc (sccModule)
+use Idyll.Check (checkedAgainst)
+use Idyll.Compiled (compiledOf)
+use Idyll.Interface (Compiled)
+use Idyll.Driver as D
+use Idyll.Format as Fmt
+use Std.St (runSt)
+use Std.St as St
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Result.Result.*
+
+database! {
+  pub Session
+    | input source (file : Int) : String
+    | query parsed (file : Int) : (Green Idyll, [(Int, String)]) = parseIdyll (querySource file)
+    | query prelude (unit : Int) : Result [Diagnostic] SurfaceProgram = Surface.parsed D.prelude
+    | query std (unit : Int) : Result String (PackageNames, Compiled) = stdOf (queryPrelude 0)
+    | query problems (file : Int) : [Diagnostic] =
+        problemsOf (querySource file) (queryPrelude 0) (\u -> queryStd 0)
+    | query formatted (file : Int) : String = formattedOf (querySource file)
+}
+
+-- --- what the queries do ----------------------------------------------------------
+
+-- What is wrong with a program: what its syntax says, or what renaming it
+-- says, or what checking it does (each a kind of error, for now with no
+-- place of its own: at the start of the file).
+@pub fun problemsOf (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : [Diagnostic] ! e =
+  match (Surface.parsed text, prelude) with
+  | (Err ds, _) -> ds
+  | (_, Err _) -> [errorAt nowhere "the prelude does not parse"]
+  | (Ok prog, Ok pre) ->
+      let deps =
+        if not (S.contains "Std" text) then []
+        else (match std () with | Ok (names, c) -> [("Std", names, c)] | Err _ -> [])
+      in
+      let first = V.foldl (\acc d -> match d with | (_, _, (c : Compiled)) -> if c.high > acc then c.high else acc) 0 deps in
+      let vis = Rename.mentionsVisibility (Rename.programOf prog) in
+      (match Rename.renamePackageWith "Main" [([], prog)] pre (V.map (\d -> match d with | (n, ns, _) -> (n, ns)) deps) [] first True vis with
+       | (m, _, problems) ->
+           if not (V.isEmpty problems) then V.map (\p -> errorAt nowhere p) problems
+           else
+             runSt (\() ->
+               let c = checkedAgainst (sccModule m) False (V.map (\d -> match d with | (_, _, cp) -> cp) deps) in
+               V.append
+                 (V.map (\k -> errorAt nowhere k) (distinct (St.getRef c.tc.errors)))
+                 (V.map (\k -> warningAt nowhere "this compiler cannot check this yet: ${k}") (distinct (St.getRef c.tc.unsupported)))))
+
+-- Std compiled, after the prelude: its modules as this program holds them.
+@pub fun stdOf (prelude : Result [Diagnostic] SurfaceProgram) : Result String (PackageNames, Compiled) =
+  match prelude with
+  | Err _ -> Err "the prelude does not parse"
+  | Ok pre ->
+      let parsed =
+        V.foldl
+          (\acc m ->
+            match (acc, m) with
+            | (Err e, _) -> Err e
+            | (Ok done, (path, text)) ->
+                (match Surface.parsed text with
+                 | Ok p -> Ok (V.pushBack done ((if path == "" then [] else S.split "." path), p))
+                 | Err _ -> Err "Std.${path} does not parse"))
+          (Ok [])
+          D.stdModules
+      in
+      match parsed with
+      | Err e -> Err e
+      | Ok mods -> compiledPackage pre "Std" mods []
+
+-- A package compiled whole, after the prelude, against the compiled
+-- packages it depends on: the names it gives, and its interface.
+@pub fun compiledPackage prelude (name : String) (modules : [([String], SurfaceProgram)]) (deps : [(String, PackageNames, Compiled)]) : Result String (PackageNames, Compiled) =
+  let programs = V.map (\m -> Rename.programOf (snd m)) modules in
+  let vis = V.any (\p -> Rename.mentionsVisibility p) programs in
+  let first = V.foldl (\acc d -> match d with | (_, _, (c : Compiled)) -> if c.high > acc then c.high else acc) 0 deps in
+  match Rename.renamePackageWith name modules prelude (V.map (\d -> match d with | (n, ns, _) -> (n, ns)) deps) [] first True vis with
+  | (m, names, problems) ->
+      if not (V.isEmpty problems) then Err (S.join "; " problems)
+      else
+        let grouped = sccModule m in
+        runSt (\() ->
+          let c = checkedAgainst grouped False (V.map (\d -> match d with | (_, _, cp) -> cp) deps) in
+          let errors = St.getRef c.tc.errors in
+          if not (V.isEmpty errors) then Err (S.join ", " errors) else Ok (names, compiledOf c grouped names))
+
+-- A file set out, or as it is if it has errors.
+@pub fun formattedOf (text : String) : String = match Fmt.formatted text with | Ok out -> out | Err _ -> text
+
+fun nowhere = spanMeta 0 0
+
+fun distinct (xs : [String]) : [String] = V.foldl (\acc x -> if V.elem x acc then acc else V.pushBack acc x) [] xs

@@ -31,6 +31,7 @@ use Idyll.Num as N
 use Idyll.Tc (Tc, CtorInfo, OpInfo)
 use Idyll.Tc as T
 use Idyll.Check (Checked)
+use Std.St as St
 use Idyll.Elaborated
 use Idyll.World (World, Arg, Answer, Stop)
 use Idyll.World as W
@@ -106,19 +107,19 @@ data Control = Eval ElaboratedTerm Env | Return Value | Perform Int [Value] | Re
 
 -- The program a module checked is: its tables, and what the checker's
 -- state says of its constructors, operations, natives and types.
-@pub fun programOf (c : Checked) : Program ! { Mut | e } =
+@pub fun programOf (c : Checked s) : Program ! { St s | e } =
   let tc = c.tc in
   let a = elaboratedArena c.elaborated in
   let root = elaboratedRoot c.elaborated in
-  let natives = getRef tc.nativeInfo in
+  let natives = St.getRef tc.nativeInfo in
   let typeNatives = V.filter (\kv -> match snd kv with | (name, _) -> name == "Array" or name == "MArray" or name == "Ref") (Hm.toVec natives) in
-  let types = V.foldl (\m u -> Hm.insert u True m) Hm.empty (V.append (Hm.keys (getRef tc.datas)) (V.map fst typeNatives)) in
+  let types = V.foldl (\m u -> Hm.insert u True m) Hm.empty (V.append (Hm.keys (St.getRef tc.datas)) (V.map fst typeNatives)) in
   Program {
     a,
     body = elaboratedModuleBody a root,
     recDefs = V.foldl (\m d -> Hm.insert (elaboratedDefUnique a d) (elaboratedDefLevel a d, elaboratedDefBody a d) m) Hm.empty (elaboratedModuleDefs a root),
-    ctors = getRef tc.ctors,
-    ops = getRef tc.ops,
+    ctors = St.getRef tc.ctors,
+    ops = St.getRef tc.ops,
     natives,
     types,
     metas = V.foldl (\m x -> Hm.insert (elaboratedSolutionNumber a x) (elaboratedSolutionTerm a x) m) Hm.empty (elaboratedModuleMetas a root)

@@ -5,6 +5,7 @@
 -- means at once, which a cell of the metacontext gives: `Eval.force` looks a
 -- solution up whenever it meets a metavariable's head.
 
+use Std.St (StRef, newRef, getRef, setRef)
 use Std.Macro (Reflect)
 use Idyll.Rename (HirArena, HirExpr, freezeHir, newHirBuilder)
 use Idyll.Elab (Cx)
@@ -68,147 +69,147 @@ use Std.Maybe.Maybe.*
 @derive(Reflect)
 @pub data OpInfo = OpInfo String Int Int Int Int Bool
 
-@pub record Tc = {
+@pub record Tc s = {
   -- the renamed program being checked, whose tables everything reads
-  hir : Ref HirArena,
+  hir : StRef s HirArena,
   -- the elaborating pass's function for an expression (`Elab.install`)
-  elab : Ref (Cx -> HirExpr -> (Core, Value, Usage) ! { Mut }),
-  metas : Ref [Meta],
+  elab : StRef s (Cx s -> HirExpr -> (Core, Value, Usage) ! { St s }),
+  metas : StRef s [Meta],
   -- the type of every constant (a data type, a constructor, a recursive
   -- definition), by its unique
-  constants : Ref (HashMap Int Value),
+  constants : StRef s (HashMap Int Value),
   -- the values of other packages' definitions that the types may see, by
   -- unique: what such a constant is (`Compiled`)
-  globals : Ref (HashMap Int Value),
+  globals : StRef s (HashMap Int Value),
   -- what is wrong, a line each, for now
-  problems : Ref [String],
+  problems : StRef s [String],
   -- the row variables made to keep a solved row open for more, each with
   -- how many arguments it is applied to: closed to the empty row when the
   -- definition they were made in has been checked, if nothing filled them
-  opened : Ref [(Int, Int)],
+  opened : StRef s [(Int, Int)],
   -- the metavariables a solution met applied to variables it may not
   -- mention, with which of their arguments it may: to be pruned of the
   -- others, and the solution tried again (see `Unify.solve`)
-  prunes : Ref [(Int, [Bool])],
+  prunes : StRef s [(Int, [Bool])],
   -- the grades being worked out, of the parameters that say none in a module
   -- that is not linear, with the constraints that waited on each (see
   -- `Elab.settleGrade`)
-  inferred : Ref (HashMap Int [Waiting]),
+  inferred : StRef s (HashMap Int [Waiting]),
   -- the joins of two alternatives' uses that mention a grade still being
   -- worked out, each standing for `join(p, q)` until it can be (see
   -- `Elab.joinUsage`), in the order they were made
-  joins : Ref [(Int, Poly, Poly)],
+  joins : StRef s [(Int, Poly, Poly)],
   -- how many of the explicit arrows ahead are a definition's parameters, on
   -- its signature's spine (or its lambdas): given to the next term inferred,
   -- which hands it to its `Pi` or `Lam` as `spineHere`
-  inferSpine : Ref Int,
-  spineHere : Ref Int,
+  inferSpine : StRef s Int,
+  spineHere : StRef s Int,
   -- what was wrong, by the name the Rust checker gives the kind of error
-  errors : Ref [String],
-  holes : Ref [HoleAt],
-  postponed : Ref [Postponed],
+  errors : StRef s [String],
+  holes : StRef s [HoleAt],
+  postponed : StRef s [Postponed],
   -- whether the definition being checked is in a linear module, where an
   -- unannotated binder is used once
-  linear : Ref Bool,
+  linear : StRef s Bool,
   -- how many `let`s deep the checker is: none is the top level
-  lets : Ref Int,
+  lets : StRef s Int,
   -- what the program uses that this checker cannot check yet; a program
   -- with anything here is not compared
-  unsupported : Ref [String],
+  unsupported : StRef s [String],
   -- the declared effects and their operations, by unique
-  effects : Ref (HashMap Int EffectInfo),
-  ops : Ref (HashMap Int OpInfo),
+  effects : StRef s (HashMap Int EffectInfo),
+  ops : StRef s (HashMap Int OpInfo),
   -- the `nil` and `cons` of each data type declared `@seq`
-  seqs : Ref (HashMap Int (Int, Int)),
+  seqs : StRef s (HashMap Int (Int, Int)),
   -- the natives, by the names they are declared by
-  nativeNames : Ref (HashMap String Int),
+  nativeNames : StRef s (HashMap String Int),
   -- the prelude's `List`, which a sequence is with nothing to say otherwise
-  list : Ref Int,
+  list : StRef s Int,
   -- what the program declares, with its type, as the REPL lists it: the
   -- unique, the name (`Nat.Z` for a constructor), the type
-  declared : Ref [(Int, String, Core)],
+  declared : StRef s [(Int, String, Core)],
   -- the data types and native types, by unique, and for each, which of its
   -- parameters it uses strictly positively
-  datas : Ref (HashMap Int [Int]),
-  ctors : Ref (HashMap Int CtorInfo),
+  datas : StRef s (HashMap Int [Int]),
+  ctors : StRef s (HashMap Int CtorInfo),
   -- the unique the next slot no name refers to is charged to, counting down
   -- from where no name's unique is
-  nextKey : Ref Int,
+  nextKey : StRef s Int,
   -- the recursive definitions found to terminate, which unfold in types
   -- when their case trees can choose: where each was defined, how many
   -- arguments it takes first, and its case tree under them
-  transparent : Ref (HashMap Int (Env, Int, Core)),
+  transparent : StRef s (HashMap Int (Env, Int, Core)),
   -- the definitions `@terminating` vouches for
-  terminating : Ref [Int],
+  terminating : StRef s [Int],
   -- the recursive definitions, for running the program: each one's unique,
   -- how many slots the context it was defined in had, and its body
-  recDefs : Ref [(Int, Int, Core)],
+  recDefs : StRef s [(Int, Int, Core)],
   -- those of them defined inside another definition
-  localRecs : Ref [Int],
-  recNames : Ref (HashMap Int String),
+  localRecs : StRef s [Int],
+  recNames : StRef s (HashMap Int String),
   -- the natives, by unique: which each is, and how many erased arguments
   -- come before the ones it takes at run time
-  nativeInfo : Ref (HashMap Int (String, Int)),
-  natives : Ref (HashMap Int Bool),
-  positive : Ref (HashMap Int [Bool]),
+  nativeInfo : StRef s (HashMap Int (String, Int)),
+  natives : StRef s (HashMap Int Bool),
+  positive : StRef s (HashMap Int [Bool]),
   -- the definitions a search for an auto argument may find (a trait's
   -- instances), the traits' records, each trait's superclass projections,
   -- and each trait's methods (by the method's unique: the record, the
   -- field, how many parameters the trait has)
-  hints : Ref [Int],
-  traits : Ref [Int],
-  supers : Ref (HashMap Int [Int]),
-  methods : Ref (HashMap Int (Int, Int, Int)),
+  hints : StRef s [Int],
+  traits : StRef s [Int],
+  supers : StRef s (HashMap Int [Int]),
+  methods : StRef s (HashMap Int (Int, Int, Int)),
   -- each instance with no parameters, and those of its fields that are a
   -- constant or a primitive: what a method of it is (`Elab.specialize`)
-  instanceFields : Ref (HashMap Int [Maybe Core]),
+  instanceFields : StRef s (HashMap Int [Maybe Core]),
   -- the hints' names, as a type shows one a search found: this package's
   -- under their modules, a dependency's by its path there
-  hintNames : Ref (HashMap Int String),
+  hintNames : StRef s (HashMap Int String),
   -- the metavariables standing for an auto argument still to be found, and
   -- what each was found to be, with the length of the context it was found
   -- in: written over the placeholder once the definition is checked
-  placeholders : Ref [Int],
-  chosen : Ref (HashMap Int (Core, Int)),
+  placeholders : StRef s [Int],
+  chosen : StRef s (HashMap Int (Core, Int)),
   -- the searches waiting for their types to be known: the placeholder, the
   -- context, and the type wanted
-  deferredAutos : Ref [(Int, Ctx, Value, Bool)],
+  deferredAutos : StRef s [(Int, Ctx, Value, Bool)],
   -- the number literals waiting for their types (`Literals`): the
   -- placeholder, the context, the type wanted, and the literal
-  deferredLiterals : Ref [(Int, Ctx, Value, Literal)],
+  deferredLiterals : StRef s [(Int, Ctx, Value, Literal)],
   -- a signature's implicit binders that equations naming one before them
   -- left to their matching, by name (`Elab.checkAgainstSig`)
-  quantified : Ref [Ident],
+  quantified : StRef s [Ident],
   -- the transparent definitions that unfold only where a `case` reads a
   -- field a type may compute with off them (instances), and which fields
   -- of each constructor those are; the instances being unfolded
-  onCase : Ref [Int],
-  opens : Ref (HashMap Int [Bool]),
-  opening : Ref [Int],
+  onCase : StRef s [Int],
+  opens : StRef s (HashMap Int [Bool]),
+  opening : StRef s [Int],
   -- that a solution is being read off what it was equated with keeping
   -- definitions by their names (`Unify.solveMeta`)
-  naming : Ref Bool,
+  naming : StRef s Bool,
   -- the data types that live above `Type`, and where
-  large : Ref (HashMap Int Int),
+  large : StRef s (HashMap Int Int),
   -- that the application being inferred is the head of `f x @{d}`
-  autoGiven : Ref Bool,
+  autoGiven : StRef s Bool,
   -- the meaning chosen for an overloaded name, by the node it was written
   -- at; the terms put off because more than one still fitted (the
   -- placeholder, the name's node, the term, its context, and what it is to
   -- be); and the constructor chosen for an overloaded name in a pattern
-  forced : Ref (HashMap Int Int),
-  deferred : Ref [(Int, Int, HirExpr, Ctx, Value)],
-  patternChoice : Ref (HashMap Int Int),
+  forced : StRef s (HashMap Int Int),
+  deferred : StRef s [(Int, Int, HirExpr, Ctx, Value)],
+  patternChoice : StRef s (HashMap Int Int),
   -- which data types are linear, as far as worked out; and the type
   -- parameters given what may be a linear type, to check once it is known:
   -- the length of the context, and what was given (see `Linear`)
-  linearDatas : Ref (HashMap Int Bool),
-  linearWants : Ref [(Int, Value)],
+  linearDatas : StRef s (HashMap Int Bool),
+  linearWants : StRef s [(Int, Value)],
   -- the prelude's `fromInt` and `fromFloat`, by name, which a literal at a
   -- type variable is read through; and how (`Elab.literalThrough`, given
   -- here as `elab` is)
-  numberLits : Ref (HashMap String Int),
-  through : Ref (Ctx -> Literal -> Value -> Core ! { Mut })
+  numberLits : StRef s (HashMap String Int),
+  through : StRef s (Ctx -> Literal -> Value -> Core ! { St s })
 }
 
 @pub fun new () =
@@ -277,7 +278,7 @@ use Std.Maybe.Maybe.*
 -- The checker as it is now, to go back to (`restore`): a trial, of a
 -- candidate for an auto argument, is made on the checker itself and then
 -- undone. Every table is a value, so this is a copy of each.
-@pub fun save (tc : Tc) : Tc ! { Mut | e } =
+@pub fun save (tc : Tc s) : Tc s ! { St s | e } =
   Tc {
     hir = newRef (getRef tc.hir),
     elab = newRef (getRef tc.elab),
@@ -341,7 +342,7 @@ use Std.Maybe.Maybe.*
   }
 
 -- Back to what `save` kept.
-@pub fun restore (tc : Tc) (saved : Tc) : () ! { Mut | e } =
+@pub fun restore (tc : Tc s) (saved : Tc s) : () ! { St s | e } =
   let w0 = setRef tc.hir (getRef saved.hir) in
   let w1 = setRef tc.elab (getRef saved.elab) in
   let w2 = setRef tc.metas (getRef saved.metas) in
@@ -395,23 +396,23 @@ use Std.Maybe.Maybe.*
   let w44 = setRef tc.patternChoice (getRef saved.patternChoice) in
   ()
 
-@pub fun problem (tc : Tc) (why : String) = setRef tc.problems (V.pushBack (getRef tc.problems) why)
+@pub fun problem (tc : Tc s) (why : String) = setRef tc.problems (V.pushBack (getRef tc.problems) why)
 
 -- An error, by its kind's name.
-@pub fun error (tc : Tc) (kind : String) = setRef tc.errors (V.pushBack (getRef tc.errors) kind)
+@pub fun error (tc : Tc s) (kind : String) = setRef tc.errors (V.pushBack (getRef tc.errors) kind)
 
 -- Something this checker cannot check yet.
-@pub fun cannot (tc : Tc) (what : String) = setRef tc.unsupported (V.pushBack (getRef tc.unsupported) what)
+@pub fun cannot (tc : Tc s) (what : String) = setRef tc.unsupported (V.pushBack (getRef tc.unsupported) what)
 
 -- A new metavariable, unsolved.
-@pub fun newMeta (tc : Tc) (info : MetaInfo) =
+@pub fun newMeta (tc : Tc s) (info : MetaInfo) =
   let ms = getRef tc.metas in
   let w = setRef tc.metas (V.pushBack ms (Meta.Unsolved info)) in
   V.len ms
 
-@pub fun meta (tc : Tc) (m : Int) : Maybe Meta ! { Mut | e } = V.get (getRef tc.metas) m
+@pub fun meta (tc : Tc s) (m : Int) : Maybe Meta ! { St s | e } = V.get (getRef tc.metas) m
 
-@pub fun solve (tc : Tc) (m : Int) (v : Value) =
+@pub fun solve (tc : Tc s) (m : Int) (v : Value) =
   let ms = getRef tc.metas in
   match V.get ms m with
   | Just (Meta.Unsolved info) -> setRef tc.metas (V.set ms m (Meta.Solved v info))
@@ -424,9 +425,9 @@ use Std.Maybe.Maybe.*
   | Meta.Solved _ i -> i
 
 -- A fresh key, for a slot no name refers to.
-@pub fun freshKey (tc : Tc) : Int ! { Mut | e } =
+@pub fun freshKey (tc : Tc s) : Int ! { St s | e } =
   let k = getRef tc.nextKey - 1 in
   let w = setRef tc.nextKey k in
   k
 
-@pub fun ctorInfo (tc : Tc) (c : Int) : Maybe CtorInfo ! { Mut | e } = Hm.lookup c (getRef tc.ctors)
+@pub fun ctorInfo (tc : Tc s) (c : Int) : Maybe CtorInfo ! { St s | e } = Hm.lookup c (getRef tc.ctors)

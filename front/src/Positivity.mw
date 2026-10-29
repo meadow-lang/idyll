@@ -17,6 +17,7 @@
 -- looking for the parameter; within a group, every parameter starts
 -- positive and is demoted until nothing changes.
 
+use Std.St (StRef, newRef, getRef, setRef)
 use Idyll.Core (CaseAlt)
 use Idyll.Value (Value, Elim, Row)
 use Idyll.Value as Va
@@ -42,7 +43,7 @@ fun isData (t : Target) (u : Int) : Bool = match t with | Target.Datas us -> V.e
 
 fun isParam (t : Target) (k : Int) : Bool = match t with | Target.Param p -> p == k | _ -> False
 
-@pub fun checkPositivity (tc : Tc) (shapes : [Shape]) =
+@pub fun checkPositivity (tc : Tc s) (shapes : [Shape]) =
   let uniques = V.map (\s -> match s with | Shape.Shape u _ _ _ -> u) shapes in
   let edges =
     V.map
@@ -78,7 +79,7 @@ fun isParam (t : Target) (k : Int) : Bool = match t with | Target.Param p -> p =
 
 -- The parameters a group of types uses strictly positively: all of them to
 -- start with, demoted until stable.
-fun decide (tc : Tc) (group : [Shape]) =
+fun decide (tc : Tc s) (group : [Shape]) =
   let w =
     V.foldl
       (\acc s -> match s with | Shape.Shape u _ n _ -> setRef tc.positive (Hm.insert u (V.replicate n True) (getRef tc.positive)))
@@ -88,10 +89,10 @@ fun decide (tc : Tc) (group : [Shape]) =
   if demote tc group then decide2 tc group else ()
 
 -- (again, without starting over)
-fun decide2 (tc : Tc) (group : [Shape]) = if demote tc group then decide2 tc group else ()
+fun decide2 (tc : Tc s) (group : [Shape]) = if demote tc group then decide2 tc group else ()
 
 -- One round of demotions; whether there were any.
-fun demote (tc : Tc) (group : [Shape]) : Bool ! { Mut | e } =
+fun demote (tc : Tc s) (group : [Shape]) : Bool ! { St s | e } =
   V.foldl
     (\changed s ->
       match s with
@@ -111,7 +112,7 @@ fun demote (tc : Tc) (group : [Shape]) : Bool ! { Mut | e } =
 
 -- Whether `v`, a type in a context of `l` slots, is strictly positive in
 -- the target.
-fun positive (tc : Tc) (l : Int) (v0 : Value) (target : Target) : Bool ! { Mut | e } =
+fun positive (tc : Tc s) (l : Int) (v0 : Value) (target : Target) : Bool ! { St s | e } =
   let v = force tc v0 in
   match mentions tc l v target with
   | None -> True
@@ -142,14 +143,14 @@ fun positive (tc : Tc) (l : Int) (v0 : Value) (target : Target) : Bool ! { Mut |
 
 -- At an occurrence of what is being defined: its arguments may not mention
 -- it again.
-fun notInArguments (tc : Tc) (l : Int) (sp : [Elim]) (target : Target) : Bool ! { Mut | e } =
+fun notInArguments (tc : Tc s) (l : Int) (sp : [Elim]) (target : Target) : Bool ! { St s | e } =
   V.all (\e -> match e with | Elim.App arg -> M.isNone (mentions tc l arg target) | _ -> True) sp
 
-fun firstOf (tc : Tc) (l : Int) (vs : [Value]) (target : Target) : Maybe String ! { Mut | e } =
+fun firstOf (tc : Tc s) (l : Int) (vs : [Value]) (target : Target) : Maybe String ! { St s | e } =
   V.foldl (\acc v -> match acc with | Just x -> Just x | None -> mentions tc l v target) None vs
 
 -- The first occurrence of the target in `v`, by name, looking everywhere.
-fun mentions (tc : Tc) (l : Int) (v0 : Value) (target : Target) : Maybe String ! { Mut | e } =
+fun mentions (tc : Tc s) (l : Int) (v0 : Value) (target : Target) : Maybe String ! { St s | e } =
   match force tc v0 with
   | Value.Prim _ args -> firstOf tc l args target
   | Value.Stuck h sp ->
@@ -170,7 +171,7 @@ fun mentions (tc : Tc) (l : Int) (v0 : Value) (target : Target) : Maybe String !
   | Value.Flex _ sp -> spineMentions tc l sp target
   | _ -> None
 
-fun spineMentions (tc : Tc) (l : Int) (sp : [Elim]) (target : Target) : Maybe String ! { Mut | e } =
+fun spineMentions (tc : Tc s) (l : Int) (sp : [Elim]) (target : Target) : Maybe String ! { St s | e } =
   V.foldl
     (\acc e ->
       match acc with

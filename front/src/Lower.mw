@@ -24,6 +24,7 @@
 -- runtimes print only strings; and a native the runtime has no primitive
 -- for is a `def` of the program's own.
 
+use Std.St (StRef, newRef, getRef, setRef)
 use Idyll.Hir (Literal)
 use Idyll.Core (Core, Builtin, Prim, Head)
 use Idyll.Elaborated
@@ -143,45 +144,45 @@ data ShowDefs = ShowDefs Sym (Maybe Sym) (Maybe Sym)
 data Head2 = HCall Sym | HCon Sym | HPerform Sym [Bool] Bool | HPrim String
 
 record L s = {
-  tc : Tc,
+  tc : Tc s,
   -- the Cut being written, and the program's tables, read off as data for
   -- the typer once each
   out : CutBuilder s,
   a : ElaboratedArena,
-  cores : Ref (HashMap Int Core),
+  cores : StRef s (HashMap Int Core),
   linear : Bool,
   symbols : HashMap Int (String, String),
   -- each recursive definition: its name, level, body, and whether it is
   -- inside another
   recs : HashMap Int (String, Int, ElaboratedTerm, Bool),
-  recParams : Ref (HashMap Int [Param]),
-  local : Ref (HashMap Int (Int, Uses)),
-  lifted : Ref (HashMap Int (Sym, [Param], [Int])),
+  recParams : StRef s (HashMap Int [Param]),
+  local : StRef s (HashMap Int (Int, Uses)),
+  lifted : StRef s (HashMap Int (Sym, [Param], [Int])),
   package : String,
   toplevel : [Int],
-  levels : Ref [LEnv],
-  fresh : Ref Int,
+  levels : StRef s [LEnv],
+  fresh : StRef s Int,
   -- the program's `def`s, each with its symbol, and its `val`s, written
-  defs : Ref [(Sym, CutDecl)],
-  vals : Ref [CutDecl],
-  datas : Ref [Int],
-  effects : Ref [Int],
-  performed : Ref [Int],
-  errors : Ref [String],
-  shows : Ref (HashMap String (Maybe ShowDefs)),
-  handledByEntry : Ref (Maybe Int),
-  nativesMade : Ref [String],
-  atoms : Ref [String],
-  showDefs : Ref [(Sym, CutDecl)],
-  showInt : Ref (Maybe Sym),
+  defs : StRef s [(Sym, CutDecl)],
+  vals : StRef s [CutDecl],
+  datas : StRef s [Int],
+  effects : StRef s [Int],
+  performed : StRef s [Int],
+  errors : StRef s [String],
+  shows : StRef s (HashMap String (Maybe ShowDefs)),
+  handledByEntry : StRef s (Maybe Int),
+  nativesMade : StRef s [String],
+  atoms : StRef s [String],
+  showDefs : StRef s [(Sym, CutDecl)],
+  showInt : StRef s (Maybe Sym),
   -- the lambdas with no note on their binders, each with the grades and
   -- types the parameter it is passed for gives them (`noteLambdas`)
-  noted : Ref [(Tm, [(Maybe Grade, Core)])],
+  noted : StRef s [(Tm, [(Maybe Grade, Core)])],
   -- whether a value has been put in a box to go where an operation takes or
   -- gives `any` (`boxed`), so the box's type is declared; and the
   -- resumptions of clauses whose operation gives `any`
-  boxesUsed : Ref Bool,
-  boxedResumes : Ref [String]
+  boxesUsed : StRef s Bool,
+  boxedResumes : StRef s [String]
 }
 
 -- A term of the program: a row of its tables (`Elaborated`).
@@ -290,11 +291,11 @@ fun writeProgram (l : L s) (entry : Maybe Sym) (answer : Bool) (datas : [CutDecl
 -- A module checked and lowered, in one `runSt` -- the checker's state and
 -- the Cut written share it -- as what the Cut test compares: the program's
 -- Cut, or why there is none.
-@pub fun cutText (m : Renamed) (package : String) : String ! { Mut | e } = cutTextAt m package False
+@pub fun cutText (m : Renamed) (package : String) : String = cutTextAt m package False
 
 -- The same; with `entry`, a program with a `main` and no expression runs
 -- `main ()` (see `Check.checkedAt`): a package built to run.
-@pub fun cutTextAt (m : Renamed) (package : String) (entry : Bool) : String ! { Mut | e } =
+@pub fun cutTextAt (m : Renamed) (package : String) (entry : Bool) : String =
   runSt (\() ->
     let c = checkedAt m entry in
     if not (V.isEmpty (getRef c.tc.unsupported)) then "(unsupported)"
@@ -307,7 +308,7 @@ fun writeProgram (l : L s) (entry : Maybe Sym) (answer : Bool) (datas : [CutDecl
 -- The same, for a package checked against the compiled packages it depends
 -- on (`deps`, each after those it depends on) and linked with them (see
 -- `Link`); `names` is what its renaming says it gives.
-@pub fun cutTextLinked (m : Renamed) (names : PackageNames) (package : String) (entry : Bool) (deps : [Compiled]) : String ! { Mut | e } =
+@pub fun cutTextLinked (m : Renamed) (names : PackageNames) (package : String) (entry : Bool) (deps : [Compiled]) : String =
   runSt (\() ->
     let c = checkedWith m entry deps in
     if not (V.isEmpty (getRef c.tc.unsupported)) then "(unsupported)"
@@ -323,7 +324,7 @@ fun writeProgram (l : L s) (entry : Maybe Sym) (answer : Bool) (datas : [CutDecl
 -- depends on; `context` is a module of nothing but the prelude, checked
 -- against them all, which gives the program its tables and the prelude's
 -- own definitions.
-@pub fun cutTextOfPackages (context : Renamed) (root : Compiled) (deps : [Compiled]) (package : String) : String ! { Mut | e } =
+@pub fun cutTextOfPackages (context : Renamed) (root : Compiled) (deps : [Compiled]) (package : String) : String =
   runSt (\() ->
     let c = checkedWith context False (V.pushBack deps root) in
     if not (V.isEmpty (getRef c.tc.errors)) then "(error)"
@@ -342,7 +343,7 @@ fun vecOf (m : Maybe a) : [a] =
 fun insertSorted (xs : [Int]) (x : Int) : [Int] =
   if V.elem x xs then xs else V.concat [V.filter (\y -> y < x) xs, [x], V.filter (\y -> y > x) xs]
 
-fun note (r : Ref [Int]) (x : Int) = setRef r (insertSorted (getRef r) x)
+fun note (r : StRef s [Int]) (x : Int) = setRef r (insertSorted (getRef r) x)
 
 fun err (l : L s) (why : String) = setRef l.errors (V.pushBack (getRef l.errors) why)
 
@@ -354,7 +355,7 @@ fun byte (s : String) (i : Int) : Int =
 fun isAlnum (c : Int) : Bool = (c >= 48 and c <= 57) or (c >= 65 and c <= 90) or (c >= 97 and c <= 122)
 
 -- A fresh name, from a hint: what is not a letter or digit made `_`.
-fun name (l : L s) (hint : String) : String ! { Mut, St s | e } =
+fun name (l : L s) (hint : String) : String ! { St s | e } =
   let n = getRef l.fresh + 1 in
   let w = setRef l.fresh n in
   let clean = S.join "" (V.map (\i -> if isAlnum (byte hint i) then S.slice hint i (i + 1) else "_") (V.range 0 (S.byteLength hint))) in
@@ -389,10 +390,10 @@ fun rep (env : LEnv) (r : TRep) : Rep =
        | Just (_, _, Just _, a) -> Rep.Var a
        | _ -> Rep.Any)
 
-fun repOf (l : L s) (env : LEnv) (c : Tm) : Rep ! { Mut, St s | e } = rep env (Ty.repOf l.tc (scopeOf env) (dataOf l c))
+fun repOf (l : L s) (env : LEnv) (c : Tm) : Rep ! { St s | e } = rep env (Ty.repOf l.tc (scopeOf env) (dataOf l c))
 
 -- A term of the program as the checker's data, for the typer: made once.
-fun dataOf (l : L s) (c : Tm) : Core ! { Mut, St s | e } =
+fun dataOf (l : L s) (c : Tm) : Core ! { St s | e } =
   match Hm.lookup c (getRef l.cores) with
   | Just d -> d
   | None ->
@@ -437,7 +438,7 @@ fun lambda (l : L s) (c : Tm) : Maybe (String, Maybe Grade, Maybe Core, Tm) ! { 
 -- not say the types of (one read back from a value, as a solved
 -- metavariable's is) noted with the types of the parameter it is passed
 -- for (`Ty.annotateArgs`).
-fun noteLambdas (l : L s) (env : LEnv) (head : Tm) (args : [Tm]) : () ! { Mut, St s | e } =
+fun noteLambdas (l : L s) (env : LEnv) (head : Tm) (args : [Tm]) : () ! { St s | e } =
   let a = l.a in
   let bare = \t -> match (a, t) with | ElaboratedTermLam _ _ -> True | _ -> False in
   if not (V.any bare args) then ()
@@ -458,9 +459,9 @@ fun spine (l : L s) (c : Tm) (args : [Tm]) : (Tm, [Tm]) =
 
 fun primArgs l (op : String) (args : [CutProd]) = if op == concatOp then [pArray l args] else args
 
-fun ctorInfo (l : L s) (u : Int) : Maybe CtorInfo ! { Mut, St s | e } = T.ctorInfo l.tc u
+fun ctorInfo (l : L s) (u : Int) : Maybe CtorInfo ! { St s | e } = T.ctorInfo l.tc u
 
-fun opInfo (l : L s) (u : Int) : Maybe OpInfo ! { Mut, St s | e } = Hm.lookup u (getRef l.tc.ops)
+fun opInfo (l : L s) (u : Int) : Maybe OpInfo ! { St s | e } = Hm.lookup u (getRef l.tc.ops)
 
 -- --- entry -----------------------------------------------------------------------------
 
@@ -468,7 +469,7 @@ fun opInfo (l : L s) (u : Int) : Maybe OpInfo ! { Mut, St s | e } = Hm.lookup u 
 -- Lower a checked program, whose own package is `package`, into Cut, as
 -- the text `meadow cut` reads. Inside the `runSt` the program was checked
 -- in: its tables and the checker's state are that state's.
-@pub fun lowerIn (checked : Checked) (package : String) : Result [String] String ! { Mut, St s | e } =
+@pub fun lowerIn (checked : Checked s) (package : String) : Result [String] String ! { St s | e } =
   let tc = checked.tc in
   -- an answer is shown with the prelude's `showInt`, so it stays
   let showIntU = V.find (\kv -> snd kv == ("Prelude", "showInt")) (Hm.toVec checked.symbols) in
@@ -596,7 +597,7 @@ fun opInfo (l : L s) (u : Int) : Maybe OpInfo ! { Mut, St s | e } = Hm.lookup u 
       if V.isEmpty (getRef l.errors) then Ok text else Err (getRef l.errors)
 
 -- The top-level `let`s: each a slot, and the scope after it a level.
-fun toplevels (l : L s) (env : LEnv) (c : Tm) (i : Int) : (LEnv, Tm) ! { Mut, St s | e } =
+fun toplevels (l : L s) (env : LEnv) (c : Tm) (i : Int) : (LEnv, Tm) ! { St s | e } =
   match (l.a, c) with
   | ElaboratedTermLet x rhs body ->
       if i >= V.len l.toplevel then (env, c)
@@ -609,7 +610,7 @@ fun toplevels (l : L s) (env : LEnv) (c : Tm) (i : Int) : (LEnv, Tm) ! { Mut, St
   | _ -> (env, c)
 
 -- A world operation of the prelude's, by name: its unique and its effect.
-fun preludeOp (l : L s) (opName : String) : Maybe (Int, Int) ! { Mut, St s | e } =
+fun preludeOp (l : L s) (opName : String) : Maybe (Int, Int) ! { St s | e } =
   M.map
     (\kv -> match kv with | (u, OpInfo.OpInfo _ eff _ _ _ _) -> (u, eff))
     (V.find
@@ -640,7 +641,7 @@ fun letsMention (l : L s) (c : Tm) (n : Int) (u : Int) : Bool =
 -- `body`, its value to `b`, under a handler for the prelude's `Abort` that
 -- does what Idyll's world does: the message on standard error, then exit
 -- status 1.
-fun abortHandler (l : L s) (abort : Int) (b : String) (body : CutStmt) (r : Rep) (k : CutCons) : CutStmt ! { Mut, St s | e } =
+fun abortHandler (l : L s) (abort : Int) (b : String) (body : CutStmt) (r : Rep) (k : CutCons) : CutStmt ! { St s | e } =
   match (preludeOp l "putErr", preludeOp l "exit") with
   | (Just (putErr, console), Just (exit, process)) ->
       let abortEffect = match opInfo l abort with | Just (OpInfo.OpInfo _ eff _ _ _ _) -> eff | None -> 0 - 1 in
@@ -675,7 +676,7 @@ fun abortHandler (l : L s) (abort : Int) (b : String) (body : CutStmt) (r : Rep)
 -- --- definitions -----------------------------------------------------------------------
 
 -- A top-level definition: a `def` for a function, a `val` otherwise.
-fun toplevel (l : L s) (env : LEnv) (sym : Sym) (rhs : Tm) : Slot ! { Mut, St s | e } =
+fun toplevel (l : L s) (env : LEnv) (sym : Sym) (rhs : Tm) : Slot ! { St s | e } =
   -- a type, a row or a type family is nothing at run time
   if Ty.isTypeFormer l.tc (scopeOf env) (dataOf l rhs) then Slot.SErased
   else if M.isSome (lambda l rhs) then
@@ -690,7 +691,7 @@ fun toplevel (l : L s) (env : LEnv) (sym : Sym) (rhs : Tm) : Slot ! { Mut, St s 
     Slot.SVal sym
 
 -- What each of a function's leading lambdas binds.
-fun paramsOf (l : L s) (env : LEnv) (c : Tm) : [Param] ! { Mut, St s | e } =
+fun paramsOf (l : L s) (env : LEnv) (c : Tm) : [Param] ! { St s | e } =
   match lambda l c with
   | None -> []
   | Just (x, grade, ty, body) ->
@@ -709,7 +710,7 @@ fun paramsOf (l : L s) (env : LEnv) (c : Tm) : [Param] ! { Mut, St s | e } =
       V.append [p] (paramsOf l env2 body)
 
 -- A recursive definition's parameters, in the scope it is defined in.
-fun recParamsOf (l : L s) (u : Int) : Maybe [Param] ! { Mut, St s | e } =
+fun recParamsOf (l : L s) (u : Int) : Maybe [Param] ! { St s | e } =
   match Hm.lookup u (getRef l.recParams) with
   | Just p -> Just p
   | None ->
@@ -732,7 +733,7 @@ fun hintOf (x : String) : String =
 -- first time it is used: the variables of the enclosing definition it uses
 -- become its first parameters, a value as a value, a type as its
 -- descriptor. Named under the top-level definition it was in.
-fun lift (l : L s) (u : Int) (env : LEnv) : Maybe (Sym, [Param], [Int]) ! { Mut, St s | e } =
+fun lift (l : L s) (u : Int) (env : LEnv) : Maybe (Sym, [Param], [Int]) ! { St s | e } =
   match Hm.lookup u (getRef l.lifted) with
   | Just done -> Just done
   | None ->
@@ -817,19 +818,19 @@ fun lift (l : L s) (u : Int) (env : LEnv) : Maybe (Sym, [Param], [Int]) ! { Mut,
                   Just (sym, allParams, captured))
        | _ -> None)
 
-fun uniqueSym taken (enclosing : Sym) (nm : String) (sym : Sym) (n : Int) : Sym ! { Mut, St s | e } =
+fun uniqueSym taken (enclosing : Sym) (nm : String) (sym : Sym) (n : Int) : Sym ! { St s | e } =
   if taken sym then uniqueSym taken enclosing nm (A.child enclosing (nm ++ "#" ++ show (n + 1))) (n + 1) else sym
 
 -- A function as a `def`: its leading lambdas are its parameters, after
 -- `outerParams` (with `outerReps`, their representations' variables), what
 -- a lifted one is given.
-fun defOf (l : L s) (sym : Sym) (env : LEnv) (c : Tm) (outerReps : [(String, String)]) (outerParams : [Binder]) : (Sym, CutDecl) ! { Mut, St s | e } =
+fun defOf (l : L s) (sym : Sym) (env : LEnv) (c : Tm) (outerReps : [(String, String)]) (outerParams : [Binder]) : (Sym, CutDecl) ! { St s | e } =
   let (env2, body0, params, repVars, effectVars) = defParams l env c [] [] [] in
   let k = name l "k" in
   let body = term l env2 body0 (kVar l k) in
   defDecl l sym (V.append outerReps repVars) effectVars (V.append outerParams params) [k] body
 
-fun defParams (l : L s) (env : LEnv) (c : Tm) (params : [Binder]) (rvs : [(String, String)]) (evs : [(String, String)]) : (LEnv, Tm, [Binder], [(String, String)], [(String, String)]) ! { Mut, St s | e } =
+fun defParams (l : L s) (env : LEnv) (c : Tm) (params : [Binder]) (rvs : [(String, String)]) (evs : [(String, String)]) : (LEnv, Tm, [Binder], [(String, String)], [(String, String)]) ! { St s | e } =
   match lambda l c with
   | None -> (env, c, params, rvs, evs)
   | Just (x, grade, ty, body) ->
@@ -845,7 +846,7 @@ fun defParams (l : L s) (env : LEnv) (c : Tm) (params : [Binder]) (rvs : [(Strin
 
 -- A lambda's variable bound: a value parameter, a descriptor parameter for
 -- a type, or nothing for anything else erased.
-fun bindParam (l : L s) (env : LEnv) (x : String) (grade : Maybe Grade) (ty : Maybe Core) : (LEnv, Maybe Binder, Maybe (String, String)) ! { Mut, St s | e } =
+fun bindParam (l : L s) (env : LEnv) (x : String) (grade : Maybe Grade) (ty : Maybe Core) : (LEnv, Maybe Binder, Maybe (String, String)) ! { St s | e } =
   let isType = match ty with | Just t -> Ty.isTypeBinder l.tc (scopeOf env) t | None -> False in
   let scope2 =
     match ty with
@@ -868,7 +869,7 @@ fun bindParam (l : L s) (env : LEnv) (x : String) (grade : Maybe Grade) (ty : Ma
 -- After a value parameter `x` (just bound): if it is a record with fields
 -- that are types, a dictionary with associated types, a descriptor for
 -- each, which the types of what comes after may read (`Elem c`).
-fun dictDescs (l : L s) (env : LEnv) (x : String) : (LEnv, [Binder], [(String, String)]) ! { Mut, St s | e } =
+fun dictDescs (l : L s) (env : LEnv) (x : String) : (LEnv, [Binder], [(String, String)]) ! { St s | e } =
   let lvl = lenOf env - 1 in
   match V.last (slotsOf env) with
   | Just (Slot.SVar _) ->
@@ -892,7 +893,7 @@ fun dictDescs (l : L s) (env : LEnv) (x : String) : (LEnv, [Binder], [(String, S
 -- (`docs/CUT.md`: only a `def`'s signature does), so a type parameter's
 -- values are boxed, `any`, and what it is a descriptor of is passed on as
 -- `desc(any)`.
-fun bindMethodParam (l : L s) (env : LEnv) (x : String) (grade : Maybe Grade) (ty : Maybe Core) : (LEnv, Maybe Binder, Maybe (String, String)) ! { Mut, St s | e } =
+fun bindMethodParam (l : L s) (env : LEnv) (x : String) (grade : Maybe Grade) (ty : Maybe Core) : (LEnv, Maybe Binder, Maybe (String, String)) ! { St s | e } =
   let (env2, b, rv) = bindParam l env x grade ty in
   match rv with
   | Just (a, _) ->
@@ -903,7 +904,7 @@ fun bindMethodParam (l : L s) (env : LEnv) (x : String) (grade : Maybe Grade) (t
 -- --- terms -----------------------------------------------------------------------------
 
 -- `c`'s value, given to `k`.
-fun term (l : L s) (env : LEnv) (c : Tm) (k : CutCons) : CutStmt ! { Mut, St s | e } =
+fun term (l : L s) (env : LEnv) (c : Tm) (k : CutCons) : CutStmt ! { St s | e } =
   let a = l.a in
   match (a, c) with
   | ElaboratedTermVar _ _ -> application l env c k
@@ -951,14 +952,14 @@ fun term (l : L s) (env : LEnv) (c : Tm) (k : CutCons) : CutStmt ! { Mut, St s |
   | _ -> sCut l (pUnit l) k
 
 -- `[x] = e`: the box's one field.
-fun unbox (l : L s) (env : LEnv) (whole : Tm) (e : Tm) (k : CutCons) : CutStmt ! { Mut, St s | e } =
+fun unbox (l : L s) (env : LEnv) (whole : Tm) (e : Tm) (k : CutCons) : CutStmt ! { St s | e } =
   let x = name l "x" in
   let r = repOf l env whole in
   term l env e (kCase l [arm l None [Binder.Binder x r] (sCut l (pVar l x) k)])
 
 -- `c`'s value as a producer, for `rest`: as it is if it is a value already,
 -- or computed into a variable first.
-fun atom (l : L s) (env : LEnv) (c : Tm) rest : CutStmt ! { Mut, St s | e } =
+fun atom (l : L s) (env : LEnv) (c : Tm) rest : CutStmt ! { St s | e } =
   match value l env c with
   | Just p -> rest p
   | None ->
@@ -968,24 +969,24 @@ fun atom (l : L s) (env : LEnv) (c : Tm) rest : CutStmt ! { Mut, St s | e } =
       term l env c (kMuT l (Binder.Binder v r) body)
 
 -- Several terms' values, in order.
-fun atoms (l : L s) (env : LEnv) (cs : [Tm]) rest : CutStmt ! { Mut, St s | e } = atomsFrom l env (V.map (\c -> Arg.Of c) cs) [] rest
+fun atoms (l : L s) (env : LEnv) (cs : [Tm]) rest : CutStmt ! { St s | e } = atomsFrom l env (V.map (\c -> Arg.Of c) cs) [] rest
 
 -- An argument: a term, or a variable of the context, by its level, that a
 -- lifted definition captured.
 data Arg = Of ElaboratedTerm | Level Int
 
-fun argAtom (l : L s) (env : LEnv) (x : Arg) rest : CutStmt ! { Mut, St s | e } =
+fun argAtom (l : L s) (env : LEnv) (x : Arg) rest : CutStmt ! { St s | e } =
   match x with
   | Arg.Of c -> atom l env c rest
   | Arg.Level lv -> rest (M.unwrapOr (pUnit l) (slotValue l env lv))
 
-fun atomsFrom (l : L s) (env : LEnv) (cs : [Arg]) (done : [CutProd]) rest : CutStmt ! { Mut, St s | e } =
+fun atomsFrom (l : L s) (env : LEnv) (cs : [Arg]) (done : [CutProd]) rest : CutStmt ! { St s | e } =
   match V.head cs with
   | None -> rest done
   | Just first -> argAtom l env first (\p -> atomsFrom l env (V.drop cs 1) (V.pushBack done p) rest)
 
 -- The variable at a level, as a producer, if it is one.
-fun slotValue (l : L s) (env : LEnv) (at : Int) : Maybe CutProd ! { Mut, St s | e } =
+fun slotValue (l : L s) (env : LEnv) (at : Int) : Maybe CutProd ! { St s | e } =
   if at < 0 then None
   else
     match V.get (slotsOf env) at with
@@ -997,7 +998,7 @@ fun slotValue (l : L s) (env : LEnv) (at : Int) : Maybe CutProd ! { Mut, St s | 
     | _ -> None
 
 -- A term that is a value without computing anything, as a producer.
-fun value (l : L s) (env : LEnv) (c : Tm) : Maybe CutProd ! { Mut, St s | e } =
+fun value (l : L s) (env : LEnv) (c : Tm) : Maybe CutProd ! { St s | e } =
   let a = l.a in
   match (a, c) with
   | ElaboratedTermVar i _ -> slotValue l env (lenOf env - (i + 1))
@@ -1013,7 +1014,7 @@ fun value (l : L s) (env : LEnv) (c : Tm) : Maybe CutProd ! { Mut, St s | e } =
 
 -- A lambda as codata: an object whose `apply` takes its argument. A type
 -- parameter's is a descriptor; one erased otherwise is no method at all.
-fun closure (l : L s) (env : LEnv) (c : Tm) : CutProd ! { Mut, St s | e } =
+fun closure (l : L s) (env : LEnv) (c : Tm) : CutProd ! { St s | e } =
   match lambda l c with
   | None -> pUnit l
   | Just (x, grade, ty, body) ->
@@ -1034,7 +1035,7 @@ fun closure (l : L s) (env : LEnv) (c : Tm) : CutProd ! { Mut, St s | e } =
 -- An application, or a head applied to nothing: a primitive, a constructor,
 -- an operation, a top-level function, or a value applied one argument at a
 -- time.
-fun application (l : L s) (env : LEnv) (c : Tm) (k : CutCons) : CutStmt ! { Mut, St s | e } =
+fun application (l : L s) (env : LEnv) (c : Tm) (k : CutCons) : CutStmt ! { St s | e } =
   let a = l.a in
   let (head, args) = spine l c [] in
   -- (a lambda read back from a value, its binders' types from where it is
@@ -1101,7 +1102,7 @@ fun application (l : L s) (env : LEnv) (c : Tm) (k : CutCons) : CutStmt ! { Mut,
 
 -- `f a b ..`, `f` a value: `<f | apply(a; μ̃ g. <g | apply(b; k)>)>`. An
 -- erased argument is a descriptor if it is a type, and nothing otherwise.
-fun applyArgs (l : L s) (env : LEnv) (f : CutProd) (args : [Tm]) (k : CutCons) : CutStmt ! { Mut, St s | e } =
+fun applyArgs (l : L s) (env : LEnv) (f : CutProd) (args : [Tm]) (k : CutCons) : CutStmt ! { St s | e } =
   match V.head args with
   | None -> sCut l f k
   | Just first ->
@@ -1113,7 +1114,7 @@ fun applyArgs (l : L s) (env : LEnv) (f : CutProd) (args : [Tm]) (k : CutCons) :
            else applyOne l env f (descriptor l env (dataOf l x)) rest k
        | None -> atom l env first (\x -> applyOne l env f x rest k))
 
-fun applyOne (l : L s) (env : LEnv) (f : CutProd) (x : CutProd) (rest : [Tm]) (k : CutCons) : CutStmt ! { Mut, St s | e } =
+fun applyOne (l : L s) (env : LEnv) (f : CutProd) (x : CutProd) (rest : [Tm]) (k : CutCons) : CutStmt ! { St s | e } =
   if V.isEmpty rest then sCut l f (kCall l "apply" [x] [k])
   else
     let g = name l "g" in
@@ -1121,10 +1122,10 @@ fun applyOne (l : L s) (env : LEnv) (f : CutProd) (x : CutProd) (rest : [Tm]) (k
     sCut l f (kCall l "apply" [x] [kMuT l (Binder.Binder g Rep.Ptr) next])
 
 -- The descriptor for a type argument.
-fun descriptor (l : L s) (env : LEnv) (ty : Core) : CutProd ! { Mut, St s | e } = descriptorOf l env (Ty.repOfType l.tc (scopeOf env) ty)
+fun descriptor (l : L s) (env : LEnv) (ty : Core) : CutProd ! { St s | e } = descriptorOf l env (Ty.repOfType l.tc (scopeOf env) ty)
 
 -- The descriptor of a representation the typer gave.
-fun descriptorOf (l : L s) (env : LEnv) (r : TRep) : CutProd ! { Mut, St s | e } =
+fun descriptorOf (l : L s) (env : LEnv) (r : TRep) : CutProd ! { St s | e } =
   match r with
   | TRep.Var lvl ->
       (match V.get (slotsOf env) lvl with
@@ -1139,7 +1140,7 @@ fun descriptorOf (l : L s) (env : LEnv) (r : TRep) : CutProd ! { Mut, St s | e }
   | other -> pDesc l (rep env other)
 
 -- A known function's arguments, as its parameters take them.
-fun arguments (l : L s) (env : LEnv) (params : [Param]) (args : [Arg]) rest : CutStmt ! { Mut, St s | e } =
+fun arguments (l : L s) (env : LEnv) (params : [Param]) (args : [Arg]) rest : CutStmt ! { St s | e } =
   let pairs = V.zip (V.range 0 (V.len params)) (V.zip params args) in
   let core = \x -> match x with | Arg.Of t -> dataOf l t | Arg.Level lv -> Core.Var (lenOf env - 1 - lv) "captured" in
   -- (the descriptors that come after a record, for its fields that are
@@ -1178,7 +1179,7 @@ fun arguments (l : L s) (env : LEnv) (params : [Param]) (args : [Arg]) rest : Cu
 -- A top-level function called: with all its arguments, a call; with more,
 -- a call whose result is applied to the rest; with fewer, an object
 -- waiting for the rest.
-fun call (l : L s) (env : LEnv) (whole : Tm) (s : Sym) (params : [Param]) (args : [Arg]) (k : CutCons) : CutStmt ! { Mut, St s | e } =
+fun call (l : L s) (env : LEnv) (whole : Tm) (s : Sym) (params : [Param]) (args : [Arg]) (k : CutCons) : CutStmt ! { St s | e } =
   if V.len args < V.len params then partial l env whole (Head2.HCall s) (V.take params (V.len args)) args k
   else
     let now = V.take args (V.len params) in
@@ -1197,13 +1198,13 @@ fun call (l : L s) (env : LEnv) (whole : Tm) (s : Sym) (params : [Param]) (args 
 
 -- A partial application: its arguments computed, then an object taking the
 -- rest one `apply` at a time, as the partial application's type says.
-fun partial (l : L s) (env : LEnv) (whole : Tm) (head : Head2) (given : [Param]) (args : [Arg]) (k : CutCons) : CutStmt ! { Mut, St s | e } =
+fun partial (l : L s) (env : LEnv) (whole : Tm) (head : Head2) (given : [Param]) (args : [Arg]) (k : CutCons) : CutStmt ! { St s | e } =
   let remaining = Ty.functionParams l.tc (scopeOf env) (dataOf l whole) in
   arguments l env given args (\g -> sCut l (waiting l env head g remaining) k)
 
 -- The object a partial application is: one `apply` for each parameter still
 -- to come, the last doing what `head` does with all of them.
-fun waiting (l : L s) (env : LEnv) (head : Head2) (given : [CutProd]) (remaining : [(TRep, Bool, Bool, Bool)]) : CutProd ! { Mut, St s | e } =
+fun waiting (l : L s) (env : LEnv) (head : Head2) (given : [CutProd]) (remaining : [(TRep, Bool, Bool, Bool)]) : CutProd ! { St s | e } =
   let w = if V.any (\x -> match x with | (_, _, _, dict) -> dict) remaining then err l "a partial application that waits for a record with fields that are types is not lowered yet" else () in
   let names =
     V.map
@@ -1238,7 +1239,7 @@ fun waiting (l : L s) (env : LEnv) (head : Head2) (given : [CutProd]) (remaining
   in
   M.unwrapOr (pMu l cont body) obj
 
-fun primApp (l : L s) (env : LEnv) (whole : Tm) (p : Prim) (args : [Tm]) (k : CutCons) : CutStmt ! { Mut, St s | e } =
+fun primApp (l : L s) (env : LEnv) (whole : Tm) (p : Prim) (args : [Tm]) (k : CutCons) : CutStmt ! { St s | e } =
   let op =
     match p with
     | Prim.IntAdd -> "add"
@@ -1269,7 +1270,7 @@ fun nativeArity (n : String) : Int =
 
 -- A native: an array's operation is the runtime's primitive of the same
 -- name, and an array literal an array.
-fun nativeApp (l : L s) (env : LEnv) (whole : Tm) (ni : (String, Int)) (args : [Tm]) (k : CutCons) : CutStmt ! { Mut, St s | e } =
+fun nativeApp (l : L s) (env : LEnv) (whole : Tm) (ni : (String, Int)) (args : [Tm]) (k : CutCons) : CutStmt ! { St s | e } =
   let (n, nparams) = ni in
   let all = nparams + nativeArity n in
   let literal =
@@ -1349,9 +1350,9 @@ fun nativeApp (l : L s) (env : LEnv) (whole : Tm) (ni : (String, Int)) (args : [
                         sPrim l op ps [kMuT l (Binder.Binder r Rep.Any) next])))
 
 -- The elements of a list written out, `x :: y :: Nil`, if `c` is one.
-fun listLiteral (l : L s) (c : Tm) : Maybe [Tm] ! { Mut, St s | e } = listFrom l c []
+fun listLiteral (l : L s) (c : Tm) : Maybe [Tm] ! { St s | e } = listFrom l c []
 
-fun listFrom (l : L s) (c : Tm) (items : [Tm]) : Maybe [Tm] ! { Mut, St s | e } =
+fun listFrom (l : L s) (c : Tm) (items : [Tm]) : Maybe [Tm] ! { St s | e } =
   let (head, args) = spine l c [] in
   match (l.a, head) with
   | ElaboratedTermOpaque u _ ->
@@ -1366,7 +1367,7 @@ fun listFrom (l : L s) (c : Tm) (items : [Tm]) : Maybe [Tm] ! { Mut, St s | e } 
        | None -> None)
   | _ -> None
 
-fun construct (l : L s) (env : LEnv) (whole : Tm) (u : Int) (info : CtorInfo) (args : [Tm]) (k : CutCons) : CutStmt ! { Mut, St s | e } =
+fun construct (l : L s) (env : LEnv) (whole : Tm) (u : Int) (info : CtorInfo) (args : [Tm]) (k : CutCons) : CutStmt ! { St s | e } =
   match info with
   | CtorInfo.CtorInfo nm dt _ nparams nfields ->
       let w = note l.datas dt in
@@ -1377,7 +1378,7 @@ fun construct (l : L s) (env : LEnv) (whole : Tm) (u : Int) (info : CtorInfo) (a
       if V.len args < V.len params then partial l env whole (Head2.HCon s) (V.take params (V.len args)) (V.map (\x -> Arg.Of x) args) k
       else arguments l env params (V.map (\x -> Arg.Of x) (V.take args (V.len params))) (\ps -> sCut l (pCon l s ps) k)
 
-fun performed (l : L s) (env : LEnv) (whole : Tm) (u : Int) (info : OpInfo) (args : [Tm]) (k : CutCons) : CutStmt ! { Mut, St s | e } =
+fun performed (l : L s) (env : LEnv) (whole : Tm) (u : Int) (info : OpInfo) (args : [Tm]) (k : CutCons) : CutStmt ! { St s | e } =
   match info with
   | OpInfo.OpInfo nm eff _ erased arity _ ->
       let w = note l.effects eff in
@@ -1413,21 +1414,21 @@ fun performed (l : L s) (env : LEnv) (whole : Tm) (u : Int) (info : OpInfo) (arg
 -- Which of operation `u`'s arguments go in a box, and whether what it gives
 -- back comes in one: those its declaration says are `any` (`op_boxes`).
 -- Cut's `any` holds a box, and a box is a constructor's field.
-fun opBoxes (l : L s) (u : Int) : ([Bool], Bool) ! { Mut, St s | e } =
+fun opBoxes (l : L s) (u : Int) : ([Bool], Bool) ! { St s | e } =
   let (ps, r) = M.unwrapOr ([], TRep.Any) (Ty.opShape l.tc u) in
   (V.map (\p -> conv p == Rep.Any) ps, conv r == Rep.Any)
 
 -- The box a value goes in where `any` is wanted: `#Box`.
-fun boxCtor (l : L s) : Sym ! { Mut, St s | e } =
+fun boxCtor (l : L s) : Sym ! { St s | e } =
   let w = setRef l.boxesUsed True in
   A.child (A.idyll "Prelude" "#Box") "Box"
 
 -- `ps`, each whose slot says so in a box.
-fun boxing (l : L s) (ps : [CutProd]) (slots : [Bool]) : [CutProd] ! { Mut, St s | e } =
+fun boxing (l : L s) (ps : [CutProd]) (slots : [Bool]) : [CutProd] ! { St s | e } =
   V.map (\ip -> match ip with | (i, p) -> if V.getOr False slots i then pCon l (boxCtor l) [p] else p) (V.zip (V.range 0 (V.len ps)) ps)
 
 -- `k`, given what a box holds, at `r`.
-fun unboxing (l : L s) (r : Rep) (k : CutCons) : CutCons ! { Mut, St s | e } =
+fun unboxing (l : L s) (r : Rep) (k : CutCons) : CutCons ! { St s | e } =
   let b = name l "b" in
   let v = name l "v" in
   let a = arm l (Just (boxCtor l)) [Binder.Binder v r] (sCut l (pVar l v) k) in
@@ -1440,7 +1441,7 @@ fun isBoolAlt (l : L s) (alt : ElaboratedAlt) : Bool =
 
 -- A `case`: on data, a `case` consumer; on a `Bool`, `prim if`. The
 -- consumer is named first if it is not a variable, so the arms share it.
-fun caseOf (l : L s) (env : LEnv) (scrutinee : Tm) (alts : [ElaboratedAlt]) (k : CutCons) : CutStmt ! { Mut, St s | e } =
+fun caseOf (l : L s) (env : LEnv) (scrutinee : Tm) (alts : [ElaboratedAlt]) (k : CutCons) : CutStmt ! { St s | e } =
   let kind = kindCutCons l.out k in
   if kind == CutConsKind.KVar or kind == CutConsKind.Halt then caseNamed l env scrutinee alts k
   else
@@ -1448,7 +1449,7 @@ fun caseOf (l : L s) (env : LEnv) (scrutinee : Tm) (alts : [ElaboratedAlt]) (k :
     let inner = caseNamed l env scrutinee alts (kVar l j) in
     sCut l (pMu l j inner) k
 
-fun caseNamed (l : L s) (env : LEnv) (scrutinee : Tm) (alts : [ElaboratedAlt]) (k : CutCons) : CutStmt ! { Mut, St s | e } =
+fun caseNamed (l : L s) (env : LEnv) (scrutinee : Tm) (alts : [ElaboratedAlt]) (k : CutCons) : CutStmt ! { St s | e } =
   let a = l.a in
   if V.all (isBoolAlt l) alts then
     let arm2 =
@@ -1499,7 +1500,7 @@ fun caseNamed (l : L s) (env : LEnv) (scrutinee : Tm) (alts : [ElaboratedAlt]) (
     term l env scrutinee (kCase l arms)
 
 -- `handle body with clauses`.
-fun handled (l : L s) (env : LEnv) (body : Tm) (ret : Tm) (clauses : [ElaboratedOpClause]) (k : CutCons) : CutStmt ! { Mut, St s | e } =
+fun handled (l : L s) (env : LEnv) (body : Tm) (ret : Tm) (clauses : [ElaboratedOpClause]) (k : CutCons) : CutStmt ! { St s | e } =
   let a = l.a in
   let cutClauses =
     V.concatMap
@@ -1550,7 +1551,7 @@ fun handled (l : L s) (env : LEnv) (body : Tm) (ret : Tm) (clauses : [Elaborated
   let bodyS = term l env body (kVar l b) in
   sHandle l cutClauses retX retK retS b bodyS k
 
-fun erasedArgs (l : L s) (env : LEnv) (lam : Tm) (n : Int) : (LEnv, Tm) ! { Mut, St s | e } =
+fun erasedArgs (l : L s) (env : LEnv) (lam : Tm) (n : Int) : (LEnv, Tm) ! { St s | e } =
   if n <= 0 then (env, lam)
   else
     match lambda l lam with
@@ -1559,7 +1560,7 @@ fun erasedArgs (l : L s) (env : LEnv) (lam : Tm) (n : Int) : (LEnv, Tm) ! { Mut,
         let scope2 = match ty with | Just t -> Ty.bind l.tc (scopeOf env) x t | None -> Ty.bindUnknown (scopeOf env) x in
         erasedArgs l (pushSlot (withScope env scope2) (Slot.STypeVar None x)) body (n - 1)
 
-fun opArgs (l : L s) (env : LEnv) (lam : Tm) (n : Int) (params : [Binder]) (slots : [Bool]) (i : Int) (unboxed : [(String, Binder)]) : (LEnv, Tm, [Binder], [(String, Binder)]) ! { Mut, St s | e } =
+fun opArgs (l : L s) (env : LEnv) (lam : Tm) (n : Int) (params : [Binder]) (slots : [Bool]) (i : Int) (unboxed : [(String, Binder)]) : (LEnv, Tm, [Binder], [(String, Binder)]) ! { St s | e } =
   if n <= 0 then (env, lam, params, unboxed)
   else
     match lambda l lam with
@@ -1593,7 +1594,7 @@ fun symLess (a : Sym) (b : Sym) : Bool = S.lessThan (sortKey a) (sortKey b)
 fun sortKey (s : Sym) : String = match s with | Sym.Sym lang p path -> S.join "\u{0}" (V.append [lang, p] path)
 
 -- The data types, roles, effects and native operations.
-fun declarations (l : L s) (entry : Maybe Sym) (answer : Bool) : String ! { Mut, St s | e } =
+fun declarations (l : L s) (entry : Maybe Sym) (answer : Bool) : String ! { St s | e } =
   let ctorsOf =
     \d ->
       let cs = V.filter (\kv -> match snd kv with | CtorInfo.CtorInfo _ dt _ _ _ -> dt == d) (Hm.toVec (getRef l.tc.ctors)) in
@@ -1846,19 +1847,19 @@ fun unitBinder l (x : String) (body : CutStmt) = kMuT l (Binder.Binder x Rep.Uni
 -- `prim op(args; μ̃ x: rep. body)`
 fun primThen l (op : String) (args : [CutProd]) (x : String) (r : Rep) (body : CutStmt) = sPrim l op args [kMuT l (Binder.Binder x r) body]
 
-fun testEq (l : L s) (a : CutProd) (b : CutProd) (no : CutStmt) (yes : CutStmt) : CutStmt ! { Mut, St s | e } =
+fun testEq (l : L s) (a : CutProd) (b : CutProd) (no : CutStmt) (yes : CutStmt) : CutStmt ! { St s | e } =
   let u1 = name l "u" in
   let u2 = name l "u" in
   sPrim l "eq" [a, b] [unitBinder l u1 no, unitBinder l u2 yes]
 
-fun testLt (l : L s) (a : CutProd) (b : CutProd) (no : CutStmt) (yes : CutStmt) : CutStmt ! { Mut, St s | e } =
+fun testLt (l : L s) (a : CutProd) (b : CutProd) (no : CutStmt) (yes : CutStmt) : CutStmt ! { St s | e } =
   let u1 = name l "u" in
   let u2 = name l "u" in
   sPrim l "lt" [a, b] [unitBinder l u1 no, unitBinder l u2 yes]
 
 -- The entry's consumer, given what computes its value: the value shown, and
 -- handed to `k` as a string; none if it has nothing to show.
-fun showAnswer (l : L s) (s : Ctx) (ty : Value) (k : CutCons) : Maybe (Rep, CutCons) ! { Mut, St s | e } =
+fun showAnswer (l : L s) (s : Ctx) (ty : Value) (k : CutCons) : Maybe (Rep, CutCons) ! { St s | e } =
   let v = name l "answer" in
   match showValue l s ty (pVar l v) k False with
   | None -> None
@@ -1867,7 +1868,7 @@ fun showAnswer (l : L s) (s : Ctx) (ty : Value) (k : CutCons) : Maybe (Rep, CutC
       Just (r, kMuT l (Binder.Binder v r) body)
 
 -- A representation for a closed type.
-fun flatRep (l : L s) (s : Ctx) (ty : Value) : Rep ! { Mut, St s | e } =
+fun flatRep (l : L s) (s : Ctx) (ty : Value) : Rep ! { St s | e } =
   match Ty.rep l.tc s ty with
   | TRep.Var _ -> Rep.Any
   | r -> conv r
@@ -1879,7 +1880,7 @@ fun pushShow (l : L s) (sym : Sym) (x : String) (k : String) (body : CutStmt) = 
 
 -- `x`, of type `ty`, as a string handed to `k`; parenthesised if `isAtom`
 -- and it is a constructor with fields.
-fun showValue (l : L s) (s : Ctx) (ty : Value) (x : CutProd) (k : CutCons) (isAtom : Bool) : Maybe CutStmt ! { Mut, St s | e } =
+fun showValue (l : L s) (s : Ctx) (ty : Value) (x : CutProd) (k : CutCons) (isAtom : Bool) : Maybe CutStmt ! { St s | e } =
   match Ty.shown l.tc l.linear s ty with
   | Shown.Int -> M.map (\si -> sInvoke l si [x] [k]) (getRef l.showInt)
   | Shown.Bool ->
@@ -1928,7 +1929,7 @@ fun showValue (l : L s) (s : Ctx) (ty : Value) (x : CutProd) (k : CutCons) (isAt
   | Shown.Nothing -> None
 
 -- Several values shown in turn, then `done` with their strings.
-fun showAll (l : L s) (s : Ctx) (items : [(Value, CutProd, Bool)]) (got : [CutProd]) done : Maybe CutStmt ! { Mut, St s | e } =
+fun showAll (l : L s) (s : Ctx) (items : [(Value, CutProd, Bool)]) (got : [CutProd]) done : Maybe CutStmt ! { St s | e } =
   match V.head items with
   | None -> Just (done got)
   | Just (ty, x, isAtom) ->
@@ -1940,7 +1941,7 @@ fun showAll (l : L s) (s : Ctx) (items : [(Value, CutProd, Bool)]) (got : [CutPr
 fun isPrelude (l : L s) (u : Int) : Bool = match Hm.lookup u l.symbols with | Just ("Prelude", _) -> True | _ -> False
 
 -- What shows a data type's values, made the first time it is asked for.
-fun dataShow (l : L s) (s : Ctx) (key : String) (ctors : [(Int, String, [Value])]) : Maybe ShowDefs ! { Mut, St s | e } =
+fun dataShow (l : L s) (s : Ctx) (key : String) (ctors : [(Int, String, [Value])]) : Maybe ShowDefs ! { St s | e } =
   match Hm.lookup key (getRef l.shows) with
   | Just known -> known
   | None ->
@@ -1965,7 +1966,7 @@ fun dataShow (l : L s) (s : Ctx) (key : String) (ctors : [(Int, String, [Value])
            None)
 
 -- `Just (Ok 3)`, `x :: xs`: a case on the constructor.
-fun dataDefs (l : L s) (s : Ctx) (defs : ShowDefs) (ctors : [(Int, String, [Value])]) : Maybe () ! { Mut, St s | e } =
+fun dataDefs (l : L s) (s : Ctx) (defs : ShowDefs) (ctors : [(Int, String, [Value])]) : Maybe () ! { St s | e } =
   let x = name l "x" in
   let k = name l "k" in
   let kv = kVar l k in
@@ -2011,7 +2012,7 @@ fun dataDefs (l : L s) (s : Ctx) (defs : ShowDefs) (ctors : [(Int, String, [Valu
 
 -- A data type's values as a field: in parentheses, if its constructor has
 -- fields of its own.
-fun atomDef (l : L s) (s : Ctx) (sh : Sym) (a : Sym) (ctors : [(Int, String, [Value])]) : Maybe () ! { Mut, St s | e } =
+fun atomDef (l : L s) (s : Ctx) (sh : Sym) (a : Sym) (ctors : [(Int, String, [Value])]) : Maybe () ! { St s | e } =
   let x = name l "x" in
   let k = name l "k" in
   let arms =
@@ -2038,7 +2039,7 @@ fun atomDef (l : L s) (s : Ctx) (sh : Sym) (a : Sym) (ctors : [(Int, String, [Va
   M.map (\arms0 -> pushShow l a x k (sCut l (pVar l x) (kCase l arms0))) arms
 
 -- `(1, True)`, and a pair nested to the right a longer tuple, `(1, 2, 3)`.
-fun tupleDefs (l : L s) (s : Ctx) (defs : ShowDefs) (pair : (Int, String, [Value])) : Maybe () ! { Mut, St s | e } =
+fun tupleDefs (l : L s) (s : Ctx) (defs : ShowDefs) (pair : (Int, String, [Value])) : Maybe () ! { St s | e } =
   match (defs, pair) with
   | (ShowDefs.ShowDefs sh _ (Just itemsDef), (u, _, ftys)) ->
       let w = match ctorInfo l u with | Just (CtorInfo.CtorInfo _ dt _ _ _) -> note l.datas dt | None -> () in
@@ -2090,7 +2091,7 @@ fun tupleDefs (l : L s) (s : Ctx) (defs : ShowDefs) (pair : (Int, String, [Value
   | _ -> None
 
 -- `#[1; 2]`, `#[1;]`, `#[;]`: the elements in turn, then the brackets.
-fun arrayShow (l : L s) (s : Ctx) (array : Value) (elem : Value) : Maybe Sym ! { Mut, St s | e } =
+fun arrayShow (l : L s) (s : Ctx) (array : Value) (elem : Value) : Maybe Sym ! { St s | e } =
   match Ty.typeKey l.tc l.linear s array with
   | None -> None
   | Just key ->
@@ -2146,7 +2147,7 @@ fun arrayShow (l : L s) (s : Ctx) (array : Value) (elem : Value) : Maybe Sym ! {
 
 -- What escapes a string as the REPL shows one, made the first time it is
 -- wanted: byte by byte, copying the runs between what needs escaping.
-fun escapeDef (l : L s) : Sym ! { Mut, St s | e } =
+fun escapeDef (l : L s) : Sym ! { St s | e } =
   let escape = Sym.Sym "idyll" l.package ["#escape"] in
   let w = if V.elem "#escape" (getRef l.atoms) then () else (let a = setRef l.atoms (V.pushBack (getRef l.atoms) "#escape") in makeEscape l escape) in
   escape
@@ -2228,7 +2229,7 @@ fun makeEscape (l : L s) (escape : Sym) =
 -- is the runtime's mutable one, written in place (the `st` primitives); a
 -- read and a write give it back, and freezing and thawing copy it.
 
-fun nativeHelper (l : L s) (n : String) : Maybe (Sym, [Param]) ! { Mut, St s | e } =
+fun nativeHelper (l : L s) (n : String) : Maybe (Sym, [Param]) ! { St s | e } =
   let values =
     if V.elem n ["arrayToList", "arrayFromList", "marrayLen", "marrayFreeze", "marrayThaw"] then Just [Rep.Ptr]
     else if n == "marrayNew" then Just [Rep.I64, Rep.Any]
@@ -2254,14 +2255,14 @@ fun nativeHelper (l : L s) (n : String) : Maybe (Sym, [Param]) ! { Mut, St s | e
 
 -- A constructor of the prelude's, by name: its symbol, its type declared
 -- for the program.
-fun preludeCtor (l : L s) (cn : String) : Maybe Sym ! { Mut, St s | e } =
+fun preludeCtor (l : L s) (cn : String) : Maybe Sym ! { St s | e } =
   match V.find (\kv -> match kv with | (u, CtorInfo.CtorInfo n _ _ _ _) -> n == cn and isPrelude l u) (Hm.toVec (getRef l.tc.ctors)) with
   | Just (u, CtorInfo.CtorInfo _ dt _ _ _) ->
       let w = note l.datas dt in
       symbol l u
   | None -> None
 
-fun makeNative (l : L s) (n : String) (sym : Sym) : Maybe () ! { Mut, St s | e } =
+fun makeNative (l : L s) (n : String) (sym : Sym) : Maybe () ! { St s | e } =
   if n == "stringByteAt" then Just (makeByteAt l sym) else makeGeneric l n sym
 
 -- `stringByteAt`: the runtime's byte is a `u8`, made an `Int`.
@@ -2273,7 +2274,7 @@ fun makeByteAt (l : L s) (sym : Sym) =
   let body = sPrim l "stringByteAt" [pVar l st, pVar l i] [kMuT l (Binder.Binder b (Rep.Number "UInt8")) (sPrim l "toInt" [pVar l b] [kVar l k])] in
   setRef l.defs (V.pushBack (getRef l.defs) (defDecl l sym [] [] [Binder.Binder st Rep.Str, Binder.Binder i Rep.I64] [k] body))
 
-fun makeGeneric (l : L s) (n : String) (sym : Sym) : Maybe () ! { Mut, St s | e } =
+fun makeGeneric (l : L s) (n : String) (sym : Sym) : Maybe () ! { St s | e } =
   let d = name l "d" in
   let a = name l "a" in
   let elem = Rep.Var a in

@@ -9,6 +9,7 @@
 -- holes are reported, the postponed questions asked a last time, and the
 -- metavariables nothing solved reported too.
 
+use Std.St (StRef, newRef, getRef, setRef)
 use Idyll.Core (Core, Builtin)
 use Idyll.Core as C
 use Idyll.Value (Value, Row)
@@ -56,8 +57,8 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
 -- declared; the type of the module's expression; and the elaborated
 -- program, the expression under the top-level definitions as `let`s, in
 -- the context of the builtins and the primitives.
-@pub record Checked = {
-  tc : Tc,
+@pub record Checked s = {
+  tc : Tc s,
   bodyType : Maybe Core,
   program : Maybe Core,
   -- the same, written out, with its recursive definitions and what each
@@ -90,20 +91,24 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
 -- else, a line each, sorted, the program's declarations with their types
 -- (`name : type`), the type of its expression (`body : type`), and the
 -- kinds of the errors found (`error: Mismatch`).
-@pub fun checkModule (m : Renamed) : String ! { Mut | e } =
-  let c = checked m in
-  dump c.tc m c.bodyType
+@pub fun checkModule (m : Renamed) : String =
+  runSt (\() ->
+    let c = checked m in
+    dump c.tc m c.bodyType)
 
 -- The same, against the compiled packages it depends on.
-@pub fun checkModuleWith (m : Renamed) (deps : [Compiled]) : String ! { Mut | e } =
-  let c = checkedAgainst m False deps in
-  dump c.tc m c.bodyType
+@pub fun checkModuleWith (m : Renamed) (deps : [Compiled]) : String =
+  runSt (\() ->
+    let c = checkedAgainst m False deps in
+    dump c.tc m c.bodyType)
 
 -- `checked`, against the compiled packages it depends on.
-@pub fun checkedAgainst (m : Renamed) (entry : Bool) (deps : [Compiled]) : Checked ! { Mut | e } = runSt (\() -> checkedWith m entry deps)
+@pub fun checkedAgainst (m : Renamed) (entry : Bool) (deps : [Compiled]) : Checked s ! { St s | e } = checkedWith m entry deps
 
--- All of it in one `runSt`, whose state the pass's tables are (`Elaborated`).
-@pub fun checked (m : Renamed) : Checked ! { Mut | e } = runSt (\() -> checkedIn m)
+-- A module checked: the checker's state and the pass's tables
+-- (`Elaborated`) are one `St`'s, so what reads them runs in the same
+-- `runSt` as this.
+@pub fun checked (m : Renamed) : Checked s ! { St s | e } = checkedIn m
 
 @pub fun checkedIn (m : Renamed) = checkedAt m False
 
@@ -114,7 +119,7 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
 
 -- The same, against the compiled packages it depends on (`deps`, each
 -- after those it depends on): `check_module` with its `deps`.
-@pub fun checkedWith (m : Renamed) (entry : Bool) (deps : [Compiled]) =
+@pub fun checkedWith (m : Renamed) (entry : Bool) (deps : [Compiled]) : Checked s ! { St s | e } =
   let h = hirArena m.hir in
   let root = hirRoot m.hir in
   let datas = hirModuleDatas h root in
@@ -267,7 +272,7 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
 -- type, a transparent one with its value, a recursive one with its case
 -- tree, and everything known about their data types, effects and natives,
 -- hints, traits and instances (`Checker::import`).
-fun importAll (tc : Tc) (ctx : Ctx) (deps : [Compiled]) : Ctx ! { Mut | e } =
+fun importAll (tc : Tc s) (ctx : Ctx) (deps : [Compiled]) : Ctx ! { St s | e } =
   -- (the definitions already in the context, the builtins' and the
   -- primitives', by their names: what an exported right-hand side names
   -- them by)
@@ -363,7 +368,7 @@ fun symbolsOf (m : Renamed) : HashMap Int (String, String) =
 
 -- The effects the runtime handles: the prelude's `Eff`, or failing that,
 -- `Div`.
-fun worldOf (tc : Tc) (ctx : Ctx) (prelude : [HirGroup]) : Value ! { Mut | e } =
+fun worldOf (tc : Tc s) (ctx : Ctx) (prelude : [HirGroup]) : Value ! { St s | e } =
   let h = getRef tc.hir in
   let eff = V.find (\b -> hirIdentText h (hirBindName h b) == "Eff") (V.concatMap (bindsOf h) prelude) in
   match M.andThen (\b -> X.lookup ctx (identOf h (hirBindName h b))) eff with
@@ -373,7 +378,7 @@ fun worldOf (tc : Tc) (ctx : Ctx) (prelude : [HirGroup]) : Value ! { Mut | e } =
 -- The effects in `usage` that nothing will handle: all but the world's. A
 -- row variable nothing has said anything about is no more effects, at the
 -- top, where nothing more will.
-fun unhandled (tc : Tc) (ctx : Ctx) (usage : Usage) (world : Value) =
+fun unhandled (tc : Tc s) (ctx : Ctx) (usage : Usage) (world : Value) =
   match effectsOf tc usage with
   | None -> ()
   | Just effects ->
@@ -393,7 +398,7 @@ fun unhandled (tc : Tc) (ctx : Ctx) (usage : Usage) (world : Value) =
            else T.error tc "UnhandledEffects")
 
 -- `main : () -> () ! e`, every effect in `e` the runtime's.
-fun checkMain (tc : Tc) (ctx : Ctx) (main : Ident) (world : Value) : Bool ! { Mut | e } =
+fun checkMain (tc : Tc s) (ctx : Ctx) (main : Ident) (world : Value) : Bool ! { St s | e } =
   match X.lookup ctx main with
   | None -> False
   | Just (_, ty, _) ->
@@ -416,7 +421,7 @@ fun sorted (xs : [String]) : [String] =
 
 fun distinct (xs : [String]) : [String] = V.foldl (\acc x -> if V.elem x acc then acc else V.pushBack acc x) [] xs
 
-fun dump (tc : Tc) (m : Renamed) (body : Maybe Core) : String ! { Mut | e } =
+fun dump (tc : Tc s) (m : Renamed) (body : Maybe Core) : String ! { St s | e } =
   let cannot = getRef tc.unsupported in
   if not (V.isEmpty cannot) then "(unsupported: " ++ S.join ", " (sorted (distinct cannot)) ++ ")"
   else
@@ -444,7 +449,7 @@ fun qualified (m : Renamed) (u : Int) (name : String) : String =
 -- The groups entered and the data types declared, each data type once the
 -- groups before it are (`dataAfter`, from `Scc.interleave`), from group `g`
 -- and data type `d` on.
-fun enterInterleaved (tc : Tc) (ctx : Ctx) (datas : [HirData]) (dataAfter : [Int]) (groups : [HirGroup]) (g : Int) (d : Int) owed lets =
+fun enterInterleaved (tc : Tc s) (ctx : Ctx) (datas : [HirData]) (dataAfter : [Int]) (groups : [HirGroup]) (g : Int) (d : Int) owed lets =
   if g >= V.len groups and d >= V.len datas then (ctx, owed, lets)
   else
     let upto0 = if d < V.len datas then (let a = V.getOr 0 dataAfter d in if a < V.len groups then a else V.len groups) else V.len groups in

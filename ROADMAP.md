@@ -888,8 +888,19 @@ accepted when what it does fits within what resuming was found to.
   is broken as the principles above set it out (`format!`'s `indent N(..)`
   and `nogroup`, which Lingua added for it). Still to come: `idyll fmt` in
   the Rust driver.
-- [ ] **The language server** (`meadow-lsp`). Joining the renamer's span
-  table with the checker's type table gives type-on-hover almost for free.
+- [~] **The language server**, written with Lingua's `lsp!` over a
+  `database!` of front/'s queries (front/README.md, "The editor"), as the
+  formatter is written with `format!`. `Idyll lsp` publishes what is wrong
+  with each open file, colours it from its tree and formats it. Each
+  answer is worked out again only when an edit changes what it read. For
+  it, front/'s renamer, checker and lowering keep their state in `St`
+  cells, as a query may perform nothing but asking other queries. Still to
+  come:
+  - the renamer's and the checker's errors at the nodes they are about
+    (now at the start of the file);
+  - hover, with each node's type;
+  - going to a definition, and completion;
+  - a file checked in its package, not as a lone program.
 - [ ] **The VS Code extension** (`editors/vscode`).
 - [ ] **Named holes, for type-driven development** (Chris, 2026-10-16), as
   Idris and Agda have them. `_` is a hole the checker fills in, as it does

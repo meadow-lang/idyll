@@ -1,0 +1,65 @@
+-- Idyll's language server (`lsp!`), `Idyll lsp`: on standard input and
+-- output, over a session of the compiler's queries (`Session`), which
+-- works out again only what an edit changed. It publishes what is wrong
+-- with each open file, colours a file from its tree, and sets a file out
+-- as `Idyll fmt` does.
+
+use Lingua (lsp!)
+use Idyll.Session
+use Idyll.Syntax (parseIdyll)
+use Std.Exn (toResult)
+use Std.Result.Result.*
+
+lsp! {
+  pub Server "idyll" for Session
+    | text = setSessionSource
+    | diagnostics = diagnosticsOf
+    | tree = treeOf
+    | format = formatOf
+}
+
+-- A query's answer, or `fallback` if it has none (an input never set).
+fun answered fallback act = match toResult act with | Ok x -> x | Err _ -> fallback
+
+fun diagnosticsOf db file = answered [] (\() -> sessionProblems db file)
+
+fun treeOf db file = answered (fst (parseIdyll "")) (\() -> fst (sessionParsed db file))
+
+-- The file set out; as it is, if it cannot be.
+fun formatOf db file = answered (answered "" (\() -> sessionSource db file)) (\() -> sessionFormatted db file)
+
+-- --- the server, told what an editor would tell it --------------------------------
+
+use Lingua.Lsp (told)
+use Std.Json (Json)
+use Std.Json as J
+use Std.Collections.Vector as V
+use Std.Maybe as M
+use Std.Test (assertEq)
+
+fun message (fields : [(String, Json)]) : Json = J.jObject (V.pushFront fields ("jsonrpc", J.jString "2.0"))
+
+fun asking (id : Int) (method : String) (params : Json) : Json =
+  message [("id", J.jInt id), ("method", J.jString method), ("params", params)]
+
+fun inFile (uri : String) : Json = J.jObject [("textDocument", J.jObject [("uri", J.jString uri)])]
+
+fun opening (uri : String) (text : String) : Json =
+  message [
+    ("method", J.jString "textDocument/didOpen"),
+    ("params", J.jObject [("textDocument", J.jObject [("uri", J.jString uri), ("text", J.jString text)])])
+  ]
+
+-- How many diagnostics the first thing the server said, after an edit,
+-- published.
+fun published (said : [Json]) : Maybe Int =
+  M.andThen (\d -> match d with | J.Json.Array xs -> Just (V.len xs) | _ -> None) (M.andThen (J.path ["params", "diagnostics"]) (V.get said 0))
+
+@test fun aProgramThatChecksHasNothingWrong () =
+  assertEq (published (told [opening "file:///a.idl" "x : Int\nx = 1\n"] serveServer)) (Just 0) "nothing to say"
+
+@test fun aSyntaxErrorIsPublished () =
+  assertEq (M.map (\n -> n > 0) (published (told [opening "file:///a.idl" "x = (1 +\n"] serveServer))) (Just True) "what the parser said"
+
+@test fun aTypeErrorIsPublished () =
+  assertEq (M.map (\n -> n > 0) (published (told [opening "file:///a.idl" "x : Bool\nx = 1\n"] serveServer))) (Just True) "what the checker said"

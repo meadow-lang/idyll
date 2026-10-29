@@ -13,6 +13,7 @@
 --
 -- A scope is a checker's context, with the types of the variables in it.
 
+use Std.St (StRef, newRef, getRef, setRef)
 use Idyll.Hir (Icit)
 use Idyll.Core (Core, Builtin, Prim, Note, Head, CaseAlt)
 use Idyll.Core as C
@@ -61,34 +62,34 @@ use Std.Maybe.Maybe.*
   | Nothing
 
 -- Where an elaborated program starts: the builtins, then the primitives.
-@pub fun scope (tc : Tc) : Ctx ! { Mut | e } = initial tc
+@pub fun scope (tc : Tc s) : Ctx ! { St s | e } = initial tc
 
-@pub fun bind (tc : Tc) (s : Ctx) (name : String) (ty : Core) : Ctx ! { Mut | e } = X.bind s None name (eval tc s.env ty)
+@pub fun bind (tc : Tc s) (s : Ctx) (name : String) (ty : Core) : Ctx ! { St s | e } = X.bind s None name (eval tc s.env ty)
 
 @pub fun bindUnknown (s : Ctx) (name : String) : Ctx = X.bind s None name Value.Error
 
 -- `s` with `name` defined as `rhs`, a `let`.
-@pub fun define (tc : Tc) (s : Ctx) (name : String) (rhs : Core) : Ctx ! { Mut | e } =
+@pub fun define (tc : Tc s) (s : Ctx) (name : String) (rhs : Core) : Ctx ! { St s | e } =
   let ty = M.unwrapOr Value.Error (tyOf tc s rhs) in
   X.extend s None name ty Info.Defined (eval tc s.env rhs)
 
 @pub fun varType (s : Ctx) (lvl : Int) : Value = X.typeAt s lvl
 
 -- How a term's value is represented: `Any` if its type cannot be worked out.
-@pub fun repOf (tc : Tc) (s : Ctx) (c : Core) : TRep ! { Mut | e } =
+@pub fun repOf (tc : Tc s) (s : Ctx) (c : Core) : TRep ! { St s | e } =
   match tyOf tc s c with
   | Just ty -> rep tc s ty
   | None -> TRep.Any
 
-fun isTypeNative (tc : Tc) (u : Int) : Bool ! { Mut | e } =
+fun isTypeNative (tc : Tc s) (u : Int) : Bool ! { St s | e } =
   match Hm.lookup u (getRef tc.nativeInfo) with
   | Just (name, _) -> name == "Array" or name == "MArray" or name == "Ref"
   | None -> False
 
-fun isUniverse (tc : Tc) (v : Value) : Bool ! { Mut | e } = match force tc v with | Value.Type _ -> True | _ -> False
+fun isUniverse (tc : Tc s) (v : Value) : Bool ! { St s | e } = match force tc v with | Value.Type _ -> True | _ -> False
 
 -- How a value of type `ty` is represented.
-@pub fun rep (tc : Tc) (s : Ctx) (ty : Value) : TRep ! { Mut | e } =
+@pub fun rep (tc : Tc s) (s : Ctx) (ty : Value) : TRep ! { St s | e } =
   match force tc ty with
   | Value.LitTy Builtin.Int -> TRep.I64
   | Value.LitTy Builtin.Bool -> TRep.Bool
@@ -112,7 +113,7 @@ fun isUniverse (tc : Tc) (v : Value) : Bool ! { Mut | e } = match force tc v wit
   | Value.Rigid l _ [] -> if l < s.lvl and isUniverse tc (X.typeAt s l) then TRep.Var l else TRep.Any
   | v -> fieldRepOf tc v
 
-fun fieldRepOf (tc : Tc) (v : Value) : TRep ! { Mut | e } =
+fun fieldRepOf (tc : Tc s) (v : Value) : TRep ! { St s | e } =
   match fieldOf tc v 4 with
   | Just (l, i) -> TRep.Field l i
   | None -> TRep.Any
@@ -121,7 +122,7 @@ fun fieldRepOf (tc : Tc) (v : Value) : TRep ! { Mut | e } =
 -- `case` on the variable choosing a field that is a type, or a definition
 -- that unfolds to one (`Elem c @{d}`, through `Container.Elem d`), at most
 -- `depth` deep.
-fun fieldOf (tc : Tc) (v : Value) (depth : Int) : Maybe (Int, Int) ! { Mut | e } =
+fun fieldOf (tc : Tc s) (v : Value) (depth : Int) : Maybe (Int, Int) ! { St s | e } =
   match v with
   | Value.Rigid l _ sp ->
       (match (if V.len sp == 1 then V.head sp else None) with
@@ -151,12 +152,12 @@ fun peel (c : Core) : Core =
 -- A constructor's fields that are types, each by its place among a `case`
 -- alternative's variables (after the constructor's parameters), with its
 -- name: what a record holds as descriptors at run time.
-@pub fun typeFields (tc : Tc) (ctor : Int) : [(Int, String)] ! { Mut | e } =
+@pub fun typeFields (tc : Tc s) (ctor : Int) : [(Int, String)] ! { St s | e } =
   match Hm.lookup ctor (getRef tc.constants) with
   | None -> []
   | Just ty -> typeFieldsFrom tc (ctorParams tc ctor) (scope tc).lvl 0 ty []
 
-fun typeFieldsFrom (tc : Tc) (params : Int) (lvl : Int) (i : Int) (ty : Value) (acc : [(Int, String)]) : [(Int, String)] ! { Mut | e } =
+fun typeFieldsFrom (tc : Tc s) (params : Int) (lvl : Int) (i : Int) (ty : Value) (acc : [(Int, String)]) : [(Int, String)] ! { St s | e } =
   match force tc ty with
   | Value.Pi name _ _ _ dom cod ->
       let acc2 = if i >= params and isUniverse tc dom then V.pushBack acc (i, name) else acc in
@@ -167,7 +168,7 @@ fun typeFieldsFrom (tc : Tc) (params : Int) (lvl : Int) (i : Int) (ty : Value) (
 -- is a record (a data type with one constructor) with any: its
 -- constructor, and those fields. A parameter of such a type comes with a
 -- descriptor for each.
-@pub fun recordTypeFields (tc : Tc) (ty : Value) : Maybe (Int, [(Int, String)]) ! { Mut | e } =
+@pub fun recordTypeFields (tc : Tc s) (ty : Value) : Maybe (Int, [(Int, String)]) ! { St s | e } =
   match force tc ty with
   | Value.Opaque u _ _ ->
       (match Hm.lookup u (getRef tc.datas) with
@@ -183,7 +184,7 @@ fun typeFieldsFrom (tc : Tc) (params : Int) (lvl : Int) (i : Int) (ty : Value) (
 -- How a value of the type that field `field` of `r` (a term in `s`, of a
 -- record whose constructor is `ctor`) holds is represented: what a
 -- descriptor passed with the record says.
-@pub fun fieldRep (tc : Tc) (s : Ctx) (r : Core) (ctor : Int) (field : Int) : TRep ! { Mut | e } =
+@pub fun fieldRep (tc : Tc s) (s : Ctx) (r : Core) (ctor : Int) (field : Int) : TRep ! { St s | e } =
   match T.ctorInfo tc ctor with
   | None -> TRep.Any
   | Just (CtorInfo.CtorInfo nm _ _ params fields) ->
@@ -192,18 +193,18 @@ fun typeFieldsFrom (tc : Tc) (params : Int) (lvl : Int) (i : Int) (ty : Value) (
       let alt = CaseAlt.CaseAlt (Head.Con ctor) nm vars (Core.Var k ("#f" ++ show field)) in
       rep tc s (eval tc s.env (Core.Case r [alt]))
 
-@pub fun repOfType (tc : Tc) (s : Ctx) (ty : Core) : TRep ! { Mut | e } = rep tc s (eval tc s.env ty)
+@pub fun repOfType (tc : Tc s) (s : Ctx) (ty : Core) : TRep ! { St s | e } = rep tc s (eval tc s.env ty)
 
 -- Whether a binder of type `ty` is a type parameter, which a descriptor
 -- stands for at run time.
-@pub fun isTypeBinder (tc : Tc) (s : Ctx) (ty : Core) : Bool ! { Mut | e } = isUniverse tc (eval tc s.env ty)
+@pub fun isTypeBinder (tc : Tc s) (s : Ctx) (ty : Core) : Bool ! { St s | e } = isUniverse tc (eval tc s.env ty)
 
 -- The kind of the effect variable a binder of type `ty` binds, if it binds
 -- one: `False` for `Effect`, `True` for `Effect []`.
-@pub fun effectBinderKind (tc : Tc) (s : Ctx) (ty : Core) : Maybe Bool ! { Mut | e } = rowKind tc (eval tc s.env ty)
+@pub fun effectBinderKind (tc : Tc s) (s : Ctx) (ty : Core) : Maybe Bool ! { St s | e } = rowKind tc (eval tc s.env ty)
 
 -- Whether a term is a type: what an erased argument for a type parameter is.
-@pub fun isType (tc : Tc) (s : Ctx) (c : Core) : Bool ! { Mut | e } =
+@pub fun isType (tc : Tc s) (s : Ctx) (c : Core) : Bool ! { St s | e } =
   match tyOf tc s c with
   | Just t -> isUniverse tc t
   | None -> False
@@ -212,12 +213,12 @@ fun typeFieldsFrom (tc : Tc) (params : Int) (lvl : Int) (i : Int) (ty : Value) (
 -- representation (a type variable of the function's own is `Any`), whether
 -- it is a type parameter, whether it is erased, and whether it is a record
 -- with fields that are types (which a descriptor for each comes with).
-@pub fun functionParams (tc : Tc) (s : Ctx) (c : Core) : [(TRep, Bool, Bool, Bool)] ! { Mut | e } =
+@pub fun functionParams (tc : Tc s) (s : Ctx) (c : Core) : [(TRep, Bool, Bool, Bool)] ! { St s | e } =
   match tyOf tc s c with
   | None -> []
   | Just t -> paramsFrom tc s s t []
 
-fun paramsFrom (tc : Tc) (s : Ctx) (inner : Ctx) (t : Value) (acc : [(TRep, Bool, Bool, Bool)]) : [(TRep, Bool, Bool, Bool)] ! { Mut | e } =
+fun paramsFrom (tc : Tc s) (s : Ctx) (inner : Ctx) (t : Value) (acc : [(TRep, Bool, Bool, Bool)]) : [(TRep, Bool, Bool, Bool)] ! { St s | e } =
   match force tc t with
   | Value.Pi name _ grade _ dom cod ->
       let isTy = isUniverse tc dom in
@@ -238,7 +239,7 @@ fun paramsFrom (tc : Tc) (s : Ctx) (inner : Ctx) (t : Value) (acc : [(TRep, Bool
 -- solved metavariable's is), the grade and type of each binder, from the
 -- parameter it is passed for; what lowering it as a function of those
 -- representations needs (`Typer::annotate_args`).
-@pub fun annotateArgs (tc : Tc) (s : Ctx) (head : Core) (args : [Core]) : [Maybe [(Maybe G.Grade, Core)]] ! { Mut | e } =
+@pub fun annotateArgs (tc : Tc s) (s : Ctx) (head : Core) (args : [Core]) : [Maybe [(Maybe G.Grade, Core)]] ! { St s | e } =
   let none = V.map (\x -> None) args in
   if not (V.any isLam args) then none
   else
@@ -248,7 +249,7 @@ fun paramsFrom (tc : Tc) (s : Ctx) (inner : Ctx) (t : Value) (acc : [(TRep, Bool
 
 fun isLam (c : Core) : Bool = match c with | Core.Lam _ _ -> True | _ -> False
 
-fun annotateFrom (tc : Tc) (s : Ctx) (t : Value) (args : [Core]) (i : Int) (acc : [Maybe [(Maybe G.Grade, Core)]]) : [Maybe [(Maybe G.Grade, Core)]] ! { Mut | e } =
+fun annotateFrom (tc : Tc s) (s : Ctx) (t : Value) (args : [Core]) (i : Int) (acc : [Maybe [(Maybe G.Grade, Core)]]) : [Maybe [(Maybe G.Grade, Core)]] ! { St s | e } =
   match V.get args i with
   | None -> acc
   | Just a ->
@@ -260,7 +261,7 @@ fun annotateFrom (tc : Tc) (s : Ctx) (t : Value) (args : [Core]) (i : Int) (acc 
 
 -- A lambda's binders' grades and types, as `ty` (a function type) gives
 -- them.
-fun lamNotes (tc : Tc) (s : Ctx) (c : Core) (ty : Value) : [(Maybe G.Grade, Core)] ! { Mut | e } =
+fun lamNotes (tc : Tc s) (s : Ctx) (c : Core) (ty : Value) : [(Maybe G.Grade, Core)] ! { St s | e } =
   match c with
   | Core.Lam x body ->
       (match force tc (fst (splitComp tc ty)) with
@@ -274,12 +275,12 @@ fun lamNotes (tc : Tc) (s : Ctx) (c : Core) (ty : Value) : [(Maybe G.Grade, Core
 
 -- Whether a term is nothing at run time: a type, an effect row, a grade, or
 -- a function that makes one.
-@pub fun isTypeFormer (tc : Tc) (s : Ctx) (c : Core) : Bool ! { Mut | e } =
+@pub fun isTypeFormer (tc : Tc s) (s : Ctx) (c : Core) : Bool ! { St s | e } =
   match tyOf tc s c with
   | None -> False
   | Just t -> formerFrom tc s.lvl t
 
-fun formerFrom (tc : Tc) (lvl : Int) (t : Value) : Bool ! { Mut | e } =
+fun formerFrom (tc : Tc s) (lvl : Int) (t : Value) : Bool ! { St s | e } =
   match force tc t with
   | Value.Type _ -> True
   | Value.LitTy Builtin.Effect -> True
@@ -287,7 +288,7 @@ fun formerFrom (tc : Tc) (lvl : Int) (t : Value) : Bool ! { Mut | e } =
   | Value.Pi name _ _ _ _ cod -> formerFrom tc (lvl + 1) (apply tc cod (Va.vvar lvl name))
   | _ -> False
 
-@pub fun ctorParams (tc : Tc) (c : Int) : Int ! { Mut | e } =
+@pub fun ctorParams (tc : Tc s) (c : Int) : Int ! { St s | e } =
   match T.ctorInfo tc c with
   | Just (CtorInfo.CtorInfo _ _ _ params _) -> params
   | None -> 0
@@ -295,14 +296,14 @@ fun formerFrom (tc : Tc) (lvl : Int) (t : Value) : Bool ! { Mut | e } =
 -- A constructor's shape: its erased arguments, each with whether it is a
 -- type parameter, and its fields' representations, where `Var i` is the
 -- type parameter that is its `i`th erased argument.
-@pub fun ctorShape (tc : Tc) (c : Int) : Maybe ([Bool], [TRep]) ! { Mut | e } =
+@pub fun ctorShape (tc : Tc s) (c : Int) : Maybe ([Bool], [TRep]) ! { St s | e } =
   match Hm.lookup c (getRef tc.constants) with
   | None -> None
   | Just ty ->
       let s = scope tc in
       Just (shapeFrom tc (ctorParams tc c) s.lvl s 0 ty [] [])
 
-fun shapeFrom (tc : Tc) (params : Int) (base : Int) (s : Ctx) (i : Int) (ty : Value) (kinds : [Bool]) (fields : [TRep]) : ([Bool], [TRep]) ! { Mut | e } =
+fun shapeFrom (tc : Tc s) (params : Int) (base : Int) (s : Ctx) (i : Int) (ty : Value) (kinds : [Bool]) (fields : [TRep]) : ([Bool], [TRep]) ! { St s | e } =
   match force tc ty with
   | Value.Pi name _ _ _ dom cod ->
       let lvl = s.lvl in
@@ -319,14 +320,14 @@ fun shapeFrom (tc : Tc) (params : Int) (base : Int) (s : Ctx) (i : Int) (ty : Va
 
 -- An operation's shape: its arguments' representations, after the erased
 -- ones, and its result's; a type variable of its own is `Any`.
-@pub fun opShape (tc : Tc) (op : Int) : Maybe ([TRep], TRep) ! { Mut | e } =
+@pub fun opShape (tc : Tc s) (op : Int) : Maybe ([TRep], TRep) ! { St s | e } =
   match (Hm.lookup op (getRef tc.constants), Hm.lookup op (getRef tc.ops)) with
   | (Just ty, Just (OpInfo.OpInfo _ _ _ erased arity _)) -> Just (opFrom tc erased arity (scope tc) 0 ty [])
   | _ -> None
 
 fun noVar (r : TRep) : TRep = match r with | TRep.Var _ -> TRep.Any | TRep.Field _ _ -> TRep.Any | other -> other
 
-fun opFrom (tc : Tc) (erased : Int) (arity : Int) (s : Ctx) (i : Int) (ty : Value) (params : [TRep]) : ([TRep], TRep) ! { Mut | e } =
+fun opFrom (tc : Tc s) (erased : Int) (arity : Int) (s : Ctx) (i : Int) (ty : Value) (params : [TRep]) : ([TRep], TRep) ! { St s | e } =
   let finish = \t -> (params, noVar (rep tc s (fst (splitComp tc t)))) in
   if i >= erased + arity then finish ty
   else
@@ -338,22 +339,22 @@ fun opFrom (tc : Tc) (erased : Int) (arity : Int) (s : Ctx) (i : Int) (ty : Valu
     | fty -> finish fty
 
 -- The scope inside an alternative of a `case` on `scrutinee`.
-@pub fun altScope (tc : Tc) (s : Ctx) (scrutinee : Core) (alt : CaseAlt) : Ctx ! { Mut | e } = altCtx tc s scrutinee alt
+@pub fun altScope (tc : Tc s) (s : Ctx) (scrutinee : Core) (alt : CaseAlt) : Ctx ! { St s | e } = altCtx tc s scrutinee alt
 
 -- The types of an alternative's variables, in the scope it makes.
-@pub fun altTypes (tc : Tc) (s : Ctx) (scrutinee : Core) (alt : CaseAlt) : [Value] ! { Mut | e } =
+@pub fun altTypes (tc : Tc s) (s : Ctx) (scrutinee : Core) (alt : CaseAlt) : [Value] ! { St s | e } =
   let inner = altScope tc s scrutinee alt in
   V.map (\l -> X.typeAt inner l) (V.range s.lvl inner.lvl)
 
-@pub fun evalType (tc : Tc) (s : Ctx) (ty : Core) : Value ! { Mut | e } = eval tc s.env ty
+@pub fun evalType (tc : Tc s) (s : Ctx) (ty : Core) : Value ! { St s | e } = eval tc s.env ty
 
 -- A type written out, as a key: `None` if it has an unsolved metavariable.
-@pub fun typeKey (tc : Tc) (linear : Bool) (s : Ctx) (ty : Value) : Maybe String ! { Mut | e } =
+@pub fun typeKey (tc : Tc s) (linear : Bool) (s : Ctx) (ty : Value) : Maybe String ! { St s | e } =
   let key = C.shown linear (quote tc s.lvl ty) in
   if S.contains "?" key then None else Just key
 
 -- What a value of `ty` looks like written out.
-@pub fun shown (tc : Tc) (linear : Bool) (s : Ctx) (ty0 : Value) : Shown ! { Mut | e } =
+@pub fun shown (tc : Tc s) (linear : Bool) (s : Ctx) (ty0 : Value) : Shown ! { St s | e } =
   let ty = force tc ty0 in
   match ty with
   | Value.LitTy Builtin.Int -> Shown.Int
@@ -393,7 +394,7 @@ fun opFrom (tc : Tc) (erased : Int) (arity : Int) (s : Ctx) (i : Int) (ty : Valu
 
 -- The types of the fields of constructor `c` making a value of `ty`, if it
 -- can make one.
-fun ctorFields (tc : Tc) (s : Ctx) (c : Int) (ty : Value) : Maybe [Value] ! { Mut | e } =
+fun ctorFields (tc : Tc s) (s : Ctx) (c : Int) (ty : Value) : Maybe [Value] ! { St s | e } =
   match (Hm.lookup c (getRef tc.constants), T.ctorInfo tc c) with
   | (Just cty0, Just (CtorInfo.CtorInfo _ _ _ params fs)) ->
       (match fieldsFrom tc s params (params + fs) 0 cty0 [] with
@@ -401,7 +402,7 @@ fun ctorFields (tc : Tc) (s : Ctx) (c : Int) (ty : Value) : Maybe [Value] ! { Mu
        | None -> None)
   | _ -> None
 
-fun fieldsFrom (tc : Tc) (s : Ctx) (params : Int) (all : Int) (i : Int) (cty : Value) (fields : [Value]) : Maybe (Value, [Value]) ! { Mut | e } =
+fun fieldsFrom (tc : Tc s) (s : Ctx) (params : Int) (all : Int) (i : Int) (cty : Value) (fields : [Value]) : Maybe (Value, [Value]) ! { St s | e } =
   if i >= all then Just (cty, fields)
   else
     match force tc cty with
@@ -412,7 +413,7 @@ fun fieldsFrom (tc : Tc) (s : Ctx) (params : Int) (all : Int) (i : Int) (cty : V
         fieldsFrom tc s params all (i + 1) (apply tc cod v) (if i >= params then V.pushBack fields dom else fields)
     | _ -> None
 
-fun altCtx (tc : Tc) (ctx : Ctx) (scrutinee : Core) (alt : CaseAlt) : Ctx ! { Mut | e } =
+fun altCtx (tc : Tc s) (ctx : Ctx) (scrutinee : Core) (alt : CaseAlt) : Ctx ! { St s | e } =
   match alt with
   | CaseAlt.CaseAlt (Head.Con u) _ vars _ ->
       let unknown = \c -> V.foldl (\acc x -> X.bind acc None x Value.Error) c vars in
@@ -441,7 +442,7 @@ fun altCtx (tc : Tc) (ctx : Ctx) (scrutinee : Core) (alt : CaseAlt) : Ctx ! { Mu
        | _ -> unknown ctx)
   | _ -> ctx
 
-fun altVars (tc : Tc) (params : Int) (i : Int) (vars : [String]) (inner : Ctx) (ty : Value) : Maybe (Ctx, Value) ! { Mut | e } =
+fun altVars (tc : Tc s) (params : Int) (i : Int) (vars : [String]) (inner : Ctx) (ty : Value) : Maybe (Ctx, Value) ! { St s | e } =
   match V.get vars i with
   | None -> Just (inner, ty)
   | Just x ->
@@ -464,7 +465,7 @@ fun primUnique (p : Prim) : Int =
   V.len C.builtins + V.foldl (\acc i -> if V.getOr Prim.IntAdd order i == p then i else acc) 0 (V.range 0 (V.len order))
 
 -- The type of a term in a scope, if it can be worked out.
-@pub fun tyOf (tc : Tc) (ctx : Ctx) (c : Core) : Maybe Value ! { Mut | e } =
+@pub fun tyOf (tc : Tc s) (ctx : Ctx) (c : Core) : Maybe Value ! { St s | e } =
   match c with
   | Core.Var i _ -> if i < ctx.lvl then Just (X.typeAt ctx (ctx.lvl - i - 1)) else None
   | Core.Opaque u _ -> Hm.lookup u (getRef tc.constants)

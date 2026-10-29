@@ -21,6 +21,7 @@
 -- A constructor in a pattern is chosen by the type of what it is matched
 -- against (`patternCtor`).
 
+use Std.St (StRef, newRef, getRef, setRef)
 use Idyll.Core (Core)
 use Idyll.Value (Value)
 use Idyll.Tc (Tc, Meta, MetaInfo, Origin, CtorInfo)
@@ -39,7 +40,7 @@ use Std.Maybe.Maybe.*
 
 -- The node of the overloaded name heading `t` (`f` in `f a b`), if it heads
 -- one whose meaning has not been chosen.
-@pub fun overloadedHead (tc : Tc) (t : HirExpr) : Maybe Int ! { Mut | e } = headNode (getRef tc.hir) (getRef tc.forced) t
+@pub fun overloadedHead (tc : Tc s) (t : HirExpr) : Maybe Int ! { St s | e } = headNode (getRef tc.hir) (getRef tc.forced) t
 
 fun headNode (h : HirArena) forced (t : HirExpr) : Maybe Int =
   match (h, t) with
@@ -49,12 +50,12 @@ fun headNode (h : HirArena) forced (t : HirExpr) : Maybe Int =
   | HirExprVar x -> if V.len (hirIdentUniques h x) > 1 and not (Hm.member t forced) then Just t else None
   | _ -> None
 
-fun errorCount (tc : Tc) : Int ! { Mut | e } = V.len (getRef tc.errors)
+fun errorCount (tc : Tc s) : Int ! { St s | e } = V.len (getRef tc.errors)
 
 -- Elaborate `t`, against `wanted` if it is to have a type, as headed by the
 -- meaning `u` of its overloaded name: whether that made no error. Tried, and
 -- undone.
-fun fits (tc : Tc) (ctx : Ctx) (t : HirExpr) (head : Int) (u : Int) (wanted : Maybe Value) : Bool ! { Mut | e } =
+fun fits (tc : Tc s) (ctx : Ctx) (t : HirExpr) (head : Int) (u : Int) (wanted : Maybe Value) : Bool ! { St s | e } =
   let saved = T.save tc in
   let before = errorCount tc in
   let w = elaborateAs tc ctx t head u wanted in
@@ -63,12 +64,12 @@ fun fits (tc : Tc) (ctx : Ctx) (t : HirExpr) (head : Int) (u : Int) (wanted : Ma
   ok
 
 -- The meanings of the name heading `t` that fit.
-fun fitting (tc : Tc) (ctx : Ctx) (t : HirExpr) (head : Int) (wanted : Maybe Value) : [Int] ! { Mut | e } =
+fun fitting (tc : Tc s) (ctx : Ctx) (t : HirExpr) (head : Int) (wanted : Maybe Value) : [Int] ! { St s | e } =
   let h = getRef tc.hir in
   V.filter (\u -> fits tc ctx t head u wanted) (hirIdentUniques h (hirExprVarIdent h head))
 
 -- Elaborate `t` for real, its overloaded name meaning `u`.
-fun elaborateAs (tc : Tc) (ctx : Ctx) (t : HirExpr) (head : Int) (u : Int) (wanted : Maybe Value) : (Core, Value, Usage) ! { Mut | e } =
+fun elaborateAs (tc : Tc s) (ctx : Ctx) (t : HirExpr) (head : Int) (u : Int) (wanted : Maybe Value) : (Core, Value, Usage) ! { St s | e } =
   let w = setRef tc.forced (Hm.insert head u (getRef tc.forced)) in
   match wanted with
   | Just ty ->
@@ -77,7 +78,7 @@ fun elaborateAs (tc : Tc) (ctx : Ctx) (t : HirExpr) (head : Int) (u : Int) (want
   | None -> infer tc ctx t
 
 -- Infer or check a term headed by an overloaded name, at `head`.
-@pub fun overloaded (tc : Tc) (ctx : Ctx) (t : HirExpr) (head : Int) (wanted : Maybe Value) : (Core, Value, Usage) ! { Mut | e } =
+@pub fun overloaded (tc : Tc s) (ctx : Ctx) (t : HirExpr) (head : Int) (wanted : Maybe Value) : (Core, Value, Usage) ! { St s | e } =
   let fs = fitting tc ctx t head wanted in
   if V.len fs == 1 then elaborateAs tc ctx t head (V.getOr 0 fs 0) wanted
   else if V.isEmpty fs then
@@ -100,7 +101,7 @@ fun elaborateAs (tc : Tc) (ctx : Ctx) (t : HirExpr) (head : Int) (u : Int) (want
 -- auto argument (which may wait on an overloaded name, and the other way
 -- round). Choosing one can settle another, so round until nothing changes;
 -- what still has several meanings then is ambiguous.
-@pub fun settle (tc : Tc) : () ! { Mut | e } =
+@pub fun settle (tc : Tc s) : () ! { St s | e } =
   let autos = A.settleAutos tc False in
   let waiting = getRef tc.deferred in
   let w = setRef tc.deferred [] in
@@ -141,7 +142,7 @@ fun elaborateAs (tc : Tc) (ctx : Ctx) (t : HirExpr) (head : Int) (u : Int) (want
 -- What was reported about a term put off is all there is to say: it stands
 -- for an error, of a type that is one, so that nothing about it is reported
 -- again.
-fun giveUp (tc : Tc) (m : Int) (ctx : Ctx) (ty : Value) : () ! { Mut | e } =
+fun giveUp (tc : Tc s) (m : Int) (ctx : Ctx) (ty : Value) : () ! { St s | e } =
   let w =
     match force tc ty with
     | Value.Flex f _ -> (match T.meta tc f with | Just (Meta.Unsolved _) -> T.solve tc f Value.Error | _ -> ())
@@ -151,7 +152,7 @@ fun giveUp (tc : Tc) (m : Int) (ctx : Ctx) (ty : Value) : () ! { Mut | e } =
 
 -- The constructor a pattern means, for what it is matched against: of a
 -- name with several meanings, the one of the type `ty` has.
-@pub fun patternCtor (tc : Tc) (pat : HirPattern) (c : HirIdent) (ty : Value) : Maybe Int ! { Mut | e } =
+@pub fun patternCtor (tc : Tc s) (pat : HirPattern) (c : HirIdent) (ty : Value) : Maybe Int ! { St s | e } =
   match Hm.lookup pat (getRef tc.patternChoice) with
   | Just u -> Just u
   | None ->
@@ -177,7 +178,7 @@ fun giveUp (tc : Tc) (m : Int) (ctx : Ctx) (ty : Value) : () ! { Mut | e } =
               None
 
 -- The constructor a pattern was found to mean, or the one it names.
-@pub fun patternUnique (tc : Tc) (pat : HirPattern) (c : HirIdent) : Int ! { Mut | e } =
+@pub fun patternUnique (tc : Tc s) (pat : HirPattern) (c : HirIdent) : Int ! { St s | e } =
   match Hm.lookup pat (getRef tc.patternChoice) with
   | Just u -> u
   | None -> V.getOr (0 - 1) (hirIdentUniques (getRef tc.hir) c) 0

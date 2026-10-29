@@ -5,6 +5,7 @@
 -- see it, and how a recursive definition unfolds; its tables; and its code,
 -- for the program it is linked into.
 
+use Std.St (StRef, newRef, getRef, setRef)
 use Idyll.Core (Core)
 use Idyll.Core as C
 use Idyll.Value as Va
@@ -43,7 +44,7 @@ use Std.Maybe.Maybe.*
 
 -- How a recursive definition unfolds, closed for another package: its case
 -- tree normalised where it was defined, under its parameters.
-fun exportUnfold (tc : Tc) (ctx : Ctx) (u : (Va.Env, Int, Core)) : Unfold ! { Mut | e } =
+fun exportUnfold (tc : Tc s) (ctx : Ctx) (u : (Va.Env, Int, Core)) : Unfold ! { St s | e } =
   match u with
   | (env, arity, body) ->
       let top = Va.envLen env in
@@ -66,7 +67,7 @@ fun bindsOf (h : HirArena) (g : HirGroup) : [HirBind] =
 
 -- The package `c` checked `m` into, as those that depend on it see it,
 -- `names` what its modules give.
-@pub fun compiledOf (c : Checked) (m : Renamed) (names : PackageNames) : Compiled ! { Mut | e } =
+@pub fun compiledOf (c : Checked s) (m : Renamed) (names : PackageNames) : Compiled ! { St s | e } =
   let tc = c.tc in
   let ctx = c.top in
   let h = hirArena m.hir in

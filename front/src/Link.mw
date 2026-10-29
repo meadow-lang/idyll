@@ -10,6 +10,7 @@
 -- them becomes the variable for its slot, and each package's
 -- metavariables are solved away.
 
+use Std.St (StRef, newRef, getRef, setRef)
 use Idyll.Core (Core, Note, Head, CaseAlt, OpClause)
 use Idyll.Core as C
 use Idyll.Check (Checked)
@@ -68,7 +69,7 @@ fun mentions (own : Compiled) (dep : Compiled) (c : Core) : Bool =
 
 -- `c`'s program, linked with the compiled packages it depends on (`deps`,
 -- each after those it depends on), `own` what checking it compiled to.
-@pub fun linked (c : Checked) (own : Compiled) (deps : [Compiled]) : Checked ! { St s | e } =
+@pub fun linked (c : Checked s) (own : Compiled) (deps : [Compiled]) : Checked s ! { St s | e } =
   let packages = V.pushBack deps own in
   -- each package's definitions get the slots after those before it
   let (offsets, slots, _) =

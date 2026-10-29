@@ -14,6 +14,7 @@
 -- a function using its argument less, or with fewer effects, where one using
 -- it more, or with more, is wanted.
 
+use Std.St (StRef, newRef, getRef, setRef)
 use Idyll.Hir (Icit, Literal)
 use Idyll.Core (Core, CaseAlt, OpClause, Builtin, Head)
 use Idyll.Core as C
@@ -33,7 +34,7 @@ use Std.Maybe as M
 use Std.Maybe.Maybe.*
 
 -- `actual` where `expected` is wanted.
-@pub fun subtype (tc : Tc) (l : Int) (actual : Value) (expected : Value) : Bool ! { Mut | e } =
+@pub fun subtype (tc : Tc s) (l : Int) (actual : Value) (expected : Value) : Bool ! { St s | e } =
   let a = force tc actual in
   let x = force tc expected in
   match (a, x) with
@@ -58,7 +59,7 @@ use Std.Maybe.Maybe.*
   | _ -> unify tc l a x
 
 -- A new row variable beside `tail`, made where it was.
-@pub fun sibling (tc : Tc) (tail : Value) : Maybe Value ! { Mut | e } =
+@pub fun sibling (tc : Tc s) (tail : Value) : Maybe Value ! { St s | e } =
   match force tc tail with
   | Value.Flex m sp ->
       (match T.meta tc m with
@@ -70,7 +71,7 @@ use Std.Maybe.Maybe.*
   | _ -> None
 
 -- Whether two values are the same, solving metavariables as needed.
-@pub fun unify (tc : Tc) (l : Int) (t0 : Value) (u0 : Value) : Bool ! { Mut | e } =
+@pub fun unify (tc : Tc s) (l : Int) (t0 : Value) (u0 : Value) : Bool ! { St s | e } =
   let t = force tc t0 in
   let u = force tc u0 in
   let fresh = Va.vvar l "_" in
@@ -121,7 +122,7 @@ fun samePoly (p : Poly) (q : Poly) : Bool =
     and V.all (\pr -> match pr with | (a, b) -> a == b) (V.zip pk qk)
     and V.all (\k -> Va.coefficient p k == Va.coefficient q k) pk
 
-fun unifySpine (tc : Tc) (l : Int) (a : [Elim]) (b : [Elim]) : Bool ! { Mut | e } =
+fun unifySpine (tc : Tc s) (l : Int) (a : [Elim]) (b : [Elim]) : Bool ! { St s | e } =
   V.len a == V.len b
     and V.all
       (\pr ->
@@ -147,20 +148,20 @@ fun unifySpine (tc : Tc) (l : Int) (a : [Elim]) (b : [Elim]) : Bool ! { Mut | e 
 
 -- --- rows --------------------------------------------------------------------
 
-@pub fun rowHasError (tc : Tc) (r : Value) : Bool ! { Mut | e } =
+@pub fun rowHasError (tc : Tc s) (r : Value) : Bool ! { St s | e } =
   match rowParts tc r with
   | Row.Row ls ts -> V.any (\kv -> match snd kv with | Value.Error -> True | _ -> False) (V.append ls ts)
 
 -- A row as a message shows it: without the row variables made only to keep
 -- it open, which nothing has filled.
-@pub fun shownRow (tc : Tc) (r : Value) : Value ! { Mut | e } =
+@pub fun shownRow (tc : Tc s) (r : Value) : Value ! { St s | e } =
   match rowParts tc r with
   | Row.Row ls ts ->
       let opened = V.map fst (getRef tc.opened) in
       row tc (V.filter (\v -> match v with | Value.Flex m _ -> not (V.elem m opened) | _ -> True) (V.map snd (V.append ls ts)))
 
 -- The head of an effect with parameters, `State` of `State s`.
-fun effectHead (tc : Tc) (v : Value) : Maybe (Bool, Int) ! { Mut | e } =
+fun effectHead (tc : Tc s) (v : Value) : Maybe (Bool, Int) ! { St s | e } =
   match force tc v with
   | Value.Opaque u _ sp -> if V.isEmpty sp then None else Just (False, u)
   | Value.Rigid k _ sp -> if V.isEmpty sp then None else Just (True, k)
@@ -177,7 +178,7 @@ fun only (x : Row) (y : Row) : ([Value], [Value]) =
 
 -- Two rows are the same when they have the same effects and row variables;
 -- what one lacks, a row variable still to be found on it can make up.
-fun unifyRows (tc : Tc) (l : Int) (t : Value) (u : Value) (pair : Bool) : Bool ! { Mut | e } =
+fun unifyRows (tc : Tc s) (l : Int) (t : Value) (u : Value) (pair : Bool) : Bool ! { St s | e } =
   if rowHasError tc t or rowHasError tc u then True
   else
     -- effects with parameters that differ only in those (`State ?s` and
@@ -231,12 +232,12 @@ fun unifyRows (tc : Tc) (l : Int) (t : Value) (u : Value) (pair : Bool) : Bool !
               | None -> False
             else False
 
-fun merge (tc : Tc) (l : Int) (ts : [Value]) : Bool ! { Mut | e } =
+fun merge (tc : Tc s) (l : Int) (ts : [Value]) : Bool ! { St s | e } =
   V.len ts < 2 or not (V.all isFlex ts) or V.all (\x -> unify tc l x (V.getOr Value.Error ts 0)) (V.drop ts 1)
 
 -- `effects` fit within `allowed`. A row variable of `allowed` still to be
 -- found takes what is missing, and stays open for more.
-@pub fun effectsFit (tc : Tc) (l : Int) (effects : Value) (allowed : Value) : Bool ! { Mut | e } =
+@pub fun effectsFit (tc : Tc s) (l : Int) (effects : Value) (allowed : Value) : Bool ! { St s | e } =
   if rowHasError tc effects or rowHasError tc allowed then True
   else
     -- an effect with parameters is the allowed one of its head, if just one
@@ -279,7 +280,7 @@ fun merge (tc : Tc) (l : Int) (ts : [Value]) : Bool ! { Mut | e } =
 
 -- Which kind of row a type is: `Just False` for `Effect`, `Just True` for
 -- `Effect []`, nothing for neither.
-@pub fun rowKind (tc : Tc) (ty : Value) : Maybe Bool ! { Mut | e } =
+@pub fun rowKind (tc : Tc s) (ty : Value) : Maybe Bool ! { St s | e } =
   match force tc ty with
   | Value.LitTy Builtin.Effect -> Just False
   | Value.BoxTy g a ->
@@ -289,7 +290,7 @@ fun merge (tc : Tc) (l : Int) (ts : [Value]) : Bool ! { Mut | e } =
   | _ -> None
 
 -- Whether a row holds an operation that may be resumed more than once.
-fun rowIsMany (tc : Tc) (types : [(String, Value)]) (r : Value) : Bool ! { Mut | e } =
+fun rowIsMany (tc : Tc s) (types : [(String, Value)]) (r : Value) : Bool ! { St s | e } =
   let neutral =
     \ty sp ->
       let final =
@@ -339,7 +340,7 @@ fun lift (p : Renaming) (name : String) : Renaming =
 
 -- A spine of distinct bound variables, inverted; nothing outside the
 -- pattern fragment.
-fun invert (tc : Tc) (gamma : Int) (sp : [Elim]) : Maybe Renaming ! { Mut | e } =
+fun invert (tc : Tc s) (gamma : Int) (sp : [Elim]) : Maybe Renaming ! { St s | e } =
   V.foldl
     (\acc pr ->
       match acc with
@@ -361,7 +362,7 @@ fun invert (tc : Tc) (gamma : Int) (sp : [Elim]) : Maybe Renaming ! { Mut | e } 
 -- pruned of them: solved as `\x y. ?n' x` with a new `?n'` that takes only
 -- what `?m` may mention, and the solution tried again. So a metavariable
 -- made inside a lambda, or a handler's clause, can meet one made outside it.
-fun solve (tc : Tc) (gamma : Int) (m : Int) (sp : [Elim]) (rhs : Value) : Bool ! { Mut | e } =
+fun solve (tc : Tc s) (gamma : Int) (m : Int) (sp : [Elim]) (rhs : Value) : Bool ! { St s | e } =
   let waiting = getRef tc.deferredAutos in
   match V.find (\d -> match d with | (n, _, _, _) -> n == m) waiting with
   | Just (_, ctx, _, _) if V.isEmpty sp -> solveDeferredAuto tc gamma m ctx rhs
@@ -372,7 +373,7 @@ fun solve (tc : Tc) (gamma : Int) (m : Int) (sp : [Elim]) (rhs : Value) : Bool !
 -- been made in, which it may mention (as a found instance may); and there
 -- is nothing left to search for. So `size l`, with `l : MapBy k o v`, is
 -- given `o`.
-fun solveDeferredAuto (tc : Tc) (gamma : Int) (m : Int) (ctx : Ctx) (rhs : Value) : Bool ! { Mut | e } =
+fun solveDeferredAuto (tc : Tc s) (gamma : Int) (m : Int) (ctx : Ctx) (rhs : Value) : Bool ! { St s | e } =
   let lvl = ctx.lvl in
   let keep = if lvl < gamma then lvl else gamma in
   let pren = Renaming.Renaming lvl gamma (V.foldl (\mp k -> Hm.insert k k mp) Hm.empty (V.range 0 keep)) [] in
@@ -390,7 +391,7 @@ fun solveDeferredAuto (tc : Tc) (gamma : Int) (m : Int) (ctx : Ctx) (rhs : Value
       let w3 = setRef tc.deferredAutos (V.filter (\d -> match d with | (n, _, _, _) -> n != m) (getRef tc.deferredAutos)) in
       True
 
-fun solveMeta (tc : Tc) (gamma : Int) (m : Int) (sp : [Elim]) (rhs : Value) : Bool ! { Mut | e } =
+fun solveMeta (tc : Tc s) (gamma : Int) (m : Int) (sp : [Elim]) (rhs : Value) : Bool ! { St s | e } =
   match invert tc gamma sp with
   | None -> False
   | Just pren ->
@@ -423,14 +424,14 @@ fun solveMeta (tc : Tc) (gamma : Int) (m : Int) (sp : [Elim]) (rhs : Value) : Bo
                   True
 
 -- `rename`, definitions kept by their names.
-fun renameNamed (tc : Tc) (m : Int) (pren : Renaming) (rhs : Value) : Maybe Core ! { Mut | e } =
+fun renameNamed (tc : Tc s) (m : Int) (pren : Renaming) (rhs : Value) : Maybe Core ! { St s | e } =
   let w = setRef tc.naming True in
   let named = rename tc m pren rhs in
   let w2 = setRef tc.naming False in
   named
 
 -- `rename`, pruning what it asks to be pruned and trying again.
-fun renamePruning (tc : Tc) (m : Int) (pren : Renaming) (rhs : Value) : Maybe Core ! { Mut | e } =
+fun renamePruning (tc : Tc s) (m : Int) (pren : Renaming) (rhs : Value) : Maybe Core ! { St s | e } =
   match rename tc m pren rhs with
   | Just body -> Just body
   | None ->
@@ -440,7 +441,7 @@ fun renamePruning (tc : Tc) (m : Int) (pren : Renaming) (rhs : Value) : Maybe Co
       else if pruneAll tc prunes 0 then renamePruning tc m pren rhs
       else None
 
-fun pruneAll (tc : Tc) (prunes : [(Int, [Bool])]) (i : Int) : Bool ! { Mut | e } =
+fun pruneAll (tc : Tc s) (prunes : [(Int, [Bool])]) (i : Int) : Bool ! { St s | e } =
   match V.get prunes i with
   | None -> True
   | Just (n, keep) -> if prune tc n keep then pruneAll tc prunes (i + 1) else False
@@ -448,7 +449,7 @@ fun pruneAll (tc : Tc) (prunes : [(Int, [Bool])]) (i : Int) : Bool ! { Mut | e }
 -- Solve `?n` as `\x1 .. xk. ?n' (the xi `keep` says)`, with a new `?n'`. Not
 -- if the type `?n` must have mentions its context, which the new one might
 -- then lack.
-fun prune (tc : Tc) (n : Int) (keep : [Bool]) : Bool ! { Mut | e } =
+fun prune (tc : Tc s) (n : Int) (keep : [Bool]) : Bool ! { St s | e } =
   match T.meta tc n with
   | None -> False
   -- pruned already, by an earlier occurrence
@@ -485,7 +486,7 @@ fun prune (tc : Tc) (n : Int) (keep : [Bool]) : Bool ! { Mut | e } =
 
 -- Which of a metavariable's arguments are in scope, if its spine is distinct
 -- variables (a pattern) and some are not; nothing otherwise.
-fun prunable (tc : Tc) (pren : Renaming) (sp : [Elim]) : Maybe [Bool] ! { Mut | e } =
+fun prunable (tc : Tc s) (pren : Renaming) (sp : [Elim]) : Maybe [Bool] ! { St s | e } =
   match pren with
   | Renaming.Renaming _ _ mp _ ->
       let picked =
@@ -509,7 +510,7 @@ fun prunable (tc : Tc) (pren : Renaming) (sp : [Elim]) : Maybe [Bool] ! { Mut | 
       | None -> None
 
 -- What is wrong with a solution, if anything: the kind of error.
-fun violation (tc : Tc) (info : MetaInfo) (solution : Value) : Maybe String ! { Mut | e } =
+fun violation (tc : Tc s) (info : MetaInfo) (solution : Value) : Maybe String ! { St s | e } =
   match info with
   | MetaInfo.MetaInfo _ _ (Just (MetaTy.MetaTy types spine ty)) ->
       let inst = V.foldl (\f k -> vapp tc f (Va.vvar k (fst (V.getOr ("_", Value.Error) types k)))) solution spine in
@@ -528,7 +529,7 @@ fun violation (tc : Tc) (info : MetaInfo) (solution : Value) : Maybe String ! { 
 
 -- A lower bound on the universe a type is in, given the variables' types;
 -- nothing if nothing is known.
-@pub fun sortOf (tc : Tc) (types : [(String, Value)]) (v : Value) : Maybe Int ! { Mut | e } =
+@pub fun sortOf (tc : Tc s) (types : [(String, Value)]) (v : Value) : Maybe Int ! { St s | e } =
   match force tc v with
   | Value.Type n -> Just (n + 1)
   | Value.LitTy _ -> Just 0
@@ -551,7 +552,7 @@ fun violation (tc : Tc) (info : MetaInfo) (solution : Value) : Maybe String ! { 
        | None -> None)
   | _ -> None
 
-fun neutralSort (tc : Tc) (ty : Value) (sp : [Elim]) : Maybe Int ! { Mut | e } =
+fun neutralSort (tc : Tc s) (ty : Value) (sp : [Elim]) : Maybe Int ! { St s | e } =
   let final =
     V.foldl
       (\acc el ->
@@ -571,7 +572,7 @@ fun neutralSort (tc : Tc) (ty : Value) (sp : [Elim]) : Maybe Int ! { Mut | e } =
 
 -- A value read back into the metavariable's context through the renaming;
 -- nothing if it mentions the metavariable, or a variable out of scope.
-fun rename (tc : Tc) (m : Int) (pren : Renaming) (v : Value) : Maybe Core ! { Mut | e } =
+fun rename (tc : Tc s) (m : Int) (pren : Renaming) (v : Value) : Maybe Core ! { St s | e } =
   let go = \x -> rename tc m pren x in
   match pren with
   | Renaming.Renaming dom cod mp _ ->
@@ -629,7 +630,7 @@ fun rename (tc : Tc) (m : Int) (pren : Renaming) (v : Value) : Maybe Core ! { Mu
           else None
 
 -- A polynomial read back through the renaming.
-fun renamePoly (tc : Tc) (p : Poly) go : Maybe Core ! { Mut | e } =
+fun renamePoly (tc : Tc s) (p : Poly) go : Maybe Core ! { St s | e } =
   let renamed = V.map (\t -> match t with | (atoms, g) -> (V.map go atoms, g)) (Va.polyTerms (renormalise tc p)) in
   if V.any (\t -> match t with | (atoms, _) -> V.any M.isNone atoms) renamed then None
   else
@@ -651,7 +652,7 @@ fun renamePoly (tc : Tc) (p : Poly) go : Maybe Core ! { Mut | e } =
     | None -> Just (C.grade G.zero)
     | Just first -> Just (V.foldl (\s q -> Core.GradeAdd s q) first (V.drop products 1))
 
-fun renameSpine (tc : Tc) (m : Int) (pren : Renaming) (head : Core) (sp : [Elim]) : Maybe Core ! { Mut | e } =
+fun renameSpine (tc : Tc s) (m : Int) (pren : Renaming) (head : Core) (sp : [Elim]) : Maybe Core ! { St s | e } =
   V.foldl
     (\acc el ->
       match acc with

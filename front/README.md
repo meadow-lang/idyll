@@ -25,6 +25,8 @@ does, how it is checked, and why it is built the way it is.
 | Types | `Elab.mw` (a `pass!` from `Hir` to `Elaborated`, a `lang!`), `Check.mw`, `Auto.mw`, `Matching.mw`, `Termination.mw`, `Handlers.mw`, `Sequences.mw`, `Decl.mw`, `Positivity.mw`, `Ctx.mw`, `Usage.mw`, and the machinery under them | done: agrees on every program that gets this far (431, Std's users among them), and on the whole Std package (475 declarations) |
 | The CEK machine | `Cek.mw`, `World.mw` | done: the same answer, in the same number of steps, as `idyll-eval` on every program that runs (211) |
 | Cut | `Lower.mw`, `Typer.mw`, `Prune.mw`, `CutAst.mw`, `Emit.mw` | done: the same Cut as `idyllic-cut` on every program that lowers (212) |
+| The formatter | `Syntax.mw` (a `format!`), `Format.mw` | done: `Idyll fmt`; every program comes out as the same program, and formatting it again changes nothing |
+| The language server | `Session.mw` (a `database!`), `Server.mw` (an `lsp!`) | begun: `Idyll lsp` publishes what is wrong with each open file, colours it and sets it out; errors past the syntax's are at the start of the file until the checker says where |
 
 "Every program" means 1082 programs: the test corpora in
 `compiler/idyllic/tests/corpus/`, the prelude, every `.idl` file in the
@@ -967,6 +969,37 @@ A primitive whose answer is whatever was stored (`arrayGet`) has it bound at
 the element's representation before it goes on: given straight to a
 continuation, whose representation is always `ptr`, it would be taken for a
 pointer, which Glade survives (its values carry tags) and Silo does not.
+
+## The editor: a session of queries
+
+`Idyll lsp` is a language server written with Lingua's `lsp!` (`Server.mw`).
+It answers from a session of the compiler's queries, a `database!`
+(`Session.mw`). Each open file's text is an input, and what is worked out
+from it is a query: its tree, what is wrong with it, and how it is set out.
+After an edit, a query is worked out again only if something it read
+changed. A file is checked as a lone program after the prelude, against Std
+if it names Std. Std is compiled once a session, from the copy this program
+holds (`Driver.stdModules`).
+
+A query may perform nothing but asking other queries, so that its answer
+can be kept. That is why the renamer, the checker and the lowering keep
+their state in `Std.St` cells (`StRef s`, under `St s`), never in `Mut`
+ones. `Tc`, `Rn`, `Checked` and the records that hold cells take the state
+type `s`. Each entry point does all its work in one `runSt`: renaming a
+package, checking and compiling a module, lowering one to Cut. The checker's
+state and the pass's tables share that one `St`. Only the CEK machine (`Cek`,
+`World`) keeps `Mut` cells, for Idyll's own `Ref`s.
+
+So far the server:
+- publishes diagnostics: the syntax's, drawn at their nodes, then the
+  renamer's and the checker's;
+- colours a file from its tree;
+- formats a file as `Idyll fmt` does.
+
+The renamer's and the checker's errors are at the start of the file, since
+the checker records an error only as its kind ("Mismatch"). Saying where
+each is, by carrying the `Meta` of the node being checked into the error,
+comes next. Hover (each node's type) needs the same table of nodes.
 
 ## Dependencies
 

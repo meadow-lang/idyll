@@ -11,6 +11,7 @@
 -- An array literal is the native `arrayFromList` applied to the list of its
 -- elements.
 
+use Std.St (StRef, newRef, getRef, setRef)
 use Idyll.Core (Core)
 use Idyll.Value (Value, Elim)
 use Idyll.Value as Va
@@ -34,15 +35,15 @@ use Std.Maybe.Maybe.*
 fun failed () : (Core, Value, Usage) = (Core.Error, Value.Error, U.unknown ())
 
 -- The `nil` and `cons` of a type a literal can build.
-fun seqCtors (tc : Tc) (ty : Value) : Maybe (Int, Int) ! { Mut | e } =
+fun seqCtors (tc : Tc s) (ty : Value) : Maybe (Int, Int) ! { St s | e } =
   match force tc ty with
   | Value.Opaque d _ _ -> Hm.lookup d (getRef tc.seqs)
   | _ -> None
 
-fun defaultSeq (tc : Tc) : Maybe (Int, Int) ! { Mut | e } = Hm.lookup (getRef tc.list) (getRef tc.seqs)
+fun defaultSeq (tc : Tc s) : Maybe (Int, Int) ! { St s | e } = Hm.lookup (getRef tc.list) (getRef tc.seqs)
 
 -- A literal checked against `expected`, which is not a metavariable.
-@pub fun checkSeq (tc : Tc) (ctx : Ctx) (t : HirExpr) (expected : Value) : (Core, Usage) ! { Mut | e } =
+@pub fun checkSeq (tc : Tc s) (ctx : Ctx) (t : HirExpr) (expected : Value) : (Core, Usage) ! { St s | e } =
   match seqCtors tc expected with
   | None ->
       let w = T.error tc "NotASequence" in
@@ -56,7 +57,7 @@ fun defaultSeq (tc : Tc) : Maybe (Int, Int) ! { Mut | e } = Hm.lookup (getRef tc
         (Core.Error, usage)
 
 -- A literal with nothing to say what it is: a `List`.
-@pub fun inferSeq (tc : Tc) (ctx : Ctx) (t : HirExpr) : (Core, Value, Usage) ! { Mut | e } =
+@pub fun inferSeq (tc : Tc s) (ctx : Ctx) (t : HirExpr) : (Core, Value, Usage) ! { St s | e } =
   match defaultSeq tc with
   | Just ctors -> buildSeq tc ctx t ctors None
   | None -> failed ()
@@ -64,7 +65,7 @@ fun defaultSeq (tc : Tc) : Maybe (Int, Int) ! { Mut | e } = Hm.lookup (getRef tc
 -- `#[]` is `nil`, and `#[a, ..]` is `cons a #[..]`; with an expected type,
 -- `cons`'s result is made that type first, so that the parts are checked
 -- against what they must be.
-fun buildSeq (tc : Tc) (ctx : Ctx) (t : HirExpr) (ctors : (Int, Int)) (expected : Maybe Value) : (Core, Value, Usage) ! { Mut | e } =
+fun buildSeq (tc : Tc s) (ctx : Ctx) (t : HirExpr) (ctors : (Int, Int)) (expected : Maybe Value) : (Core, Value, Usage) ! { St s | e } =
   let (nil, cons) = ctors in
   match (hirOf tc, t) with
   | HirExprSeqCons hd rest ->
@@ -80,7 +81,7 @@ fun buildSeq (tc : Tc) (ctx : Ctx) (t : HirExpr) (ctors : (Int, Int)) (expected 
   | _ -> seqCtor tc ctx nil
 
 -- A constructor, as a term.
-fun seqCtor (tc : Tc) (ctx : Ctx) (c : Int) : (Core, Value, Usage) ! { Mut | e } =
+fun seqCtor (tc : Tc s) (ctx : Ctx) (c : Int) : (Core, Value, Usage) ! { St s | e } =
   let name = match T.ctorInfo tc c with | Just (CtorInfo.CtorInfo n _ _ _ _) -> n | None -> "?" in
   match X.lookup ctx (Ident.Ident [c] name) with
   | Just (core, ty, key) -> (core, ty, U.var key)
@@ -89,7 +90,7 @@ fun seqCtor (tc : Tc) (ctx : Ctx) (c : Int) : (Core, Value, Usage) ! { Mut | e }
 -- The result of a function of `arity` arguments unified with `expected`,
 -- if it does not depend on the arguments. A failure is left for checking
 -- the whole to report.
-fun expectResult (tc : Tc) (ctx : Ctx) (ty : Value) (arity : Int) (expected : Value) =
+fun expectResult (tc : Tc s) (ctx : Ctx) (ty : Value) (arity : Int) (expected : Value) =
   if arity == 0 then (let b = unify tc ctx.lvl ty expected in ())
   else
     match force tc ty with
@@ -100,7 +101,7 @@ fun expectResult (tc : Tc) (ctx : Ctx) (ty : Value) (arity : Int) (expected : Va
 
 -- The constructors a sequence pattern is matched with, for what it is
 -- matched against: with nothing known of that yet, a `List`.
-@pub fun seqPatternCtors (tc : Tc) (ctx : Ctx) (ty0 : Value) : Maybe (Int, Int) ! { Mut | e } =
+@pub fun seqPatternCtors (tc : Tc s) (ctx : Ctx) (ty0 : Value) : Maybe (Int, Int) ! { St s | e } =
   let ty = force tc ty0 in
   match ty with
   | Value.Flex _ _ ->
@@ -113,7 +114,7 @@ fun expectResult (tc : Tc) (ctx : Ctx) (ty : Value) (arity : Int) (expected : Va
        | _ -> None)
   | _ -> seqCtors tc ty
 
-fun params (tc : Tc) (ctx : Ctx) (kind : Value) (core : Core) : Core ! { Mut | e } =
+fun params (tc : Tc s) (ctx : Ctx) (kind : Value) (core : Core) : Core ! { St s | e } =
   match force tc kind with
   | Value.Pi _ _ _ _ _ cod ->
       let param = freshMeta tc ctx "the type of the elements" in
@@ -124,7 +125,7 @@ fun params (tc : Tc) (ctx : Ctx) (kind : Value) (core : Core) : Core ! { Mut | e
 
 -- `#[a; b; c]`: its elements checked against `elem` (or a new metavariable
 -- for their type), and the array made of them.
-@pub fun arrayLiteral (tc : Tc) (ctx : Ctx) (items : [HirExpr]) (elem0 : Maybe Value) : (Core, Value, Usage) ! { Mut | e } =
+@pub fun arrayLiteral (tc : Tc s) (ctx : Ctx) (items : [HirExpr]) (elem0 : Maybe Value) : (Core, Value, Usage) ! { St s | e } =
   let names = getRef tc.nativeNames in
   match (Hm.lookup "Array" names, Hm.lookup "arrayFromList" names) with
   | (Just array, Just fromList) ->
@@ -153,7 +154,7 @@ fun params (tc : Tc) (ctx : Ctx) (kind : Value) (core : Core) : Core ! { Mut | e
       failed ()
 
 -- The element type of an `Array a`, if `ty` is one.
-@pub fun arrayElement (tc : Tc) (ty : Value) : Maybe Value ! { Mut | e } =
+@pub fun arrayElement (tc : Tc s) (ty : Value) : Maybe Value ! { St s | e } =
   match Hm.lookup "Array" (getRef tc.nativeNames) with
   | None -> None
   | Just array ->

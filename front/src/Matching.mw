@@ -32,6 +32,7 @@
 -- renamed program's tables; a right-hand side is elaborated by the pass
 -- (`check`), at each leaf it wins.
 
+use Std.St (StRef, newRef, getRef, setRef)
 use Idyll.Hir (Icit, Literal)
 use Idyll.Core (Core, Builtin, Prim, Note, Head, CaseAlt)
 use Idyll.Overloads as O
@@ -80,26 +81,26 @@ data Step = Done | Fails | Splits Int How | Failed
 data Unified = Refined Ctx (Maybe Env) | Absurd | Stuck Value Value
 
 -- What one match finds out along the way.
-record Matcher = {
-  used : Ref [Bool],
-  missing : Ref [String],
+record Matcher s = {
+  used : StRef s [Bool],
+  missing : StRef s [String],
   -- the slots of what is matched, and their types before any matching
-  args : Ref [Int],
-  argTypes : Ref [Value],
+  args : StRef s [Int],
+  argTypes : StRef s [Value],
   -- the slots matching bound that no pattern named
-  unnamed : Ref [Int],
+  unnamed : StRef s [Int],
   -- the signature's names for the implicit binders no pattern takes
-  quantified : Ref [Ident],
+  quantified : StRef s [Ident],
   -- something was wrong, and has been reported: coverage and usage then
   -- say nothing
-  failed : Ref Bool
+  failed : StRef s Bool
 }
 
-fun fail (m : Matcher) = setRef m.failed True
+fun fail (m : Matcher s) = setRef m.failed True
 
 fun lvlOf (c : Ctx) : Int = c.lvl
 
-fun failedNow (m : Matcher) : Bool ! { Mut | e } = getRef m.failed
+fun failedNow (m : Matcher s) : Bool ! { St s | e } = getRef m.failed
 
 fun nothing () : (Core, Usage) = (Core.Error, U.unknown ())
 
@@ -126,15 +127,15 @@ fun peel (hir : HirArena) (p : HirPattern) : HirPattern =
 
 fun uniqueIn (hir : HirArena) (x : HirIdent) : Int = V.getOr (0 - 1) (hirIdentUniques hir x) 0
 
-fun ctorOf (tc : Tc) (c : Int) : CtorInfo ! { Mut | e } =
+fun ctorOf (tc : Tc s) (c : Int) : CtorInfo ! { St s | e } =
   M.unwrapOr (CtorInfo.CtorInfo "?" (0 - 1) 0 0 0) (T.ctorInfo tc c)
 
-fun isCtor (tc : Tc) (c : Int) : Bool ! { Mut | e } = M.isSome (T.ctorInfo tc c)
+fun isCtor (tc : Tc s) (c : Int) : Bool ! { St s | e } = M.isSome (T.ctorInfo tc c)
 
 -- --- entry points ------------------------------------------------------------------
 
 -- A function defined by equations, against its type.
-@pub fun elabMatch (tc : Tc) (ctx : Ctx) (clauses : [HirClause]) (goal : Value) : (Core, Usage) ! { Mut | e } =
+@pub fun elabMatch (tc : Tc s) (ctx : Ctx) (clauses : [HirClause]) (goal : Value) : (Core, Usage) ! { St s | e } =
   let hir = hirOf tc in
   -- (an implicit pattern, `{p}`, is for an argument written nowhere, so
   -- does not count)
@@ -156,7 +157,7 @@ fun isCtor (tc : Tc) (c : Int) : Bool ! { Mut | e } = M.isSome (T.ctorInfo tc c)
 
 -- A function defined by equations, with no signature: its type found from
 -- them, starting from how many arguments it takes.
-@pub fun inferMatch (tc : Tc) (ctx : Ctx) (clauses : [HirClause]) : (Core, Value, Usage) ! { Mut | e } =
+@pub fun inferMatch (tc : Tc s) (ctx : Ctx) (clauses : [HirClause]) : (Core, Value, Usage) ! { St s | e } =
   let hir = hirOf tc in
   let arity = match V.head clauses with | Just c -> explicitPatterns hir (patsOf hir c) | None -> 0 in
   let (under, doms) =
@@ -183,7 +184,7 @@ fun isCtor (tc : Tc) (c : Int) : Bool ! { Mut | e } = M.isSome (T.ctorInfo tc c)
 
 -- `case scrutinee of clauses`. A variable is matched where it is, so the
 -- match refines it; anything else is bound to a slot of its own first.
-@pub fun caseOf (tc : Tc) (ctx : Ctx) (scrutinee : HirExpr) (clauses : [HirClause]) (expected : Maybe Value) : (Core, Value, Usage) ! { Mut | e } =
+@pub fun caseOf (tc : Tc s) (ctx : Ctx) (scrutinee : HirExpr) (clauses : [HirClause]) (expected : Maybe Value) : (Core, Value, Usage) ! { St s | e } =
   let hir = hirOf tc in
   let (sC0, sTy0, sU) = infer tc ctx scrutinee in
   let (sC, sTy) = insert tc ctx sC0 sTy0 in
@@ -238,7 +239,7 @@ fun isCtor (tc : Tc) (c : Int) : Bool ! { Mut | e } = M.isSome (T.ctorInfo tc c)
              let (n, rest) = U.take usage (Just key) in
              (Core.Let "_" sC core, goal, U.add rest (U.scale sU n)))
 
-fun runMatch (tc : Tc) (ctx : Ctx) (clauses : [HirClause]) (problems : [Problem]) (goal : Value) (args : [Int]) (failed : Bool) : (Core, Usage) ! { Mut | e } =
+fun runMatch (tc : Tc s) (ctx : Ctx) (clauses : [HirClause]) (problems : [Problem]) (goal : Value) (args : [Int]) (failed : Bool) : (Core, Usage) ! { St s | e } =
   let hir = hirOf tc in
   let m =
     Matcher {
@@ -274,7 +275,7 @@ fun runMatch (tc : Tc) (ctx : Ctx) (clauses : [HirClause]) (problems : [Problem]
 
 -- --- the tree ---------------------------------------------------------------------
 
-fun tree (tc : Tc) (m : Matcher) (ctx : Ctx) (problems : [Problem]) (goal : Value) : (Core, Usage) ! { Mut | e } =
+fun tree (tc : Tc s) (m : Matcher s) (ctx : Ctx) (problems : [Problem]) (goal : Value) : (Core, Usage) ! { St s | e } =
   match V.head problems with
   | None ->
       let w = setRef m.missing (V.pushBack (getRef m.missing) "case") in
@@ -295,7 +296,7 @@ fun tree (tc : Tc) (m : Matcher) (ctx : Ctx) (problems : [Problem]) (goal : Valu
                   tree tc m ctx rest goal))
 
 -- Bind the next argument, for every problem's next pattern.
-fun intro (tc : Tc) (m : Matcher) (ctx : Ctx) (problems : [Problem]) (goal0 : Value) : (Core, Usage) ! { Mut | e } =
+fun intro (tc : Tc s) (m : Matcher s) (ctx : Ctx) (problems : [Problem]) (goal0 : Value) : (Core, Usage) ! { St s | e } =
   let hir = hirOf tc in
   let goal = force tc goal0 in
   match goal with
@@ -389,7 +390,7 @@ fun intro (tc : Tc) (m : Matcher) (ctx : Ctx) (problems : [Problem]) (goal0 : Va
       nothing ()
   | _ -> tooManyPatterns tc m problems
 
-fun tooManyPatterns (tc : Tc) (m : Matcher) (problems : [Problem]) : (Core, Usage) ! { Mut | e } =
+fun tooManyPatterns (tc : Tc s) (m : Matcher s) (problems : [Problem]) : (Core, Usage) ! { St s | e } =
   let hir = hirOf tc in
   let next = match V.head problems with | Just (Problem.Problem _ _ pending _ _ _) -> V.head pending | _ -> None in
   let implicit = match M.map (\q -> (hir, q)) next with | Just (HirPatternImplicit _ _) -> True | _ -> False in
@@ -419,7 +420,7 @@ fun implicitInner (hir : HirArena) (p : HirPattern) : HirPattern =
 
 -- Settle what can be settled of a problem's patterns, left to right, until
 -- one waits on a variable or disagrees.
-fun simplify (tc : Tc) (ctx : Ctx) (p : Problem) : (Step, Problem) ! { Mut | e } =
+fun simplify (tc : Tc s) (ctx : Ctx) (p : Problem) : (Step, Problem) ! { St s | e } =
   let hir = hirOf tc in
   match p with
   | Problem.Problem clause index pending constraints bindings dots ->
@@ -472,7 +473,7 @@ fun simplify (tc : Tc) (ctx : Ctx) (p : Problem) : (Step, Problem) ! { Mut | e }
                 (Step.Failed, p)
             | _ -> (Step.Failed, p)))
 
-fun seqStep (tc : Tc) (ctx : Ctx) (p : Problem) (target : Target) (rest : [(HirPattern, Target)]) (args : [HirPattern]) : (Step, Problem) ! { Mut | e } =
+fun seqStep (tc : Tc s) (ctx : Ctx) (p : Problem) (target : Target) (rest : [(HirPattern, Target)]) (args : [HirPattern]) : (Step, Problem) ! { St s | e } =
   let ty = targetType ctx target in
   match seqPatternCtors tc ctx ty with
   | Just (nil, cons) -> conStep tc ctx p (if V.isEmpty args then nil else cons) args target rest
@@ -481,7 +482,7 @@ fun seqStep (tc : Tc) (ctx : Ctx) (p : Problem) (target : Target) (rest : [(HirP
       (Step.Failed, p)
 
 -- A constructor pattern, `cu args`, against what it is matched with.
-fun conStep (tc : Tc) (ctx : Ctx) (p : Problem) (cu : Int) (args : [HirPattern]) (target : Target) (rest : [(HirPattern, Target)]) : (Step, Problem) ! { Mut | e } =
+fun conStep (tc : Tc s) (ctx : Ctx) (p : Problem) (cu : Int) (args : [HirPattern]) (target : Target) (rest : [(HirPattern, Target)]) : (Step, Problem) ! { St s | e } =
   match p with
   | Problem.Problem clause index pending _ bindings dots ->
       let again = \cs -> simplify tc ctx (Problem.Problem clause index pending cs bindings dots) in
@@ -516,7 +517,7 @@ fun conStep (tc : Tc) (ctx : Ctx) (p : Problem) (cu : Int) (args : [HirPattern])
 -- Whether a clause no case reached at least makes sense, as far as its
 -- outermost patterns go: a constructor of another type is an error, not an
 -- unreachable clause.
-fun plausible (tc : Tc) (ctx : Ctx) (m : Matcher) (clause : HirClause) : Bool ! { Mut | e } =
+fun plausible (tc : Tc s) (ctx : Ctx) (m : Matcher s) (clause : HirClause) : Bool ! { St s | e } =
   let hir = hirOf tc in
   V.foldl
     (\ok pt ->
@@ -547,13 +548,13 @@ fun plausible (tc : Tc) (ctx : Ctx) (m : Matcher) (clause : HirClause) : Bool ! 
     True
     (V.zip (patsOf hir clause) (getRef m.argTypes))
 
-fun cannotSplit (tc : Tc) (v : Value) : Step ! { Mut | e } =
+fun cannotSplit (tc : Tc s) (v : Value) : Step ! { St s | e } =
   let w = match v with | Value.Error -> () | _ -> T.error tc "CannotSplit" in
   Step.Failed
 
 -- What a constructor value's fields are matched as: the slots a split bound
 -- for them, if a split made it this constructor; otherwise its arguments.
-fun fieldTargets (tc : Tc) (ctx : Ctx) (target : Target) (c : Int) (sp : [Elim]) : [Target] ! { Mut | e } =
+fun fieldTargets (tc : Tc s) (ctx : Ctx) (target : Target) (c : Int) (sp : [Elim]) : [Target] ! { St s | e } =
   let params = match ctorOf tc c with | CtorInfo.CtorInfo _ _ _ ps _ -> ps in
   let fromSplit =
     match target with
@@ -570,7 +571,7 @@ fun fieldTargets (tc : Tc) (ctx : Ctx) (target : Target) (c : Int) (sp : [Elim])
        | Just cty -> argTargets tc params 0 cty sp []
        | None -> [])
 
-fun argTargets (tc : Tc) (params : Int) (i : Int) (cty : Value) (sp : [Elim]) (acc : [Target]) : [Target] ! { Mut | e } =
+fun argTargets (tc : Tc s) (params : Int) (i : Int) (cty : Value) (sp : [Elim]) (acc : [Target]) : [Target] ! { St s | e } =
   match V.head sp with
   | Just (Elim.App arg) ->
       (match force tc cty with
@@ -596,7 +597,7 @@ fun targetType (ctx : Ctx) (t : Target) : Value =
 
 -- The first problem has won: its right-hand side checked, with its names
 -- bound.
-fun leaf (tc : Tc) (m : Matcher) (ctx : Ctx) (p : Problem) (rest : [Problem]) (goal : Value) : (Core, Usage) ! { Mut | e } =
+fun leaf (tc : Tc s) (m : Matcher s) (ctx : Ctx) (p : Problem) (rest : [Problem]) (goal : Value) : (Core, Usage) ! { St s | e } =
   let hir = hirOf tc in
   match p with
   | Problem.Problem clause index _ _ bindings dots ->
@@ -650,7 +651,7 @@ fun leaf (tc : Tc) (m : Matcher) (ctx : Ctx) (p : Problem) (rest : [Problem]) (g
 
 -- `| g = e | ..`: the first guard that holds; if none does, the clauses
 -- after this one.
-fun guards (tc : Tc) (m : Matcher) (ctx : Ctx) (gs : [(HirExpr, HirExpr)]) (rest : [Problem]) (goal : Value) : (Core, Usage) ! { Mut | e } =
+fun guards (tc : Tc s) (m : Matcher s) (ctx : Ctx) (gs : [(HirExpr, HirExpr)]) (rest : [Problem]) (goal : Value) : (Core, Usage) ! { St s | e } =
   match V.head gs with
   | None -> tree tc m ctx rest goal
   | Just (g, e) ->
@@ -664,13 +665,13 @@ fun guards (tc : Tc) (m : Matcher) (ctx : Ctx) (gs : [(HirExpr, HirExpr)]) (rest
            let alts = [CaseAlt.CaseAlt (Head.BoolLit True) "True" [] eC, CaseAlt.CaseAlt (Head.BoolLit False) "False" [] fC] in
            (Core.Case gC alts, U.add gU (joinUsage tc eU fU)))
 
-fun joined (tc : Tc) (acc : Maybe Usage) (u : Usage) : Maybe Usage ! { Mut | e } =
+fun joined (tc : Tc s) (acc : Maybe Usage) (u : Usage) : Maybe Usage ! { St s | e } =
   match acc with
   | None -> Just u
   | Just v -> Just (joinUsage tc v u)
 
 -- Branch on the variable in slot `k`.
-fun split (tc : Tc) (m : Matcher) (ctx : Ctx) (problems : [Problem]) (goal : Value) (k : Int) (how : How) : (Core, Usage) ! { Mut | e } =
+fun split (tc : Tc s) (m : Matcher s) (ctx : Ctx) (problems : [Problem]) (goal : Value) (k : Int) (how : How) : (Core, Usage) ! { St s | e } =
   let scrutinee = Core.Var (ctx.lvl - k - 1) (X.nameAt ctx k) in
   let used = splitUse tc ctx k in
   match how with
@@ -729,12 +730,12 @@ fun split (tc : Tc) (m : Matcher) (ctx : Ctx) (problems : [Problem]) (goal : Val
            nothing ()
        | _ -> notData tc m)
 
-fun notData (tc : Tc) (m : Matcher) : (Core, Usage) ! { Mut | e } =
+fun notData (tc : Tc s) (m : Matcher s) : (Core, Usage) ! { St s | e } =
   let w = T.error tc "NotADataType" in
   let w2 = fail m in
   nothing ()
 
-fun splitData (tc : Tc) (m : Matcher) (ctx : Ctx) (problems : [Problem]) (goal : Value) (k : Int) (scrutinee : Core) (used : Usage) (ctors : [Int]) : (Core, Usage) ! { Mut | e } =
+fun splitData (tc : Tc s) (m : Matcher s) (ctx : Ctx) (problems : [Problem]) (goal : Value) (k : Int) (scrutinee : Core) (used : Usage) (ctors : [Int]) : (Core, Usage) ! { St s | e } =
   let cases =
     V.map
       (\c ->
@@ -786,7 +787,7 @@ fun splitData (tc : Tc) (m : Matcher) (ctx : Ctx) (problems : [Problem]) (goal :
   if forced then (Core.Runtime Note.Forced cased, total) else (cased, U.add used total)
 
 -- Leaving the variable a constructor's argument became.
-fun leaveField (tc : Tc) (ctx : Ctx) (key : Int) (allowed : Value) (usage : Usage) : Usage ! { Mut | e } =
+fun leaveField (tc : Tc s) (ctx : Ctx) (key : Int) (allowed : Value) (usage : Usage) : Usage ! { St s | e } =
   let (used, rest) = U.take usage (Just key) in
   if U.isUnknown rest then rest
   else if fitsOrWaits tc ctx used allowed True then rest
@@ -796,13 +797,13 @@ fun leaveField (tc : Tc) (ctx : Ctx) (key : Int) (allowed : Value) (usage : Usag
 
 -- How often a slot may be used, if known; otherwise as an unannotated
 -- binder may be, but once for a value of a linear type.
-fun slotGrade (tc : Tc) (ctx : Ctx) (k : Int) : Value ! { Mut | e } =
+fun slotGrade (tc : Tc s) (ctx : Ctx) (k : Int) : Value ! { St s | e } =
   match X.gradeAt ctx k with
   | Just g -> g
   | None -> gradeValue (if isLinear tc (X.typeAt ctx k) then G.one else defaultGrade tc)
 
 -- Whether no value of a type has fields.
-fun fieldless (tc : Tc) (ty : Value) : Bool ! { Mut | e } =
+fun fieldless (tc : Tc s) (ty : Value) : Bool ! { St s | e } =
   match force tc ty with
   | Value.LitTy _ -> True
   | Value.Opaque d _ _ ->
@@ -811,14 +812,14 @@ fun fieldless (tc : Tc) (ty : Value) : Bool ! { Mut | e } =
        | None -> False)
   | _ -> False
 
-fun erasedSlot (tc : Tc) (ctx : Ctx) (k : Int) : Bool ! { Mut | e } =
+fun erasedSlot (tc : Tc s) (ctx : Ctx) (k : Int) : Bool ! { St s | e } =
   match Va.asConstant (toPoly tc (slotGrade tc ctx k)) with
   | Just g -> G.isZero g
   | None -> False
 
 -- What splitting slot `k` uses of it: all of it, since its fields come out
 -- with its grade; and something even if it is erased, as looking is a use.
-fun splitUse (tc : Tc) (ctx : Ctx) (k : Int) : Usage ! { Mut | e } =
+fun splitUse (tc : Tc s) (ctx : Ctx) (k : Int) : Usage ! { St s | e } =
   match X.keyAt ctx k with
   | None -> U.none ()
   | Just key ->
@@ -827,11 +828,11 @@ fun splitUse (tc : Tc) (ctx : Ctx) (k : Int) : Usage ! { Mut | e } =
        | Just g -> if G.isZero g then U.var key else U.scale (U.var key) grade
        | None -> U.scale (U.var key) grade)
 
-fun ctorArity (tc : Tc) (c : Int) : Int ! { Mut | e } = match ctorOf tc c with | CtorInfo.CtorInfo _ _ _ ps fs -> ps + fs
+fun ctorArity (tc : Tc s) (c : Int) : Int ! { St s | e } = match ctorOf tc c with | CtorInfo.CtorInfo _ _ _ ps fs -> ps + fs
 
 -- Bind the arguments of constructor `c` as new variables, and unify the
 -- variable in slot `k` with `c` applied to them, indices and all.
-fun instantiate (tc : Tc) (ctx : Ctx) (k : Int) (c : Int) (hints : [Maybe String]) : (Ctx, [(Int, Int, String, Value)], Unified) ! { Mut | e } =
+fun instantiate (tc : Tc s) (ctx : Ctx) (k : Int) (c : Int) (hints : [Maybe String]) : (Ctx, [(Int, Int, String, Value)], Unified) ! { St s | e } =
   let cty0 = M.unwrapOr Value.Error (Hm.lookup c (getRef tc.constants)) in
   -- (the fields of a value have its grade; but a value of a linear type is
   -- used once only for its fields of linear types, the rest copied out of
@@ -848,7 +849,7 @@ fun instantiate (tc : Tc) (ctx : Ctx) (k : Int) (c : Int) (hints : [Maybe String
       (inner, delta, unifyIndices tc inner eqs)
   | _ -> (inner, delta, Unified.Absurd)
 
-fun telescope (tc : Tc) (whole : Value) (linearSlot : Bool) (inner : Ctx) (delta : [(Int, Int, String, Value)]) (cty : Value) (hints : [Maybe String]) : (Ctx, [(Int, Int, String, Value)], Value) ! { Mut | e } =
+fun telescope (tc : Tc s) (whole : Value) (linearSlot : Bool) (inner : Ctx) (delta : [(Int, Int, String, Value)]) (cty : Value) (hints : [Maybe String]) : (Ctx, [(Int, Int, String, Value)], Value) ! { St s | e } =
   match V.head hints with
   | None -> (inner, delta, cty)
   | Just hint0 ->
@@ -865,7 +866,7 @@ fun telescope (tc : Tc) (whole : Value) (linearSlot : Bool) (inner : Ctx) (delta
 
 -- A name for the `i`th argument of constructor `c`, from the first pattern
 -- that names it.
-fun fieldHint (tc : Tc) (ctx : Ctx) (problems : [Problem]) (k : Int) (c : Int) (i : Int) : Maybe String ! { Mut | e } =
+fun fieldHint (tc : Tc s) (ctx : Ctx) (problems : [Problem]) (k : Int) (c : Int) (i : Int) : Maybe String ! { St s | e } =
   let hir = hirOf tc in
   let params = match ctorOf tc c with | CtorInfo.CtorInfo _ _ _ ps _ -> ps in
   let constraints = V.concatMap (\p -> match p with | Problem.Problem _ _ _ cs _ _ -> cs) problems in
@@ -889,13 +890,13 @@ fun fieldHint (tc : Tc) (ctx : Ctx) (problems : [Problem]) (k : Int) (c : Int) (
     None
     constraints
 
-fun targetsSlot (tc : Tc) (ctx : Ctx) (target : Target) (k : Int) : Bool ! { Mut | e } =
+fun targetsSlot (tc : Tc s) (ctx : Ctx) (target : Target) (k : Int) : Bool ! { St s | e } =
   match force tc (targetValue ctx target) with
   | Value.Rigid l _ [] -> l == k
   | _ -> False
 
 -- Whether a problem needs slot `k` to be this number.
-fun wantsLiteral (tc : Tc) (ctx : Ctx) (p : Problem) (k : Int) (lit : Literal) : Bool ! { Mut | e } =
+fun wantsLiteral (tc : Tc s) (ctx : Ctx) (p : Problem) (k : Int) (lit : Literal) : Bool ! { St s | e } =
   let hir = hirOf tc in
   match p with
   | Problem.Problem _ _ _ cs _ _ ->
@@ -910,7 +911,7 @@ fun wantsLiteral (tc : Tc) (ctx : Ctx) (p : Problem) (k : Int) (lit : Literal) :
 
 -- For `impossible`: a variable of a type none of whose constructors can be
 -- what it is, which a case with no alternatives disposes of.
-fun emptySplit (tc : Tc) (m : Matcher) (ctx : Ctx) : Maybe (Core, Usage) ! { Mut | e } =
+fun emptySplit (tc : Tc s) (m : Matcher s) (ctx : Ctx) : Maybe (Core, Usage) ! { St s | e } =
   let start = M.unwrapOr ctx.lvl (V.head (getRef m.args)) in
   V.foldl
     (\acc k ->
@@ -945,7 +946,7 @@ fun emptySplit (tc : Tc) (m : Matcher) (ctx : Ctx) : Maybe (Core, Usage) ! { Mut
 
 -- Equations between values solved for the context's own variables, which
 -- matching is how they become known.
-fun unifyIndices (tc : Tc) (ctx : Ctx) (eqs : [(Value, Value)]) : Unified ! { Mut | e } =
+fun unifyIndices (tc : Tc s) (ctx : Ctx) (eqs : [(Value, Value)]) : Unified ! { St s | e } =
   solveIndices tc ctx eqs []
 
 fun asVar (ctx : Ctx) (v : Value) : Maybe Int =
@@ -953,7 +954,7 @@ fun asVar (ctx : Ctx) (v : Value) : Maybe Int =
   | Value.Rigid x _ [] -> if X.unknownAt ctx x then Just x else None
   | _ -> None
 
-fun solveIndices (tc : Tc) (ctx : Ctx) (work : [(Value, Value)]) (sigma : [(Int, Value)]) : Unified ! { Mut | e } =
+fun solveIndices (tc : Tc s) (ctx : Ctx) (work : [(Value, Value)]) (sigma : [(Int, Value)]) : Unified ! { St s | e } =
   let l = ctx.lvl in
   match V.head work with
   | None ->
@@ -986,20 +987,20 @@ fun solveIndices (tc : Tc) (ctx : Ctx) (work : [(Value, Value)]) (sigma : [(Int,
             | (Value.Lit x, Value.Lit y) -> if x != y then Unified.Absurd else solveIndices tc ctx more sigma
             | _ -> if unify tc l a b then solveIndices tc ctx more sigma else Unified.Stuck a b))
 
-fun oneVar (tc : Tc) (ctx : Ctx) (more : [(Value, Value)]) (sigma : [(Int, Value)]) (x : Int) (t : Value) (a : Value) (b : Value) : Unified ! { Mut | e } =
+fun oneVar (tc : Tc s) (ctx : Ctx) (more : [(Value, Value)]) (sigma : [(Int, Value)]) (x : Int) (t : Value) (a : Value) (b : Value) : Unified ! { St s | e } =
   if not (mentions (quote tc ctx.lvl t) (ctx.lvl - x - 1)) then solveIndices tc ctx more (assign tc ctx sigma x t)
   -- `n = S n`
   else if rigidlyIn tc x t then Unified.Absurd
   else Unified.Stuck a b
 
-fun rigidlyIn (tc : Tc) (x : Int) (t : Value) : Bool ! { Mut | e } =
+fun rigidlyIn (tc : Tc s) (x : Int) (t : Value) : Bool ! { St s | e } =
   match force tc t with
   | Value.Rigid y _ sp -> y == x and V.isEmpty sp
   | Value.Opaque c _ sp -> isCtor tc c and V.any (\e -> match e with | Elim.App a -> rigidlyIn tc x a | _ -> False) sp
   | _ -> False
 
 -- `x := t` added, keeping the substitution idempotent.
-fun assign (tc : Tc) (ctx : Ctx) (sigma : [(Int, Value)]) (x : Int) (t : Value) : [(Int, Value)] ! { Mut | e } =
+fun assign (tc : Tc s) (ctx : Ctx) (sigma : [(Int, Value)]) (x : Int) (t : Value) : [(Int, Value)] ! { St s | e } =
   let single = sigmaEnv ctx [(x, t)] in
   V.pushBack (V.map (\kv -> match kv with | (k, s) -> (k, eval tc single (quote tc ctx.lvl s))) sigma) (x, t)
 
@@ -1013,19 +1014,19 @@ fun sigmaEnv (ctx : Ctx) (sigma : [(Int, Value)]) : Env =
     (Va.emptyEnv ())
     (V.range 0 ctx.lvl)
 
-fun applySigma (tc : Tc) (ctx : Ctx) (sigma : [(Int, Value)]) (v : Value) : Value ! { Mut | e } =
+fun applySigma (tc : Tc s) (ctx : Ctx) (sigma : [(Int, Value)]) (v : Value) : Value ! { St s | e } =
   if V.isEmpty sigma then v else eval tc (sigmaEnv ctx sigma) (quote tc ctx.lvl v)
 
 -- The goal, in a case that learned `sigma`. A goal still a bare
 -- metavariable is an unannotated result type, left as it is.
-fun refineGoal (tc : Tc) (l : Int) (sigma : Maybe Env) (goal : Value) : Value ! { Mut | e } =
+fun refineGoal (tc : Tc s) (l : Int) (sigma : Maybe Env) (goal : Value) : Value ! { St s | e } =
   match force tc goal with
   | Value.Flex _ _ -> goal
   | _ -> resubst tc l sigma goal
 
 -- A result type left unsolved by a match that failed: an error, so it is
 -- not reported again as unsolved.
-fun abandon (tc : Tc) (ty : Value) =
+fun abandon (tc : Tc s) (ty : Value) =
   match force tc ty with
   | Value.Flex m _ ->
       (match T.meta tc m with
@@ -1033,12 +1034,12 @@ fun abandon (tc : Tc) (ty : Value) =
        | _ -> ())
   | _ -> ()
 
-fun resubst (tc : Tc) (l : Int) (sigma : Maybe Env) (v : Value) : Value ! { Mut | e } =
+fun resubst (tc : Tc s) (l : Int) (sigma : Maybe Env) (v : Value) : Value ! { St s | e } =
   match sigma with
   | None -> v
   | Just env -> eval tc env (quote tc l v)
 
-fun resubstProblems (tc : Tc) (l : Int) (sigma : Maybe Env) (problems : [Problem]) : [Problem] ! { Mut | e } =
+fun resubstProblems (tc : Tc s) (l : Int) (sigma : Maybe Env) (problems : [Problem]) : [Problem] ! { St s | e } =
   match sigma with
   | None -> problems
   | Just _ ->
@@ -1064,7 +1065,7 @@ fun resubstProblems (tc : Tc) (l : Int) (sigma : Maybe Env) (problems : [Problem
 -- The context, having learned `sigma`: each solved variable defined as its
 -- solution, and every value and type that could mention one brought up to
 -- date. Slots before the first solved one stay as they are.
-fun refine (tc : Tc) (ctx : Ctx) (sigma : [(Int, Value)]) (env : Env) : Ctx ! { Mut | e } =
+fun refine (tc : Tc s) (ctx : Ctx) (sigma : [(Int, Value)]) (env : Env) : Ctx ! { St s | e } =
   let first = V.foldl (\acc kv -> if fst kv < acc then fst kv else acc) ctx.lvl sigma in
   let l = ctx.lvl in
   let old = Va.envValues ctx.env in

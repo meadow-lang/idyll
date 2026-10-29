@@ -16,6 +16,7 @@
 -- group that may not terminate must say `! Div` where its calls get to, or
 -- be vouched for with `@terminating`.
 
+use Std.St (StRef, newRef, getRef, setRef)
 use Idyll.Core (Core, CaseAlt, Head, OpClause)
 use Idyll.Value (Value)
 use Idyll.Value as Va
@@ -113,7 +114,7 @@ fun lambdas (c : Core) (most : Int) : (Int, Core) =
 -- After a recursive group is checked: whether every loop of calls in it
 -- makes something smaller; if so, and it is not under a binder, its
 -- members unfold from now on.
-@pub fun checkTermination (tc : Tc) (ctx : Ctx) (members : [(Int, Core)]) : Bool ! { Mut | e } =
+@pub fun checkTermination (tc : Tc s) (ctx : Ctx) (members : [(Int, Core)]) : Bool ! { St s | e } =
   let index = V.foldl (\m i -> match V.get members i with | Just (u, _) -> Hm.insert u i m | None -> m) Hm.empty (V.range 0 (V.len members)) in
   -- with metavariables solved and definitions inlined, so that calls made
   -- through them are seen
@@ -159,7 +160,7 @@ fun lambdas (c : Core) (most : Int) : (Int, Core) =
 -- The instances of a recursive group checked at the top level that do not
 -- unfold already (`Checker::unfold_instances`): each unfolds where a
 -- `case` reads a type or a superclass off it.
-@pub fun unfoldInstances (tc : Tc) (ctx : Ctx) (members : [(Int, Core)]) : () ! { Mut | e } =
+@pub fun unfoldInstances (tc : Tc s) (ctx : Ctx) (members : [(Int, Core)]) : () ! { St s | e } =
   if V.any (\l -> X.infoAt ctx l == Just Info.Bound) (V.range 0 ctx.lvl) then ()
   else
     V.foldl
@@ -183,14 +184,14 @@ fun dedupe (calls : [Call]) : [Call] =
 -- parameter; for each variable from there, which parameter it came out of
 -- and how it relates to it; the splits around (the constructor, the levels
 -- its arguments were bound at, and where the variable split came from).
-record Walk = {
+record Walk s = {
   base : Int,
-  origin : Ref [Maybe (Int, Int)],
-  splits : Ref [(Int, [Int], Maybe (Int, Int))],
+  origin : StRef s [Maybe (Int, Int)],
+  splits : StRef s [(Int, [Int], Maybe (Int, Int))],
   index : HashMap Int Int,
   arities : [Int],
   from : Int,
-  calls : Ref [Call]
+  calls : StRef s [Call]
 }
 
 -- A term's head and its arguments.
@@ -199,7 +200,7 @@ fun spine (c : Core) (args : [Core]) : (Core, [Core]) =
   | Core.App f a -> spine f (V.append [a] args)
   | _ -> (c, args)
 
-fun originOf (w : Walk) (c : Core) (lvl : Int) : Maybe (Int, Int) ! { Mut | e } =
+fun originOf (w : Walk s) (c : Core) (lvl : Int) : Maybe (Int, Int) ! { St s | e } =
   match c with
   | Core.Var i _ ->
       let at = lvl - i - 1 - w.base in
@@ -221,13 +222,13 @@ fun originOf (w : Walk) (c : Core) (lvl : Int) : Maybe (Int, Int) ! { Mut | e } 
              (getRef w.splits)
        | _ -> None)
 
-fun under (w : Walk) (n : Int) (origin : Maybe (Int, Int)) (body : Core) (lvl : Int) =
+fun under (w : Walk s) (n : Int) (origin : Maybe (Int, Int)) (body : Core) (lvl : Int) =
   let before = getRef w.origin in
   let u = setRef w.origin (V.append before (V.replicate n origin)) in
   let u2 = term w body (lvl + n) in
   setRef w.origin before
 
-fun term (w : Walk) (c : Core) (lvl : Int) =
+fun term (w : Walk s) (c : Core) (lvl : Int) =
   match c with
   | Core.Lam _ body -> under w 1 None body lvl
   | Core.Pi _ _ g r dom cod ->
@@ -271,7 +272,7 @@ fun term (w : Walk) (c : Core) (lvl : Int) =
 
 -- An application: a call to the group, summarised, and its arguments
 -- walked.
-fun call (w : Walk) (c : Core) (lvl : Int) =
+fun call (w : Walk s) (c : Core) (lvl : Int) =
   let (head, args) = spine c [] in
   let u =
     match head with

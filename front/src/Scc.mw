@@ -24,6 +24,7 @@
 -- `let`. Everything else it copies as it is. Its context is the hints and
 -- what comes early, which only the module's own groups are ordered by.
 
+use Std.St (StRef, newRef, getRef, setRef, runSt)
 use Lingua (pass!)
 use Idyll.Rename
 use Idyll.Rename (Hir!)
@@ -34,7 +35,7 @@ use Std.Maybe as M
 use Std.Maybe.Maybe.*
 
 -- A package's definitions put in order, for the checker.
-@pub fun sccModule (r : Renamed) : Renamed ! { Mut | e } =
+@pub fun sccModule (r : Renamed) : Renamed =
   let early = V.append r.hints (V.concatMap snd (Hm.toVec r.supers)) in
   { r | hir = regroup (Early r.hints early) r.hir }
 
@@ -61,7 +62,7 @@ pass! {
 
 fun dataUnique (a : HirArena) (d : HirData) : Int = V.getOr (0 - 1) (hirIdentUniques a (hirDataName a d)) 0
 
-fun orderDatas (a : HirArena) (datas : [HirData]) : [HirData] ! { Mut | e } =
+fun orderDatas (a : HirArena) (datas : [HirData]) : [HirData] =
   let index =
     V.foldl (\acc i -> match V.get datas i with | Just d -> Hm.insert (dataUnique a d) i acc | None -> acc) Hm.empty (V.range 0 (V.len datas))
   in
@@ -78,10 +79,12 @@ fun orderDatas (a : HirArena) (datas : [HirData]) : [HirData] ! { Mut | e } =
         | None -> [])
       (V.range 0 (V.len datas))
   in
-  let seen = newRef Hm.empty in
-  let order = newRef [] in
-  let w = V.foldl (\acc i -> visitData i needs seen order) () (V.range 0 (V.len datas)) in
-  V.concatMap (\i -> vecOf (V.get datas i)) (getRef order)
+  -- (what it has seen and the order, its own state)
+  runSt (\() ->
+    let seen = newRef Hm.empty in
+    let order = newRef [] in
+    let w = V.foldl (\acc i -> visitData i needs seen order) () (V.range 0 (V.len datas)) in
+    V.concatMap (\i -> vecOf (V.get datas i)) (getRef order))
 
 fun visitData (i : Int) (needs : [[Int]]) seen order =
   if Hm.member i (getRef seen) then ()
@@ -144,7 +147,7 @@ fun sccGroups (a : HirArena) out (k : Early) (groups : [HirGroup]) =
 -- what it needs moved as far forward as they can go: the projections first,
 -- in the order they come, then the hints (a search for a hint's own auto
 -- arguments may go through a projection it does not name).
-fun earlyFirst (early : [Bool]) (isHint : [Bool]) (edges : [[Int]]) (comps : [[Int]]) : [[Int]] ! { Mut | e } =
+fun earlyFirst (early : [Bool]) (isHint : [Bool]) (edges : [[Int]]) (comps : [[Int]]) : [[Int]] =
   if not (V.any (\b -> b) early) then comps
   else
     let componentOf =
@@ -153,13 +156,14 @@ fun earlyFirst (early : [Bool]) (isHint : [Bool]) (edges : [[Int]]) (comps : [[I
         Hm.empty
         (V.range 0 (V.len comps))
     in
-    let done = newRef Hm.empty in
-    let order = newRef [] in
-    let earlies = V.filter (\i -> V.getOr False early i) (V.range 0 (V.len early)) in
-    let firsts = V.append (V.filter (\i -> not (V.getOr False isHint i)) earlies) (V.filter (\i -> V.getOr False isHint i) earlies) in
-    let w1 = V.foldl (\acc v -> emitComponent (Hm.getOr 0 v componentOf) comps edges componentOf done order) () firsts in
-    let w2 = V.foldl (\acc c -> emitComponent c comps edges componentOf done order) () (V.range 0 (V.len comps)) in
-    V.map (\c -> V.getOr [] comps c) (getRef order)
+    runSt (\() ->
+      let done = newRef Hm.empty in
+      let order = newRef [] in
+      let earlies = V.filter (\i -> V.getOr False early i) (V.range 0 (V.len early)) in
+      let firsts = V.append (V.filter (\i -> not (V.getOr False isHint i)) earlies) (V.filter (\i -> V.getOr False isHint i) earlies) in
+      let w1 = V.foldl (\acc v -> emitComponent (Hm.getOr 0 v componentOf) comps edges componentOf done order) () firsts in
+      let w2 = V.foldl (\acc c -> emitComponent c comps edges componentOf done order) () (V.range 0 (V.len comps)) in
+      V.map (\c -> V.getOr [] comps c) (getRef order))
 
 fun emitComponent (c : Int) (comps : [[Int]]) (edges : [[Int]]) componentOf done order =
   if Hm.member c (getRef done) then ()
@@ -175,30 +179,32 @@ fun emitComponent (c : Int) (comps : [[Int]]) (edges : [[Int]]) componentOf done
 
 -- The strongly connected components of a graph of `n` nodes, by Tarjan's
 -- algorithm: each comes out after every component it reaches.
-@pub fun components (n : Int) (edges : [[Int]]) : [[Int]] ! { Mut | e } =
-  let t =
-    Tarjan {
-      index = newRef Hm.empty,
-      low = newRef Hm.empty,
-      onStack = newRef Hm.empty,
-      stack = newRef [],
-      next = newRef 0,
-      components = newRef []
-    }
-  in
-  let w = V.foldl (\acc v -> if Hm.member v (getRef t.index) then () else visit t v edges) () (V.range 0 n) in
-  getRef t.components
+@pub fun components (n : Int) (edges : [[Int]]) : [[Int]] =
+  runSt (\() ->
+    let t =
+      Tarjan {
+        index = newRef Hm.empty,
+        low = newRef Hm.empty,
+        onStack = newRef Hm.empty,
+        stack = newRef [],
+        next = newRef 0,
+        components = newRef []
+      }
+    in
+    let w = V.foldl (\acc v -> if Hm.member v (getRef t.index) then () else visit t v edges) () (V.range 0 n) in
+    getRef t.components)
 
-record Tarjan = {
-  index : Ref (HashMap Int Int),
-  low : Ref (HashMap Int Int),
-  onStack : Ref (HashMap Int Bool),
-  stack : Ref [Int],
-  next : Ref Int,
-  components : Ref [[Int]]
+-- Tarjan's state, the algorithm's own.
+record Tarjan s = {
+  index : StRef s (HashMap Int Int),
+  low : StRef s (HashMap Int Int),
+  onStack : StRef s (HashMap Int Bool),
+  stack : StRef s [Int],
+  next : StRef s Int,
+  components : StRef s [[Int]]
 }
 
-fun visit (t : Tarjan) (v : Int) (edges : [[Int]]) =
+fun visit (t : Tarjan s) (v : Int) (edges : [[Int]]) =
   let i = getRef t.next in
   let w1 = setRef t.index (Hm.insert v i (getRef t.index)) in
   let w2 = setRef t.low (Hm.insert v i (getRef t.low)) in
@@ -218,10 +224,10 @@ fun visit (t : Tarjan) (v : Int) (edges : [[Int]]) =
   in
   if Hm.getOr 0 v (getRef t.low) == i then setRef t.components (V.pushBack (getRef t.components) (popTo t v [])) else ()
 
-fun lower (t : Tarjan) (v : Int) (x : Int) =
+fun lower (t : Tarjan s) (v : Int) (x : Int) =
   if x < Hm.getOr 0 v (getRef t.low) then setRef t.low (Hm.insert v x (getRef t.low)) else ()
 
-fun popTo (t : Tarjan) (v : Int) (acc : [Int]) : [Int] ! { Mut | e } =
+fun popTo (t : Tarjan s) (v : Int) (acc : [Int]) : [Int] ! { St s | e } =
   match V.last (getRef t.stack) with
   | Just w ->
       let u = setRef t.stack (V.take (getRef t.stack) (V.len (getRef t.stack) - 1)) in

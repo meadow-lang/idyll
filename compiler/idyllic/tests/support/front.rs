@@ -112,7 +112,11 @@ pub fn idl_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// once, its output cut at each `== <file>` line.
 pub fn dumps(args: &[&str], extra: &[(&str, &str)], programs: &[(String, String)]) -> Result<Vec<String>, String> {
     let exe = front()?;
-    let dir = std::env::temp_dir().join(format!("idyll-front-{}-{}", args[0], std::process::id()));
+    // a directory of this call's own: two tests of one run may dump with the
+    // same pass at once, and each removes its directory when done
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("idyll-front-{}-{}-{call}", args[0], std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     for (name, text) in extra {
         std::fs::write(dir.join(name), text).map_err(|e| e.to_string())?;

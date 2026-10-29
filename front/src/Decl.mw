@@ -15,6 +15,7 @@
 -- `effect E (a : k) where op : a -> b` declares `E : (a : k) -> Effect`,
 -- and `op : {a : k} -> a -> b ! E a`: the effect on its last arrow.
 
+use Std.St (StRef, newRef, getRef, setRef)
 use Idyll.Hir (Icit, Literal)
 use Idyll.Core (Core, Builtin, Prim)
 use Idyll.Core as C
@@ -95,12 +96,12 @@ fun nativeOf (h : HirArena) (n : HirNative) : NativeDecl = NativeDecl.NativeDecl
 fun pi (name : String) (grade : Grade) (icit : Icit) (dom : Core) (cod : Core) : Core =
   Core.Pi name icit (C.grade grade) (C.grade G.defaultInType) dom cod
 
-fun declare (tc : Tc) (x : Ident) (name : String) (ty : Core) =
+fun declare (tc : Tc s) (x : Ident) (name : String) (ty : Core) =
   setRef tc.declared (V.pushBack (getRef tc.declared) (H.uniqueOf x, name, ty))
 
 -- The parameters `(a : k) ..` checked, each under the ones before: their
 -- kinds, and the context with them bound.
-fun paramKinds (tc : Tc) (ctx : Ctx) (params : [(Ident, Maybe HirExpr)]) : ([Core], Ctx) ! { Mut | e } =
+fun paramKinds (tc : Tc s) (ctx : Ctx) (params : [(Ident, Maybe HirExpr)]) : ([Core], Ctx) ! { St s | e } =
   V.foldl
     (\acc p ->
       match (acc, p) with
@@ -115,7 +116,7 @@ fun paramKinds (tc : Tc) (ctx : Ctx) (params : [(Ident, Maybe HirExpr)]) : ([Cor
     params
 
 -- The parameters bound again, from their kinds.
-fun bindParams (tc : Tc) (ctx : Ctx) (params : [(Ident, Maybe HirExpr)]) (ks : [Core]) : Ctx ! { Mut | e } =
+fun bindParams (tc : Tc s) (ctx : Ctx) (params : [(Ident, Maybe HirExpr)]) (ks : [Core]) : Ctx ! { St s | e } =
   V.foldl
     (\c pk -> match pk with | ((x, _), k) -> X.bind c (Just x) (H.textOf x) (eval tc c.env k))
     ctx
@@ -129,7 +130,7 @@ fun underParams (params : [(Ident, Maybe HirExpr)]) (ks : [Core]) (ty : Core) (g
 
 -- The module's data types: all their kinds first, then all the
 -- constructors, so that a constructor may mention any of them.
-@pub fun declareDatas (tc : Tc) (ctx : Ctx) (rows : [HirData]) : Ctx ! { Mut | e } =
+@pub fun declareDatas (tc : Tc s) (ctx : Ctx) (rows : [HirData]) : Ctx ! { St s | e } =
   let datas = V.map (\d -> dataOf (hirOf tc) d) rows in
   let inherited = inheritedLevels tc (hirOf tc) datas in
   let (ctx1, kinds) =
@@ -189,7 +190,7 @@ fun underParams (params : [(Ident, Maybe HirExpr)]) (ks : [Core]) (ty : Core) (g
 -- field of a large data type (a trait whose superclass has an associated
 -- type, a record holding such a trait's record): the universe each lives
 -- in, as large as the largest such field's (`Checker::inherited_levels`).
-fun inheritedLevels (tc : Tc) (h : HirArena) (datas : [DataDecl]) : HashMap Int Int ! { Mut | e } =
+fun inheritedLevels (tc : Tc s) (h : HirArena) (datas : [DataDecl]) : HashMap Int Int ! { St s | e } =
   let written =
     V.foldl
       (\acc (d : DataDecl) ->
@@ -249,7 +250,7 @@ fun writtenLevel (h : HirArena) (k : HirExpr) : Maybe Int =
 
 -- The constructors of a data type, and all their fields, for positivity:
 -- each with the size of the context it is in, and its type.
-fun declareCtors (tc : Tc) (ctx : Ctx) (d : DataDecl) (ks : [Core]) (indices : Int) : (Ctx, [(Int, Value)]) ! { Mut | e } =
+fun declareCtors (tc : Tc s) (ctx : Ctx) (d : DataDecl) (ks : [Core]) (indices : Int) : (Ctx, [(Int, Value)]) ! { St s | e } =
   -- the parameters again, now that the type itself is in scope
   let params = bindParams tc ctx d.params ks in
   let n = V.len d.params in
@@ -281,7 +282,7 @@ fun declareCtors (tc : Tc) (ctx : Ctx) (d : DataDecl) (ks : [Core]) (indices : I
 -- A data type's `@seq`, noted once its constructors are declared: `nil`
 -- has to be one of them with no fields, and `cons` one with two, an element
 -- and the rest.
-fun declareSeq (tc : Tc) (d : DataDecl) =
+fun declareSeq (tc : Tc s) (d : DataDecl) =
   match d.seq with
   | None -> ()
   | Just (nil, cons) ->
@@ -300,7 +301,7 @@ fun declareSeq (tc : Tc) (d : DataDecl) =
 
 -- Which of a constructor's `count` fields a type may read off a known
 -- instance: those that are types, and a trait's superclasses.
-fun fieldOpens (tc : Tc) (shape : CtorShape) (found : [(Int, Value)]) (count : Int) : [Bool] ! { Mut | e } =
+fun fieldOpens (tc : Tc s) (shape : CtorShape) (found : [(Int, Value)]) (count : Int) : [Bool] ! { St s | e } =
   let h = hirOf tc in
   let names =
     match shape with
@@ -328,10 +329,10 @@ fun piNames (h : HirArena) (t : HirExpr) : [String] =
   | _ -> []
 
 -- The universe a data type lives in: `Type`, unless its kind says more.
-fun dataLevel (tc : Tc) (d : DataDecl) : Int ! { Mut | e } = Hm.getOr 0 (H.uniqueOf d.name) (getRef tc.large)
+fun dataLevel (tc : Tc s) (d : DataDecl) : Int ! { St s | e } = Hm.getOr 0 (H.uniqueOf d.name) (getRef tc.large)
 
 -- How many function types a type starts with, and what it ends in.
-fun telescopeEnd (tc : Tc) (lvl : Int) (ty : Value) : (Int, Value) ! { Mut | e } =
+fun telescopeEnd (tc : Tc s) (lvl : Int) (ty : Value) : (Int, Value) ! { St s | e } =
   match force tc ty with
   | Value.Pi name _ _ _ _ cod ->
       let (n, last) = telescopeEnd tc (lvl + 1) (apply tc cod (Va.vvar lvl name)) in
@@ -340,7 +341,7 @@ fun telescopeEnd (tc : Tc) (lvl : Int) (ty : Value) : (Int, Value) ! { Mut | e }
 
 -- `C t ..`: the constructor's type under the parameters, `t -> .. -> T a ..`,
 -- each field linear.
-fun ctorFields (tc : Tc) (d : DataDecl) (params : Ctx) (fields : [HirExpr]) : (Core, Int, Int, [(Int, Value)]) ! { Mut | e } =
+fun ctorFields (tc : Tc s) (d : DataDecl) (params : Ctx) (fields : [HirExpr]) : (Core, Int, Int, [(Int, Value)]) ! { St s | e } =
   let (elaborated, under, found) =
     V.foldl
       (\acc f ->
@@ -367,7 +368,7 @@ fun ctorFields (tc : Tc) (d : DataDecl) (params : Ctx) (fields : [HirExpr]) : (C
 -- `C : ty`: the constructor's type under the parameters, checked to end in
 -- the type at its parameters and then at indices, and how many implicit
 -- arguments and fields it has.
-fun ctorSig (tc : Tc) (d : DataDecl) (params : Ctx) (paramsAt : Int) (sig : HirExpr) (indices : Int) : (Core, Int, Int, [(Int, Value)]) ! { Mut | e } =
+fun ctorSig (tc : Tc s) (d : DataDecl) (params : Ctx) (paramsAt : Int) (sig : HirExpr) (indices : Int) : (Core, Int, Int, [(Int, Value)]) ! { St s | e } =
   let (sigC0, _) = checkType tc params sig in
   -- the fields it gives no grade are linear, as a list of fields is
   let sigC = linearFields (hirOf tc) sig sigC0 in
@@ -412,7 +413,7 @@ fun ctorSig (tc : Tc) (d : DataDecl) (params : Ctx) (paramsAt : Int) (sig : HirE
 
 -- A type's binders, each with its level, icit, grade, domain and the types
 -- of the slots before it; and what it ends in.
-fun walk (tc : Tc) (types : [(String, Value)]) (acc : [(Int, Icit, Value, Value, [(String, Value)])]) (ty : Value) : ([(Int, Icit, Value, Value, [(String, Value)])], Value) ! { Mut | e } =
+fun walk (tc : Tc s) (types : [(String, Value)]) (acc : [(Int, Icit, Value, Value, [(String, Value)])]) (ty : Value) : ([(Int, Icit, Value, Value, [(String, Value)])], Value) ! { St s | e } =
   match force tc ty with
   | Value.Pi name icit grade _ dom cod ->
       let lvl = V.len types in
@@ -432,7 +433,7 @@ fun linearFields (h : HirArena) (sig : HirExpr) (core : Core) : Core =
 
 -- Each effect: `E : (a : k) -> .. -> Effect`, or `Effect []` if a handler
 -- may resume one of its operations more than once.
-@pub fun declareEffects (tc : Tc) (ctx : Ctx) (rows : [HirEffect]) : Ctx ! { Mut | e } =
+@pub fun declareEffects (tc : Tc s) (ctx : Ctx) (rows : [HirEffect]) : Ctx ! { St s | e } =
   let effects = V.map (\e -> effectOf (hirOf tc) e) rows in
   V.foldl
     (\c (e : EffectDecl) ->
@@ -448,7 +449,7 @@ fun linearFields (h : HirArena) (sig : HirExpr) (core : Core) : Core =
     effects
 
 -- Then their operations, once the data types they mention are declared.
-@pub fun declareOps (tc : Tc) (ctx : Ctx) (rows : [HirEffect]) : Ctx ! { Mut | e } =
+@pub fun declareOps (tc : Tc s) (ctx : Ctx) (rows : [HirEffect]) : Ctx ! { St s | e } =
   let effects = V.map (\e -> effectOf (hirOf tc) e) rows in
   V.foldl
     (\c (e : EffectDecl) ->
@@ -534,7 +535,7 @@ fun native (name : String) : Maybe (Bool, Int) =
 
 -- The natives of one kind: the types, or the operations. A name that is
 -- no native is reported with the operations.
-@pub fun declareNatives (tc : Tc) (ctx : Ctx) (rows : [HirNative]) (types : Bool) : Ctx ! { Mut | e } =
+@pub fun declareNatives (tc : Tc s) (ctx : Ctx) (rows : [HirNative]) (types : Bool) : Ctx ! { St s | e } =
   let natives = V.map (\n -> nativeOf (hirOf tc) n) rows in
   V.foldl
     (\c nd ->
@@ -589,7 +590,7 @@ fun endsInEffects (c : Core) : Bool =
 -- The primitive types (each a definition of sort `Type`, but `Div`, an
 -- effect) and the primitive operations (each at its function type), at the
 -- uniques the renamer reserves for them.
-@pub fun initial (tc : Tc) : Ctx ! { Mut | e } =
+@pub fun initial (tc : Tc s) : Ctx ! { St s | e } =
   let builtins = C.builtins in
   let withTypes =
     V.foldl
