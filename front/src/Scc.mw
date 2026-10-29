@@ -237,70 +237,35 @@ fun uniquesInto (a : HirArena) (x : HirIdent) (s : Names) : Names = V.foldl (\ac
 
 fun uniqueOf (a : HirArena) (x : HirIdent) : Int = V.getOr (0 - 1) (hirIdentUniques a x) 0
 
--- The uniques a term uses and does not bind, added to a set. (Names are
--- unique, so what a clause binds cannot be mistaken for anything outside
--- it, and is left in: only the members of a group are looked up.)
-@pub fun freeInto (a : HirArena) (t : HirExpr) (s : Names) : Names =
-  let go = \e acc -> freeInto a e acc in
-  match (a, t) with
-  | HirExprVar x -> uniquesInto a x s
-  | HirExprApp f x -> go x (go f s)
-  | HirExprImplicitApp f x -> go x (go f s)
-  | HirExprAutoApp f x -> go x (go f s)
-  | HirExprAnn f x -> go x (go f s)
-  | HirExprRange f x -> go x (go f s)
-  | HirExprEff f x -> go x (go f s)
-  | HirExprSeqCons f x -> go x (go f s)
-  | HirExprBox x -> go x s
-  | HirExprArray items -> V.foldl (\acc e -> go e acc) s items
-  | HirExprLetBox x e body -> without a x (go body (go e s)) s
-  | HirExprPi (Just x) _ g dom cod -> without a x (go cod (go dom (gradeInto a g s))) s
-  | HirExprPi None _ g dom cod -> go cod (go dom (gradeInto a g s))
-  | HirExprLam x g ty body -> without a x (go body (V.foldl (\acc e -> go e acc) (gradeInto a g s) (vecOf ty))) s
-  | HirExprCase sc cs -> V.foldl (\acc c -> clauseInto a c acc) (go sc s) cs
-  | HirExprMatch cs -> V.foldl (\acc c -> clauseInto a c acc) s cs
-  | HirExprHandle body cs ->
-      V.foldl
-        (\acc c ->
-          let acc2 = match hirHandleClauseOp a c with | Just op -> uniquesInto a op acc | None -> acc in
-          go (hirHandleClauseBody a c) acc2)
-        (go body s)
-        cs
-  | HirExprRow ls tail -> V.foldl (\acc e -> go e acc) (V.foldl (\acc l -> go l acc) s ls) (vecOf tail)
-  | HirExprLet gs body ->
-      let binds = V.concatMap (bindsOf a) gs in
-      let inner = V.foldl (\acc b -> V.foldl (\x ty -> go ty x) (go (hirBindRhs a b) acc) (vecOf (hirBindTy a b))) Hm.empty binds in
-      let inner2 = go body inner in
-      let kept = V.foldl (\acc b -> Hm.delete (uniqueOf a (hirBindName a b)) acc) inner2 binds in
-      V.foldl (\acc u -> Hm.insert u True acc) s (Hm.keys kept)
-  | _ -> s
+-- The uniques a term uses and does not bind, added to a set.
+@pub fun freeInto (a : HirArena) (t : HirExpr) (s : Names) : Names = united s (freeExpr a t)
 
--- What `inner` has but the binder `x`, added to `outer`... which `inner`
--- already includes, so: `inner` with `x` taken out unless `outer` had it.
-fun without (a : HirArena) (x : HirIdent) (inner : Names) (outer : Names) : Names =
-  let u = uniqueOf a x in
-  if Hm.member u outer then inner else Hm.delete u inner
+fun united (a : Names) (b : Names) : Names = V.foldl (\acc u -> Hm.insert u True acc) a (Hm.keys b)
 
-fun gradeInto (a : HirArena) (g : Maybe HirGrade) (s : Names) : Names =
-  match g with
-  | Just gr -> V.foldl (\acc x -> freeInto a x acc) (freeInto a (hirGradeUses a gr) s) (vecOf (hirGradeInType a gr))
-  | None -> s
+-- `body`'s, but the binder `x`'s.
+fun bound (a : HirArena) (x : HirIdent) (body : Names) : Names = Hm.delete (uniqueOf a x) body
 
-fun clauseInto (a : HirArena) (c : HirClause) (s : Names) : Names =
-  let s2 = V.foldl (\acc p -> patternInto a p acc) s (hirClausePats a c) in
-  match (a, hirClauseRhs a c) with
-  | HirRhsPlain e -> freeInto a e s2
-  | HirRhsGuarded gs -> V.foldl (\acc g -> freeInto a (hirGuardBody a g) (freeInto a (hirGuardCond a g) acc)) s2 gs
-  | _ -> s2
+fun some (x : Maybe Names) : Names = M.unwrapOr Hm.empty x
 
-fun patternInto (a : HirArena) (p : HirPattern) (s : Names) : Names =
-  match (a, p) with
-  | HirPatternCon c ps -> V.foldl (\acc q -> patternInto a q acc) (uniquesInto a c s) ps
-  | HirPatternSeqCons h tl -> patternInto a tl (patternInto a h s)
-  | HirPatternAs _ q -> patternInto a q s
-  | HirPatternImplicit _ q -> patternInto a q s
-  | HirPatternDot e -> freeInto a e s
-  | _ -> s
+-- The uniques a term uses and does not bind: a name's, a constructor's in a
+-- pattern, a handled operation's. (Names are unique, so what a clause's
+-- patterns bind cannot be mistaken for anything outside it, and is left
+-- in: only the members of a group are looked up.)
+pass! {
+  free : Hir -> Names from Expr, Group
+    fold Hm.empty united
+    | Expr.Var { raw ident } -> uniquesInto src ident Hm.empty
+    | Con { raw ctor, args } -> V.foldl united (uniquesInto src ctor Hm.empty) args
+    | HandleClause { raw op, body } -> united (M.unwrapOr Hm.empty (M.map (\x -> uniquesInto src x Hm.empty) op)) body
+    | LetBox { raw name, value, body } -> united value (bound src name body)
+    | Pi { raw name, grade, dom, cod } ->
+        united (united (some grade) dom) (match name with | Just x -> bound src x cod | None -> cod)
+    | Lam { raw name, grade, ty, body } -> united (united (some grade) (some ty)) (bound src name body)
+    | Let { raw groups, body } ->
+        (let binds = V.concatMap (bindsOf src) groups in
+         let inner = united (V.foldl (\acc g -> united acc (freeGroup src g)) Hm.empty groups) body in
+         V.foldl (\acc b -> Hm.delete (uniqueOf src (hirBindName src b)) acc) inner binds)
+}
 
 fun vecOf (m : Maybe a) : [a] =
   match m with

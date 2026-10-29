@@ -1316,47 +1316,40 @@ fun scopeQuantified out (r : Rn) ty =
 -- The lower-case names `t` mentions that are neither bound in it nor
 -- `known`, in order of first appearance.
 fun freeVars (a : SurfaceArena) (t : SurfaceExpr) (bound : [String]) known (out : [String]) : [String] ! { Mut | e } =
-  let go = \u o -> freeVars a u bound known o in
-  let under = \x u o -> match x with | Just n -> freeVars a u (V.pushBack bound n) known o | None -> go u o in
-  let grades =
-    \g o ->
-      match g with
-      | Just gr -> (match surfaceGradeInType a gr with | Just x -> go x (go (surfaceGradeUses a gr) o) | None -> go (surfaceGradeUses a gr) o)
-      | None -> o
-  in
-  let text = \n -> surfaceNameText a n in
-  match (a, t) with
-  | SurfaceExprVar n ->
-      let x = text n in
-      let b = if stringByteLength x > 0 then toInt (stringByteAt x 0) else 0 in
-      let lower = (b >= 97 and b <= 122) or b == 95 in
-      if lower and not (V.elem x bound) and not (V.elem x out) and not (known x) and x != "otherwise" then V.pushBack out x
-      else out
-  | SurfaceExprPi x _ g dom cod -> under (M.map text x) cod (go dom (grades g out))
-  | SurfaceExprLam p body ->
-      let o1 = grades (surfaceParamGrade a p) out in
-      let o2 = match surfaceParamTy a p with | Just tt -> go tt o1 | None -> o1 in
-      under (Just (text (surfaceParamName a p))) body o2
-  | SurfaceExprApp f x -> go x (go f out)
-  | SurfaceExprImplicitApp f x -> go x (go f out)
-  | SurfaceExprAutoApp f x -> go x (go f out)
-  | SurfaceExprAnn f x -> go x (go f out)
-  | SurfaceExprRange f x -> go x (go f out)
-  | SurfaceExprEff f x -> go x (go f out)
-  | SurfaceExprRow ls tail -> V.foldl (\o l -> go l o) out (V.append ls (match tail with | Just x -> [x] | None -> []))
-  | SurfaceExprBox e -> go e out
-  | SurfaceExprSeq es -> V.foldl (\o e -> go e o) out es
-  | SurfaceExprArray es -> V.foldl (\o e -> go e o) out es
-  | SurfaceExprRecord _ fs -> V.foldl (\o f -> go (surfaceFieldValue a f) o) out fs
-  | SurfaceExprProj e _ -> go e out
-  | SurfaceExprUpdate e fs -> V.foldl (\o f -> go (surfaceFieldValue a f) o) (go e out) fs
-  | SurfaceExprLetBox x e body -> under (Just (text x)) body (go e out)
-  | SurfaceExprLet ds body ->
-      let names = V.concatMap (\d -> match equation a d with | Just (x, _) -> [x] | None -> []) ds in
-      freeVars a body (V.append bound names) known out
-  | SurfaceExprCase e _ -> go e out
-  | SurfaceExprHandle e _ -> go e out
-  | _ -> out
+  V.foldl (\o x -> if V.elem x o then o else V.pushBack o x) out (unboundExpr a (bound, known) t)
+
+-- Names in order of first appearance, each once.
+fun appeared (a : [String]) (b : [String]) : [String] = V.foldl (\o x -> if V.elem x o then o else V.pushBack o x) a b
+
+fun boundIn (fv : ([String], c)) (names : [String]) : ([String], c) = match fv with | (bound, known) -> (V.append bound names, known)
+
+-- The lower-case names a term mentions that nothing binds, in order of
+-- appearance: `fv` is what is bound around it, and what is known anyway.
+-- What a `case`, a handler or an equation binds, and a record's own
+-- methods, are not looked into.
+pass! {
+  unbound : Surface -> [String] with fv from Expr, Param
+    fold [] appeared
+    | Expr.Var { raw name } ->
+        (let x = surfaceNameText src name in
+         let b = if stringByteLength x > 0 then toInt (stringByteAt x 0) else 0 in
+         let lower = (b >= 97 and b <= 122) or b == 95 in
+         match fv with
+         | (bound, known) -> if lower and not (V.elem x bound) and not (known x) and x != "otherwise" then [x] else [])
+    | Pi { raw name, grade, dom, later cod } ->
+        appeared
+          (appeared (M.unwrapOr [] grade) dom)
+          (cod (match name with | Just n -> boundIn fv [surfaceNameText src n] | None -> fv))
+    | Lam { raw param, later body } ->
+        appeared (unboundParam src fv param) (body (boundIn fv [surfaceNameText src (surfaceParamName src param)]))
+    | LetBox { raw name, value, later body } -> appeared value (body (boundIn fv [surfaceNameText src name]))
+    | Let { raw decls, later body } ->
+        body (boundIn fv (V.concatMap (\d -> match equation src d with | Just (x, _) -> [x] | None -> []) decls))
+    | Case { scrutinee } -> scrutinee
+    | Handle { body } -> body
+    | Equations {} -> []
+    | RecordOf {} -> []
+}
 
 -- --- programs ----------------------------------------------------------------------
 

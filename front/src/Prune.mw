@@ -195,7 +195,7 @@ fun visit (a : ElaboratedArena) (sols : HashMap Int ElaboratedTerm) (work : [(In
   | None -> (liveLets, liveRecs)
   | Just (at, t) ->
       let rest = V.take work (V.len work - 1) in
-      let (levels, opaques) = references a sols t at 0 ([], []) in
+      let (levels, opaques) = refsTerm a (Rx { sols, at, depth = 0 }) t in
       let (ll, w2) =
         V.foldl
           (\acc lv ->
@@ -221,29 +221,54 @@ fun visit (a : ElaboratedArena) (sols : HashMap Int ElaboratedTerm) (work : [(In
       in
       visit a sols w3 base lets recs ll lr
 
+-- What `refs` carries down: each metavariable's solution, and the context,
+-- of `at` variables, `depth` binders in.
+record Rx = {
+  sols : HashMap Int ElaboratedTerm,
+  at : Int,
+  depth : Int
+}
+
+fun deeperRx (rx : Rx) (n : Int) : Rx = { rx | depth = rx.depth + n }
+
+fun rxDepth (rx : Rx) : Int = rx.depth
+
+fun rxAt (rx : Rx) : Int = rx.at
+
+fun rxSolution (rx : Rx) (n : Int) : Maybe ElaboratedTerm = Hm.lookup n rx.sols
+
+-- Two answers of `refs` as one, each list in the order things were met.
+fun joined (a : ([Int], [Int])) (b : ([Int], [Int])) : ([Int], [Int]) =
+  match (a, b) with
+  | ((ls, os), (ls2, os2)) -> (V.foldl added ls ls2, V.foldl added os os2)
+
+fun added (xs : [Int]) (x : Int) : [Int] = if V.elem x xs then xs else V.pushBack xs x
+
 -- The levels (in a context of `at` variables, `depth` binders in) and the
 -- constants a term refers to, outside its erased parts; for a solved
 -- metavariable, what its solution refers to (closed, it refers to no level
--- but through what it is applied to).
-fun references (a : ElaboratedArena) (sols : HashMap Int ElaboratedTerm) (t : ElaboratedTerm) (at : Int) (depth : Int) (acc : ([Int], [Int])) : ([Int], [Int]) =
-  let go = \x d acc2 -> references a sols x at d acc2 in
-  match (a, t) with
-  | ElaboratedTermVar i _ ->
-      if i >= depth then
-        let lv = at - (i - depth + 1) in
-        (match acc with | (ls, os) -> if lv >= 0 and not (V.elem lv ls) then (V.pushBack ls lv, os) else acc)
-      else acc
-  | ElaboratedTermOpaque u _ -> (match acc with | (ls, os) -> if V.elem u os then acc else (ls, V.pushBack os u))
-  | ElaboratedTermMeta n -> (match Hm.lookup n sols with | Just sol -> go sol depth acc | None -> acc)
-  | ElaboratedTermRuntime n x -> if kindElaboratedNote a n == ElaboratedNoteKind.Erased then acc else go x depth acc
-  | ElaboratedTermLam _ b -> go b (depth + 1) acc
-  | ElaboratedTermLet _ e b -> go b (depth + 1) (go e depth acc)
-  | ElaboratedTermApp f x -> go x depth (go f depth acc)
-  | ElaboratedTermBoxIntro x -> go x depth acc
-  | ElaboratedTermUnbox x -> go x depth acc
-  | ElaboratedTermCase s alts ->
-      V.foldl (\acc2 alt -> go (elaboratedAltBody a alt) (depth + V.len (elaboratedAltVars a alt)) acc2) (go s depth acc) alts
-  | ElaboratedTermHandle b r ops ->
-      V.foldl (\acc2 o -> go (elaboratedOpClauseBody a o) depth acc2) (go r depth (go b depth acc)) ops
-  -- types, grades and rows are erased
-  | _ -> acc
+-- but through what it is applied to). Types, grades and rows are erased.
+pass! {
+  refs : Elaborated -> ([Int], [Int]) with rx from Term
+    fold ([], []) joined
+    | Var { index } ->
+        (if index >= rxDepth rx then
+           (let lv = rxAt rx - (index - rxDepth rx + 1) in if lv >= 0 then ([lv], []) else ([], []))
+         else ([], []))
+    | Opaque { unique } -> ([], [unique])
+    | Meta { number } ->
+        (match rxSolution rx number with
+         | Just sol -> refsTerm src rx sol
+         | None -> ([], []))
+    | Runtime { raw note, later expr } -> (if kindElaboratedNote src note == ElaboratedNoteKind.Erased then ([], []) else expr rx)
+    | Lam { later body } -> body (deeperRx rx 1)
+    | Let { value, later body } -> joined value (body (deeperRx rx 1))
+    | Alt { vars, later body } -> body (deeperRx rx (V.len vars))
+    | Pi {} -> ([], [])
+    | BoxTy {} -> ([], [])
+    | GradeAdd {} -> ([], [])
+    | GradeMul {} -> ([], [])
+    | GradeRange {} -> ([], [])
+    | Comp {} -> ([], [])
+    | Row {} -> ([], [])
+}

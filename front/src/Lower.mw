@@ -27,6 +27,8 @@
 use Idyll.Hir (Literal)
 use Idyll.Core (Core, Builtin, Prim, Head)
 use Idyll.Elaborated
+use Idyll.Elaborated (Elaborated!)
+use Lingua (pass!)
 use Idyll.Core as IC
 use Idyll.Value (Value)
 use Idyll.Grade (Grade)
@@ -617,27 +619,15 @@ fun preludeOp (l : L s) (opName : String) : Maybe (Int, Int) ! { Mut, St s | e }
        (Hm.toVec (getRef l.tc.ops)))
 
 -- Whether `c` mentions the constant `u`.
-fun mentionsConst (l : L s) (c : Tm) (u : Int) : Bool =
-  let a = l.a in
-  let go = \x -> mentionsConst l x u in
-  match (a, c) with
-  | ElaboratedTermOpaque v _ -> v == u
-  | ElaboratedTermPi _ _ g r d cod -> go g or go r or go d or go cod
-  | ElaboratedTermLam _ b -> go b
-  | ElaboratedTermBoxIntro b -> go b
-  | ElaboratedTermUnbox b -> go b
-  | ElaboratedTermRuntime _ b -> go b
-  | ElaboratedTermApp x y -> go x or go y
-  | ElaboratedTermBoxTy x y -> go x or go y
-  | ElaboratedTermLet _ x y -> go x or go y
-  | ElaboratedTermGradeAdd x y -> go x or go y
-  | ElaboratedTermGradeMul x y -> go x or go y
-  | ElaboratedTermGradeRange x y -> go x or go y
-  | ElaboratedTermComp x y -> go x or go y
-  | ElaboratedTermCase sc alts -> go sc or V.any (\alt -> go (elaboratedAltBody a alt)) alts
-  | ElaboratedTermRow x y -> V.any go (V.append x y)
-  | ElaboratedTermHandle b r ops -> go b or go r or V.any (\o -> go (elaboratedOpClauseBody a o)) ops
-  | _ -> False
+fun mentionsConst (l : L s) (c : Tm) (u : Int) : Bool = mentionsTerm l.a u c
+
+-- Whether a term mentions the constant `u` (a note's type aside).
+pass! {
+  mentions : Elaborated -> Bool with u from Term
+    fold False (\a b -> a or b)
+    | Opaque { unique } -> unique == u
+    | Runtime { expr } -> expr
+}
 
 -- Whether one of the program's first `n` (top-level) definitions mentions `u`.
 fun letsMention (l : L s) (c : Tm) (n : Int) (u : Int) : Bool =
@@ -1734,7 +1724,7 @@ fun ownersFrom (l : L s) (work : [(Int, Tm)]) recs (out : HashMap Int Int) : Has
   | None -> out
   | Just (top, c) ->
       let rest = V.take work (V.len work - 1) in
-      let (_, opaques) = used l c 0 0 False (Uses.Uses [] [], []) in
+      let (_, opaques) = usedTerm l.a (Ux { at = 0, depth = 0, erased = False }) c in
       let (out2, w2) =
         V.foldl
           (\acc u ->
@@ -1762,7 +1752,7 @@ fun localFreeLevels (l : L s) recs (owners : HashMap Int Int) : HashMap Int (Int
             (match Hm.lookup u owners with
              | None -> acc
              | Just top ->
-                 (match used l core lvl 0 False (Uses.Uses [] [], []) with
+                 (match usedTerm l.a (Ux { at = lvl, depth = 0, erased = False }) core with
                   | (Uses.Uses vs als, opaques) ->
                       (Hm.insert u (top, Uses.Uses (V.filter (within top lvl) vs) (V.filter (within top lvl) als)) o, Hm.insert u opaques cs))))
       (Hm.empty, Hm.empty)
@@ -1789,42 +1779,61 @@ fun spread recs calls (out : HashMap Int (Int, Uses)) : HashMap Int (Int, Uses) 
   in
   if changed then spread recs calls out2 else out2
 
--- What a term uses (in a context of `at` variables, `depth` binders in;
--- `erased` if it is never computed), and the constants it mentions.
-fun used (l : L s) (c : Tm) (at : Int) (depth : Int) (erased : Bool) (acc : (Uses, [Int])) : (Uses, [Int]) =
-  let a = l.a in
-  let go = \x d e acc2 -> used l x at d (erased or e) acc2 in
-  match (a, c) with
-  | ElaboratedTermVar i _ ->
-      if i >= depth then
-        let lv = at - (i - depth + 1) in
-        if lv < 0 then acc
-        else
-          (match acc with
-           | (Uses.Uses vs als, os) -> (Uses.Uses (if erased then vs else insertSorted vs lv) (insertSorted als lv), os))
-      else acc
-  | ElaboratedTermOpaque u _ -> (match acc with | (us, os) -> (us, insertSorted os u))
-  | ElaboratedTermPi _ _ g r d cod -> go cod (depth + 1) True (go d depth True (go r depth True (go g depth True acc)))
-  | ElaboratedTermLam _ b -> go b (depth + 1) False acc
-  | ElaboratedTermLet _ e b -> go b (depth + 1) False (go e depth False acc)
-  | ElaboratedTermApp x y -> go y depth False (go x depth False acc)
-  | ElaboratedTermBoxTy x y -> go y depth True (go x depth True acc)
-  | ElaboratedTermGradeAdd x y -> go y depth True (go x depth True acc)
-  | ElaboratedTermGradeMul x y -> go y depth True (go x depth True acc)
-  | ElaboratedTermGradeRange x y -> go y depth True (go x depth True acc)
-  | ElaboratedTermComp x y -> go y depth True (go x depth True acc)
-  | ElaboratedTermRuntime n x ->
-      (match (a, n) with
-       | ElaboratedNoteErased -> go x depth True acc
-       | ElaboratedNoteBinds _ (Just t) -> go x depth False (go t depth True acc)
-       | _ -> go x depth False acc)
-  | ElaboratedTermBoxIntro x -> go x depth False acc
-  | ElaboratedTermUnbox x -> go x depth False acc
-  | ElaboratedTermCase sc alts ->
-      V.foldl (\acc2 alt -> go (elaboratedAltBody a alt) (depth + V.len (elaboratedAltVars a alt)) False acc2) (go sc depth False acc) alts
-  | ElaboratedTermHandle b r ops -> V.foldl (\acc2 o -> go (elaboratedOpClauseBody a o) depth False acc2) (go r depth False (go b depth False acc)) ops
-  | ElaboratedTermRow ls ts -> V.foldl (\acc2 x -> go x depth True acc2) acc (V.append ls ts)
-  | _ -> acc
+-- What `used` carries down: the context, of `at` variables, `depth`
+-- binders in; and whether the term is `erased`, never computed.
+record Ux = {
+  at : Int,
+  depth : Int,
+  erased : Bool
+}
+
+fun deeperUx (ux : Ux) (n : Int) : Ux = { ux | depth = ux.depth + n }
+
+fun typedUx (ux : Ux) : Ux = { ux | erased = True }
+
+fun uxDepth (ux : Ux) : Int = ux.depth
+
+fun uxAt (ux : Ux) : Int = ux.at
+
+fun uxErased (ux : Ux) : Bool = ux.erased
+
+-- Two answers of `used` as one.
+fun usedJoined (a : (Uses, [Int])) (b : (Uses, [Int])) : (Uses, [Int]) =
+  match (a, b) with
+  | ((Uses.Uses vs als, os), (Uses.Uses vs2 als2, os2)) ->
+      (Uses.Uses (V.foldl insertSorted vs vs2) (V.foldl insertSorted als als2), V.foldl insertSorted os os2)
+
+fun usedAll (xs : [(Uses, [Int])]) : (Uses, [Int]) = V.foldl usedJoined (Uses.Uses [] [], []) xs
+
+-- What a term uses: the variables computed, the variables mentioned at all,
+-- and the constants it mentions. A type, a grade or a row is mentioned and
+-- never computed.
+pass! {
+  used : Elaborated -> (Uses, [Int]) with ux from Term
+    fold (Uses.Uses [] [], []) usedJoined
+    | Var { index } ->
+        (if index >= uxDepth ux then
+           (let lv = uxAt ux - (index - uxDepth ux + 1) in
+            if lv < 0 then (Uses.Uses [] [], []) else (Uses.Uses (if uxErased ux then [] else [lv]) [lv], []))
+         else (Uses.Uses [] [], []))
+    | Opaque { unique } -> (Uses.Uses [] [], [unique])
+    | Pi { later grade, later inType, later dom, later cod } ->
+        usedAll [grade (typedUx ux), inType (typedUx ux), dom (typedUx ux), cod (typedUx (deeperUx ux 1))]
+    | Lam { later body } -> body (deeperUx ux 1)
+    | Let { value, later body } -> usedJoined value (body (deeperUx ux 1))
+    | Alt { vars, later body } -> body (deeperUx ux (V.len vars))
+    | BoxTy { later grade, later ty } -> usedAll [grade (typedUx ux), ty (typedUx ux)]
+    | GradeAdd { later lhs, later rhs } -> usedAll [lhs (typedUx ux), rhs (typedUx ux)]
+    | GradeMul { later lhs, later rhs } -> usedAll [lhs (typedUx ux), rhs (typedUx ux)]
+    | GradeRange { later lo, later hi } -> usedAll [lo (typedUx ux), hi (typedUx ux)]
+    | Comp { later ty, later row } -> usedAll [ty (typedUx ux), row (typedUx ux)]
+    | Row { later labels, later tails } -> usedAll (V.map (\f -> f (typedUx ux)) (V.append labels tails))
+    | Runtime { raw note, later expr } ->
+        (match (src, note) with
+         | ElaboratedNoteErased -> expr (typedUx ux)
+         | ElaboratedNoteBinds _ (Just t) -> usedJoined (usedTerm src (typedUx ux) t) (expr ux)
+         | _ -> expr ux)
+}
 
 fun named (package : String) (what : String) (key : String) : Sym = Sym.Sym "idyll" package ["#" ++ what ++ " " ++ key]
 
