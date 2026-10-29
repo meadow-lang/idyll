@@ -996,6 +996,12 @@ So far the server:
   checking when it found the problem (or at the start of the file, for a
   declaration's own);
 - says on hover what a term's type is;
+- goes to a name's definition (where it is first bound), and finds every
+  place it is named, from every name of the renamed program with its place
+  (`Rename.occurrences`, a `pass!` fold);
+- completes names: the program's and the prelude's, with their types. A
+  program that does not parse is checked without the line being written;
+- gives an outline of the program's own declarations;
 - colours a file from its tree;
 - formats a file as `Idyll fmt` does.
 

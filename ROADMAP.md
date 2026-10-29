@@ -894,14 +894,20 @@ accepted when what it does fits within what resuming was found to.
   - publishes what is wrong with each open file, the renamer's and the
     checker's problems at the nodes they are about;
   - says a term's type on hover;
+  - goes to a name's definition, and finds every place it is named;
+  - completes names, the program's and the prelude's, with their types;
+  - gives an outline of the program's own declarations;
   - colours a file from its tree, and formats it.
 
   Each answer is worked out again only when an edit changes what it read.
   For that, front/'s renamer, checker and lowering keep their state in `St`
   cells, since a query may perform nothing but asking other queries. Still
   to come:
-  - going to a definition, and completion;
-  - a file checked in its package, not as a lone program.
+  - a file checked in its package, not as a lone program;
+  - completion of the names in scope where the cursor is (locals, a
+    module's after its alias), not only the program's top level;
+  - hover, definitions and completion kept in the session, rather than
+    the file checked again for each.
 - [ ] **The VS Code extension** (`editors/vscode`).
 - [ ] **Named holes, for type-driven development** (Chris, 2026-10-16), as
   Idris and Agda have them. `_` is a hole the checker fills in, as it does
