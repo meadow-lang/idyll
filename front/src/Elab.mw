@@ -1218,9 +1218,12 @@ fun leaveGroups (usage : Usage) (pending : [Pending]) : Usage =
 fun elaborate (tc : Tc s) (cx : Cx s) (t : HirExpr) : (Core, Value, Usage) ! { St s | e } =
   -- what is found wrong meanwhile is found at `t`
   let before = getRef tc.at in
-  let w = setRef tc.at (metaHirExpr (hirOf tc) t) in
+  let here = metaHirExpr (hirOf tc) t in
+  let w = setRef tc.at here in
   let answer = elaborateAt tc cx t in
   let w2 = setRef tc.at before in
+  -- (and its type, if a place in it is asked about)
+  let w3 = if getRef tc.want >= 0 then (match answer with | (_, ty, _) -> T.noteType tc here (quote tc cx.ctx.lvl ty)) else () in
   answer
 
 fun elaborateAt (tc : Tc s) (cx : Cx s) (t : HirExpr) : (Core, Value, Usage) ! { St s | e } =

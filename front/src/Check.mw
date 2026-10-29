@@ -119,7 +119,11 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
 
 -- The same, against the compiled packages it depends on (`deps`, each
 -- after those it depends on): `check_module` with its `deps`.
-@pub fun checkedWith (m : Renamed) (entry : Bool) (deps : [Compiled]) : Checked s ! { St s | e } =
+@pub fun checkedWith (m : Renamed) (entry : Bool) (deps : [Compiled]) : Checked s ! { St s | e } = checkedWanting m entry deps (0 - 1)
+
+-- The same, keeping the type of the innermost node that holds the place
+-- `want` (`Tc.found`), for hover.
+@pub fun checkedWanting (m : Renamed) (entry : Bool) (deps : [Compiled]) (want : Int) : Checked s ! { St s | e } =
   let h = hirArena m.hir in
   let root = hirRoot m.hir in
   let datas = hirModuleDatas h root in
@@ -129,6 +133,7 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
   -- it after it: `Scc.interleave`)
   let (datasInOrder, dataAfter, groups) = interleave h datas (hirModuleGroups h root) in
   let tc = T.new () in
+  let wwant = setRef tc.want want in
   let wh = setRef tc.hir h in
   let out = newElaboratedBuilder () in
   let we = install tc out in

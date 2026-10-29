@@ -26,7 +26,7 @@ does, how it is checked, and why it is built the way it is.
 | The CEK machine | `Cek.mw`, `World.mw` | done: the same answer, in the same number of steps, as `idyll-eval` on every program that runs (211) |
 | Cut | `Lower.mw`, `Typer.mw`, `Prune.mw`, `CutAst.mw`, `Emit.mw` | done: the same Cut as `idyllic-cut` on every program that lowers (212) |
 | The formatter | `Syntax.mw` (a `format!`), `Format.mw` | done: `Idyll fmt`; every program comes out as the same program, and formatting it again changes nothing |
-| The language server | `Session.mw` (a `database!`), `Server.mw` (an `lsp!`) | begun: `Idyll lsp` publishes what is wrong with each open file, colours it and sets it out; errors past the syntax's are at the start of the file until the checker says where |
+| The language server | `Session.mw` (a `database!`), `Server.mw` (an `lsp!`) | begun: `Idyll lsp` publishes what is wrong with each open file where it is, says a term's type on hover, colours a file and sets it out |
 
 "Every program" means 1082 programs: the test corpora in
 `compiler/idyllic/tests/corpus/`, the prelude, every `.idl` file in the
@@ -991,15 +991,19 @@ state and the pass's tables share that one `St`. Only the CEK machine (`Cek`,
 `World`) keeps `Mut` cells, for Idyll's own `Ref`s.
 
 So far the server:
-- publishes diagnostics: the syntax's, drawn at their nodes, then the
-  renamer's and the checker's;
+- publishes diagnostics: the syntax's, drawn at their nodes; the
+  renamer's, at the start of the file; and the checker's, each at the
+  node it was checking when it found the error;
+- says on hover what a term's type is;
 - colours a file from its tree;
 - formats a file as `Idyll fmt` does.
 
-The renamer's and the checker's errors are at the start of the file, since
-the checker records an error only as its kind ("Mismatch"). Saying where
-each is, by carrying the `Meta` of the node being checked into the error,
-comes next. Hover (each node's type) needs the same table of nodes.
+The checker keeps the node it is checking (`Tc.at`, set around each node by
+`Elab.elaborate`) and each error with it (`Tc.placed`), beside the kinds
+the differential tests compare. For hover, the file is checked again with
+the place asked about (`Check.checkedWanting`). The type of the innermost
+node that holds the place is kept (`Tc.found`), and Std and the prelude
+come from the session.
 
 ## Dependencies
 

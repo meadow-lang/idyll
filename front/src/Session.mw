@@ -20,7 +20,8 @@ use Idyll.Surface as Surface
 use Idyll.Rename (PackageNames)
 use Idyll.Rename as Rename
 use Idyll.Scc (sccModule)
-use Idyll.Check (checkedAgainst)
+use Idyll.Check (checkedAgainst, checkedWanting)
+use Idyll.Core as C
 use Idyll.Compiled (compiledOf)
 use Idyll.Interface (Compiled)
 use Idyll.Driver as D
@@ -67,6 +68,28 @@ database! {
                V.append
                  (placedOnce (St.getRef c.tc.placed))
                  (V.map (\k -> warningAt nowhere "this compiler cannot check this yet: ${k}") (distinct (St.getRef c.tc.unsupported)))))
+
+-- The type of the innermost term of `text` at byte `at`, and where that
+-- term is: the program checked again, keeping it (`Check.checkedWanting`).
+@pub fun typeAt (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (at : Int) : Maybe (Meta, String) ! e =
+  match (Surface.parsed text, prelude) with
+  | (Ok prog, Ok pre) ->
+      let deps =
+        if not (S.contains "Std" text) then []
+        else (match std () with | Ok (names, c) -> [("Std", names, c)] | Err _ -> [])
+      in
+      let first = V.foldl (\acc d -> match d with | (_, _, (c : Compiled)) -> if c.high > acc then c.high else acc) 0 deps in
+      let vis = Rename.mentionsVisibility (Rename.programOf prog) in
+      (match Rename.renamePackageWith "Main" [([], prog)] pre (V.map (\d -> match d with | (n, ns, _) -> (n, ns)) deps) [] first True vis with
+       | (m, _, problems) ->
+           if not (V.isEmpty problems) then None
+           else
+             runSt (\() ->
+               let c = checkedWanting (sccModule m) False (V.map (\d -> match d with | (_, _, cp) -> cp) deps) at in
+               match St.getRef c.tc.found with
+               | Just (place, ty) -> Just (place, C.shown m.linearBody ty)
+               | None -> None))
+  | _ -> None
 
 -- Std compiled, after the prelude: its modules as this program holds them.
 @pub fun stdOf (prelude : Result [Diagnostic] SurfaceProgram) : Result String (PackageNames, Compiled) =

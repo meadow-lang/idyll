@@ -16,6 +16,7 @@ lsp! {
     | diagnostics = diagnosticsOf
     | tree = treeOf
     | format = formatOf
+    | hover = hoverAt
 }
 
 -- A query's answer, or `fallback` if it has none (an input never set).
@@ -24,6 +25,13 @@ fun answered fallback act = match toResult act with | Ok x -> x | Err _ -> fallb
 fun diagnosticsOf db file = answered [] (\() -> sessionProblems db file)
 
 fun treeOf db file = answered (fst (parseIdyll "")) (\() -> fst (sessionParsed db file))
+
+-- What the term at a place is: its type, as the checker found it.
+fun hoverAt db file at =
+  answered None (\() ->
+    match typeAt (sessionSource db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at with
+    | Just (place, ty) -> Just (place, "```idyll\n${ty}\n```")
+    | None -> None)
 
 -- The file set out; as it is, if it cannot be.
 fun formatOf db file = answered (answered "" (\() -> sessionSource db file)) (\() -> sessionFormatted db file)
@@ -78,6 +86,19 @@ fun firstAt (said : [Json]) : Maybe (Json, Json) =
 
 @test fun aTypeErrorIsWhereItWasFound () =
   assertEq (firstAt (told [opening "file:///a.idl" "x : Bool\nx = 1\n"] serveServer)) (Just (J.jInt 1, J.jInt 4)) "at the 1, not the start of the file"
+
+fun hovering (id : Int) (uri : String) (line : Int) (column : Int) : Json =
+  asking id "textDocument/hover" (J.jObject [
+    ("textDocument", J.jObject [("uri", J.jString uri)]),
+    ("position", J.jObject [("line", J.jInt line), ("character", J.jInt column)])
+  ])
+
+@test fun hoverSaysWhatATermIs () =
+  let said = told [opening "file:///a.idl" "x : Int\nx = 1\n", hovering 1 "file:///a.idl" 1 4] serveServer in
+  assertEq
+    (M.andThen (J.path ["result", "contents", "value"]) (V.get said 1))
+    (Just (J.jString "```idyll\nInt\n```"))
+    "the 1 is an Int"
 
 @test fun aTypeErrorIsPublished () =
   assertEq (M.map (\n -> n > 0) (published (told [opening "file:///a.idl" "x : Bool\nx = 1\n"] serveServer))) (Just True) "what the checker said"

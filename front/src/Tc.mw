@@ -112,6 +112,10 @@ use Std.Maybe.Maybe.*
   -- which `Elab.elaborate` keeps), for the language server
   placed : StRef s [(Lang.Meta, String)],
   at : StRef s Lang.Meta,
+  -- a place asked about (or -1), and the innermost node checked yet that
+  -- holds it, with its type: what hover says
+  want : StRef s Int,
+  found : StRef s (Maybe (Lang.Meta, Core)),
   holes : StRef s [HoleAt],
   postponed : StRef s [Postponed],
   -- whether the definition being checked is in a linear module, where an
@@ -239,6 +243,8 @@ use Std.Maybe.Maybe.*
     errors = newRef [],
     placed = newRef [],
     at = newRef (spanMeta 0 0),
+    want = newRef (0 - 1),
+    found = newRef None,
     holes = newRef [],
     postponed = newRef [],
     linear = newRef False,
@@ -307,6 +313,8 @@ use Std.Maybe.Maybe.*
     errors = newRef (getRef tc.errors),
     placed = newRef (getRef tc.placed),
     at = newRef (getRef tc.at),
+    want = newRef (getRef tc.want),
+    found = newRef (getRef tc.found),
     holes = newRef (getRef tc.holes),
     postponed = newRef (getRef tc.postponed),
     linear = newRef (getRef tc.linear),
@@ -372,6 +380,7 @@ use Std.Maybe.Maybe.*
   let w11 = setRef tc.errors (getRef saved.errors) in
   let w11a = setRef tc.placed (getRef saved.placed) in
   let w11b = setRef tc.at (getRef saved.at) in
+  let w11c = setRef tc.found (getRef saved.found) in
   let w12 = setRef tc.holes (getRef saved.holes) in
   let w13 = setRef tc.postponed (getRef saved.postponed) in
   let w14 = setRef tc.linear (getRef saved.linear) in
@@ -414,6 +423,18 @@ use Std.Maybe.Maybe.*
 @pub fun error (tc : Tc s) (kind : String) =
   let w = setRef tc.placed (V.pushBack (getRef tc.placed) (getRef tc.at, kind)) in
   setRef tc.errors (V.pushBack (getRef tc.errors) kind)
+
+-- A node's type, kept if the node holds the place asked about and lies
+-- within the one kept before: what hover says of the place.
+@pub fun noteType (tc : Tc s) (at : Lang.Meta) (ty : Core) =
+  let w = getRef tc.want in
+  match at with
+  | Lang.Meta.Meta a b ->
+      if w < a or w > b then ()
+      else
+        (match getRef tc.found with
+         | Just (Lang.Meta.Meta a0 b0, _) -> if a >= a0 and b <= b0 then setRef tc.found (Just (at, ty)) else ()
+         | None -> setRef tc.found (Just (at, ty)))
 
 -- Something this checker cannot check yet.
 @pub fun cannot (tc : Tc s) (what : String) = setRef tc.unsupported (V.pushBack (getRef tc.unsupported) what)
