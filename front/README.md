@@ -991,16 +991,18 @@ state and the pass's tables share that one `St`. Only the CEK machine (`Cek`,
 `World`) keeps `Mut` cells, for Idyll's own `Ref`s.
 
 So far the server:
-- publishes diagnostics: the syntax's, drawn at their nodes; the
-  renamer's, at the start of the file; and the checker's, each at the
-  node it was checking when it found the error;
+- publishes diagnostics: the syntax's, drawn at their nodes, and the
+  renamer's and the checker's, each at the node it was renaming or
+  checking when it found the problem (or at the start of the file, for a
+  declaration's own);
 - says on hover what a term's type is;
 - colours a file from its tree;
 - formats a file as `Idyll fmt` does.
 
 The checker keeps the node it is checking (`Tc.at`, set around each node by
 `Elab.elaborate`) and each error with it (`Tc.placed`), beside the kinds
-the differential tests compare. For hover, the file is checked again with
+the differential tests compare. The renamer does the same around the names
+it resolves (`Rn.at`, `atNode`; `Renamed.problemsAt`). For hover, the file is checked again with
 the place asked about (`Check.checkedWanting`). The type of the innermost
 node that holds the place is kept (`Tc.found`), and Std and the prelude
 come from the session.

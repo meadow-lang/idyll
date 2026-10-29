@@ -56,6 +56,10 @@ use Std.Sort (sortOn)
 type Scope = HashMap String [Int]
 
 record Rn s = {
+  -- each problem found, with the node being renamed then (`at`, which
+  -- `atNode` sets), for the language server
+  placed : StRef s [(Meta, String)],
+  at : StRef s Meta,
   -- innermost last; the first is the builtins'
   scopes : StRef s [Scope],
   -- where the module's own scope is, once one is entered: the one under it
@@ -135,6 +139,8 @@ fun new () =
     ownAt = newRef (0 - 1),
     next = newRef (V.len builtins),
     problems = newRef [],
+    placed = newRef [],
+    at = newRef noMeta,
     ctors = newRef Hm.empty,
     typeNames = newRef Hm.empty,
     twins = newRef Hm.empty,
@@ -187,7 +193,17 @@ fun leave (r : Rn s) =
   in
   setRef r.current (0 - 1)
 
-fun bad (r : Rn s) (why : String) = setRef r.problems (V.pushBack (getRef r.problems) why)
+fun bad (r : Rn s) (why : String) =
+  let w = setRef r.placed (V.pushBack (getRef r.placed) (getRef r.at, why)) in
+  setRef r.problems (V.pushBack (getRef r.problems) why)
+
+-- `act`, what it finds wrong found at node `m`.
+fun atNode (r : Rn s) (m : Meta) act =
+  let before = getRef r.at in
+  let w = setRef r.at m in
+  let x = act () in
+  let w2 = setRef r.at before in
+  x
 
 fun fresh (r : Rn s) =
   let u = getRef r.next in
@@ -711,6 +727,14 @@ fun theRecordWith (r : Rn s) (wanted : [String]) : Maybe (String, [String]) ! { 
   Native + Native { name : Ident, ty : Expr }
 }
 
+-- Every name of a renamed program, each with the uniques it stands for
+-- and where it is: what going to a definition and finding references read.
+pass! {
+  pub occurrences : Hir -> [([Int], Meta)] from Module
+    fold [] V.append
+    | Ident { uniques } -> [(uniques, here)]
+}
+
 -- An identifier, written.
 fun idNode out (m : Meta) (x : Ident) = match x with | Ident.Ident us t -> newHirIdent out m us t
 
@@ -851,7 +875,7 @@ pass! {
     -- `otherwise` is `True`, unless something else is called that
     | Expr.Var { name } ->
         (if name == "otherwise" and not (known r name) then Lit { lit = Literal.Bool True }
-         else Var { ident = idNode out here (useName r name) })
+         else Var { ident = idNode out here (atNode r here (\u -> useName r name)) })
     | Ann { expr, later ty } -> Ann { expr, ty = asType r (\u -> ty r) }
     -- what is given is most often a type, and read as one
     | ImplicitApp { func, later arg } -> ImplicitApp { func, arg = asType r (\u -> arg r) }
@@ -895,7 +919,7 @@ pass! {
             HandleClause { op = op2, params = xs, body = body r })))
     | Expr.Seq { items } -> V.foldr (\h tl -> newHirExprSeqCons out here h tl) (newHirExprSeqNil out here) items
     | Expr.Record { name, fields } ->
-        (match recordLiteral out here r name fields with
+        (match atNode r here (\u -> recordLiteral out here r name fields) with
          | Just built -> built
          | None -> unresolved out here)
     -- equations: each a clause of a match, as a definition's are
@@ -924,15 +948,15 @@ pass! {
     -- the trait's arguments, given by hand, are types
     | RecordOf { name, raw args, fields, inst } ->
         (let given = V.map (\a -> asType r (\u -> resolveExpr src out r a)) args in
-         match recordOf out here r name given fields inst with
+         match atNode r here (\u -> recordOf out here r name given fields inst) with
          | Just built -> built
          | None -> unresolved out here)
     | Proj { expr, field } ->
-        (match projection out here r expr field with
+        (match atNode r here (\u -> projection out here r expr field) with
          | Just read -> read
          | None -> unresolved out here)
     | Update { expr, fields } ->
-        (match recordUpdate out here r expr fields with
+        (match atNode r here (\u -> recordUpdate out here r expr fields) with
          | Just rebuilt -> rebuilt
          | None -> unresolved out here)
     -- patterns
@@ -946,7 +970,7 @@ pass! {
     | Wild {} -> (\u -> Wild {})
     | Pat.Lit { lit } -> (\u -> Pattern.Lit { lit })
     | Con { name, args } ->
-        (\u -> Con { ctor = idNode out here (asTerm r (\v -> useName r name)), args = V.map (\a -> a ()) args })
+        (\u -> Con { ctor = idNode out here (asTerm r (\v -> atNode r here (\w -> useName r name))), args = V.map (\a -> a ()) args })
     | As { name, later pat } ->
         (let x = bindName r name in
          let q = pat r in
@@ -1685,7 +1709,8 @@ fun namesGiven (r : Rn s) (count : Int) (first : Int) (datas : [(Int, String)]) 
                  methods = getRef r.methods,
                  linearBody,
                  qualifiers = getRef r.qualifiers,
-                 ranges = [(first, getRef r.next, name)]
+                 ranges = [(first, getRef r.next, name)],
+                 problemsAt = getRef r.placed
                },
                names,
                getRef r.problems
@@ -1710,7 +1735,9 @@ fun namesGiven (r : Rn s) (count : Int) (first : Int) (datas : [(Int, String)]) 
   qualifiers : HashMap Int String,
   -- the uniques each package named its own things with, and its name: the
   -- dependencies', then the package's own
-  ranges : [(Int, Int, String)]
+  ranges : [(Int, Int, String)],
+  -- what renaming found wrong, each where (or nowhere, `noMeta`)
+  problemsAt : [(Meta, String)]
 }
 
 -- Rename the modules of package `pkg` (whose modules are `first` on in
@@ -1863,7 +1890,8 @@ fun renamePackageAt out (r : Rn s) (pkg : Int) (first : Int) (progs : [Program])
                  methods = getRef r.methods,
                  linearBody,
                  qualifiers = getRef r.qualifiers,
-                 ranges = V.pushBack (V.map snd depParts) (first, getRef r.next, name)
+                 ranges = V.pushBack (V.map snd depParts) (first, getRef r.next, name),
+                 problemsAt = getRef r.placed
                },
                getRef r.problems
              )))

@@ -17,6 +17,10 @@ lsp! {
     | tree = treeOf
     | format = formatOf
     | hover = hoverAt
+    | definition = definitionAt
+    | references = referencesAt
+    | completion = completionAt
+    | symbols = symbolsOf
 }
 
 -- A query's answer, or `fallback` if it has none (an input never set).
@@ -32,6 +36,30 @@ fun hoverAt db file at =
     match typeAt (sessionSource db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at with
     | Just (place, ty) -> Just (place, "```idyll\n${ty}\n```")
     | None -> None)
+
+-- Where the name at a place is defined: where the program first binds it,
+-- its equation or its binder.
+fun definitionAt db file at =
+  answered [] (\() ->
+    match namedAt (sessionSource db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at with
+    | Just (d, _) -> [(file, d)]
+    | None -> [])
+
+-- Every place the name at a place is named.
+fun referencesAt db file at =
+  answered [] (\() ->
+    match namedAt (sessionSource db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at with
+    | Just (_, places) -> V.map (\p -> (file, p)) places
+    | None -> [])
+
+-- What a name being written may be: the program's own names and the
+-- prelude's, each with its type.
+fun completionAt db file at =
+  answered [] (\() -> completionsIn (sessionSource db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at)
+
+-- The file's own declarations, for an outline.
+fun symbolsOf db file =
+  answered [] (\() -> symbolsIn (sessionSource db file) (sessionPrelude db 0) (\u -> sessionStd db 0))
 
 -- The file set out; as it is, if it cannot be.
 fun formatOf db file = answered (answered "" (\() -> sessionSource db file)) (\() -> sessionFormatted db file)
@@ -99,6 +127,50 @@ fun hovering (id : Int) (uri : String) (line : Int) (column : Int) : Json =
     (M.andThen (J.path ["result", "contents", "value"]) (V.get said 1))
     (Just (J.jString "```idyll\nInt\n```"))
     "the 1 is an Int"
+
+@test fun aNameNotInScopeIsWhereItIsWritten () =
+  assertEq (firstAt (told [opening "file:///a.idl" "x : Int\nx = nope\n"] serveServer)) (Just (J.jInt 1, J.jInt 4)) "at nope"
+
+fun asked (id : Int) (method : String) (uri : String) (line : Int) (column : Int) : Json =
+  asking id method (J.jObject [
+    ("textDocument", J.jObject [("uri", J.jString uri)]),
+    ("position", J.jObject [("line", J.jInt line), ("character", J.jInt column)])
+  ])
+
+@test fun aDefinitionIsWhereANameIsBound () =
+  let said = told [opening "file:///a.idl" "f : Int -> Int\nf n = n\nx = f 1\n", asked 1 "textDocument/definition" "file:///a.idl" 2 4] serveServer in
+  let result = M.andThen (J.get "result") (V.get said 1) in
+  let first = M.andThen (\r -> match r with | J.Json.Array xs -> V.get xs 0 | other -> Just other) result in
+  assertEq
+    (M.andThen (J.path ["range", "start", "line"]) first, M.andThen (J.path ["range", "start", "character"]) first)
+    (Just (J.jInt 1), Just (J.jInt 0))
+    "f's equation, which the renamer binds it at"
+
+@test fun aNamesReferencesAreEveryPlaceItIsNamed () =
+  let said = told [opening "file:///a.idl" "f : Int -> Int\nf n = n\nx = f (f 1)\n", asked 1 "textDocument/references" "file:///a.idl" 2 4] serveServer in
+  assertEq
+    (M.map (\r -> match r with | J.Json.Array xs -> V.len xs >= 3 | _ -> False) (M.andThen (J.get "result") (V.get said 1)))
+    (Just True)
+    "its signature and both uses, at least"
+
+-- The labels of what a reply's result lists, each its `field`.
+fun listed (field : String) (reply : Maybe Json) : [Json] =
+  match M.andThen (J.get "result") reply with
+  | Just (J.Json.Array xs) -> V.concatMap (\x -> match J.get field x with | Just l -> [l] | None -> []) xs
+  | Just other ->
+      (match J.get "items" other with
+       | Just (J.Json.Array xs) -> V.concatMap (\x -> match J.get field x with | Just l -> [l] | None -> []) xs
+       | _ -> [])
+  | None -> []
+
+@test fun completionOffersTheProgramsNamesAndThePreludes () =
+  let said = told [opening "file:///a.idl" "double : Int -> Int\ndouble n = n + n\nx = do\n", asked 1 "textDocument/completion" "file:///a.idl" 2 6] serveServer in
+  let labels = listed "label" (V.get said 1) in
+  assertEq (V.elem (J.jString "double") labels, V.elem (J.jString "putStrLn") labels) (True, True) "double, and the prelude's putStrLn"
+
+@test fun theOutlineIsTheProgramsOwnDeclarations () =
+  let said = told [opening "file:///a.idl" "double : Int -> Int\ndouble n = n + n\n", asking 1 "textDocument/documentSymbol" (inFile "file:///a.idl")] serveServer in
+  assertEq (listed "name" (V.get said 1)) [J.jString "double"] "double, and nothing of the prelude's"
 
 @test fun aTypeErrorIsPublished () =
   assertEq (M.map (\n -> n > 0) (published (told [opening "file:///a.idl" "x : Bool\nx = 1\n"] serveServer))) (Just True) "what the checker said"

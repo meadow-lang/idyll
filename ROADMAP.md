@@ -891,8 +891,8 @@ accepted when what it does fits within what resuming was found to.
 - [~] **The language server**, written with Lingua's `lsp!` over a
   `database!` of front/'s queries (front/README.md, "The editor"), as the
   formatter is written with `format!`. `Idyll lsp`:
-  - publishes what is wrong with each open file, the checker's errors at
-    the nodes they are about;
+  - publishes what is wrong with each open file, the renamer's and the
+    checker's problems at the nodes they are about;
   - says a term's type on hover;
   - colours a file from its tree, and formats it.
 
@@ -900,7 +900,6 @@ accepted when what it does fits within what resuming was found to.
   For that, front/'s renamer, checker and lowering keep their state in `St`
   cells, since a query may perform nothing but asking other queries. Still
   to come:
-  - the renamer's errors at their nodes;
   - going to a definition, and completion;
   - a file checked in its package, not as a lone program.
 - [ ] **The VS Code extension** (`editors/vscode`).
