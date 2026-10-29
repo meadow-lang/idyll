@@ -58,6 +58,7 @@ use Std.Fs (writeString)
 use Idyll.Format as Fmt
 use Idyll.Session as Session
 use Idyll.Server (serveServer)
+use Idyll.Prompt (runPrompt)
 use Lingua.Green (dump)
 use Lingua.Diagnostic (renderAll)
 use Std.Collections.Vector as V
@@ -89,6 +90,7 @@ cli! {
         dryRun : Flag "Say what would change, and change nothing"
       }
     | lsp "Serve the language server, on standard input and output" {}
+    | repl "Read entries, and say what each is: declarations stay for those after" {}
     | fmt "Set each file out, in place" {
         files : [String] "the files"
         check : Flag "Change nothing: say which files are not set out, and fail if any is not"
@@ -118,6 +120,7 @@ fun main () =
   | (every, Tool.Check r) -> D.checkCommand every.offline every.locked r.path
   | (every, Tool.Update r) -> D.updateCommand r.names r.dryRun
   | (every, Tool.Lsp) -> serveServer ()
+  | (every, Tool.Repl) -> runPrompt ()
   | (every, Tool.Fmt r) -> if V.foldl (\ok f -> fmtFile r.check f and ok) True r.files then () else exit 1
   | (every, Tool.Tokens r) -> V.foldl (\u f -> each f dumpTokens) () r.files
   | (every, Tool.Tree r) -> V.foldl (\u f -> each f dumpTree) () r.files

@@ -27,6 +27,7 @@ does, how it is checked, and why it is built the way it is.
 | Cut | `Lower.mw`, `Typer.mw`, `Prune.mw`, `CutAst.mw`, `Emit.mw` | done: the same Cut as `idyllic-cut` on every program that lowers (212) |
 | The formatter | `Syntax.mw` (a `format!`), `Format.mw` | done: `Idyll fmt`; every program comes out as the same program, and formatting it again changes nothing |
 | The language server | `Session.mw` (a `database!`), `Server.mw` (an `lsp!`) | begun: `Idyll lsp` publishes what is wrong with each open file where it is, says a term's type on hover, colours a file and sets it out |
+| The REPL | `Prompt.mw` (a `repl!`), over the same session | begun: `Idyll repl` keeps the declarations entered, runs expressions on the CEK machine, and says each answer and type as the Rust REPL does |
 
 "Every program" means 1082 programs: the test corpora in
 `compiler/idyllic/tests/corpus/`, the prelude, every `.idl` file in the
@@ -1012,6 +1013,21 @@ it resolves (`Rn.at`, `atNode`; `Renamed.problemsAt`). For hover, the file is ch
 the place asked about (`Check.checkedWanting`). The type of the innermost
 node that holds the place is kept (`Tc.found`), and Std and the prelude
 come from the session.
+
+`Idyll repl` (`Prompt.mw`) is a `repl!` over the same session. It does
+what the Rust REPL does (`pipeline::Session`):
+- it keeps the declarations entered so far as source (the session's
+  `earlier`), and checks each entry after them;
+- an entry of declarations alone, with nothing wrong, extends them and
+  says each new one's type;
+- an expression runs on the CEK machine, and the prompt says what it
+  printed, then its value and type (`3 : Int`; `: Int -> Int` for a
+  function, which has no value to show);
+- what is wrong with an entry is drawn against the entry;
+- an entry that ends in a signature waits for its equations.
+
+Tab completes names as the server does, Ctrl-F finds what has been
+declared, and `:type`, `:reset` and `:declarations` are its commands.
 
 ## Dependencies
 

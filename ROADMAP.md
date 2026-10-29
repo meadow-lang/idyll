@@ -936,6 +936,19 @@ accepted when what it does fits within what resuming was found to.
   It is the same functions the REPL and the language server use: one
   search, one proof search, one tactic engine in `front/`, three ways to
   reach them. Its natural home is beside Lingua's `repl!` and `lsp!`.
+- [~] **front/'s REPL**, `Idyll repl`, a Lingua `repl!` over the language
+  server's session. It works as the Rust REPL does:
+  - the declarations entered so far are kept as source, and each entry is
+    checked after them;
+  - an entry of declarations alone extends them and says their types;
+  - an expression runs on the CEK machine, and its value and type are
+    said;
+  - an entry that ends in a signature waits for its equations.
+
+  Its commands are `:type`, `:reset` and `:declarations`; Tab completes
+  names, and Ctrl-F finds what has been declared. Still to come: running
+  on Glade rather than the CEK machine, and the rest of the Rust REPL's
+  commands (`:ir`, `:load`, ...).
 - [ ] **Searching and proving in the REPL**, for the REPL `front/` gets
   from Lingua's `repl!` (Chris, 2026-10-16). The Rust REPL already has
   the first two, which carry over; the third is new.

@@ -36,6 +36,8 @@ use Std.Result.Result.*
 database! {
   pub Session
     | input source (file : Int) : String
+    -- the declarations a prompt has been given so far (`Prompt`)
+    | input earlier (unit : Int) : String
     | query parsed (file : Int) : (Green Idyll, [(Int, String)]) = parseIdyll (querySource file)
     | query prelude (unit : Int) : Result [Diagnostic] SurfaceProgram = Surface.parsed D.prelude
     | query std (unit : Int) : Result String (PackageNames, Compiled) = stdOf (queryPrelude 0)
@@ -49,6 +51,8 @@ database! {
 -- A program ready to check: renamed after the prelude, against Std compiled
 -- if it names Std; with what renaming found wrong, each where. Or what its
 -- syntax says is wrong with it.
+@pub fun preparedProgram (text : String) prelude std = prepared text prelude std
+
 fun prepared (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : Result [Diagnostic] (Rename.Renamed, [Compiled], [Diagnostic]) ! e =
   match (Surface.parsed text, prelude) with
   | (Err ds, _) -> Err ds
@@ -173,7 +177,7 @@ fun kindOf (ty : String) : String =
 
 -- Whether a program could write the name: not the checker's own
 -- (`#super0`), nor one with nothing after its type's name.
-fun written (name : String) : Bool =
+@pub fun written (name : String) : Bool =
   not (S.isEmpty name) and not (S.contains "#" name) and not (S.contains " " name) and not (S.endsWith "." name)
 
 -- `text` with the line `at` is on left empty.
@@ -234,6 +238,8 @@ fun sortedPlaces (ps : [Meta]) : [Meta] =
 fun nowhere = spanMeta 0 0
 
 -- The checker's errors, each once where it was found, said in words.
+@pub fun placedDiagnostics (placed : [(Meta, String)]) : [Diagnostic] = placedOnce placed
+
 fun placedOnce (placed : [(Meta, String)]) : [Diagnostic] =
   V.map (\p -> match p with | (at, kind) -> errorAt at (said kind)) (V.foldl (\acc p -> if V.elem p acc then acc else V.pushBack acc p) [] placed)
 
