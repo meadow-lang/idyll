@@ -187,7 +187,7 @@ def promptCommands =
     ("reset", "", "forget every declaration entered", \db rest -> (let u = setSessionEarlier db 0 "" in Reply.Said "")),
     ("declarations", "", "the declarations entered so far, as source", \db rest -> Reply.Said (S.trimEnd (earlierIn db))),
     ("goals", "", "the goals (?name) left in what has been declared, each with its type", goalsSoFar),
-    ("prove", "TYPE", "look for a term of a type: proof search", provedEntry)
+    ("prove", "TYPE", "look for a term of a type, or for the goal ?name: proof search", provedEntry)
   ]
 
 -- `:prove T`: terms of `T` the checker accepts, after what has been
@@ -200,7 +200,11 @@ fun provedEntry db rest =
 
 fun proofsOf db (goal : String) =
   let w = if answered True (\() -> (let x = sessionEarlier db 0 in False)) then setSessionEarlier db 0 "" else () in
-  Prove.proved (earlierIn db) goal (answered [] (\() -> sessionCatalog db 0)) (answered (Err []) (\() -> sessionPrelude db 0)) (\u -> stdIn db) 5
+  let catalog = answered [] (\() -> sessionCatalog db 0) in
+  let prelude = answered (Err []) (\() -> sessionPrelude db 0) in
+  -- `?name`: the goal of that name, its variables in scope
+  if S.startsWith "?" (S.trim goal) then Prove.provedAt (earlierIn db) (S.drop (S.trim goal) 1) catalog prelude (\u -> stdIn db) 5
+  else Prove.proved (earlierIn db) goal catalog prelude (\u -> stdIn db) 5
 
 fun goalsSoFar db rest =
   let goals = goalsIn (earlierIn db) (answered (Err []) (\() -> sessionPrelude db 0)) (\u -> stdIn db) in
@@ -245,7 +249,7 @@ fun enteredAll (entries : [String]) =
   let db = batchSession () in
   let w = setSessionSource db 0 "half : Int -> Int\nhalf n = ?todo" in
   let said = entered db 0 in
-  assertEq (goalsIn (earlierIn db) (sessionPrelude db 0) (\u -> stdIn db)) ["?todo : Int"] "the goal, with its type"
+  assertEq (goalsIn (earlierIn db) (sessionPrelude db 0) (\u -> stdIn db)) ["?todo : Int\n  n : Int"] "the goal, with its type and what is in scope"
 
 @test fun theFinderFindsByType () =
   let db = batchSession () in
@@ -255,6 +259,14 @@ fun enteredAll (entries : [String]) =
 @test fun proofSearchFindsATerm () =
   let db = batchSession () in
   assertEq (proofsOf db "{a : Type} -> a -> a") (Ok ["\\x -> x"]) "the identity"
+
+@test fun proofSearchFillsAGoal () =
+  let db = batchSession () in
+  let w = setSessionSource db 0 "pick : (b : Bool) -> (x : Int) -> Int\npick b x = ?other" in
+  let said = entered db 0 in
+  assertEq (M.map (\ps -> V.elem "x" ps) (okOf (proofsOf db "?other"))) (Just True) "x, which is in scope there"
+
+fun okOf r = match r with | Ok x -> Just x | Err _ -> None
 
 @test fun anEntryThatIsWrongIsForgotten () =
   let said = enteredAll ["x : Int\nx = True", "x"] in

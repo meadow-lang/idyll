@@ -976,6 +976,8 @@ accepted when what it does fits within what resuming was found to.
   declaration is entered. **Proof search is done** too: `:prove T`, and
   `?T` in the finder (`Prove.mw`, a port of `prove.rs`). It proposes terms
   from the goal's shape and verifies them with the checker, in batches.
+  `:prove ?name` searches for the goal of that name: its definition's
+  variables are in scope, and each term is checked in the goal's place.
   Tactic mode is left.
   - **A finder like Hoogle**: Ctrl-F searches by name, fuzzily, or by type.
     A type query finds what fits it up to the order of arguments,

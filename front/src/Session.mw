@@ -21,6 +21,7 @@ use Idyll.Rename (PackageNames)
 use Idyll.Rename as Rename
 use Idyll.Scc (sccModule)
 use Idyll.Check (checkedAgainst, checkedWanting)
+use Idyll.Elab (goalNamed)
 use Idyll.Core as C
 use Idyll.Core (Core)
 use Idyll.Compiled (compiledOf)
@@ -99,6 +100,16 @@ fun prepared (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std
           match St.getRef c.tc.found with
           | Just (place, ty) -> Just (place, C.shown m.linearBody ty)
           | None -> None)
+  | Err _ -> None
+
+-- The goal `?name` of a program, as the checker found it: the type wanted
+-- there, and its definition's variables, each its name and type.
+@pub fun goalIn (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (name : String) : Maybe (Core, [(String, Core)]) ! e =
+  match prepared text prelude std with
+  | Ok (m, deps, _) ->
+      runSt (\() ->
+        let c = checkedAgainst (sccModule m) False deps in
+        goalNamed c.tc name)
   | Err _ -> None
 
 -- The goals, `?name`, left in a program: each said with its type.

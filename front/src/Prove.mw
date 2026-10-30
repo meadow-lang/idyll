@@ -20,7 +20,8 @@
 use Lingua.Lang (Meta)
 use Idyll.Find (Ty, Sig, sigOf, sigTy, sigArgs, sigResult, renamed, declBase, unifyWith, resolved, spelling)
 use Idyll.Find as F
-use Idyll.Session (preparedProgram, written)
+use Idyll.Session (preparedProgram, written, goalIn, problemsOf)
+use Lingua.Diagnostic (isError)
 use Idyll.Rename as Rename
 use Idyll.Scc (sccModule)
 use Idyll.Check (checkedAgainst)
@@ -57,17 +58,56 @@ def perArgument = 4
     | Err why -> Err why
     | Ok ty ->
         let heads = V.concatMap (\d -> match d with | (name, t, _) -> if written name then [(spelling name, sigOf t)] else []) catalog in
-        let candidates = byDepth heads (sigTy (sigOf ty)) 0 0 [] in
+        let candidates = byDepth heads (sigTy (sigOf ty)) [] 0 0 [] in
         Ok (V.take (verifiedAll earlier g candidates prelude std limit []) limit)
 
+-- Terms for the goal `?name` of `earlier`, with the variables of its
+-- definition in scope: each tried in the goal's place, and kept if the
+-- program then has nothing wrong with it; at most `limit` of them.
+@pub fun provedAt (earlier : String) (name : String) (catalog : [(String, Core, String)]) prelude std (limit : Int) =
+  let stdNow = std () in
+  let std = \u -> stdNow in
+  match goalIn earlier prelude std name with
+  | None -> Err "no goal ?${name} in what has been declared"
+  | Just (ty, context) ->
+      let heads = V.concatMap (\d -> match d with | (n, t, _) -> if written n then [(spelling n, sigOf t)] else []) catalog in
+      let locals = V.map (\c -> (fst c, sigTy (sigOf (snd c)))) context in
+      let candidates = byDepth heads (sigTy (sigOf ty)) locals 0 0 [] in
+      Ok (filled earlier name candidates prelude std limit 0 [])
+
+-- How many candidates are tried in a goal's place, each a whole check.
+def tries = 40
+
+-- The candidates that, put in the goal's place, leave nothing wrong.
+fun filled (earlier : String) (name : String) (candidates : [String]) prelude std (limit : Int) (tried : Int) (found : [String]) : [String] =
+  match V.head candidates with
+  | None -> found
+  | Just c ->
+      if V.len found >= limit or tried >= tries then found
+      else
+        let program = inPlace earlier ("?" ++ name) 0 ("(" ++ c ++ ")") in
+        let wrong = V.filter isError (problemsOf program prelude std) in
+        filled earlier name (V.drop candidates 1) prelude std limit (tried + 1) (if V.isEmpty wrong then V.pushBack found c else found)
+
+-- `text` with the goal `goal` (a whole word) given `filler` in its place.
+fun inPlace (text : String) (goal : String) (from : Int) (filler : String) : String =
+  match S.indexOfFrom goal text from with
+  | None -> text
+  | Just at ->
+      let after = at + S.byteLength goal in
+      let next = if after < S.byteLength text then toInt (stringByteAt text after) else 0 - 1 in
+      let wordy = (next >= 48 and next <= 57) or (next >= 65 and next <= 90) or (next >= 97 and next <= 122) or next == 95 or next == 39 in
+      if wordy then inPlace text goal after filler
+      else S.slice text 0 at ++ filler ++ S.slice text after (S.byteLength text)
+
 -- The candidates, a depth at a time, smallest first within one, each once.
-fun byDepth heads (goal : Ty) (depth : Int) (made : Int) (sofar : [String]) : [String] =
+fun byDepth heads (goal : Ty) (locals : [(String, Ty)]) (depth : Int) (made : Int) (sofar : [String]) : [String] =
   if depth > depthLimit or made >= budget then sofar
   else
-    match terms heads goal [] depth made with
+    match terms heads goal locals depth made with
     | (these, made2) ->
         let sorted = V.foldl (\acc t -> V.concat [V.filter (\x -> S.byteLength x <= S.byteLength t) acc, [t], V.filter (\x -> S.byteLength x > S.byteLength t) acc]) [] these in
-        byDepth heads goal (depth + 1) made2 (V.foldl (\acc t -> if V.elem t acc then acc else V.pushBack acc t) sofar sorted)
+        byDepth heads goal locals (depth + 1) made2 (V.foldl (\acc t -> if V.elem t acc then acc else V.pushBack acc t) sofar sorted)
 
 -- The goal, as the checker reads it: `__goal : goal`, declared after
 -- `earlier`; or what is wrong with it.
@@ -81,14 +121,14 @@ fun goalType (earlier : String) (goal : String) prelude std =
   | Ok (m, deps, _) ->
       runSt (\() ->
         let c = checkedAgainst (sccModule m) False deps in
-        let wrong = V.filter (\p -> match p with | (Meta.Meta a _, said) -> a >= from and a < to and isError said) (St.getRef c.tc.placed) in
+        let wrong = V.filter (\p -> match p with | (Meta.Meta a _, said) -> a >= from and a < to and wrongKind said) (St.getRef c.tc.placed) in
         if not (V.isEmpty wrong) then Err (S.join "; " (V.map snd wrong))
         else
           match V.find (\d -> match d with | (_, name, _) -> name == "__goal") (St.getRef c.tc.declared) with
           | Just (_, _, ty) -> Ok ty
           | None -> Err "the goal is not a type")
 
-fun isError (said : String) : Bool = not (S.startsWith "goal ?" said) and said != "HoleSolved"
+fun wrongKind (said : String) : Bool = not (S.startsWith "goal ?" said) and said != "HoleSolved"
 
 -- Which candidates the checker takes as terms of `goal`, in order, `limit`
 -- at most: a batch at a time.
@@ -113,7 +153,7 @@ fun verified (earlier : String) (goal : String) (candidates : [String]) prelude 
       let (failed, everyPlaced, declaredAll) =
         runSt (\() ->
           let c = checkedAgainst (sccModule m) False deps in
-          let wrong = V.append renamingWrong (V.concatMap (\p -> match p with | (at, said) -> if isError said then [at] else []) (St.getRef c.tc.placed)) in
+          let wrong = V.append renamingWrong (V.concatMap (\p -> match p with | (at, said) -> if wrongKind said then [at] else []) (St.getRef c.tc.placed)) in
           let names = V.map (\d -> match d with | (_, n, _) -> n) (St.getRef c.tc.declared) in
           (
             V.concatMap (\at -> M.unwrapOr [] (M.map (\i -> [i]) (placedIn at))) wrong,

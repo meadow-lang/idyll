@@ -199,7 +199,16 @@ fun freshValue (tc : Tc s) (ctx : Ctx) (desc : String) : Value ! { St s | e } = 
 -- A goal, `?name`, wanted to be a `ty`: kept, to be reported; in its place
 -- a term that is no value, which stops the program if it is reached.
 fun elabGoal (tc : Tc s) (ctx : Ctx) (name : String) (ty : Value) : Core ! { St s | e } =
-  let w = setRef tc.goals (V.pushBack (getRef tc.goals) (GoalAt.GoalAt (getRef tc.at) name ctx.lvl ty)) in
+  let from = if getRef tc.localFrom < ctx.lvl then getRef tc.localFrom else ctx.lvl in
+  let context =
+    V.concatMap
+      (\i ->
+        match V.get ctx.binders i with
+        | Just (Binder.Binder _ x t _ _) -> if S.startsWith "#" x or x == "_" then [] else [(x, i, t)]
+        | None -> [])
+      (V.range from ctx.lvl)
+  in
+  let w = setRef tc.goals (V.pushBack (getRef tc.goals) (GoalAt.GoalAt (getRef tc.at) name ctx.lvl ty context)) in
   Core.Runtime (Note.Goal name) Core.Error
 
 fun elabHole (tc : Tc s) (ctx : Ctx) (ty : Value) : Core ! { St s | e } =
@@ -911,6 +920,8 @@ fun checkGroupIn (tc : Tc s) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, May
   -- (what of the recursive definitions this group makes, for what it put off)
   let mark = V.len (getRef tc.recDefs) in
   let top = getRef tc.lets == 0 in
+  -- a top-level definition's own variables are what is bound from here
+  let wl = if top then setRef tc.localFrom ctx.lvl else () in
   match (h, group) with
   | HirGroupNonRec hb ->
       let b = BindOf { name = bindName h hb, ty = hirBindTy h hb, rhs = hirBindRhs h hb } in
@@ -1939,14 +1950,21 @@ fun closeMeta (tc : Tc s) (m : Int) (n : Int) =
 -- Every goal, `?name`, reported with the type wanted where it is: a
 -- warning, so what is around it can still be worked on.
 @pub fun reportGoals (tc : Tc s) =
-  let goals = getRef tc.goals in
-  let w = setRef tc.goals [] in
   V.foldl
     (\acc g ->
       match g with
-      | GoalAt.GoalAt at name l ty -> T.goal tc at "goal ?${name} : ${C.shown False (quote tc l ty)}")
+      | GoalAt.GoalAt at name l ty context ->
+          let scope = V.map (\c -> match c with | (x, cl, t) -> "\n  ${x} : ${C.shown False (quote tc cl t)}") context in
+          T.goal tc at ("goal ?${name} : ${C.shown False (quote tc l ty)}" ++ S.join "" scope))
     ()
-    goals
+    (getRef tc.goals)
+
+-- The goal called `name`, as the checker found it: the type wanted there,
+-- and its definition's variables, each its name and type.
+@pub fun goalNamed (tc : Tc s) (name : String) : Maybe (Core, [(String, Core)]) ! { St s | e } =
+  M.map
+    (\g -> match g with | GoalAt.GoalAt _ _ l ty context -> (quote tc l ty, V.map (\c -> match c with | (x, cl, t) -> (x, quote tc cl t)) context))
+    (V.find (\g -> match g with | GoalAt.GoalAt _ n _ _ _ -> n == name) (getRef tc.goals))
 
 -- Every `_`, reported: filled in or not.
 @pub fun reportHoles (tc : Tc s) =
