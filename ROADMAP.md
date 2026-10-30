@@ -1362,10 +1362,12 @@ do yet `(unsupported)`, and the tests count those apart.
   constructor (of the type matched, or with that many fields), what cannot
   be matched on or unboxed, sequences of no sequence type, resuming too
   often, recursive bindings with no signature, type-level grades with
-  nothing to check them, and numbers too large for their type. The rest still
-  say their kind; the renamer's errors, and an error's place (front/
-  places one at the node being checked when it is found), are still to
-  compare.
+  nothing to check them, and numbers too large for their type. The
+  renamer's errors are compared too, each headline as the Rust renamer's
+  (a problem's text is its headline, and its label on a line after). The
+  rest of the checker's kinds still say their kind, and an error's place
+  (front/ places one at the node being checked when it is found) is still
+  to compare.
 - [x] **Renaming** (`Rename`: `resolve`, a `pass!` from `Surface` to `Hir`,
   a `lang!`, under a driver for packages and `use`s), for a module after the prelude:
   every program agrees with `idyllic-rename`, binder for binder (the test

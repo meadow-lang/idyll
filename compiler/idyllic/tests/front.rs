@@ -226,8 +226,9 @@ fn ported_lines(dump: &str) -> String {
         return dump.to_string();
     }
     let headline = |l: &str| l.split(": ").next().unwrap_or("").to_string();
+    // (the renamer's errors are each said as the Rust renamer says them)
     let mut lines: Vec<&str> =
-        dump.lines().filter(|l| PORTED.iter().any(|p| shaped(&headline(l), p))).collect();
+        dump.lines().filter(|l| l.starts_with("rename: ") || PORTED.iter().any(|p| shaped(&headline(l), p))).collect();
     lines.sort_unstable();
     lines.dedup();
     // (each side's metavariables numbered by first appearance)
@@ -247,8 +248,9 @@ fn messages(prelude: &idyllic_ast::Program, src: &str) -> String {
     } else {
         idyllic_rename::rename_module(&p, prelude)
     };
+    // what renaming found, each said as it says it
     if !result.errors.is_empty() {
-        return "(error)".to_string();
+        return result.errors.iter().map(|e| format!("rename: {}", e.to_diagnostic().message)).collect::<Vec<_>>().join("\n");
     }
     let spans = result.spans.clone();
     let module = idyllic_scc::scc_module(result.module);

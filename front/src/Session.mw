@@ -12,7 +12,7 @@
 
 use Lingua (database!)
 use Lingua.Green (Green)
-use Lingua.Diagnostic (Diagnostic, errorAt, warningAt, isError, whereAt)
+use Lingua.Diagnostic (Diagnostic, errorAt, warningAt, isError, whereAt, withLabel)
 use Lingua.Lang (Meta, spanMeta)
 use Idyll.Syntax (Idyll, parseIdyll)
 use Idyll.Surface (SurfaceProgram)
@@ -73,6 +73,13 @@ database! {
   before : [(String, [String], String)]
 }
 
+-- What renaming found wrong, at the name it was resolving: its headline,
+-- and the label on a line after it, if it has one.
+fun problemAt (at : Meta) (why : String) : Diagnostic =
+  match S.indexOf "\n" why with
+  | Just i -> withLabel at (S.drop why (i + 1)) (errorAt at (S.slice why 0 i))
+  | None -> errorAt at why
+
 -- --- what the queries do ----------------------------------------------------------
 
 -- A program ready to check: renamed after the prelude, against Std compiled
@@ -93,7 +100,7 @@ fun prepared (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std
       let vis = Rename.mentionsVisibility (Rename.programOf prog) in
       (match Rename.renamePackageWith "Main" [([], prog)] pre (V.map (\d -> match d with | (n, ns, _) -> (n, ns)) deps) [] first True vis with
        | (m, _, _) ->
-           Ok (m, V.map (\d -> match d with | (_, _, cp) -> cp) deps, V.map (\p -> match p with | (at, why) -> errorAt at why) m.problemsAt))
+           Ok (m, V.map (\d -> match d with | (_, _, cp) -> cp) deps, V.map (\p -> match p with | (at, why) -> problemAt at why) m.problemsAt))
 
 -- A program lowered to Cut, as `meadow cut` reads it: linked with Std
 -- compiled, if it names Std; or why there is none, in parentheses, as the
@@ -222,7 +229,7 @@ fun packagePrepared (text : String) (pc : PackageContext) (prelude : Result [Dia
             let vis = V.any (\x -> Rename.mentionsVisibility (Rename.programOf (snd x))) progs in
             (match Rename.renamePackageWith pc.name progs pre (V.map (\d -> match d with | (n, ns, _) -> (n, ns)) deps) [] first True vis with
              | (m, _, _) ->
-                 Just (Ok (m, V.map (\d -> match d with | (_, _, cp) -> cp) deps, V.map (\p -> match p with | (at, why) -> errorAt at why) m.problemsAt), base))
+                 Just (Ok (m, V.map (\d -> match d with | (_, _, cp) -> cp) deps, V.map (\p -> match p with | (at, why) -> problemAt at why) m.problemsAt), base))
 
 -- A diagnostic `by` bytes further back.
 fun shiftedBack (d : Diagnostic) (by : Int) : Diagnostic =

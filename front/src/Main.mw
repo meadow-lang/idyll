@@ -275,7 +275,8 @@ fun messagesIn prelude (std : Maybe (Rename.PackageNames, Compiled)) (text : Str
       let vis = Rename.mentionsVisibility (Rename.programOf prog) in
       (match Rename.renamePackageWith "Main" [([], prog)] prelude (V.map (\d -> match d with | (n, ns, _) -> (n, ns)) deps) [] first True vis with
        | (m, _, problems) ->
-           if not (V.isEmpty problems) then "(error)"
+           -- what renaming found, each said as the Rust renamer says it
+           if not (V.isEmpty problems) then S.join "\n" (V.map (\p -> "rename: " ++ M.unwrapOr (snd p) (V.head (S.split "\n" (snd p)))) m.problemsAt)
            else
              let lines =
                runSt (\() ->
