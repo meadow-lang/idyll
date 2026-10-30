@@ -86,11 +86,11 @@ record Report = {
 -- a measurement and not nothing, since the call happens whether or not
 -- anyone looks at what it gives.
 @terminating
-spin : {b : Type} -> Int -> (act : (u : ()) -> b ! {Time | r}) -> () ! {Time | r}
+spin : {b : Type} -> Int -> (act : (u : ()) -> b ! {Time | e}) -> () ! {Time | e}
 spin n act = if n <= 0 then () else let x = act () in spin (n - 1) act
 
 -- Nanoseconds for `n` calls, the loop around them included.
-timeLoop : {b : Type} -> Int -> (act : (u : ()) -> b ! {Time | r}) -> Int ! {Time | r}
+timeLoop : {b : Type} -> Int -> (act : (u : ()) -> b ! {Time | e}) -> Int ! {Time | e}
 timeLoop n act =
   let start = monotonic () in
   let u = spin n act in
@@ -105,21 +105,21 @@ loopOverhead n = timeLoop n (\(u : ()) -> ())
 
 -- The count doubled until one sample lasts `target` nanoseconds.
 @terminating
-calibrate : {b : Type} -> Int -> (act : (u : ()) -> b ! {Time | r}) -> Int -> Int ! {Time | r}
+calibrate : {b : Type} -> Int -> (act : (u : ()) -> b ! {Time | e}) -> Int -> Int ! {Time | e}
 calibrate n act target =
   if n >= 100000000 then n else if timeLoop n act >= target then n else calibrate (n * 2) act target
 
 @terminating
-warmUp : {b : Type} -> Int -> (act : (u : ()) -> b ! {Time | r}) -> () ! {Time | r}
+warmUp : {b : Type} -> Int -> (act : (u : ()) -> b ! {Time | e}) -> () ! {Time | e}
 warmUp deadline act = if monotonic () >= deadline then () else let u = spin 64 act in warmUp deadline act
 
 @terminating
-collect : {b : Type} -> Int -> Int -> (act : (u : ()) -> b ! {Time | r}) -> Vector Int -> Vector Int ! {Time | r}
+collect : {b : Type} -> Int -> Int -> (act : (u : ()) -> b ! {Time | e}) -> Vector Int -> Vector Int ! {Time | e}
 collect k n act acc = if k <= 0 then acc else collect (k - 1) n act (V.pushBack acc (timeLoop n act))
 
 -- `act` measured under `config`, counting `units` of work a call.
 @pub
-benchUnitsWith : {b : Type} -> (config : BenchConfig) -> (name : String) -> (units : Int) -> (act : (u : ()) -> b ! {Time | r}) -> Report ! {Time | r}
+benchUnitsWith : {b : Type} -> (config : BenchConfig) -> (name : String) -> (units : Int) -> (act : (u : ()) -> b ! {Time | e}) -> Report ! {Time | e}
 benchUnitsWith config name units act =
   let w = warmUp (monotonic () + config.warmupNanos) act in
   let n = calibrate 1 act config.sampleNanos in
@@ -141,18 +141,18 @@ benchUnitsWith config name units act =
 
 -- `act` measured under `config`.
 @pub
-benchWith : {b : Type} -> (config : BenchConfig) -> (name : String) -> (act : (u : ()) -> b ! {Time | r}) -> Report ! {Time | r}
+benchWith : {b : Type} -> (config : BenchConfig) -> (name : String) -> (act : (u : ()) -> b ! {Time | e}) -> Report ! {Time | e}
 benchWith config name act = benchUnitsWith config name 1 act
 
 -- `act` measured under `defaultConfig`.
 @pub
-bench : {b : Type} -> (name : String) -> (act : (u : ()) -> b ! {Time | r}) -> Report ! {Time | r}
+bench : {b : Type} -> (name : String) -> (act : (u : ()) -> b ! {Time | e}) -> Report ! {Time | e}
 bench name act = benchUnitsWith defaultConfig name 1 act
 
 -- `act` measured under `defaultConfig`, counting `units` of work a call:
 -- the throughput column then says units, not calls.
 @pub
-benchUnits : {b : Type} -> (name : String) -> (units : Int) -> (act : (u : ()) -> b ! {Time | r}) -> Report ! {Time | r}
+benchUnits : {b : Type} -> (name : String) -> (units : Int) -> (act : (u : ()) -> b ! {Time | e}) -> Report ! {Time | e}
 benchUnits name units act = benchUnitsWith defaultConfig name units act
 
 -- ---------------------------------------------------------------------------

@@ -48,11 +48,11 @@ thorough = Config { runs = 1000, seed = 20261013, shrinks = 4000 }
 -- `prop` holds of a thousand inputs made from `corpus` and `words`, or the
 -- test fails with the smallest found that it does not hold of.
 @pub
-fuzz : (corpus : Vector String) -> (words : Vector String) -> (prop : (s : String) -> () ! {Gen, Test | r}) -> () ! {Test | r}
+fuzz : (corpus : Vector String) -> (words : Vector String) -> (prop : (s : String) -> () ! {Gen, Test | e}) -> () ! {Test | e}
 fuzz corpus words prop = fuzzWith thorough corpus words prop
 
 @pub
-fuzzWith : (c : Config) -> (corpus : Vector String) -> (words : Vector String) -> (prop : (s : String) -> () ! {Gen, Test | r}) -> () ! {Test | r}
+fuzzWith : (c : Config) -> (corpus : Vector String) -> (words : Vector String) -> (prop : (s : String) -> () ! {Gen, Test | e}) -> () ! {Test | e}
 fuzzWith c corpus words prop = checkWith c (\(u : ()) ->
   let input = mutated corpus words in
   case failure (\(v : ()) -> prop input) of

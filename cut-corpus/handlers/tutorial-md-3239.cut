@@ -76,14 +76,14 @@ def idyll:Prelude/showInt (n_52: i64; k_53: ptr) =
       idyll:Prelude/negativeDigits(idyll:Prelude/digitFuel, n_52; μ̃ v_58: str.
         prim concatStrings(["-", v_58]; k_53))))
 
-def idyll:Std/Exn.toResult <'e_68 = d_e_67, 'a_70 = d_a_69; r_66: Effect> (d_e_67: desc, d_a_69: desc, body_71: ptr; k_72: ptr) =
+def idyll:Std/Exn.toResult <'a_68 = d_a_67, 'b_70 = d_b_69; e_66: Effect> (d_a_67: desc, d_b_69: desc, body_71: ptr; k_72: ptr) =
   handle {
     idyll:Std/Exn.Exn.throw(b_74: ptr; r_75: ptr, k_76: ptr) =>
       <b_74 | case {
-        idyll:Prelude/"#Box".Box(err_73: 'e_68) =>
+        idyll:Prelude/"#Box".Box(err_73: 'a_68) =>
           <idyll:Prelude/Result.Err(err_73) | k_76>
       }>;
-    return(x_77: 'a_70; k_78: ptr) =>
+    return(x_77: 'b_70; k_78: ptr) =>
       <idyll:Prelude/Result.Ok(x_77) | k_78>
   } in μ b_80.
     <body_71 | apply(unit; b_80)>

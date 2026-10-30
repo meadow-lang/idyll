@@ -62,7 +62,7 @@ error message = logAt 3 message
 
 -- What `body` answers, and each line it said, in order.
 @pub
-captured : {a : Type} -> (body : (u : ()) -> a ! {Log | r}) -> (a, List (Level, String)) ! r
+captured : {a : Type} -> (body : (u : ()) -> a ! {Log | e}) -> (a, List (Level, String)) ! e
 captured body = handle body () with
   return x -> (x, Nil)
   -- what the rest of `body` answers and says, this line before it
@@ -72,14 +72,14 @@ captured body = handle body () with
 
 -- What `body` answers, saying nothing.
 @pub
-silenced : {a : Type} -> (body : (u : ()) -> a ! {Log | r}) -> a ! r
+silenced : {a : Type} -> (body : (u : ()) -> a ! {Log | e}) -> a ! e
 silenced body = handle body () with
   return x -> x
   logAt n message k -> k ()
 
 -- What `body` answers, its lines below `least` dropped and the rest said on.
 @pub
-atLeast : {a : Type} -> (least : Level) -> (body : (u : ()) -> a ! {Log | r}) -> a ! {Log | r}
+atLeast : {a : Type} -> (least : Level) -> (body : (u : ()) -> a ! {Log | e}) -> a ! {Log | e}
 atLeast least body = handle body () with
   return x -> x
   logAt n message k -> let u = (if n >= rank least then logAt n message else ()) in k ()

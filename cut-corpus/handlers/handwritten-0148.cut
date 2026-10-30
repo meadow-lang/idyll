@@ -259,7 +259,7 @@ def idyll:Std/Console.prompt <'a_379 = d_a_378> (d_a_378: desc, v__380: ptr, mes
   idyll:Std/Console.print(d_a_378, v__380, message_381; μ̃ u_383: unit.
     perform idyll:Prelude/Console.readLine(unit; k_382))
 
-def idyll:Std/Console.fed <'a_390 = d_a_389; r_388: Effect> (d_a_389: desc, lines_391: ptr, body_392: ptr; k_393: ptr) =
+def idyll:Std/Console.fed <'a_390 = d_a_389; e_388: Effect> (d_a_389: desc, lines_391: ptr, body_392: ptr; k_393: ptr) =
   handle {
     idyll:Prelude/Console.putStr(s_394: str; r_395: ptr, k_396: ptr) =>
       <cocase {
@@ -292,11 +292,11 @@ def idyll:Std/Console.fed <'a_390 = d_a_389; r_388: Effect> (d_a_389: desc, line
     <body_392 | apply(unit; b_421)>
   ; k_393
 
-def idyll:Std/Console.withInput <'a_428 = d_a_427; r_426: Effect> (d_a_427: desc, lines_429: ptr, body_430: ptr; k_431: ptr) =
+def idyll:Std/Console.withInput <'a_428 = d_a_427; e_426: Effect> (d_a_427: desc, lines_429: ptr, body_430: ptr; k_431: ptr) =
   idyll:Std/Console.fed(d_a_427, lines_429, body_430; μ̃ r_432: ptr.
     <r_432 | apply(0; k_431)>)
 
-def idyll:Std/Console.collected <'a_438 = d_a_437; r_436: Effect> (d_a_437: desc, body_439: ptr; k_440: ptr) =
+def idyll:Std/Console.collected <'a_438 = d_a_437; e_436: Effect> (d_a_437: desc, body_439: ptr; k_440: ptr) =
   handle {
     idyll:Prelude/Console.putStr(s_441: str; r_442: ptr, k_443: ptr) =>
       <cocase {
@@ -328,7 +328,7 @@ def idyll:Std/Console.collected <'a_438 = d_a_437; r_436: Effect> (d_a_437: desc
     <body_439 | apply(unit; b_467)>
   ; k_440
 
-def idyll:Std/Console.withOutput <'a_473 = d_a_472; r_471: Effect> (d_a_472: desc, body_474: ptr; k_475: ptr) =
+def idyll:Std/Console.withOutput <'a_473 = d_a_472; e_471: Effect> (d_a_472: desc, body_474: ptr; k_475: ptr) =
   idyll:Std/Console.collected(d_a_472, body_474; μ̃ r_476: ptr.
     <r_476 | apply(""; k_475)>)
 

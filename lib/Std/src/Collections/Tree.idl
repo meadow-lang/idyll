@@ -108,12 +108,12 @@ fromList : {a : Type} -> {auto o : PartialOrd a} -> (xs : List a) -> Tree a
 fromList xs = L.foldl (\(acc : Tree a) (x : a) -> insert x acc) empty xs
 
 @pub
-foldr : {a b : Type} -> (f : a -> b -> b ! r) -> (acc : b) -> (t : Tree a) -> b ! r
+foldr : {a b : Type} -> (f : a -> b -> b ! e) -> (acc : b) -> (t : Tree a) -> b ! e
 foldr f acc Leaf = acc
 foldr f acc (Node l x r) = foldr f (f x (foldr f acc r)) l
 
 @pub
-map : {a b : Type} -> (f : a -> b ! r) -> (t : Tree a) -> Tree b ! r
+map : {a b : Type} -> (f : a -> b ! e) -> (t : Tree a) -> Tree b ! e
 map f Leaf = Leaf
 map f (Node l x r) = Node (map f l) (f x) (map f r)
 

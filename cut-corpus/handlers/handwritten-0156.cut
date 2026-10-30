@@ -115,7 +115,7 @@ def idyll:Std/Log.info (message_93: str; k_94: ptr) =
 def idyll:Std/Log.warn (message_96: str; k_97: ptr) =
   perform idyll:Prelude/Log.logAt(2, message_96; k_97)
 
-def idyll:Std/Log.captured <'a_103 = d_a_102; r_101: Effect> (d_a_102: desc, body_104: ptr; k_105: ptr) =
+def idyll:Std/Log.captured <'a_103 = d_a_102; e_101: Effect> (d_a_102: desc, body_104: ptr; k_105: ptr) =
   handle {
     idyll:Prelude/Log.logAt(n_106: i64, message_107: str; r_108: ptr, k_109: ptr) =>
       <r_108 | resume(unit; μ̃ v__110: ptr.
@@ -133,7 +133,7 @@ def idyll:Std/Log.captured <'a_103 = d_a_102; r_101: Effect> (d_a_102: desc, bod
     <body_104 | apply(unit; b_120)>
   ; k_105
 
-def idyll:Std/Log.atLeast <'a_127 = d_a_126; r_125: Effect> (d_a_126: desc, least_128: ptr, body_129: ptr; k_130: ptr) =
+def idyll:Std/Log.atLeast <'a_127 = d_a_126; e_125: Effect> (d_a_126: desc, least_128: ptr, body_129: ptr; k_130: ptr) =
   handle {
     idyll:Prelude/Log.logAt(n_131: i64, message_132: str; r_133: ptr, k_134: ptr) =>
       idyll:Std/Log.rank(least_128; μ̃ v_140: i64.

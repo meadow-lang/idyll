@@ -18,13 +18,13 @@ modify f = put (f (get ()))
 
 -- Run `body` from the state `init`: what it gives, and the state it left.
 @pub
-runState : {s a : Type} -> (init : s) -> (body : (u : ()) -> a ! {State s | r}) -> (a, s) ! r
+runState : {s a : Type} -> (init : s) -> (body : (u : ()) -> a ! {State s | e}) -> (a, s) ! e
 runState init body = threaded body init
 
 -- `body`, as a function of the state it starts in: each clause is one,
 -- passing on the state that follows it. (Handling runs `body` at once, up
 -- to its first operation, so that has the effects too.)
-threaded : {s a : Type} -> (body : (u : ()) -> a ! {State s | r}) -> ((st : s) -> (a, s) ! r) ! r
+threaded : {s a : Type} -> (body : (u : ()) -> a ! {State s | e}) -> ((st : s) -> (a, s) ! e) ! e
 threaded body = handle body () with
   return x -> \(st : s) -> (x, st)
   get u k -> \(st : s) -> k st st

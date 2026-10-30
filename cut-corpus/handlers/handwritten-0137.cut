@@ -202,7 +202,7 @@ def idyll:Std/Test.assertEq <'a_134 = d_a_133> (d_a_133: desc, e_135: ptr, d_136
                           perform idyll:Prelude/Test.fail(v_142; k_140))))))>))>), μ̃ u_151: unit.
           <unit | k_140>))>)>)
 
-def idyll:Std/Test.outcome <'a_159 = d_a_158; r_157: Effect> (d_a_158: desc, act_160: ptr; k_161: ptr) =
+def idyll:Std/Test.outcome <'a_159 = d_a_158; e_157: Effect> (d_a_158: desc, act_160: ptr; k_161: ptr) =
   handle {
     idyll:Prelude/Test.fail(msg_162: str; r_163: ptr, k_164: ptr) =>
       <idyll:Prelude/Result.Err(msg_162) | k_164>;
@@ -212,7 +212,7 @@ def idyll:Std/Test.outcome <'a_159 = d_a_158; r_157: Effect> (d_a_158: desc, act
     <act_160 | apply(unit; b_168)>
   ; k_161
 
-def idyll:Std/Test.failure <'a_174 = d_a_173; r_172: Effect> (d_a_173: desc, act_175: ptr; k_176: ptr) =
+def idyll:Std/Test.failure <'a_174 = d_a_173; e_172: Effect> (d_a_173: desc, act_175: ptr; k_176: ptr) =
   idyll:Std/Test.outcome(d_a_173, act_175; μ̃ v__177: ptr.
     <v__177 | case {
       idyll:Prelude/Result.Err(msg_178: str) =>
@@ -485,7 +485,7 @@ def idyll:Std/Time.roundDiv (n_670: i64, d_671: i64; k_672: ptr) =
                 <1 | j_676>) | μ̃ v_674: i64.
               prim add(v_673, v_674; k_672)>)))))
 
-def idyll:Std/Time.ticking <'a_688 = d_a_687; r_686: Effect> (d_a_687: desc, tick_689: i64, act_690: ptr; k_691: ptr) =
+def idyll:Std/Time.ticking <'a_688 = d_a_687; e_686: Effect> (d_a_687: desc, tick_689: i64, act_690: ptr; k_691: ptr) =
   handle {
     idyll:Prelude/Time.now(u_692: unit; r_693: ptr, k_694: ptr) =>
       <cocase {
@@ -518,7 +518,7 @@ def idyll:Std/Time.ticking <'a_688 = d_a_687; r_686: Effect> (d_a_687: desc, tic
     <act_690 | apply(unit; b_719)>
   ; k_691
 
-def idyll:Std/Time.withTickingClock <'a_727 = d_a_726; r_725: Effect> (d_a_726: desc, t_728: i64, tick_729: i64, act_730: ptr; k_731: ptr) =
+def idyll:Std/Time.withTickingClock <'a_727 = d_a_726; e_725: Effect> (d_a_726: desc, t_728: i64, tick_729: i64, act_730: ptr; k_731: ptr) =
   idyll:Std/Time.ticking(d_a_726, tick_729, act_730; μ̃ r_732: ptr.
     <r_732 | apply(t_728; k_731)>)
 
@@ -679,7 +679,7 @@ def idyll:Std/Random.stepBetween (lo_893: i64, hi_894: i64, s_895: i64; k_896: p
             <idyll:Prelude/Pair.Pair(lo_893, s2_899) | k_896>))
     }>)
 
-def idyll:Std/Random.seeded <'a_911 = d_a_910; r_909: Effect> (d_a_910: desc, act_912: ptr; k_913: ptr) =
+def idyll:Std/Random.seeded <'a_911 = d_a_910; e_909: Effect> (d_a_910: desc, act_912: ptr; k_913: ptr) =
   handle {
     idyll:Prelude/Random.nextInt(u_914: unit; r_915: ptr, k_916: ptr) =>
       <cocase {
@@ -720,7 +720,7 @@ def idyll:Std/Random.seeded <'a_911 = d_a_910; r_909: Effect> (d_a_910: desc, ac
     <act_912 | apply(unit; b_947)>
   ; k_913
 
-def idyll:Std/Random.withSeed <'a_954 = d_a_953; r_952: Effect> (d_a_953: desc, n_955: i64, act_956: ptr; k_957: ptr) =
+def idyll:Std/Random.withSeed <'a_954 = d_a_953; e_952: Effect> (d_a_953: desc, n_955: i64, act_956: ptr; k_957: ptr) =
   idyll:Std/Random.seeded(d_a_953, act_956; μ̃ r_958: ptr.
     idyll:Std/Random.seed(n_955; μ̃ v_959: i64.
       <r_958 | apply(v_959; k_957)>))
@@ -753,7 +753,7 @@ def idyll:Std/Random.shuffle <'a_988 = d_a_987> (d_a_987: desc, v_989: ptr; k_99
     prim sub(v_996, 1; μ̃ v_995: i64.
       idyll:Std/Random.shuffleFrom(d_a_987, v_995, v_989; k_990)))
 
-def idyll:Std/Stream.folding <'a_1005 = d_a_1004, 'b_1007 = d_b_1006; r_1003: Effect> (d_a_1004: desc, d_b_1006: desc, f_1008: ptr, producer_1009: ptr; k_1010: ptr) =
+def idyll:Std/Stream.folding <'a_1005 = d_a_1004, 'b_1007 = d_b_1006; e_1003: Effect> (d_a_1004: desc, d_b_1006: desc, f_1008: ptr, producer_1009: ptr; k_1010: ptr) =
   handle {
     idyll:Std/Yield.Yield.yield(b_1012: ptr; r_1013: ptr, k_1014: ptr) =>
       <b_1012 | case {
@@ -775,11 +775,11 @@ def idyll:Std/Stream.folding <'a_1005 = d_a_1004, 'b_1007 = d_b_1006; r_1003: Ef
     <producer_1009 | apply(unit; b_1025)>
   ; k_1010
 
-def idyll:Std/Stream.fold <'a_1035 = d_a_1034, 'b_1037 = d_b_1036; r_1033: Effect> (d_a_1034: desc, d_b_1036: desc, f_1038: ptr, z_1039: 'b_1037, producer_1040: ptr; k_1041: ptr) =
+def idyll:Std/Stream.fold <'a_1035 = d_a_1034, 'b_1037 = d_b_1036; e_1033: Effect> (d_a_1034: desc, d_b_1036: desc, f_1038: ptr, z_1039: 'b_1037, producer_1040: ptr; k_1041: ptr) =
   idyll:Std/Stream.folding(d_a_1034, d_b_1036, f_1038, producer_1040; μ̃ r_1042: ptr.
     <r_1042 | apply(z_1039; k_1041)>)
 
-def idyll:Std/Stream.sum <r_1044: Effect> (producer_1045: ptr; k_1046: ptr) =
+def idyll:Std/Stream.sum <e_1044: Effect> (producer_1045: ptr; k_1046: ptr) =
   idyll:Std/Stream.fold(desc(i64), desc(i64), cocase {
     apply(n_1047: i64; k_1048: ptr) =>
       <cocase {
@@ -788,7 +788,7 @@ def idyll:Std/Stream.sum <r_1044: Effect> (producer_1045: ptr; k_1046: ptr) =
       } | k_1048>
   }, 0, producer_1045; k_1046)
 
-def idyll:Std/Stream.map <'a_1059 = d_a_1058, 'b_1061 = d_b_1060; r_1057: Effect> (d_a_1058: desc, d_b_1060: desc, f_1062: ptr, producer_1063: ptr; k_1064: ptr) =
+def idyll:Std/Stream.map <'a_1059 = d_a_1058, 'b_1061 = d_b_1060; e_1057: Effect> (d_a_1058: desc, d_b_1060: desc, f_1062: ptr, producer_1063: ptr; k_1064: ptr) =
   handle {
     idyll:Std/Yield.Yield.yield(b_1066: ptr; r_1067: ptr, k_1068: ptr) =>
       <b_1066 | case {

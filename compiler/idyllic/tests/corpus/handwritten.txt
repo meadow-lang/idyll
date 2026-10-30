@@ -440,10 +440,10 @@ count n = if n == 0 then 0 else count (n - 1)
 effect Search where
   @many choose : Int -> Int -> Int
 
-each : (lo : [] Int) -> (hi : [] Int) -> (k : [] (Int -> List a ! {Div | r})) -> List a ! {Div | r}
+each : (lo : [] Int) -> (hi : [] Int) -> (k : [] (Int -> List a ! {Div | e})) -> List a ! {Div | e}
 each lo hi k = if hi < lo then Nil else Std.Collections.List.append (k lo) (each (lo + 1) hi k)
 
-all : (body : () -> a ! {Search, Div | r}) -> List a ! {Div | r}
+all : (body : () -> a ! {Search, Div | e}) -> List a ! {Div | e}
 all body = handle body () with
   return x -> x :: Nil
   choose lo hi k -> each lo hi k
@@ -1135,7 +1135,7 @@ f 2
 effect Tell where
   tell : Int -> ()
 
-told : {a : Type} -> (body : (u : ()) -> a ! {Tell | r}) -> (a, List Int) ! r
+told : {a : Type} -> (body : (u : ()) -> a ! {Tell | e}) -> (a, List Int) ! e
 told body = handle body () with
   return x -> (x, Nil)
   tell n k -> case k () of

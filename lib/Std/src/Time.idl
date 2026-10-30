@@ -87,7 +87,7 @@ millisToNanos ms = ms * nanosPerMilli
 -- clock, so that a change to the system clock part-way through cannot make
 -- a duration negative.
 @pub
-timed : {a : Type} -> (act : (u : ()) -> a ! {Time | r}) -> (a, Int) ! {Time | r}
+timed : {a : Type} -> (act : (u : ()) -> a ! {Time | e}) -> (a, Int) ! {Time | e}
 timed act =
   let start = monotonic () in
   let result = act () in
@@ -96,13 +96,13 @@ timed act =
 
 -- How long `act` took, alone.
 @pub
-elapsed : {a : Type} -> (act : (u : ()) -> a ! {Time | r}) -> Int ! {Time | r}
+elapsed : {a : Type} -> (act : (u : ()) -> a ! {Time | e}) -> Int ! {Time | e}
 elapsed act = case timed act of
   (result, ns) -> ns
 
 -- Run `act`, print how long it took as `label: 1.23ms`, and give what it gave.
 @pub
-time : {a : Type} -> (label : String) -> (act : (u : ()) -> a ! {Time, Console | r}) -> a ! {Time, Console | r}
+time : {a : Type} -> (label : String) -> (act : (u : ()) -> a ! {Time, Console | e}) -> a ! {Time, Console | e}
 time label act = case timed act of
   (result, ns) -> let u = putStrLn (label ++ ": " ++ formatNanos ns) in result
 
@@ -110,7 +110,7 @@ time label act = case timed act of
 -- 1.23s for 1_000 runs, 1.23ms each`; give what the last run gave. For
 -- something too quick to time once.
 @pub
-timeRuns : {a : Type} -> (label : String) -> (n : Int) -> (act : (u : ()) -> a ! {Time, Console | r}) -> a ! {Time, Console | r}
+timeRuns : {a : Type} -> (label : String) -> (n : Int) -> (act : (u : ()) -> a ! {Time, Console | e}) -> a ! {Time, Console | e}
 timeRuns label n act =
   let runs = if n < 1 then 1 else n in
   case timed (\(u : ()) -> repeatRuns runs act) of
@@ -120,7 +120,7 @@ timeRuns label n act =
       result
 
 @terminating
-repeatRuns : {a : Type} -> (n : Int) -> (act : (u : ()) -> a ! r) -> a ! r
+repeatRuns : {a : Type} -> (n : Int) -> (act : (u : ()) -> a ! e) -> a ! e
 repeatRuns n act = if n <= 1 then act () else let x = act () in repeatRuns (n - 1) act
 
 -- --- handling ----------------------------------------------------------------
@@ -128,7 +128,7 @@ repeatRuns n act = if n <= 1 then act () else let x = act () in repeatRuns (n - 
 -- Run `act` with the clock stopped at `t`: every `now` is `t`, `monotonic`
 -- is 0, and `sleep` returns at once.
 @pub
-withClock : {a : Type} -> (t : Int) -> (act : (u : ()) -> a ! {Time | r}) -> a ! r
+withClock : {a : Type} -> (t : Int) -> (act : (u : ()) -> a ! {Time | e}) -> a ! e
 withClock t act = handle act () with
   return x -> x
   now u k -> k t
@@ -139,10 +139,10 @@ withClock t act = handle act () with
 -- reading: enough to test code that compares two `now`s, and to have `sleep`
 -- move the clock without waiting.
 @pub
-withTickingClock : {a : Type} -> (t : Int) -> (tick : Int) -> (act : (u : ()) -> a ! {Time | r}) -> a ! r
+withTickingClock : {a : Type} -> (t : Int) -> (tick : Int) -> (act : (u : ()) -> a ! {Time | e}) -> a ! e
 withTickingClock t tick act = ticking tick act t
 
-ticking : {a : Type} -> (tick : Int) -> (act : (u : ()) -> a ! {Time | r}) -> ((s : Int) -> a ! r) ! r
+ticking : {a : Type} -> (tick : Int) -> (act : (u : ()) -> a ! {Time | e}) -> ((s : Int) -> a ! e) ! e
 ticking tick act = handle act () with
   return x -> \(s : Int) -> x
   now u k -> \(s : Int) -> k s (s + tick)

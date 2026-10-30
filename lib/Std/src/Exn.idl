@@ -12,52 +12,51 @@ effect Exn (e : Type) where
 
 -- Run `body`: `Ok` what it gives, or `Err` what it threw.
 @pub
-toResult : {e a : Type} -> (body : (u : ()) -> a ! {Exn e | r}) -> Result e a ! r
+toResult : {a b : Type} -> (body : (u : ()) -> b ! {Exn a | e}) -> Result a b ! e
 toResult body = handle body () with
   return x -> Ok x
   throw err k -> Err err
 
 -- What `body` gives, or `recover` of what it threw.
 @pub
-catch : {e a : Type} -> (recover : e -> a ! r) -> (body : (u : ()) -> a ! {Exn e | r}) -> a ! r
+catch : {a b : Type} -> (recover : a -> b ! e) -> (body : (u : ()) -> b ! {Exn a | e}) -> b ! e
 catch recover body = handle body () with
   return x -> x
   throw err k -> recover err
 
-
 -- What `body` gives, or `fallback` if it threw.
 @pub
-withDefault : {e a : Type} -> (fallback : a) -> (body : ((u : ()) -> a ! {Exn e | r})) -> a ! r
+withDefault : {a b : Type} -> (fallback : b) -> (body : ((u : ()) -> b ! {Exn a | e})) -> b ! e
 withDefault fallback body = Std.Result.withDefault fallback (toResult body)
 
 -- `Just` what `body` gives, or `Nothing` if it threw.
 @pub
-toMaybe : {e a : Type} -> (body : ((u : ()) -> a ! {Exn e | r})) -> Maybe a ! r
+toMaybe : {a b : Type} -> (body : ((u : ()) -> b ! {Exn a | e})) -> Maybe b ! e
 toMaybe body = Std.Result.toMaybe (toResult body)
 
 -- Whether `body` threw.
 @pub
-threw : {e a : Type} -> (body : ((u : ()) -> a ! {Exn e | r})) -> Bool ! r
+threw : {a b : Type} -> (body : ((u : ()) -> b ! {Exn a | e})) -> Bool ! e
 threw body = Std.Result.isErr (toResult body)
 
 -- The value of a `Result`, or its error, thrown.
 @pub
-ofResult : {e a : Type} -> Result e a -> a ! Exn e
+ofResult : {a b : Type} -> Result a b -> b ! Exn a
 ofResult (Err err) = throw err
 ofResult (Ok x) = x
 
 -- The value of a `Maybe`, or `err`, thrown.
 @pub
-ofMaybe : {e a : Type} -> (err : e) -> Maybe a -> a ! Exn e
+ofMaybe : {a b : Type} -> (err : a) -> Maybe b -> b ! Exn a
 ofMaybe err Nothing = throw err
 ofMaybe err (Just x) = x
 
 -- Nothing, if `cond` holds; otherwise `err`, thrown.
 @pub
-ensure : {e : Type} -> Bool -> (err : e) -> () ! Exn e
+ensure : {a : Type} -> Bool -> (err : a) -> () ! Exn a
 ensure cond err = if cond then () else throw err
 
 -- Nothing, unless `cond` holds; then `err`, thrown.
 @pub
-refute : {e : Type} -> Bool -> (err : e) -> () ! Exn e
+refute : {a : Type} -> Bool -> (err : a) -> () ! Exn a
 refute cond err = if cond then throw err else ()

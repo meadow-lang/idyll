@@ -76,7 +76,7 @@ def idyll:Prelude/showInt (n_52: i64; k_53: ptr) =
       idyll:Prelude/negativeDigits(idyll:Prelude/digitFuel, n_52; μ̃ v_58: str.
         prim concatStrings(["-", v_58]; k_53))))
 
-def idyll:Main/all <'a_65 = d_a_64; r_66: Effect> (d_a_64: desc, body_67: ptr; k_68: ptr) =
+def idyll:Main/all <'a_65 = d_a_64; e_66: Effect> (d_a_64: desc, body_67: ptr; k_68: ptr) =
   handle {
     idyll:Main/Search.choose(lo_69: i64, hi_70: i64; r_71: ptr, k_72: ptr) =>
       idyll:Main/each(d_a_64, lo_69, hi_70, r_71; k_72);
@@ -114,7 +114,7 @@ def idyll:Std/Collections.List.append <'a_98 = d_a_97> (d_a_97: desc, x_99: ptr,
         <idyll:Prelude/List."::"(x_102, v_104) | k_101>)
   }>
 
-def idyll:Main/each <'a_110 = d_a_109; r_111: Effect> (d_a_109: desc, lo_112: i64, hi_113: i64, k_114: ptr; k_115: ptr) =
+def idyll:Main/each <'a_110 = d_a_109; e_111: Effect> (d_a_109: desc, lo_112: i64, hi_113: i64, k_114: ptr; k_115: ptr) =
   prim lt(hi_113, lo_112; μ̃ v__116: bool.
     prim if(v__116; μ̃ u_120: unit.
       <k_114 | apply(lo_112; μ̃ v_117: ptr.
