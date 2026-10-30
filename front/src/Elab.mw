@@ -628,7 +628,7 @@ fun linearLets (tc : Tc s) (ctx : Ctx) (from : Int) (usage : Usage) (pending : [
 -- constant, so its metavariable is applied to nothing, and a type whose
 -- arrows' grades are being worked out does not depend on the parameters
 -- before them for that.
-fun inferredGrade (tc : Tc s) (ctx : Ctx) (name : String) : (Core, Value) ! { St s | e } =
+@pub(pkg) fun inferredGrade (tc : Tc s) (ctx : Ctx) (name : String) : (Core, Value) ! { St s | e } =
   let m = T.newMeta tc (MetaInfo.MetaInfo 0 (Origin.Inferred ("the grade of " ++ name)) None) in
   let w = setRef tc.inferred (Hm.insert m [] (getRef tc.inferred)) in
   (Core.Meta m, eval tc ctx.env (Core.Meta m))
@@ -731,7 +731,7 @@ fun fitsOrWaitsAt (tc : Tc s) (lvl : Int) (used : Poly) (allowed : Value) (field
 -- worked out is taken at `[]`. What waited on it is then checked against it.
 -- A `()` may be used as often as wanted, whatever its grade says, so its
 -- grade stays `[]`, as is written least.
-fun settleGrade (tc : Tc s) (m : Int) (used : Maybe Poly) (unit : Bool) : () ! { St s | e } =
+@pub(pkg) fun settleGrade (tc : Tc s) (m : Int) (used : Maybe Poly) (unit : Bool) : () ! { St s | e } =
   let waiting = Hm.getOr [] m (getRef tc.inferred) in
   let candidates = [G.one, M.unwrapOr G.any (G.range G.zero G.one), G.any] in
   let tries =
@@ -1454,7 +1454,10 @@ pass! {
            again
            (\(c : Cx s) ->
              let grade = freshValue c.tc c.ctx "the grade of this box" in
-             let (eC, eTy, usage) = infer c.tc c.ctx expr in
+             let (eC0, eTy0, usage) = infer c.tc c.ctx expr in
+             -- what goes in a box is a value: `[Nothing]` boxes a `Maybe
+             -- ?a`, its implicit argument given, not a function of a type
+             let (eC, eTy) = insert c.tc c.ctx eC0 eTy0 in
              let w = linearBox c.tc eTy in
              (Core.BoxIntro eC, Value.BoxTy grade eTy, U.scale usage (toPoly c.tc grade)))
            (\(c : Cx s) g ->

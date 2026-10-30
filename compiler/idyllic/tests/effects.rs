@@ -301,15 +301,15 @@ fn only_an_operation_marked_many_is_resumed_more_than_once() {
         "2 : Int"
     );
     // the mark is part of what a compiled package says of its operations
-    let out = accepts("effect Choose where\n  @many flip : () -> Bool\n  pick : () -> Int\n\n");
+    let out = accepts("effect Choose where\n  @many flip : () -> Bool\n  pickOne : () -> Int\n\n");
     let ops = &out.checked.as_ref().expect("checked").ops;
     let many: Vec<(&str, bool)> = {
         let mut v: Vec<(&str, bool)> =
-            ops.values().map(|o| (o.name.as_str(), o.many)).filter(|(n, _)| ["flip", "pick"].contains(n)).collect();
+            ops.values().map(|o| (o.name.as_str(), o.many)).filter(|(n, _)| ["flip", "pickOne"].contains(n)).collect();
         v.sort();
         v
     };
-    assert_eq!(many, [("flip", true), ("pick", false)]);
+    assert_eq!(many, [("flip", true), ("pickOne", false)]);
 }
 
 #[test]
@@ -643,4 +643,27 @@ fn a_row_variable_made_inside_a_lambda_meets_one_made_outside() {
     assert_eq!(accepts(search).evaluation, Some(Evaluation::Value("(1, 1) :: (1, 2) :: (2, 2) :: Nil".into())));
     // which also lets an argument's type be found from how it is used
     assert_eq!(ty("(\\f -> f 1) (\\n -> True)"), "Bool");
+}
+
+/// A match on what a resumption answers resumes it once, however many
+/// fields the pattern takes apart: the value matched has the tightest grade
+/// its fields' uses allow, not the default `[]`, which made `case k () of
+/// (x, said) -> ..` "resume more than once".
+#[test]
+fn matching_a_resumptions_answer_resumes_it_once() {
+    let src = "effect Tell where\n  tell : Int -> ()\n\n\
+               told : {a : Type} -> (body : (u : ()) -> a ! {Tell | r}) -> (a, List Int) ! r\n\
+               told body = handle body () with\n  return x -> (x, Nil)\n  tell n k -> case k () of\n    (x, said) -> (x, n :: said)\n\n\
+               told (\\u -> let a = tell 1 in tell 2)";
+    assert_eq!(accepts(src).evaluation, Some(Evaluation::Value("((), 1 :: 2 :: Nil)".into())));
+    // a field used twice still may be, the value matched taken as often
+    assert_eq!(value("pair : () -> (Int, Int)\npair u = (2, 3)\n\ncase pair () of\n  (x, y) -> x + x + y"), "7 : Int");
+    // and resuming inside a pattern whose fields are used twice is refused
+    rejects(
+        "effect Tell where\n  tell : Int -> ()\n\n\
+         twice : (body : (u : ()) -> (Int, Int) ! {Tell | r}) -> (Int, Int) ! r\n\
+         twice body = handle body () with\n  return x -> x\n  tell n k -> case k () of\n    (x, y) -> (x + x, y)\n\n\
+         twice (\\u -> let a = tell 1 in (5, 6))",
+        &["tell is resumed more than once: this clause may resume tell more than once, and Tell declares it to be resumed at most once"],
+    );
 }

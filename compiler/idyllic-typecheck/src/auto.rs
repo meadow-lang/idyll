@@ -192,6 +192,11 @@ impl Checker {
             let x = hir::Ident { unique: Some(u), text: String::new() };
             let Some((core, ty, _)) = ctx.lookup(&x) else { continue };
             let head = self.head_of(ctx.lvl, &ty);
+            // a hint whose own type is in error was reported there: it has
+            // no head, so it would fit every goal, and make each ambiguous
+            if head.0.is_none() && self.quote(ctx.lvl, ty.clone()).mentions_error() {
+                continue;
+            }
             if compatible(&head, &goal) {
                 candidates.push((u, core, ty));
             }

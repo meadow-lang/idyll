@@ -919,7 +919,8 @@ turns the program's answer into text as the REPL shows it: a `def` per
 data type in the answer's type, `#show ..` and `#atom ..` for when it is a
 field, one per array type, the prelude's `showInt` for integers, and
 `#escape` for strings, and for a character the same escape between single
-quotes. A native the runtime has no primitive for (`arrayToList`, the
+quotes. (A program that runs its `main` shows no answer, so `showInt` is
+kept for it only where it uses it, as the Rust lowering does.) A native the runtime has no primitive for (`arrayToList`, the
 mutable arrays) becomes a `def` of the program's own, built of the array
 primitives it does have. A mutable array is the runtime's own, written in
 place (`stNewArray`, `stSetArray`, `stFreeze`, ...), not Cut's persistent

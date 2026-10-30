@@ -45,13 +45,13 @@ use Idyll.Grade (Grade)
 use Idyll.Grade as G
 use Idyll.Tc (Tc, Meta, CtorInfo)
 use Idyll.Tc as T
-use Idyll.Eval (force, apply, eval, quote, toPoly, splitComp)
+use Idyll.Eval (force, apply, eval, quote, toPoly, splitComp, renormalise)
 use Idyll.Unify (unify)
 use Idyll.Usage (Usage)
 use Idyll.Usage as U
 use Idyll.Ctx (Ctx, Info)
 use Idyll.Ctx as X
-use Idyll.Elab (check, infer, insert, freshMeta, closeEffects, leaveKey, leaveBinder, lam, gradeFits, fitsOrWaits, joinUsage, defaultGrade, mentions, keyOf, effectsOf, hirOf, isLinear)
+use Idyll.Elab (check, infer, insert, freshMeta, closeEffects, leaveKey, leaveBinder, lam, gradeFits, fitsOrWaits, joinUsage, defaultGrade, mentions, keyOf, effectsOf, hirOf, isLinear, inferredGrade, settleGrade)
 use Idyll.Hir (Ident)
 use Idyll.Hir as H
 use Idyll.Rename
@@ -232,12 +232,33 @@ fun isCtor (tc : Tc s) (c : Int) : Bool ! { St s | e } = M.isSome (T.ctorInfo tc
          | None ->
              let key = T.freshKey tc in
              -- a value with nothing inside is looked at once, which is all
-             -- a match does with it
-             let grade = if fieldless tc sTy then Just (gradeValue G.one) else None in
+             -- a match does with it; one with fields, where a binder that
+             -- says nothing may be used as often as wanted, has the
+             -- tightest grade its fields' uses allow, as a parameter that
+             -- says none does: `case k () of (x, rest) -> ..` resumes `k`
+             -- once. (In a linear module, or of a linear type, the fields
+             -- have the default grade.)
+             let none = fieldless tc sTy in
+             let inferred = not none and defaultGrade tc == G.any and not (isLinear tc sTy) in
+             let (grade, meta) =
+               if none then (Just (gradeValue G.one), None)
+               else if inferred then
+                 (match inferredGrade tc ctx "the matched value" with
+                  | (Core.Meta m, v) -> (Just v, Just m)
+                  | (_, v) -> (Just v, None))
+               else (None, None)
+             in
              let ctx2 = X.bindKeyed ctx key "_" sTy grade in
              let (core, usage) = runMatch tc ctx2 clauses (problems ctx.lvl) goal [ctx.lvl] False in
              let (n, rest) = U.take usage (Just key) in
-             (Core.Let "_" sC core, goal, U.add rest (U.scale sU n)))
+             let n2 =
+               match meta with
+               | Just m ->
+                   let w = settleGrade tc m (if U.isUnknown rest then None else Just n) False in
+                   renormalise tc n
+               | None -> n
+             in
+             (Core.Let "_" sC core, goal, U.add rest (U.scale sU n2)))
 
 fun runMatch (tc : Tc s) (ctx : Ctx) (clauses : [HirClause]) (problems : [Problem]) (goal : Value) (args : [Int]) (failed : Bool) : (Core, Usage) ! { St s | e } =
   let hir = hirOf tc in

@@ -218,7 +218,16 @@ fun searchHints (tc : Tc s) (ctx : Ctx) (wanted : Value) (depth : Int) : Result 
     V.concatMap
       (\u ->
         match X.lookup ctx (named u) with
-        | Just (core, ty, _) -> if compatible (headOf tc ctx.lvl ty) goal then [(u, core, ty)] else []
+        | Just (core, ty, _) ->
+            let head = headOf tc ctx.lvl ty in
+            -- a hint whose own type is in error was reported there: it has
+            -- no head, so it would fit every goal, and make each ambiguous
+            let broken =
+              match head with
+              | (None, _) -> C.anyNode (quote tc ctx.lvl ty) (\c -> match c with | Core.Error -> True | _ -> False)
+              | _ -> False
+            in
+            if not broken and compatible head goal then [(u, core, ty)] else []
         | None -> [])
       (Srt.sort (getRef tc.hints))
   in
