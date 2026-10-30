@@ -239,7 +239,7 @@ def promptCommands =
     ("goals", "", "the goals (?name) left in what has been declared, each with its type", goalsSoFar),
     ("prove", "TYPE", "look for a term of a type, or for the goal ?name: proof search", provedEntry),
     ("tactic", "?NAME", "prove the goal ?name a step at a time, each step a `:by`", beganProof),
-    ("by", "TACTIC", "a step of the proof under way: intro, intros, exact, refine, apply, cases, search, undo", steppedProof),
+    ("by", "TACTIC", "a step of the proof under way: intro, intros, exact, refine, apply, cases, induction, rewrite, search, undo", steppedProof),
     ("qed", "", "keep the proof under way: the declarations, the goal filled", keptProof),
     ("abandon", "", "drop the proof under way", \db rest -> (let u = setSessionProving db 0 None in Reply.Said "(abandoned)"))
   ]
@@ -408,3 +408,12 @@ fun commandsSaid (declared : String) (commands : [(String, String)]) =
   -- instances, and comes before it by name)
   let db = batchSession () in
   assertEq (match stdIn db with | Ok _ -> "ok" | Err why -> why) "ok" "Std"
+
+@test fun rewriteMatchesAProofOfAnEquality () =
+  let (said, after) =
+    commandsSaid
+      "data Same : {a : Type} -> a -> a -> Type where\n  Refl : {a : Type} -> {x : a} -> Same x x\n\nback : {a : Type} -> {x y : a} -> Same x y -> Same y x\nback p = ?g\n\nagain : {a : Type} -> {x y : a} -> Same x y -> Same y x\nagain p = ?h"
+      [("tactic", "?g"), ("by", "rewrite p"), ("by", "exact Same.Refl"), ("qed", ""), ("tactic", "?h"), ("by", "rewrite back (back p)"), ("by", "exact Same.Refl"), ("qed", "")]
+  in
+  let a = assertEq (V.getOr "" said 3) "(proved)" "a variable: a case on it" in
+  assertEq (V.getOr "" said 7) "(proved)" "a term: named, then a case on it"

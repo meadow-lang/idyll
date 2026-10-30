@@ -14,6 +14,10 @@
 --   exact e       `e`, which may have goals of its own (`refine` too)
 --   apply f       `f ?g1 .. ?gn`, the fewest arguments that check
 --   cases x       a case on `x`, a goal for each constructor
+--   induction x   the same: a recursive call on a case's field, which the
+--                 checker sees is structural, is its inductive hypothesis
+--   rewrite e     a case on a proof of an equality, whose `Refl` refines
+--                 the goal by it (`e` named first if it is no variable)
 --   search        what proof search finds first, as `exact`
 --   undo          the step before back
 --
@@ -88,6 +92,15 @@ fun filler (p : Proof) (focus : String) (facts : GoalFacts) (tactic : String) (a
          match V.find (\s -> fst s == x) facts.splits with
          | None -> Err "${x} is not a variable of a data type in scope at ?${focus}"
          | Just (_, ctors) -> Ok (casesOn p.source focus x ctors facts))
+  else if tactic == "induction" then
+    -- a case on `x`: recursion is structural, so a recursive call on one of
+    -- a case's fields is its inductive hypothesis, and the checker sees to
+    -- it as it does any recursion
+    filler p focus facts "cases" args rest prelude std catalog
+  else if tactic == "rewrite" then
+    (if S.isEmpty rest then Err "`rewrite` takes a proof of an equality"
+     else if V.any (\s -> fst s == rest) facts.splits then filler p focus facts "cases" args rest prelude std catalog
+     else rewritten p focus facts rest prelude std)
   else if tactic == "search" or tactic == "auto" then
     (match Prove.provedAt p.source focus catalog prelude std 1 with
      | Ok found ->
@@ -96,6 +109,25 @@ fun filler (p : Proof) (focus : String) (facts : GoalFacts) (tactic : String) (a
           | None -> Err "proof search found nothing for ?${focus}")
      | Err why -> Err why)
   else Err "no tactic `${tactic}`: intro, intros, exact, refine, apply, cases, search or undo"
+
+-- `rewrite e`, for a proof `e` that is no variable: `e` named, then a case
+-- on it, whose one constructor (`Refl`) refines the goal by what `e`
+-- proves. What that constructor is, the checker says of the named proof,
+-- in one check of the program with the name in place.
+fun rewritten (p : Proof) (focus : String) (facts : GoalFacts) (proof : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : Result String String ! e =
+  let name = fieldName "eq" (V.map fst facts.locals) 0 in
+  let named = fresh p.source focus 1 in
+  let head = "(let " ++ name ++ " = (" ++ proof ++ ") in " in
+  let probe = filledWith p.source focus (head ++ "?" ++ named ++ ")") in
+  let up = checkup probe prelude std named in
+  if not (V.isEmpty up.wrong) then Err (renderAll "proof" probe up.wrong)
+  else
+    match up.focused with
+    | None -> Err "`rewrite` takes a proof of an equality"
+    | Just f ->
+        match V.find (\s -> fst s == name) f.splits with
+        | None -> Err "${proof} is no proof of an equality: its type is no data type to match on"
+        | Just (_, ctors) -> Ok (head ++ casesOn probe named name ctors f ++ ")")
 
 -- The names of the explicit arguments a goal's type takes, `x` for one it
 -- does not name.

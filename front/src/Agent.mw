@@ -29,7 +29,7 @@ mcp! {
     | tool typeAt "The type of the term at a line and column (each from 1) of an Idyll file, and the span of that term." (path : String, line : Int, column : Int) = typeAtTool
     | tool search "Search what an Idyll file and the prelude declare: by name, or by type (a query with an arrow, such as `Int -> String`), as Hoogle does." (path : String, query : String) = searchTool
     | tool prove "Proof search: terms for the goal ?name of an Idyll file (with the variables in scope there), or of a type written out, each one the type checker accepts. At most `limit` of them (5 unless said)." (path : String, goal : String, limit : Maybe Int) = proveTool
-    | tool tactic "One step of tactic mode on the goal ?name of an Idyll file: intro x, intros, exact e, refine e (e may hold new ?goals), apply f, cases x, search, each checked by the type checker. Answers the program with the step taken and the new goals, the first to work on next; with write, the file is written too." (path : String, goal : String, step : String, write : Maybe Bool) = tacticTool
+    | tool tactic "One step of tactic mode on the goal ?name of an Idyll file: intro x, intros, exact e, refine e (e may hold new ?goals), apply f, cases x, induction x, rewrite e (a proof of an equality), search, each checked by the type checker. Answers the program with the step taken and the new goals, the first to work on next; with write, the file is written too." (path : String, goal : String, step : String, write : Maybe Bool) = tacticTool
     | tool fill "Fill the goal ?name of an Idyll file with a term, if the type checker takes it. Answers the program and the goals left; with write, the file is written too." (path : String, goal : String, term : String, write : Maybe Bool) = fillTool
 }
 

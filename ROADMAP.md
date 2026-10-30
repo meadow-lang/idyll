@@ -1007,8 +1007,9 @@ accepted when what it does fits within what resuming was found to.
   (`intro`, `intros`, `exact`, `refine`, `apply`, `cases`, `search`,
   `undo`), its new goals named after it, and the program is checked again:
   the step is taken only if the checker takes it, and the new goals are
-  what the checker says of them. Still to come: `induction` (a `cases`
-  whose recursive calls are offered) and `rewrite` along `Eq`.
+  what the checker says of them. `induction` and `rewrite` (2026-10-30):
+  a case on a variable, the recursive call on a field its hypothesis; and
+  a case on a proof of an equality, whose `Refl` refines the goal.
   - **A finder like Hoogle**: Ctrl-F searches by name, fuzzily, or by type.
     A type query finds what fits it up to the order of arguments,
     instantiation, implicits and grades, the closest first. Today's

@@ -1074,6 +1074,11 @@ on, which may hold goals of its own:
 - `cases x`: a case on a variable of a data type, a goal for each
   constructor, laid out two columns in from the goal's line
   (`Session.goalFacts` gives each variable's constructors);
+- `induction x`: the same as `cases`, a recursive call on a field being
+  the inductive hypothesis, which the checker sees is structural;
+- `rewrite e`: a case on a proof of an equality, whose `Refl` refines the
+  goal (`e` named by a `let` first if it is no variable, and checked once
+  to find its constructor);
 - `search`: the first term proof search finds;
 - `undo`.
 
