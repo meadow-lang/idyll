@@ -1,0 +1,287 @@
+-- The functions of a `Float` a program draws or simulates with, as Meadow's
+-- `Std.Num.Float`: square roots, sines and cosines, angles, exponentials and
+-- logarithms, written in Idyll from the four operations, so every runtime
+-- answers the same.
+--
+--   use Std.Num.Float as F
+--
+--   F.sin (F.pi / 6.0)         -- 0.5, to the last bit or so
+--   F.atan2 1.0 (0.0 - 1.0)    -- 3π/4
+--
+-- Each is good to a unit or two in the last place where its argument is not
+-- huge: `sin` and `cos` reduce theirs by π/2 in three parts, which stays
+-- exact while it is under a million or so, and grows less so after. `floor`
+-- is the prelude's, from any float to an `Int`; `ceil` and `round` are
+-- here, to the same.
+
+use Std.Bool (not, and, or)
+
+-- π, and the whole turn.
+@pub
+pi : Float
+pi = 3.141592653589793
+
+@pub
+tau : Float
+tau = 6.283185307179586
+
+@pub
+abs : (x : Float) -> Float
+abs x = if x < 0.0 then 0.0 - x else x
+
+-- The least whole number at or above `x`.
+@pub
+ceil : (x : Float) -> Int
+ceil x = let f = floor x in if toFloat f < x then f + 1 else f
+
+-- The whole number nearest `x`, a half away from zero.
+@pub
+round : (x : Float) -> Int
+round x = if x < 0.0 then 0 - floor (0.5 - x) else floor (x + 0.5)
+
+-- Whether `x` is not a number, and whether it is a finite one.
+@pub
+isNaN : (x : Float) -> Bool
+isNaN x = x != x
+
+@pub
+isFinite : (x : Float) -> Bool
+isFinite x = x - x == 0.0
+
+-- ---------------------------------------------------------------------------
+-- Roots
+-- ---------------------------------------------------------------------------
+
+-- The square root: what is not a number for `x` below zero.
+@pub
+sqrt : (x : Float) -> Float
+sqrt x =
+  if or (x == 0.0) (not (isFinite x)) then (if x < 0.0 then 0.0 / 0.0 else x)
+  else if x < 0.0 then 0.0 / 0.0
+  else scaled x 1.0
+
+-- `x` brought into [1, 4) by fours, its root's scale kept in `s`, which the
+-- root there (by Newton's method from a guess within a half) is put back at.
+@terminating
+scaled : Float -> Float -> Float
+scaled x s =
+  if x >= 4.0 then scaled (x / 4.0) (s * 2.0)
+  else if x < 1.0 then scaled (x * 4.0) (s / 2.0)
+  else newton x ((1.0 + x) / 2.0) 6 * s
+
+@terminating
+newton : Float -> Float -> Int -> Float
+newton x y n = if n == 0 then y else newton x ((y + x / y) / 2.0) (n - 1)
+
+-- ---------------------------------------------------------------------------
+-- Sines and cosines
+-- ---------------------------------------------------------------------------
+
+-- π/2 in three parts, each exact in fewer bits than a float has, so that
+-- `x - k·π/2` loses nothing for the `k` an argument of moderate size gives:
+-- fdlibm's `pio2_1`, `pio2_2` and `pio2_2t`.
+halfPi1 : Float
+halfPi1 = 1.5707963267341256
+
+halfPi2 : Float
+halfPi2 = 0.000000000060771005063039659766
+
+halfPi3 : Float
+halfPi3 = 0.00000000000000000000202226624879595063154
+
+twoOverPi : Float
+twoOverPi = 0.6366197723675814
+
+-- `x` as a quarter turn `k`, mod 4, and what is left, in [-π/4, π/4].
+quadrant : Float -> (Int, Float)
+quadrant x =
+  let k = round (x * twoOverPi) in
+  let kf = toFloat k in
+  let r = ((x - kf * halfPi1) - kf * halfPi2) - kf * halfPi3 in
+  (((k % 4) + 4) % 4, r)
+
+-- Sine and cosine on [-π/4, π/4], by their series to the nineteenth power
+-- and the eighteenth, where the next term is under a part in 10^19.
+sinNear : Float -> Float
+sinNear r =
+  let r2 = r * r in
+  r * (1.0 + r2 * (0.0 - 1.0 / 6.0 + r2 * (1.0 / 120.0 + r2 * (0.0 - 1.0 / 5040.0 + r2 * (1.0 / 362880.0
+    + r2 * (0.0 - 1.0 / 39916800.0 + r2 * (1.0 / 6227020800.0 + r2 * (0.0 - 1.0 / 1307674368000.0
+    + r2 * (1.0 / 355687428096000.0 - r2 / 121645100408832000.0)))))))))
+
+cosNear : Float -> Float
+cosNear r =
+  let r2 = r * r in
+  1.0 + r2 * (0.0 - 0.5 + r2 * (1.0 / 24.0 + r2 * (0.0 - 1.0 / 720.0 + r2 * (1.0 / 40320.0
+    + r2 * (0.0 - 1.0 / 3628800.0 + r2 * (1.0 / 479001600.0 + r2 * (0.0 - 1.0 / 87178291200.0
+    + r2 * (1.0 / 20922789888000.0 - r2 / 6402373705728000.0))))))))
+
+@pub
+sin : (x : Float) -> Float
+sin x =
+  if not (isFinite x) then 0.0 / 0.0
+  else case quadrant x of
+    (0, r) -> sinNear r
+    (1, r) -> cosNear r
+    (2, r) -> 0.0 - sinNear r
+    (_, r) -> 0.0 - cosNear r
+
+@pub
+cos : (x : Float) -> Float
+cos x =
+  if not (isFinite x) then 0.0 / 0.0
+  else case quadrant x of
+    (0, r) -> cosNear r
+    (1, r) -> 0.0 - sinNear r
+    (2, r) -> 0.0 - cosNear r
+    (_, r) -> sinNear r
+
+@pub
+tan : (x : Float) -> Float
+tan x = sin x / cos x
+
+-- ---------------------------------------------------------------------------
+-- Angles
+-- ---------------------------------------------------------------------------
+
+-- tan(π/12), and √3.
+tanTwelfth : Float
+tanTwelfth = 0.2679491924311227
+
+root3 : Float
+root3 = 1.7320508075688772
+
+-- The angle whose tangent is `x`, in (-π/2, π/2): brought to [0, 1] by
+-- atan x = π/2 - atan (1/x), then to [0, tan(π/12)] by
+-- atan x = π/6 + atan ((x√3 - 1) / (x + √3)), where its series has what it
+-- needs in sixteen terms.
+@pub
+atan : (x : Float) -> Float
+atan x = if isNaN x then x else if x < 0.0 then 0.0 - atanPositive (0.0 - x) else atanPositive x
+
+atanPositive : Float -> Float
+atanPositive x = if x > 1.0 then pi / 2.0 - atanSmall (1.0 / x) else atanSmall x
+
+atanSmall : Float -> Float
+atanSmall x = if x > tanTwelfth then pi / 6.0 + atanSeries ((x * root3 - 1.0) / (x + root3)) else atanSeries x
+
+atanSeries : Float -> Float
+atanSeries x = let x2 = x * x in x * atanFrom x2 15 0.0
+
+-- 1 - x²/3 + x⁴/5 - ..., to the term of `n`, by Horner's rule from the last.
+@terminating
+atanFrom : Float -> Int -> Float -> Float
+atanFrom x2 n acc =
+  if n < 0 then acc
+  else
+    let term = 1.0 / toFloat (2 * n + 1) in
+    let signed = if n % 2 == 0 then term else 0.0 - term in
+    atanFrom x2 (n - 1) (signed + x2 * acc)
+
+-- The angle of the point (`x`, `y`) from the positive x-axis, in (-π, π]:
+-- `y` first, as C's `atan2` has it.
+@pub
+atan2 : (y : Float) -> (x : Float) -> Float
+atan2 y x =
+  if or (isNaN x) (isNaN y) then 0.0 / 0.0
+  else if x > 0.0 then atan (y / x)
+  else if x < 0.0 then (if y < 0.0 then atan (y / x) - pi else atan (y / x) + pi)
+  else if y > 0.0 then pi / 2.0
+  else if y < 0.0 then 0.0 - pi / 2.0
+  else 0.0
+
+-- The length of (`x`, `y`).
+@pub
+hypot : (x : Float) -> (y : Float) -> Float
+hypot x y = sqrt (x * x + y * y)
+
+-- The angle whose sine is `x`, in [-π/2, π/2], and the one whose cosine is,
+-- in [0, π]: what is not a number outside [-1, 1].
+@pub
+asin : (x : Float) -> Float
+asin x = if not (abs x <= 1.0) then 0.0 / 0.0 else atan2 x (sqrt ((1.0 - x) * (1.0 + x)))
+
+@pub
+acos : (x : Float) -> Float
+acos x = if not (abs x <= 1.0) then 0.0 / 0.0 else atan2 (sqrt ((1.0 - x) * (1.0 + x))) x
+
+-- ---------------------------------------------------------------------------
+-- Exponentials and logarithms
+-- ---------------------------------------------------------------------------
+
+-- ln 2 in two parts, the first exact in fewer bits than a float has:
+-- fdlibm's `ln2_hi` and `ln2_lo`.
+ln2Hi : Float
+ln2Hi = 0.6931471803691238
+
+ln2Lo : Float
+ln2Lo = 0.00000000019082149292705877
+
+ln2 : Float
+ln2 = 0.6931471805599453
+
+root2 : Float
+root2 = 1.4142135623730951
+
+-- e to the `x`: `x` as `k` ln 2 and what is left, within ln 2 / 2, whose
+-- series is summed to its twentieth term and scaled by 2 to the `k`.
+@pub
+exp : (x : Float) -> Float
+exp x =
+  if isNaN x then x
+  else if x > 709.782712893384 then 1.0 / 0.0
+  else if x < 0.0 - 745.1332191019411 then 0.0
+  else
+    let k = round (x / ln2) in
+    let kf = toFloat k in
+    let r = (x - kf * ln2Hi) - kf * ln2Lo in
+    timesTwoTo (expFrom r 20 1.0) k
+
+-- 1 + r (1 + r/2 (1 + r/3 (...))), from the term of `n` in.
+@terminating
+expFrom : Float -> Int -> Float -> Float
+expFrom r n acc = if n == 0 then acc else expFrom r (n - 1) (1.0 + r * acc / toFloat n)
+
+-- `x` times 2 to the `k`, a factor of two at a time: exact while what it
+-- makes is a normal float.
+@terminating
+timesTwoTo : Float -> Int -> Float
+timesTwoTo x k = if k > 0 then timesTwoTo (x * 2.0) (k - 1) else if k < 0 then timesTwoTo (x / 2.0) (k + 1) else x
+
+-- The natural logarithm: `x` as 2 to the `k` times `m`, `m` within a factor
+-- of √2 of 1, whose logarithm is 2 atanh ((m - 1) / (m + 1)) by its series.
+-- What is not a number below zero, and minus infinity at it.
+@pub
+ln : (x : Float) -> Float
+ln x =
+  if or (isNaN x) (x < 0.0) then 0.0 / 0.0
+  else if x == 0.0 then 0.0 - 1.0 / 0.0
+  else if not (isFinite x) then x
+  else lnFrom x 0
+
+@terminating
+lnFrom : Float -> Int -> Float
+lnFrom m k =
+  if m >= root2 then lnFrom (m / 2.0) (k + 1)
+  else if m < root2 / 2.0 then lnFrom (m * 2.0) (k - 1)
+  else
+    let s = (m - 1.0) / (m + 1.0) in
+    let kf = toFloat k in
+    kf * ln2Hi + (kf * ln2Lo + 2.0 * s * atanhFrom (s * s) 12 0.0)
+
+-- 1 + s²/3 + s⁴/5 + ..., to the term of `n`, by Horner's rule from the last.
+@terminating
+atanhFrom : Float -> Int -> Float -> Float
+atanhFrom s2 n acc = if n < 0 then acc else atanhFrom s2 (n - 1) (1.0 / toFloat (2 * n + 1) + s2 * acc)
+
+-- `x` to the `y`: e to the `y` ln `x`; a negative `x` only to a whole `y`.
+@pub
+pow : (x : Float) -> (y : Float) -> Float
+pow x y =
+  if y == 0.0 then 1.0
+  else if or (isNaN x) (isNaN y) then 0.0 / 0.0
+  else if x > 0.0 then exp (y * ln x)
+  else if x == 0.0 then (if y > 0.0 then 0.0 else 1.0 / 0.0)
+  else if and (toFloat (floor y) == y) (abs y < 9007199254740992.0) then
+    let p = exp (y * ln (0.0 - x)) in if floor y % 2 == 0 then p else 0.0 - p
+  else 0.0 / 0.0

@@ -2594,7 +2594,7 @@ The effects a program's top level may still have are the ones the
 runtime handles itself: everything in `Eff`, which the prelude declares as
 
 ```
-effect Eff = {Console, Fs, Process, Random, Time, Test, Abort, Mut, Div}
+effect Eff = {Console, Fs, Process, Random, Time, Test, Abort, Log, Mut, Div}
 ```
 
 with these operations (and `Maybe` and `Result` declared alongside,
@@ -2609,6 +2609,7 @@ with these operations (and `Maybe` and `Result` declared alongside,
 | `Time` | `now : () -> Int` (milliseconds since 1970), `monotonic : () -> Int` (nanoseconds, for measuring), `sleep : Int -> ()` (milliseconds; `Std.Time` has clocks of your own, timing and dates) |
 | `Test` | `fail : String -> ()`, which stops the program (`Std.Test` has the assertions) |
 | `Abort` | `abort : {a : Type} -> String -> a`, which gives up: unhandled, it writes its message to standard error and exits with status 1 |
+| `Log` | `logAt : Int -> String -> ()`, a line at a level from 0 (debug) to 3 (error): unhandled, it goes to standard error with the time and level, if `MEADOW_LOG` lets it (`Std.Log` has `info` and the rest, and handlers that capture or silence it) |
 | `Mut` | no operations a handler could take: `newRef : {a : Type} -> a -> Ref a ! Mut`, `getRef : {a : Type} -> Ref a -> a ! Mut` and `setRef : {a : Type} -> Ref a -> a -> () ! Mut` are the runtime's own, on cells (`Ref a`) that may be shared, held in many places and changed through any of them (`Std.Ref` has the rest: `modify`, `swap`, `bump`, ...) |
 
 The runtime prints only strings. `putStrLn` and `printInt` are ordinary
@@ -2697,7 +2698,7 @@ ask : () -> Int ! Ask
 main () = printInt (ask ())
 
 Error: effects not allowed
-   │ ╰── this has the effects {Console, Ask}, but its type allows {Div, Console, Fs, Process, Random, Time, Test, Abort, Mut}
+   │ ╰── this has the effects {Console, Ask}, but its type allows {Div, Console, Fs, Process, Random, Time, Test, Abort, Log, Mut}
 ```
 
 A file with a `main` is run with `idyllic hello.idl` (in `compiler/`); what comes after
@@ -3096,6 +3097,7 @@ is nothing to install.
 | `Std.Maybe`, `Std.Result` | `map`, `andThen`, `withDefault`, `orElse`, `toList`, `toResult`, `toMaybe`, ... |
 | `Std.Either` | `Either a b` (`Left`, `Right`), `either`, `mapLeft`, `bimap`, `lefts`, `rights`, `partitionEithers`, ... |
 | `Std.Tuple` | on [tuples](#tuples), the prelude's pairs: `pair`, `fst`, `snd`, `swap`, `mapFst`, `curry`, `uncurry`, ... |
+| `Std.Num.Float` | as Meadow's, from the four operations: `pi`, `tau`, `abs`, `ceil`, `round`, `isNaN`, `isFinite`, `sqrt`, `sin`, `cos`, `tan`, `atan`, `atan2`, `hypot`, `asin`, `acos`, `exp`, `ln`, `pow` |
 | `Std.Sigma` | `Sigma a b`, a dependent pair: an `x : a` and a `b x` (made by `Sigma`); `first`, `second` |
 | `Std.Collections.List` | `map`, `foldr`, `foldl`, `filter`, `filterMap`, `reverse`, `append`, `zip`, `take`, `drop`, `range`, `sortBy`, `lookup`, `nth`, ... |
 | `Std.Collections.Vec` | `Vec n a`, a list of length `n` (`Nil`, `Cons`, and `#[..]` literals): `head`, `tail`, `index`, `append`, `zip`, `splitAt`, `fromList`, ... |
@@ -3105,6 +3107,8 @@ is nothing to install.
 | `Std.Collections.Map` | `Map k v`, keys in order by an `Ord k` its type keeps (`MapBy k o v`): `insert`, `lookup`, `member`, `getOr`, `delete`, `adjust`, `insertWith`, `map`, `foldr`, `keys`, `values`, `minEntry`, `toList`, `fromList`, ... |
 | `Std.Collections.HashMap` | `HashMap k v`, Meadow's hash array mapped trie, keyed by a `Hash k` its type keeps (`HashMapBy k h v`): `insert`, `lookup`, `member`, `getOr`, `delete`, `adjust`, `insertWith`, `alter`, `foldl`, `map`, `filter`, `union`, `keys`, `values`, `toList`, `fromList`, ... |
 | `Std.Collections.Set` | `Set a`, the same for sets (`SetBy a o`): `insert`, `member`, `delete`, `union`, `diff`, `intersect`, `subset`, `minElem`, `toList`, `fromList`, ... |
+| `Std.Collections.HashTable` | `HashTable k v`, Meadow's table written in place, linear as `St` is (each operation takes the table and gives it back, a read beside what it read, boxed): `new`, `withCapacity`, `insert`, `insertWith`, `lookup`, `member`, `getOr`, `adjust`, `delete`, `clear`, `size`, `foldl`, `entries`, `keys`, `values`, `fromVec`, `done` |
+| `Std.Collections.Tree` | `Tree a`, Meadow's unbalanced search tree, by `<`: `insert`, `member`, `delete`, `minElem`, `maxElem`, `size`, `depth`, `toList`, `toVec`, `fromList`, `foldr`, `map`, `toStream`; compared by its elements in order, not its shape |
 | `Std.Sort` | a stable merge sort: `sortBy`, `sort`, `sortOn`, `sortArrayBy`, `sortVectorBy`, `isSortedBy` |
 | `Std.String` | as Meadow's, by bytes: `byteLength`, `slice`, `take`, `drop`, `byteAt`, `indexOf`, `contains`, `startsWith`, `split`, `lines`, `words`, `trim`, `toUpper`, `toInt`, `equal`, `compare`; by characters: `chars`, `fromChars`, `charAt`, `charLength`; and `join`, `concatAll`, `unlines`, `unwords`, `repeat`, `fromList` |
 | `Std.Bytes` | byte arrays, `Array UInt8`, as Meadow's: `stringToBytes`, `bytesToString`, `bytesToHex`, `bytesFromHex`, `bytesGet`, `bytesSet`, `bytesPush`, `bytesSlice`, `bytesConcat`, and the wider unsigned integers by their bytes, `bytesGetU16LE` ... `bytesSetU64BE` |
@@ -3114,6 +3118,8 @@ is nothing to install.
 | `Std.Char` | `code`, `fromCode`, `fromCodeSafe`, `isDigit`, `isAlpha`, `isSpace`, `isUpper`, `toUpper`, `toLower`, `digitToInt`, `hexDigitToInt`, `equal`, `compare` (the classes ASCII only, as Meadow's are) |
 | `Std.Console` | as Meadow's: `print`, `println`, `eprintln` (as `display` writes a value), `prompt`, `readLineOr`, `readWord`, `promptUntil`, `readAll`, `readLines`, `printLines`; and `withInput` (the lines read given) and `withOutput` (what is written kept), each passing the rest of the console on, so a program that talks to a person runs with no one there |
 | `Std.Fs`, `Std.Process` | `readToStringOr`, `tryReadDir`, `writeLines`, `existsAll`; `argCount`, `arg`, `envOr`, `exitFailure`, ... |
+| `Std.Path` | paths as strings, as Meadow's, never touching the disk: `join`, `joinAll`, `parent`, `fileName`, `fileStem`, `extension`, `withExtension`, `withFileName`, `components`, `isAbsolute`, `normalize` (`/` and `\` both taken, `/` written) |
+| `Std.Log` | the prelude's `Log`, as Meadow's: `Level` (`Level.Debug`, `Level.Info`, `Level.Warn`, `Level.Error`), `log`, `debug`, `info`, `warn`, `error`; and handlers, `captured` (each line, with its level), `silenced`, `atLeast` |
 | `Std.Exn` | an effect: `throw`, and `toResult`, `catch`, `withDefault`, `toMaybe`, `ofResult`, `ensure` |
 | `Std.Ref` | shared mutable cells, as Meadow's: `modify`, `swap`, `getAndModify`, `modifyAndGet`, `bump`, `repeatN`, over the prelude's `Ref`, `newRef`, `getRef`, `setRef` (the effect `Mut`) |
 | `Std.St` | state changed in place, as Meadow's but linear rather than an effect: a cell, `StRef a` (`newRef`, `getRef`, `setRef`, `modifyRef`, `value`), and an array, `StArray a` (`newArray`, `get`, `set`, `length`, `modify`, `swap`, `freeze`, `thaw`, `fromVec`, `toVec`), each operation giving it back; `forRange` and `while` thread it through a loop |
@@ -3122,7 +3128,10 @@ is nothing to install.
 | `Std.Stream` | consumers and transformers of what is yielded: `toVec`, `toList`, `forEach`, `fold`, `sum`, `count`, `take`, `takeWhile`, `first`, `any`, `all`, `find`, `map`, `filter`; and producers, `range`, `repeat`, `iterate`, `ofList`, `ofVec` |
 | `Std.Random` | as Meadow's, SplitMix64: `withSeed` (the same numbers from the same seed), `withSeedFrom`, `between`, `nextFloat`, `bool`, `choose`, `shuffle`, and the pure `step`, `seed`, `stepBetween`, `stepFloat` |
 | `Std.Time` | as Meadow's: `withClock`, `withTickingClock`, `timed`, `elapsed`, `time`, `timeRuns`; units (`seconds`, `millisPerDay`, ...); `formatNanos`, `formatMillis`, `formatDuration`; dates in UTC, `utc` (a `DateTime`), `formatTimestamp`, `formatDate`, `formatReadable`, `formatAgo`, `monthName`, `weekdayName` |
+| `Std.Bench` | as Meadow's, after Criterion: `bench`, `benchWith`, `benchUnits` (calibrated, warmed up, sampled; the best, the median and the spread), `report`, `runAll`, `formatReport`, `formatCount`, `middle` |
 | `Std.Test` | assertions, the `Test` effect: `assert`, `assertEq`, `assertNeq`, `assertTrue`, `assertFalse`, `refuteThat`, `failWith`, and `didFail`, `failure`, `assertFails` to check that something fails |
+| `Std.Test.Property` | as Meadow's: properties checked on a hundred generated cases, the same every run; a generator is a function performing `Gen` (`pick`, `between`, `bool`, `element`, `oneOf`, `maybe`, `vector`, `char`, `text`); `check`, `forAll`, `replay`, `generated`, `sample`; a failing case shrunk by its draws |
+| `Std.Test.Fuzz` | as Meadow's `fuzz`: a function run on text made by changing examples (`mutated`, `changed`, `noise`), what fails shrunk to the fewest changes |
 
 A module and its type share a name, so its constructors are
 `Std.Num.Nat.Nat.Z`, or bare after `use Std.Num.Nat.Nat.*`.

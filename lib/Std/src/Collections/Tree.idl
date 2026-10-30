@@ -1,0 +1,144 @@
+-- An unbalanced binary search tree, as Meadow's `Std.Collections.Tree`.
+-- Reach these as `Tree.insert` etc.
+--
+-- `insert`, `member` and `delete` order elements with `<`, so they work on
+-- any type with a `PartialOrd`; `map`, `foldr` and `toVec` work on any. A
+-- tree's shape depends on the order its elements were inserted in; for
+-- one that keeps its `Ord` in its type, and so stays in order, see
+-- `Std.Collections.Set`.
+
+use Std.Num.Int (max)
+use Std.Collections.List as L
+use Std.Collections.Vector (Vector)
+use Std.Collections.Vector as V
+use Std.Yield (Yield, yield)
+
+@pub
+@derive(Debug, Display)
+data Tree (a : Type) = Leaf | Node (Tree a) a (Tree a)
+
+use Tree.*
+
+@pub
+empty : {a : Type} -> Tree a
+empty = Leaf
+
+@pub
+null : {a : Type} -> (t : Tree a) -> Bool
+null Leaf = True
+null (Node l x r) = False
+
+@pub
+size : {a : Type} -> (t : Tree a) -> Int
+size Leaf = 0
+size (Node l x r) = 1 + size l + size r
+
+@pub
+depth : {a : Type} -> (t : Tree a) -> Int
+depth Leaf = 0
+depth (Node l x r) = 1 + max (depth l) (depth r)
+
+@pub
+insert : {a : Type} -> {auto o : PartialOrd a} -> (x : a) -> (t : Tree a) -> Tree a
+insert x Leaf = Node Leaf x Leaf
+insert x (Node l y r) = if x < y then Node (insert x l) y r else if y < x then Node l y (insert x r) else Node l y r
+
+@pub
+member : {a : Type} -> {auto o : PartialOrd a} -> (x : a) -> (t : Tree a) -> Bool
+member x Leaf = False
+member x (Node l y r) = if x < y then member x l else if y < x then member x r else True
+
+@pub
+minElem : {a : Type} -> (t : Tree a) -> Maybe a
+minElem Leaf = Nothing
+minElem (Node Leaf x r) = Just x
+minElem (Node l x r) = minElem l
+
+@pub
+maxElem : {a : Type} -> (t : Tree a) -> Maybe a
+maxElem Leaf = Nothing
+maxElem (Node l x Leaf) = Just x
+maxElem (Node l x r) = maxElem r
+
+deleteMin : {a : Type} -> Tree a -> Tree a
+deleteMin Leaf = Leaf
+deleteMin (Node Leaf x r) = r
+deleteMin (Node l x r) = Node (deleteMin l) x r
+
+-- `l` and `r` joined under the least of `r`.
+spliceMin : {a : Type} -> Tree a -> Tree a -> Tree a
+spliceMin l r = case minElem r of
+  Nothing -> l
+  Just m -> Node l m (deleteMin r)
+
+removeRoot : {a : Type} -> Tree a -> Tree a -> Tree a
+removeRoot Leaf r = r
+removeRoot l Leaf = l
+removeRoot l r = spliceMin l r
+
+@pub
+delete : {a : Type} -> {auto o : PartialOrd a} -> (x : a) -> (t : Tree a) -> Tree a
+delete x Leaf = Leaf
+delete x (Node l y r) = if x < y then Node (delete x l) y r else if y < x then Node l y (delete x r) else removeRoot l r
+
+-- ---------------------------------------------------------------------------
+-- Converting
+-- ---------------------------------------------------------------------------
+
+-- Every element, in order.
+@pub
+toVec : {a : Type} -> (t : Tree a) -> Vector a
+toVec t = pushInOrder V.empty t
+
+pushInOrder : {a : Type} -> Vector a -> Tree a -> Vector a
+pushInOrder acc Leaf = acc
+pushInOrder acc (Node l x r) = pushInOrder (V.pushBack (pushInOrder acc l) x) r
+
+@pub
+fromVec : {a : Type} -> {auto o : PartialOrd a} -> (v : Vector a) -> Tree a
+fromVec v = V.foldl (\(acc : Tree a) (x : a) -> insert x acc) empty v
+
+-- The same, as a `List`.
+@pub
+toList : {a : Type} -> (t : Tree a) -> List a
+toList t = foldr (\(x : a) (acc : List a) -> x :: acc) Nil t
+
+@pub
+fromList : {a : Type} -> {auto o : PartialOrd a} -> (xs : List a) -> Tree a
+fromList xs = L.foldl (\(acc : Tree a) (x : a) -> insert x acc) empty xs
+
+@pub
+foldr : {a b : Type} -> (f : a -> b -> b ! r) -> (acc : b) -> (t : Tree a) -> b ! r
+foldr f acc Leaf = acc
+foldr f acc (Node l x r) = foldr f (f x (foldr f acc r)) l
+
+@pub
+map : {a b : Type} -> (f : a -> b ! r) -> (t : Tree a) -> Tree b ! r
+map f Leaf = Leaf
+map f (Node l x r) = Node (map f l) (f x) (map f r)
+
+-- Yield every element in order, for `Std.Stream`.
+@pub
+toStream : {a : Type} -> (t : Tree a) -> () ! Yield a
+toStream Leaf = ()
+toStream (Node l x r) = let u = toStream l in let v = yield x in toStream r
+
+-- ---------------------------------------------------------------------------
+-- Comparing
+-- ---------------------------------------------------------------------------
+
+-- By their elements in order, not by the shape of the tree, which depends on
+-- the order they were inserted in.
+
+instance PartialEq a => PartialEq (Tree a) where
+  (==) x y = toList x == toList y
+
+instance PartialOrd a => PartialOrd (Tree a) where
+  (<) x y = lessList (toList x) (toList y)
+
+-- Lexicographically: the first place they differ, or the shorter first.
+lessList : {a : Type} -> {auto o : PartialOrd a} -> List a -> List a -> Bool
+lessList Nil Nil = False
+lessList Nil (y :: ys) = True
+lessList (x :: xs) Nil = False
+lessList (x :: xs) (y :: ys) = if x < y then True else if y < x then False else lessList xs ys

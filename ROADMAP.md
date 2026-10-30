@@ -796,10 +796,24 @@ and a `Map` built with one `Ord` is rejected when used with another.
   declares `Maybe`, `Result` and the world's effects themselves; what is
   left of those modules is their functions, and the operations phase 2
   left out.)
-  Meadow's other modules are not placed yet: `Bench`, `Collections.Tree`
-  and `Collections.HashTable`, `Num.Float`, `Ops`, `Path`, `Log`,
-  `Terminal`, `Test.Fuzz` and `Test.Property`, `Eff`, and those on the
-  runtimes' larger natives (`Thread`, `Stm`, `Net`, `Http`, `Tls`, `Ffi`,
+  `Path`, Meadow's paths as strings, is done too (2026-10-29), and `Log`
+  (2026-10-29): the prelude declares the effect, `logAt`, which both
+  lowerings map to the runtimes' `Log.logAt` (a line on standard error,
+  with the time and level, as `MEADOW_LOG` lets it), and `Std.Log` has the
+  levels and Meadow's handlers, `captured`, `silenced` and `atLeast`.
+  Meadow's `Ops` and `Eff` are the prelude's own: its operator traits, and
+  its `effect Eff` (which has `Log` as Meadow's does, and not yet `Net` or
+  `Thread`, whose runtimes' natives are not bound).
+  `Num.Float`, `Collections.Tree`, `Test.Property` and `Test.Fuzz` are
+  done as well (2026-10-29), each with what Meadow's own tests check of it;
+  of `Test.Fuzz`, `fuzz` only, since `fuzzGuided` steers by the runtime's
+  `Process.covered`, which Idyll does not bind yet.
+  So are `Bench` and `Collections.HashTable`, the table written in place:
+  in Meadow a place inside `runSt`, here linear, as `St` is, each operation
+  taking the table and giving it back.
+  Meadow's other modules are not placed yet: `Terminal`, whose raw mode,
+  keys and size are Console operations Cut does not offer yet, and those
+  on the runtimes' larger natives (`Thread`, `Stm`, `Net`, `Http`, `Tls`, `Ffi`,
   `Macro`).
 - [x] **Adapt rather than copy**: `St` becomes linear mutable references
   and arrays (`MArray`, and a cell beside it) rather than an effect: a

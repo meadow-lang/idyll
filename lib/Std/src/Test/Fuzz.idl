@@ -1,0 +1,103 @@
+-- A function run on text nobody would write, as Meadow's `Std.Test.Fuzz`.
+--
+--   use Std.Test (assertTrue)
+--   use Std.Test.Fuzz as F
+--
+--   @test
+--   theParserAnswersWhateverItIsGiven : () -> () ! Test
+--   theParserAnswersWhateverItIsGiven u =
+--     F.fuzz (V.fromList ("let x = 1 in x + 2" :: "f (a, b) = a" :: Nil))
+--       (V.fromList ("let" :: "in" :: "(" :: ")" :: "=" :: Nil))
+--       (\src -> assertTrue (answers (parse src)) "an answer, right or wrong")
+--
+-- A property says what holds of every value; a fuzzer goes looking for the
+-- value a program did not expect. What it tries is text close to text that
+-- is right (a `corpus` of examples, with pieces taken out, doubled, moved
+-- from one example into another, and `words` of the language dropped in
+-- where they do not belong), since text that is nothing like a program is
+-- turned away by the first thing that reads it, and tests nothing behind
+-- that.
+--
+-- It is `Std.Test.Property` underneath: an input is made by a generator, so
+-- the same inputs are tried every run, and one that fails is shrunk before
+-- the test fails with it, to the fewest changes that still fail, of the
+-- earliest example they fail on; so put the shortest examples first:
+--
+--   an answer, right or wrong
+--     for "let x = ( in"
+--     after 212 cases, on draws #[0, 1, 2, 7, 0]
+--
+-- What it does not do: it sees a failure only as a test does, an assertion
+-- that fails. A program that stops the process is not caught here; the run
+-- ends with it. (Meadow's `fuzzGuided`, steered by how much of the program
+-- an input reached, is not here: it needs the runtime's `Process.covered`,
+-- which Idyll does not bind yet.)
+
+use Std.Test (failWith, failure)
+use Std.Test.Property (Gen, Config, checkWith, pick, between, element, vector, anyChar)
+use Std.Collections.Vector (Vector)
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Maybe as M
+
+-- A thousand inputs: a fuzzer finds what it finds by trying many.
+@pub
+thorough : Config
+thorough = Config { runs = 1000, seed = 20261013, shrinks = 4000 }
+
+-- `prop` holds of a thousand inputs made from `corpus` and `words`, or the
+-- test fails with the smallest found that it does not hold of.
+@pub
+fuzz : (corpus : Vector String) -> (words : Vector String) -> (prop : (s : String) -> () ! {Gen, Test | r}) -> () ! {Test | r}
+fuzz corpus words prop = fuzzWith thorough corpus words prop
+
+@pub
+fuzzWith : (c : Config) -> (corpus : Vector String) -> (words : Vector String) -> (prop : (s : String) -> () ! {Gen, Test | r}) -> () ! {Test | r}
+fuzzWith c corpus words prop = checkWith c (\(u : ()) ->
+  let input = mutated corpus words in
+  case failure (\(v : ()) -> prop input) of
+    (True, why) -> failWith "${why}\n  for ${input:?}"
+    (False, why) -> ())
+
+-- One of `corpus` (the first when it shrinks, nothing where there are
+-- none) changed up to eight times: see `changed`.
+@pub
+mutated : (corpus : Vector String) -> (words : Vector String) -> String ! Gen
+mutated corpus words =
+  let start = charsOf (M.withDefault "" (element corpus)) in
+  S.fromChars (V.toList (changes corpus words start (pick 9)))
+
+charsOf : String -> Vector Char
+charsOf s = V.fromList (S.chars s)
+
+@terminating
+changes : Vector String -> Vector String -> Vector Char -> Int -> Vector Char ! Gen
+changes corpus words cs left = if left <= 0 then cs else changes corpus words (changed corpus words cs) (left - 1)
+
+-- `cs` changed once: a run of it taken out; a run of it doubled; one of
+-- `words` put in; a run of another of `corpus` put in; a character put in;
+-- or a character made another. Where is drawn, and how long a run: at most
+-- sixteen characters.
+@pub
+changed : (corpus : Vector String) -> (words : Vector String) -> (cs : Vector Char) -> Vector Char ! Gen
+changed corpus words cs =
+  let kind = pick 6 in
+  let at = pick (V.len cs + 1) in
+  let n = between 1 17 in
+  if kind == 0 then V.append (V.take cs at) (V.drop cs (at + n))
+  else if kind == 1 then V.concat (V.fromList (V.take cs (at + n) :: V.slice cs at (at + n) :: V.drop cs (at + n) :: Nil))
+  else if kind == 2 then
+    V.concat (V.fromList (V.take cs at :: charsOf (M.withDefault "" (element words)) :: V.drop cs at :: Nil))
+  else if kind == 3 then
+    let other = charsOf (M.withDefault "" (element corpus)) in
+    let from = pick (V.len other + 1) in
+    V.concat (V.fromList (V.take cs at :: V.slice other from (from + n) :: V.drop cs at :: Nil))
+  else if kind == 4 then V.concat (V.fromList (V.take cs at :: V.fromList (anyChar () :: Nil) :: V.drop cs at :: Nil))
+  else if at < V.len cs then V.set cs at (anyChar ())
+  else V.pushBack cs (anyChar ())
+
+-- Any text at all, of at most `most` characters: for what reads bytes off
+-- a wire, where there is no example to start from.
+@pub
+noise : (most : Int) -> String ! Gen
+noise most = S.fromChars (V.toList (vector most (\(u : ()) -> anyChar ())))

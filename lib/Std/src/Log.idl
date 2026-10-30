@@ -1,0 +1,85 @@
+-- What a program says it is doing, at a level, as Meadow's `Std.Log`: the
+-- prelude's `Log` effect, and the levels and handlers that go with it.
+--
+--   use Std.Log as Log
+--
+--   serve port = let u = Log.info ("listening on " ++ showInt port) in ...
+--
+-- Where nothing handles it, the runtime writes each line to standard error
+-- with when it was said and its level, if the level is at or above the one
+-- `MEADOW_LOG` names: `debug`, `info`, `warn`, `error` or `off`, and `info`
+-- where it is unset.
+--
+--   2026-10-17T19:12:04.512Z INFO  listening on 8080
+--
+-- Because it is an effect, a caller decides what becomes of it: `captured`
+-- collects a block's lines, as a test wants them; `silenced` drops them; and
+-- `atLeast` keeps only those at a level or above, the rest going nowhere.
+
+-- How much a line matters, least first. Its constructors are written
+-- `Level.Debug` and so on: `Debug` alone is the trait.
+@pub
+@derive(Debug, PartialEq)
+data Level = Debug | Info | Warn | Error
+
+-- A level's place, from 0 for `Debug` to 3 for `Error`: what `logAt` takes.
+@pub
+rank : (level : Level) -> Int
+rank Level.Debug = 0
+rank Level.Info = 1
+rank Level.Warn = 2
+rank Level.Error = 3
+
+-- The level of a rank, the nearest where it is out of range.
+@pub
+levelOf : (n : [] Int) -> Level
+levelOf n = if n <= 0 then Level.Debug else if n == 1 then Level.Info else if n == 2 then Level.Warn else Level.Error
+
+-- `message` at `level`.
+@pub
+log : (level : Level) -> (message : String) -> () ! Log
+log level message = logAt (rank level) message
+
+@pub
+debug : (message : String) -> () ! Log
+debug message = logAt 0 message
+
+@pub
+info : (message : String) -> () ! Log
+info message = logAt 1 message
+
+@pub
+warn : (message : String) -> () ! Log
+warn message = logAt 2 message
+
+@pub
+error : (message : String) -> () ! Log
+error message = logAt 3 message
+
+-- ---------------------------------------------------------------------------
+-- Handling
+-- ---------------------------------------------------------------------------
+
+-- What `body` answers, and each line it said, in order.
+@pub
+captured : {a : Type} -> (body : (u : ()) -> a ! {Log | r}) -> (a, List (Level, String)) ! r
+captured body = handle body () with
+  return x -> (x, Nil)
+  -- what the rest of `body` answers and says, this line before it
+  -- what the rest of `body` answers and says, this line before it
+  logAt n message k -> case k () of
+    (x, said) -> (x, (levelOf n, message) :: said)
+
+-- What `body` answers, saying nothing.
+@pub
+silenced : {a : Type} -> (body : (u : ()) -> a ! {Log | r}) -> a ! r
+silenced body = handle body () with
+  return x -> x
+  logAt n message k -> k ()
+
+-- What `body` answers, its lines below `least` dropped and the rest said on.
+@pub
+atLeast : {a : Type} -> (least : Level) -> (body : (u : ()) -> a ! {Log | r}) -> a ! {Log | r}
+atLeast least body = handle body () with
+  return x -> x
+  logAt n message k -> let u = (if n >= rank least then logAt n message else ()) in k ()

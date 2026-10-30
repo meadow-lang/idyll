@@ -1,0 +1,30 @@
+cut 0
+entry idyll:Main/"#entry"
+answer none
+
+native {
+  idyll:Prelude/Console.putStr = Console.writeOutput
+  idyll:Prelude/Log.logAt = Log.logAt
+}
+
+effect idyll:Prelude/Console { putStr(str) -> unit; putErr(str) -> unit; readLine(unit) -> ptr }
+
+effect idyll:Prelude/Log { logAt(i64, str) -> unit }
+
+def idyll:Prelude/putStrLn (s_2: str; k_3: ptr) =
+  prim concatStrings([s_2, "\n"]; μ̃ v_4: str.
+    perform idyll:Prelude/Console.putStr(v_4; k_3))
+
+def idyll:Std/Log.info (message_6: str; k_7: ptr) =
+  perform idyll:Prelude/Log.logAt(1, message_6; k_7)
+
+def idyll:Std/Log.error (message_9: str; k_10: ptr) =
+  perform idyll:Prelude/Log.logAt(3, message_9; k_10)
+
+def idyll:Main/main (u_12: unit; k_13: ptr) =
+  idyll:Std/Log.info("starting"; μ̃ a_14: unit.
+    idyll:Std/Log.error("something went wrong"; μ̃ b_15: unit.
+      idyll:Prelude/putStrLn("done"; k_13)))
+
+def idyll:Main/"#entry" (; k_16: ptr) =
+  idyll:Main/main(unit; k_16)

@@ -1,0 +1,311 @@
+-- A property, checked on many values a generator makes, as Meadow's
+-- `Std.Test.Property`.
+--
+--   use Std.Test (assertEq)
+--   use Std.Test.Property as P
+--   use Std.Collections.Vector as V
+--
+--   @test
+--   reversingTwiceIsTheSame : () -> () ! Test
+--   reversingTwiceIsTheSame u =
+--     P.forAll (\v -> P.vector 20 (\w -> P.between 0 100))
+--       (\xs -> assertEq (V.reverse (V.reverse xs)) xs "reversed twice")
+--
+-- A test says what holds of one value; a property says what holds of every
+-- value, and the runner looks for one it does not hold of. When it finds one
+-- it looks for a smaller one before it says anything, and the test fails with
+-- the smallest it found:
+--
+--   reversed twice: expected [0, 1], got [1, 0]
+--     for [0, 1]
+--     after 3 cases, on draws [1, 0, 1, 1, 0]
+--
+-- A generator is a function that draws. `Gen` has one operation, `pick n`,
+-- a number from 0 up to and not including `n`; `between`, `bool`, `vector`
+-- and the rest are functions that perform it, and a generator of your own is
+-- any function that calls them. There is no type of generators and nothing
+-- to combine them with but the language: to make a pair, make one and then
+-- the other.
+--
+-- Shrinking is of the draws, not of the value. A run is the numbers it drew,
+-- in order, and can be run again on other numbers: fewer of them, or smaller
+-- ones. So every generator shrinks, one written by hand included, and what
+-- it shrinks to is still something it could have made: a vector of even
+-- numbers shrinks to a shorter vector of smaller even numbers. A generator
+-- is easy to shrink when a smaller draw means a simpler value: `between lo
+-- hi` is `lo` at 0, `bool` is `False`, a `vector` ends.
+--
+-- The same numbers every run. Nothing here reads a clock: a property is
+-- checked on the same values each time, as a test should be, and a failure
+-- names its draws, so that `replay` checks that one case again.
+--
+-- (Meadow writes a property's row `{ Gen, Test, Test | e }`, a `Test` for
+-- what the property asserts and one for the checker's own failure; Idyll's
+-- rows take an effect once, and the property's `Test` is handled, by
+-- `failure`, before the checker's is performed.)
+
+use Std.Bool (not, or)
+use Std.Test (failWith, failure)
+use Std.Random (seed, stepBetween)
+use Std.Collections.Vector (Vector)
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Char as C
+
+@pub
+effect Gen where
+  -- A number from 0 up to, and not including, the one given; 0 where that
+  -- is 1 or less.
+  pick : (n : [] Int) -> Int
+
+-- ---------------------------------------------------------------------------
+-- Generators
+-- ---------------------------------------------------------------------------
+
+-- From `lo` up to, and not including, `hi`: `lo` where there is nothing
+-- between them. Smaller draws are nearer `lo`.
+@pub
+between : (lo : [] Int) -> (hi : [] Int) -> Int ! Gen
+between lo hi = if hi <= lo then lo else lo + pick (hi - lo)
+
+-- `False` when it shrinks.
+@pub
+bool : (u : ()) -> Bool ! Gen
+bool u = pick 2 == 1
+
+-- One of `xs`, the first when it shrinks; `Nothing` of none.
+@pub
+element : {a : Type} -> (xs : Vector a) -> Maybe a ! Gen
+element xs = if V.isEmpty xs then Nothing else V.get xs (pick (V.len xs))
+
+-- What one of the generators `first` and `rest` makes: `first`'s when it
+-- shrinks, so put the simplest first.
+@pub
+oneOf : {a : Type} -> (first : (u : ()) -> a ! {Gen | r}) -> (rest : Vector ((u : ()) -> a ! {Gen | r})) -> a ! {Gen | r}
+oneOf first rest =
+  let k = pick (V.len rest + 1) in
+  if k == 0 then first ()
+  else case V.get rest (k - 1) of
+    Just g -> g ()
+    Nothing -> first ()
+
+-- `Nothing`, or what `item` makes: `Nothing` when it shrinks.
+@pub
+maybe : {a : Type} -> (item : (u : ()) -> a ! {Gen | r}) -> Maybe a ! {Gen | r}
+maybe item = if pick 4 == 0 then Nothing else Just (item ())
+
+-- At most `most` of what `item` makes, about five on average. One draw
+-- before each says whether there is another, so a vector shrinks by ending.
+@pub
+vector : {a : Type} -> (most : Int) -> (item : (u : ()) -> a ! {Gen | r}) -> Vector a ! {Gen | r}
+vector most item = vectorFrom most item V.empty
+
+@terminating
+vectorFrom : {a : Type} -> (most : Int) -> (item : (u : ()) -> a ! {Gen | r}) -> Vector a -> Vector a ! {Gen | r}
+vectorFrom most item acc =
+  if V.len acc >= most then acc
+  else if pick 6 == 0 then acc
+  else vectorFrom most item (V.pushBack acc (item ()))
+
+-- A character that prints, of ASCII's: `a` when it shrinks.
+@pub
+char : (u : ()) -> Char ! Gen
+char u = C.fromCode (32 + (pick 95 + 65) % 95)
+
+-- Any character at all but a surrogate, which is none: most draws are
+-- ASCII, since that is where most code looks.
+@pub
+anyChar : (u : ()) -> Char ! Gen
+anyChar u =
+  let kind = pick 8 in
+  if kind < 6 then char ()
+  else if kind == 6 then C.fromCode (pick 55296)
+  else C.fromCode (57344 + pick 1056768)
+
+-- At most `most` characters that print.
+@pub
+text : (most : Int) -> String ! Gen
+text most = S.fromChars (V.toList (vector most (\(u : ()) -> char ())))
+
+-- ---------------------------------------------------------------------------
+-- Checking
+-- ---------------------------------------------------------------------------
+
+-- How a property is checked: how many cases, the number the first is made
+-- from, and how many smaller cases may be tried once one has failed.
+@pub
+record Config = {
+  runs : Int,
+  seed : Int,
+  shrinks : Int
+}
+
+@pub
+standard : Config
+standard = Config { runs = 100, seed = 20261013, shrinks = 2000 }
+
+-- `prop` holds of a hundred cases, or the test fails with the smallest case
+-- found that it does not hold of. It draws what it is about and asserts
+-- what holds of it; `forAll` is this with the value named in the failure.
+@pub
+check : (prop : (u : ()) -> () ! {Gen, Test | r}) -> () ! {Test | r}
+check prop = checkWith standard prop
+
+@pub
+checkWith : (c : Config) -> (prop : (u : ()) -> () ! {Gen, Test | r}) -> () ! {Test | r}
+checkWith c prop = case firstFailing c prop 0 of
+  Nothing -> ()
+  Just (n, draws, why) -> failing c prop n draws why
+
+-- The test failed with a case of `prop` that fails (case `n`, which drew
+-- `draws` and said `why`) once it has been made as small as it will go:
+-- what `checkWith` does with the first it finds, for whoever finds a
+-- failing case another way.
+@pub
+failing : (c : Config) -> (prop : (u : ()) -> () ! {Gen, Test | r}) -> (n : Int) -> (draws : Vector Int) -> (why : String) -> () ! {Test | r}
+failing c prop n draws why = case shrunk prop draws why c.shrinks of
+  (small, said, left) -> failWith "${said}\n  after ${n + 1} cases, on draws ${small:?}"
+
+-- `prop` holds of everything `gen` makes, or the test fails naming the
+-- smallest thing found that it does not hold of.
+@pub
+forAll : {a : Type} -> {auto d : Debug a} -> (gen : (u : ()) -> a ! {Gen | r}) -> (prop : (x : a) -> () ! {Gen, Test | r}) -> () ! {Test | r}
+forAll gen prop = forAllWith standard gen prop
+
+@pub
+forAllWith : {a : Type} -> {auto d : Debug a} -> (c : Config) -> (gen : (u : ()) -> a ! {Gen | r}) -> (prop : (x : a) -> () ! {Gen, Test | r}) -> () ! {Test | r}
+forAllWith c gen prop = checkWith c (\(u : ()) ->
+  let x = gen () in
+  case failure (\(v : ()) -> prop x) of
+    (True, why) -> failWith "${why}\n  for ${x:?}"
+    (False, why) -> ())
+
+-- The one case that draws `draws`: what a failure said it failed on,
+-- checked again. Draws past the end of them are 0.
+@pub
+replay : (draws : Vector Int) -> (prop : (u : ()) -> () ! {Gen, Test | r}) -> () ! {Test | r}
+replay draws prop = case attempt prop draws False 0 of
+  ((True, why), used) -> failWith "${why}\n  on draws ${used:?}"
+  ((False, why), used) -> ()
+
+-- What `act` makes of the draws `draws`: for whoever wants a generator's
+-- value outside a property, to look at what it makes.
+@pub
+generated : {a : Type} -> (draws : Vector Int) -> (act : (u : ()) -> a ! {Gen | r}) -> a ! r
+generated draws act = case drawing draws False 0 act of
+  (x, used) -> x
+
+-- The same, of draws made up from `from`: a value a property would be
+-- checked on.
+@pub
+sample : {a : Type} -> (from : Int) -> (act : (u : ()) -> a ! {Gen | r}) -> a ! r
+sample from act = case drawing V.empty True (seed from) act of
+  (x, used) -> x
+
+-- ---------------------------------------------------------------------------
+-- Running a case
+-- ---------------------------------------------------------------------------
+
+-- `act` run on draws: the first of them `given`, each brought into the
+-- range asked for, and after those made up from `from` if `random` and 0 if
+-- not. With what it answered, the draws it made. What every check here is
+-- made of, for a checker of another kind.
+@pub
+drawing : {a : Type} -> (given : Vector Int) -> (random : Bool) -> (from : Int) -> (act : (u : ()) -> a ! {Gen | r}) -> (a, Vector Int) ! r
+drawing given random from act = threaded given random act (0, from, V.empty)
+
+-- `act`, as a function of where it is in its draws: how many it has made,
+-- the generator's state, and the draws so far.
+threaded : {a : Type} -> (given : Vector Int) -> (random : Bool) -> (act : (u : ()) -> a ! {Gen | r}) -> ((st : (Int, Int, Vector Int)) -> (a, Vector Int) ! r) ! r
+threaded given random act = handle act () with
+  return x -> \(st : (Int, Int, Vector Int)) -> case st of
+    (i, s, used) -> (x, used)
+  pick n k -> \(st : (Int, Int, Vector Int)) -> case st of
+    (i, s, used) -> case drawn given random i s n of
+      (v, s2) -> k v (i + 1, s2, V.pushBack used v)
+
+-- The draw at `i`, of `n`: the one given there, brought into range, or one
+-- made up from the state `s` (or 0), with the state after it.
+drawn : (given : Vector Int) -> (random : Bool) -> (i : Int) -> (s : Int) -> (n : [] Int) -> (Int, Int)
+drawn given random i s n = case V.get given i of
+  Just v -> (if n <= 1 then 0 else if v < 0 then 0 else if v >= n then n - 1 else v, s)
+  Nothing -> if random then (if n > 1 then stepBetween 0 n s else (0, s)) else (0, s)
+
+-- One case of `prop`: whether it failed and what it said, and its draws.
+attempt : (prop : (u : ()) -> () ! {Gen, Test | r}) -> (given : Vector Int) -> (random : Bool) -> (from : Int) -> ((Bool, String), Vector Int) ! r
+attempt prop given random from = drawing given random from (\(u : ()) -> failure prop)
+
+-- The first of the cases from `n` on that fails: which, its draws, and
+-- what it said.
+@terminating
+firstFailing : (c : Config) -> (prop : (u : ()) -> () ! {Gen, Test | r}) -> (n : Int) -> Maybe (Int, Vector Int, String) ! r
+firstFailing c prop n =
+  if n >= c.runs then Nothing
+  else case attempt prop V.empty True (seed (c.seed + n * 7919)) of
+    ((True, why), used) -> Just (n, used, why)
+    ((False, why), used) -> firstFailing c prop (n + 1)
+
+-- ---------------------------------------------------------------------------
+-- Shrinking
+-- ---------------------------------------------------------------------------
+
+-- A failing case made smaller until nothing tried is smaller and still
+-- fails, or `left` cases have been tried: runs of its draws taken out, the
+-- longest first, then each draw made 0, halved, or one less.
+@terminating
+shrunk : (prop : (u : ()) -> () ! {Gen, Test | r}) -> (draws : Vector Int) -> (why : String) -> (left : Int) -> (Vector Int, String, Int) ! r
+shrunk prop draws why left = case withoutRuns prop draws why (V.len draws / 2) 0 left of
+  (a, said, l1) -> case lowered prop a said 0 l1 of
+    (b, said2, l2) -> if or (l2 <= 0) (b == draws) then (b, said2, l2) else shrunk prop b said2 l2
+
+-- Whether `a` is before `b`: shorter, or as long and smaller at the first
+-- place they differ. A case is only ever replaced by one before it, which
+-- is why shrinking ends.
+before : (a : Vector Int) -> (b : Vector Int) -> Bool
+before a b = if V.len a != V.len b then V.len a < V.len b else beforeAt a b 0
+
+@terminating
+beforeAt : (a : Vector Int) -> (b : Vector Int) -> (i : Int) -> Bool
+beforeAt a b i = case (V.get a i, V.get b i) of
+  (Just x, Just y) -> if x == y then beforeAt a b (i + 1) else x < y
+  (p, q) -> False
+
+-- `draws` with runs of `size` taken out wherever the case still fails
+-- without them, and then of half that, down to one.
+@terminating
+withoutRuns : (prop : (u : ()) -> () ! {Gen, Test | r}) -> (draws : Vector Int) -> (why : String) -> (size : Int) -> (at : Int) -> (left : Int) -> (Vector Int, String, Int) ! r
+withoutRuns prop draws why size at left =
+  if or (size <= 0) (left <= 0) then (draws, why, left)
+  else if at >= V.len draws then withoutRuns prop draws why (size / 2) 0 left
+  else case attempt prop (V.append (V.take draws at) (V.drop draws (at + size))) False 0 of
+    ((True, said), used) ->
+      if before used draws then withoutRuns prop used said size at (left - 1)
+      else withoutRuns prop draws why size (at + size) (left - 1)
+    ((False, said), used) -> withoutRuns prop draws why size (at + size) (left - 1)
+
+-- `draws` with each made as small as the case still fails with.
+@terminating
+lowered : (prop : (u : ()) -> () ! {Gen, Test | r}) -> (draws : Vector Int) -> (why : String) -> (i : Int) -> (left : Int) -> (Vector Int, String, Int) ! r
+lowered prop draws why i left =
+  if left <= 0 then (draws, why, left)
+  else case V.get draws i of
+    Nothing -> (draws, why, left)
+    Just v ->
+      if v <= 0 then lowered prop draws why (i + 1) left
+      else case firstBefore prop draws i (0 :: v / 2 :: v - 1 :: Nil) left of
+        (Just (used, said), l2) -> lowered prop used said i l2
+        (Nothing, l2) -> lowered prop draws why (i + 1) l2
+
+-- The first of `values` that, put at `i` of `draws`, still fails and makes
+-- a case before this one: its draws and what it said.
+@terminating
+firstBefore : (prop : (u : ()) -> () ! {Gen, Test | r}) -> (draws : Vector Int) -> (i : Int) -> (values : List Int) -> (left : Int) -> (Maybe (Vector Int, String), Int) ! r
+firstBefore prop draws i values left =
+  if left <= 0 then (Nothing, left)
+  else case values of
+    Nil -> (Nothing, left)
+    v :: rest -> case attempt prop (V.set draws i v) False 0 of
+      ((True, said), used) ->
+        if before used draws then (Just (used, said), left - 1)
+        else firstBefore prop draws i rest (left - 1)
+      ((False, said), used) -> firstBefore prop draws i rest (left - 1)
