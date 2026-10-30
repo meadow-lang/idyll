@@ -1400,19 +1400,33 @@ do yet `(unsupported)`, and the tests count those apart.
   they are (the checker's errors are kinds only). (Lingua e15e7f9, Cut
   071b64b: a part's room of uniques is its first module's place among the
   package's sources, `partUnitPaths`.)
-- [ ] front/'s own REPL, once Cut moves its Lingua pin (Lingua 833e1a5, for
-  LineEditor 0.2.2).
-- [ ] CI, with MeadowBoot's prerelease for the `meadow` it needs.
-- [ ] **The rest of the passes on Lingua's `lang!`/`pass!`**, as MeadowBoot's
-  are (2026-10-18): writing the compiler on Lingua is for this. Done:
-  `Surface`, `Hir` and `Elaborated` are languages; the parser's lowering,
-  the renamer, `Scc` (`regroup`) and the checker (`elab : Hir ->
-  Elaborated`, bidirectional through its context's goal) are passes, and
-  nothing reads HIR as data any more. The checker computes with Core as data
-  inside, where normalisation by evaluation needs it. Next: the checked
-  program written out as `Elaborated`, the CEK machine and the Cut lowering
-  reading it there, and the lowering a pass from it to the Cut package's own
-  `lang!`, as MeadowBoot's `Seq` lowers its Core.
+- [x] front/'s own REPL, `Idyll repl`, a `repl!` (see phase 6), and its
+  language server, `Idyll lsp`, an `lsp!`, over one `database!` of
+  front/'s queries. For them the passes keep their state in `St`, not
+  `Mut` (2026-10-29).
+- [x] CI: front/'s own tests and its comparisons with the Rust compiler,
+  each a job of its own, on Meadow's nightly.
+- [x] **The rest of the passes on Lingua's eDSLs**, as MeadowBoot's are
+  (2026-10-18; Chris, 2026-10-28: wherever they fit):
+  - `Surface`, `Hir` and `Elaborated` are languages;
+  - the parser's lowering, the renamer, `Scc`, the checker (`elab : Hir ->
+    Elaborated`) and `Prune` are passes;
+  - what collects from a tree is a `pass!` fold;
+  - the command line is one `cli!`, the build a `make!`, the formatter a
+    `format!`;
+  - the lowering writes the Cut package's own `lang!` rows.
+
+  The checker computes with Core as data inside, where normalisation by
+  evaluation needs it. The lowering's continuation-passing core stays
+  hand-written, as do the CEK machine, the layout rule and the dumps the
+  differentials compare.
+- [ ] A file checked in its package, in the language server: Lingua's
+  `opened` (lsp!) gives the server a file's path, from which it can read
+  the package's other modules. What is missing is knowing which module a
+  place is in. Each module's places are offsets into its own text, so when
+  the modules are checked together, an error does not say which file it is
+  about. The renamer and the checker would keep the module with each place
+  (or the parser would give each module's offsets a base of their own).
 
 *Done when:* `front/` compiles the corpus and the tutorial to Cut that Glade
 and Silo run with the answers the CEK machine gives. Done 2026-10-21, and
