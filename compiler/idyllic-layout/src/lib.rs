@@ -18,10 +18,13 @@
 //! waiting for one, a `let` cannot appear inside a `case` alternative without
 //! explicit braces.  The `in` would be matched against the wrong block.
 //!
-//! Layout is suspended inside a sequence literal, `#[ … ]`, as it is inside
-//! explicit braces: its elements may run over several lines, and a `;` there
-//! is always the literal's own.  Its `]` also closes any layout block opened
-//! inside it and still open, as a `)` would in Haskell.
+//! Layout is suspended inside a sequence literal, `#[ … ]`, and inside
+//! brackets and parentheses, as it is inside explicit braces: what is in them
+//! may run over several lines, at any indentation, and a `;` there is always
+//! the literal's own.  A block opened inside them is laid out as usual, and
+//! their `]` or `)` closes it if it is still open, as Haskell's parse-error
+//! rule would: `(case m of` with its alternatives on the lines after, then
+//! `)`, is one expression.
 
 use idyllic_diagnostics::Diagnostic;
 use idyllic_span::{LineIndex, Span, Spanned};
@@ -219,23 +222,36 @@ fn mark_indents(li: &LineIndex, ms: Vec<Marked>) -> Vec<Marked> {
 // Layout
 // ---------------------------------------------------------------------------
 
-/// An open block.  `column` is the column its items line up at, or 0 for a
-/// block written with explicit braces — those are closed by `}` rather than
-/// by dedenting, which `is_explicit` is asking about.
+/// What opened a block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    /// a herald (`let`, `where`, `of`, ..), or the file itself: its items
+    /// line up, and dedenting closes it
+    Layout,
+    /// `{`, a block written out by hand, closed by its `}`
+    Brace,
+    /// `#[`, a sequence literal, closed by its `]`
+    Seq,
+    /// `[`, closed by its `]`
+    Bracket,
+    /// `(`, closed by its `)`
+    Paren,
+}
+
+/// An open block.  `column` is the column its items line up at, or 0 for one
+/// that dedenting does not close: braces, brackets and parentheses, inside
+/// which layout is suspended (which `is_explicit` is asking about), though a
+/// block opened inside them is laid out as any is.
 #[derive(Clone, Debug)]
 struct LayoutCtx {
     column: usize,
     closer: Option<Token>,
-    /// opened by `#[`, and closed by the `]` that matches it
-    seq: bool,
-    /// the plain `[`s opened in this block and not yet closed, so that the
-    /// `]` of a sequence literal is told from theirs
-    brackets: usize,
+    kind: Kind,
 }
 
 impl LayoutCtx {
     fn is_explicit(&self) -> bool {
-        self.column == 0
+        self.kind != Kind::Layout
     }
 }
 
@@ -256,7 +272,7 @@ struct Layouter {
 pub fn layout(li: &LineIndex, input: &[Spanned<Token>]) -> LayoutOutput {
     let markers = mark(li, input);
     let mut st = Layouter {
-        stack: vec![LayoutCtx { column: 1, closer: None, seq: false, brackets: 0 }],
+        stack: vec![LayoutCtx { column: 1, closer: None, kind: Kind::Layout }],
         out: vec![Spanned::new(Token::VLBrace, Span::at(0))],
         errors: Vec::new(),
         end_span: input.last().map_or(Span::at(0), |t| t.span),
@@ -271,7 +287,12 @@ impl Layouter {
     }
 
     fn push(&mut self, column: usize, closer: Option<Token>) {
-        self.stack.push(LayoutCtx { column, closer, seq: false, brackets: 0 });
+        self.stack.push(LayoutCtx { column, closer, kind: Kind::Layout });
+    }
+
+    /// A block that dedenting does not close: `{`, `#[`, `[` or `(`.
+    fn push_group(&mut self, kind: Kind, closer: Option<Token>) {
+        self.stack.push(LayoutCtx { column: 0, closer, kind });
     }
 
     fn top(&self) -> Option<LayoutCtx> {
@@ -374,14 +395,14 @@ impl Layouter {
                 if lb.node == Token::LBrace {
                     self.emit(t.node.clone(), t.span);
                     self.emit(lb.node.clone(), lb.span);
-                    self.push(0, Some(closer));
+                    self.push_group(Kind::Brace, Some(closer));
                     return i + 2;
                 }
             }
         }
         if t.node == Token::LBrace {
             self.emit(t.node.clone(), t.span);
-            self.push(0, None);
+            self.push_group(Kind::Brace, None);
             return i + 1;
         }
         // `#[`: a sequence literal, with layout suspended until its `]`
@@ -390,20 +411,38 @@ impl Layouter {
                 if lb.node == Token::LBracket {
                     self.emit(t.node.clone(), t.span);
                     self.emit(lb.node.clone(), lb.span);
-                    self.stack.push(LayoutCtx { column: 0, closer: None, seq: true, brackets: 0 });
+                    self.push_group(Kind::Seq, None);
                     return i + 2;
                 }
             }
         }
-        if t.node == Token::LBracket {
-            if let Some(top) = self.stack.last_mut() {
-                top.brackets += 1;
-            }
+        // `[` and `(` suspend layout too, until what closes them
+        let group = match t.node {
+            Token::LBracket => Some(Kind::Bracket),
+            Token::LParen => Some(Kind::Paren),
+            _ => None,
+        };
+        if let Some(kind) = group {
+            self.emit(t.node.clone(), t.span);
+            self.push_group(kind, None);
+            return i + 1;
         }
-        if t.node == Token::RBracket {
-            self.close_bracket(t.span);
+        let closing: &[Kind] = match t.node {
+            Token::RBracket => &[Kind::Seq, Kind::Bracket],
+            Token::RParen => &[Kind::Paren],
+            _ => &[],
+        };
+        if !closing.is_empty() {
+            self.close_group(closing, t.span);
             self.emit(t.node.clone(), t.span);
             return i + 1;
+        }
+        // a `,` separates the items of the group it is in, never of a layout
+        // block: the blocks opened since the group's item began are over
+        if t.node == Token::Comma {
+            if let Some(at) = self.stack.iter().rposition(|c| c.is_explicit()) {
+                self.close_above(at, t.span);
+            }
         }
         // 'in' / 'where' closing the block that is waiting for it
         if let Some(ctx) = self.top() {
@@ -422,31 +461,37 @@ impl Layouter {
         i + 1
     }
 
-    /// A `]` closes the innermost `[` still open.  If that is a sequence
-    /// literal's, the layout blocks opened inside the literal close with it.
-    fn close_bracket(&mut self, sp: Span) {
-        if let Some(top) = self.stack.last_mut() {
-            if top.brackets > 0 {
-                top.brackets -= 1;
-                return;
-            }
-        }
-        // the literal is the nearest block that is not a layout block
+    /// A `]` or a `)` closes the `#[`, `[` or `(` it matches, and the layout
+    /// blocks opened inside it, as Haskell's parse-error rule would: so a
+    /// `case` in parentheses may have its alternatives on lines of their
+    /// own. (One that matches nothing, or with an explicit `{` in between, is
+    /// the parser's to report.)
+    fn close_group(&mut self, kinds: &[Kind], sp: Span) {
         let Some(at) = self.stack.iter().rposition(|c| c.is_explicit()) else { return };
-        if !self.stack[at].seq || self.stack[at].brackets > 0 {
+        if !kinds.contains(&self.stack[at].kind) {
             return;
         }
+        self.close_above(at, sp);
+        self.stack.pop();
+    }
+
+    /// Close every layout block above the one at `at`.
+    fn close_above(&mut self, at: usize, sp: Span) {
         while self.stack.len() > at + 1 {
             self.emit(Token::VRBrace, sp);
             self.stack.pop();
         }
-        self.stack.pop();
     }
 
     /// '}' closes an explicit block; if that block was opened by 'let {' its
     /// closing keyword may follow immediately.
     fn close_explicit(&mut self, t: &Spanned<Token>, ms: &[Marked], i: usize) -> usize {
         if let Some(ctx) = self.top() {
+            // inside a `#[`, `[` or `(`: the parser reports the `}`
+            if ctx.is_explicit() && ctx.kind != Kind::Brace {
+                self.emit(t.node.clone(), t.span);
+                return i + 1;
+            }
             if ctx.is_explicit() {
                 match (&ctx.closer, ms.get(i + 1)) {
                     (None, _) => {
@@ -472,6 +517,11 @@ impl Layouter {
     /// never saw its '}' is an error, and stops the unwinding.
     fn close_all(&mut self) {
         while let Some(ctx) = self.top() {
+            // a `[` or `(` never closed is the parser's to report
+            if matches!(ctx.kind, Kind::Bracket | Kind::Paren) {
+                self.stack.pop();
+                continue;
+            }
             if ctx.is_explicit() {
                 self.errors.push(LayoutError::NotInLayoutContextAtEndOfInput(self.end_span));
                 return;

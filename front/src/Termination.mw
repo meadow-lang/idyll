@@ -1,0 +1,298 @@
+-- Termination checking, and what it buys: recursive definitions that
+-- compute in types. `compiler/idyllic-typecheck/src/termination.rs`.
+--
+-- Once a recursive group is checked, its case trees are examined with the
+-- size-change principle (Lee, Jones & Ben-Amram), as Agda does: each
+-- recursive call is summarised by how its arguments relate to the caller's
+-- parameters (smaller: a variable a split took out of the parameter; the
+-- same; or unknown), and the group terminates if every way round a loop of
+-- calls, composed with itself until nothing new appears, makes some
+-- parameter smaller. That covers structural recursion on any argument,
+-- mutual recursion, and lexicographic orders like Ackermann's.
+--
+-- A group that terminates, at the top level, becomes transparent: its
+-- members unfold in types when applied to enough arguments that their case
+-- trees can choose (`Eval.unfold`), so `S n + m` computes to `S (n + m)`. A
+-- group that may not terminate must say `! Div` where its calls get to, or
+-- be vouched for with `@terminating`.
+
+use Std.St (StRef, newRef, getRef, setRef)
+use Idyll.Core (Core, CaseAlt, Head, OpClause)
+use Idyll.Value (Value)
+use Idyll.Value as Va
+use Idyll.Tc (Tc)
+use Idyll.Tc as T
+use Idyll.Eval (eval, quote)
+use Idyll.Ctx (Ctx, Info)
+use Idyll.Ctx as X
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as Hm
+use Std.Collections.HashMap (HashMap)
+use Std.String as S
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+-- How a call's argument relates to a parameter of the caller: unknown (0),
+-- the same (1), or smaller (2), in that order.
+fun unknown () : Int = 0
+
+fun same () : Int = 1
+
+fun smaller () : Int = 2
+
+-- Through one call and then another.
+fun andThen (a : Int) (b : Int) : Int = if a == 0 or b == 0 then 0 else if a == 1 and b == 1 then 1 else 2
+
+-- A call: from which member, to which, and for each of the caller's
+-- parameters and each of the callee's, how the argument relates to it.
+data Call = Call Int Int [[Int]]
+
+fun keyOf (c : Call) : String =
+  match c with
+  | Call.Call f g m -> show f ++ ">" ++ show g ++ ":" ++ S.join "|" (V.map (\row -> S.join "," (V.map show row)) m)
+
+fun compose (a : [[Int]]) (b : [[Int]]) (calleeParams : Int) : [[Int]] =
+  V.map
+    (\row ->
+      V.map
+        (\k -> V.foldl (\best rb -> match rb with | (r, bRow) -> (let x = andThen r (V.getOr 0 bRow k) in if x > best then x else best)) 0 (V.zip row b))
+        (V.range 0 calleeParams))
+    a
+
+-- Whether every loop of calls makes something smaller: the calls closed
+-- under composition, and each call of a member to itself that composing
+-- with itself leaves alone must make one of its parameters smaller.
+fun terminates (calls : [Call]) (arities : [Int]) : Bool =
+  let all = closure calls (V.map keyOf calls) calls arities in
+  V.all
+    (\c ->
+      match c with
+      | Call.Call f g m ->
+          if f != g then True
+          else
+            let square = compose m m (V.getOr 0 arities g) in
+            keyOf (Call.Call f g square) != keyOf c
+              or V.any (\i -> V.getOr 0 (V.getOr [] m i) i == 2) (V.range 0 (minOf (V.len m) (V.getOr 0 arities g))))
+    all
+
+fun minOf (a : Int) (b : Int) : Int = if a < b then a else b
+
+fun closure (all : [Call]) (keys : [String]) (fresh : [Call]) (arities : [Int]) : [Call] =
+  match V.last fresh with
+  | None -> all
+  | Just (Call.Call f g m) ->
+      let rest = V.take fresh (V.len fresh - 1) in
+      let after = V.concatMap (\c -> match c with | Call.Call g2 h m2 -> if g2 == g then [Call.Call f h (compose m m2 (V.getOr 0 arities h))] else []) all in
+      let before = V.concatMap (\c -> match c with | Call.Call e h m0 -> if h == f then [Call.Call e g (compose m0 m (V.getOr 0 arities g))] else []) all in
+      let (all2, keys2, fresh2) =
+        V.foldl
+          (\acc c ->
+            match acc with
+            | (a, ks, fr) -> if V.elem (keyOf c) ks then acc else (V.pushBack a c, V.pushBack ks (keyOf c), V.pushBack fr c))
+          (all, keys, rest)
+          (V.append after before)
+      in
+      closure all2 keys2 fresh2 arities
+
+-- How many lambdas a term starts with, through the notes elaboration
+-- leaves on them, and what is under them.
+@pub fun lambdasOf (c : Core) : (Int, Core) =
+  match c with
+  | Core.Lam _ body -> (match lambdasOf body with | (n, inner) -> (n + 1, inner))
+  | Core.Runtime _ (Core.Lam x body) -> lambdasOf (Core.Lam x body)
+  | _ -> (0, c)
+
+-- Up to `most` lambdas.
+fun lambdas (c : Core) (most : Int) : (Int, Core) =
+  match c with
+  | Core.Lam _ body -> if most > 0 then (match lambdas body (most - 1) with | (n, inner) -> (n + 1, inner)) else (0, c)
+  | _ -> (0, c)
+
+-- How many arguments a recursive definition takes before its case tree.
+@pub fun arity (c : Core) : Int = fst (lambdasOf c)
+
+-- After a recursive group is checked: whether every loop of calls in it
+-- makes something smaller; if so, and it is not under a binder, its
+-- members unfold from now on.
+@pub fun checkTermination (tc : Tc s) (ctx : Ctx) (members : [(Int, Core)]) : Bool ! { St s | e } =
+  let index = V.foldl (\m i -> match V.get members i with | Just (u, _) -> Hm.insert u i m | None -> m) Hm.empty (V.range 0 (V.len members)) in
+  -- with metavariables solved and definitions inlined, so that calls made
+  -- through them are seen
+  let bodies = V.map (\mc -> match mc with | (_, core) -> quote tc ctx.lvl (eval tc ctx.env core)) members in
+  let arities = V.map (\mc -> match mc with | (_, core) -> arity core) members in
+  let calls = newRef [] in
+  let w =
+    V.foldl
+      (\acc f ->
+        let (n, inner) = lambdas (V.getOr Core.Error bodies f) (V.getOr 0 arities f) in
+        let walk =
+          Walk {
+            base = ctx.lvl,
+            origin = newRef (V.map (\p -> Just (p, same ())) (V.range 0 n)),
+            splits = newRef [],
+            index,
+            arities,
+            from = f,
+            calls
+          }
+        in
+        term walk inner (ctx.lvl + n))
+      ()
+      (V.range 0 (V.len members))
+  in
+  if not (terminates (dedupe (getRef calls)) arities) then False
+  -- only a group with no enclosing variables: one nested under a binder is
+  -- known by its binding site, so its instances could not be told apart
+  else if V.any (\l -> X.infoAt ctx l == Just Info.Bound) (V.range 0 ctx.lvl) then True
+  else
+    let w2 =
+      V.foldl
+        (\acc mc ->
+          match mc with
+          | (u, core) ->
+              (match lambdasOf core with
+               | (k, body) -> setRef tc.transparent (Hm.insert u (ctx.env, k, body) (getRef tc.transparent))))
+        ()
+        members
+    in
+    True
+
+-- The instances of a recursive group checked at the top level that do not
+-- unfold already (`Checker::unfold_instances`): each unfolds where a
+-- `case` reads a type or a superclass off it.
+@pub fun unfoldInstances (tc : Tc s) (ctx : Ctx) (members : [(Int, Core)]) : () ! { St s | e } =
+  if V.any (\l -> X.infoAt ctx l == Just Info.Bound) (V.range 0 ctx.lvl) then ()
+  else
+    V.foldl
+      (\acc mc ->
+        match mc with
+        | (u, core) ->
+            if V.elem u (getRef tc.hints) and not (Hm.member u (getRef tc.transparent)) then
+              (match lambdasOf core with
+               | (k, body) ->
+                   let w = setRef tc.transparent (Hm.insert u (ctx.env, k, body) (getRef tc.transparent)) in
+                   setRef tc.onCase (V.pushBack (getRef tc.onCase) u))
+            else ())
+      ()
+      members
+
+fun dedupe (calls : [Call]) : [Call] =
+  match V.foldl (\acc c -> match acc with | (ks, cs) -> if V.elem (keyOf c) ks then acc else (V.pushBack ks (keyOf c), V.pushBack cs c)) ([], []) calls with
+  | (_, cs) -> cs
+
+-- Collecting a definition's calls to its group: the level of its first
+-- parameter; for each variable from there, which parameter it came out of
+-- and how it relates to it; the splits around (the constructor, the levels
+-- its arguments were bound at, and where the variable split came from).
+record Walk s = {
+  base : Int,
+  origin : StRef s [Maybe (Int, Int)],
+  splits : StRef s [(Int, [Int], Maybe (Int, Int))],
+  index : HashMap Int Int,
+  arities : [Int],
+  from : Int,
+  calls : StRef s [Call]
+}
+
+-- A term's head and its arguments.
+fun spine (c : Core) (args : [Core]) : (Core, [Core]) =
+  match c with
+  | Core.App f a -> spine f (V.append [a] args)
+  | _ -> (c, args)
+
+fun originOf (w : Walk s) (c : Core) (lvl : Int) : Maybe (Int, Int) ! { St s | e } =
+  match c with
+  | Core.Var i _ ->
+      let at = lvl - i - 1 - w.base in
+      if at < 0 then None else M.andThen (\o -> o) (V.get (getRef w.origin) at)
+  | _ ->
+      -- a split variable, put back together
+      (match spine c [] with
+       | (Core.Opaque u _, args) ->
+           V.foldl
+             (\acc sp ->
+               match sp with
+               | (con, vars, origin) ->
+                   let isSame =
+                     con == u and V.len args == V.len vars
+                       and V.all (\av -> match av with | (Core.Var i _, v) -> lvl - i - 1 == v | _ -> False) (V.zip args vars)
+                   in
+                   if isSame and M.isSome origin then origin else acc)
+             None
+             (getRef w.splits)
+       | _ -> None)
+
+fun under (w : Walk s) (n : Int) (origin : Maybe (Int, Int)) (body : Core) (lvl : Int) =
+  let before = getRef w.origin in
+  let u = setRef w.origin (V.append before (V.replicate n origin)) in
+  let u2 = term w body (lvl + n) in
+  setRef w.origin before
+
+fun term (w : Walk s) (c : Core) (lvl : Int) =
+  match c with
+  | Core.Lam _ body -> under w 1 None body lvl
+  | Core.Pi _ _ g r dom cod ->
+      let u = V.foldl (\acc x -> term w x lvl) () [g, r, dom] in
+      under w 1 None cod lvl
+  | Core.Let _ e body ->
+      let u = term w e lvl in
+      under w 1 (originOf w e lvl) body lvl
+  -- what comes out of a split is smaller than what went in
+  | Core.Case s alts ->
+      let u = term w s lvl in
+      let whole = originOf w s lvl in
+      let o = M.map (\pr -> match pr with | (p, _) -> (p, smaller ())) whole in
+      V.foldl
+        (\acc alt ->
+          match alt with
+          | CaseAlt.CaseAlt (Head.Con con) _ vars body ->
+              let before = getRef w.splits in
+              let u2 = setRef w.splits (V.pushBack before (con, V.range lvl (lvl + V.len vars), whole)) in
+              let u3 = under w (V.len vars) o body lvl in
+              setRef w.splits before
+          | CaseAlt.CaseAlt _ _ vars body -> under w (V.len vars) o body lvl)
+        ()
+        alts
+  | Core.App _ _ -> call w c lvl
+  | Core.Opaque _ _ -> call w c lvl
+  | Core.Row ls ts -> V.foldl (\acc x -> term w x lvl) () (V.append ls ts)
+  | Core.Handle b r ops ->
+      let u = term w b lvl in
+      let u2 = term w r lvl in
+      V.foldl (\acc op -> match op with | OpClause.OpClause _ _ _ body -> term w body lvl) () ops
+  | Core.BoxTy a b -> V.foldl (\acc x -> term w x lvl) () [a, b]
+  | Core.Comp a b -> V.foldl (\acc x -> term w x lvl) () [a, b]
+  | Core.GradeAdd a b -> V.foldl (\acc x -> term w x lvl) () [a, b]
+  | Core.GradeMul a b -> V.foldl (\acc x -> term w x lvl) () [a, b]
+  | Core.GradeRange a b -> V.foldl (\acc x -> term w x lvl) () [a, b]
+  | Core.BoxIntro a -> term w a lvl
+  | Core.Unbox a -> term w a lvl
+  | Core.Runtime _ a -> term w a lvl
+  | _ -> ()
+
+-- An application: a call to the group, summarised, and its arguments
+-- walked.
+fun call (w : Walk s) (c : Core) (lvl : Int) =
+  let (head, args) = spine c [] in
+  let u =
+    match head with
+    | Core.Opaque fu _ ->
+        (match Hm.lookup fu w.index with
+         | Just to ->
+             let params = V.getOr 0 w.arities w.from in
+             let matrix =
+               V.map
+                 (\p ->
+                   V.map
+                     (\j ->
+                       match M.andThen (\a -> originOf w a lvl) (V.get args j) with
+                       | Just (q, rel) -> if q == p then rel else unknown ()
+                       | None -> unknown ())
+                     (V.range 0 (V.getOr 0 w.arities to)))
+                 (V.range 0 params)
+             in
+             setRef w.calls (V.pushBack (getRef w.calls) (Call.Call w.from to matrix))
+         | None -> ())
+    | _ -> term w head lvl
+  in
+  V.foldl (\acc a -> term w a lvl) () args

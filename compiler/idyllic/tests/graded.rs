@@ -53,7 +53,11 @@ fn outside_a_linear_module_a_binder_that_says_nothing_is_unrestricted() {
     assert_eq!(plain("\\(x : [1] Int) -> x + x").1, ["usage mismatch"]);
     // a truth value is looked at once by the `if` that looks at it, whatever
     // the default (it has no fields to hand on)
-    assert_eq!(plain("\\(x : [1] Int) -> if x < 0 then 1 else 2").1, Vec::<String>::new());
+    assert_eq!(plain("\\(x : [1] Bool) -> if x then 1 else 2").1, Vec::<String>::new());
+    // a comparison looks at its operands as often as it likes (as Rust's
+    // borrow theirs): what it compares is unrestricted
+    assert_eq!(plain("\\(x : [1] Int) -> if x < 0 then 1 else 2").1, ["usage mismatch"]);
+    assert_eq!(plain("\\(x : [] Int) -> if x < 0 then 1 else 2").1, Vec::<String>::new());
     // and in a linear module, the other way round
     assert_eq!(run("\\(x : [] Int) -> x + x"), ("(x : [] Int) -> Int".into(), vec![]));
 }

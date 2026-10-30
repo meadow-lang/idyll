@@ -65,6 +65,8 @@ pub enum RenameError {
     ModuleNotValue { path: String, span: Span },
     /// a record built, matched, read or updated wrongly: what, and where
     Record { message: String, label: String, span: Span },
+    /// `module M where` inside a file, for a module the package has already
+    DuplicateModule { path: String, span: Span },
 }
 
 impl RenameError {
@@ -97,6 +99,9 @@ impl RenameError {
                 Diagnostic::error(format!("{module} has no {name}")).label(*span, "used here")
             }
             RenameError::Record { message, label, span } => Diagnostic::error(message.clone()).label(*span, label.clone()),
+            RenameError::DuplicateModule { path, span } => Diagnostic::error(format!("the package has a module {path} already"))
+                .label(*span, "a second module of this name")
+                .help("a module inside a file is the module under that file's: give it a name of its own"),
             RenameError::ModuleNotValue { path, span } => Diagnostic::error(format!("{path} is a module"))
                 .label(*span, "a module is not a value; name something in it, as in M.x"),
             RenameError::AliasForType { path, span } => {
@@ -155,6 +160,9 @@ struct ModuleState {
     /// what other modules may take from it: its declarations, each with how
     /// visible it is, and what it gives on with `@pub use`
     exports: HashMap<String, (usize, Visibility)>,
+    /// every meaning its `use`s bring each name, in order: `imports` keeps
+    /// the last, and two or more make the name an overload
+    brought: HashMap<String, Vec<usize>>,
 }
 
 struct Renamer {
@@ -179,6 +187,18 @@ struct Renamer {
     fields: HashMap<usize, Vec<(String, usize)>>,
     /// the definitions marked `@terminating`
     terminating: std::collections::HashSet<usize>,
+    /// the definitions marked `@test`, in order
+    tests: Vec<usize>,
+    /// the definitions marked `@hint`
+    hints: std::collections::HashSet<usize>,
+    /// each trait's methods with a default, the default, and whether the
+    /// method is a function, by the trait's record type: what an instance
+    /// leaving one out gets
+    defaults: HashMap<usize, Vec<(String, usize, bool)>>,
+    /// each trait's superclass projections, by its record type
+    supers: HashMap<usize, Vec<usize>>,
+    /// each trait's methods: see [`hir::Module::methods`]
+    methods: HashMap<usize, (usize, usize, usize)>,
     /// whether the package's modules are all linear (`--linear`)
     linear_package: bool,
     /// whether the module being renamed is: its unannotated binders get
@@ -207,6 +227,12 @@ struct Renamer {
     /// the module each top-level name of a module other than the root is in,
     /// as written before it from outside (`Math` for `Math.double`)
     qualifiers: HashMap<usize, String>,
+    /// the names with more than one meaning where they are written (see
+    /// [`hir::Module::overloads`])
+    overloads: HashMap<NodeId, Vec<usize>>,
+    /// what the last name [`Renamer::use_name`] looked up may mean, when it
+    /// is more than one thing: for its caller to give the node it makes
+    meanings: Option<Vec<usize>>,
 }
 
 /// What binding a module's names leaves to do once every module's are bound.
@@ -259,7 +285,51 @@ pub fn rename_package(
     first_unique: usize,
     linear: bool,
 ) -> RenameResult {
+    let programs: Vec<&ast::Program> = modules.iter().map(|m| m.program).collect();
+    let part = PartOf { siblings: &[], root: true, visibility_mentioned: package_mentions_visibility(&programs) };
+    rename_part(package, modules, prelude, deps, first_unique, linear, part)
+}
+
+/// Where the modules being renamed are in their package, when they are one
+/// part of it (see `idyllic::parts`) rather than all of it.
+pub struct PartOf<'a> {
+    /// what the package's earlier parts that these modules import give:
+    /// their modules are this package's, reached by their paths, with all
+    /// the package may see of them
+    pub siblings: &'a [&'a hir::PackageNames],
+    /// whether the first module is the package's root, whose trailing
+    /// expression is the body and whose `main` is run
+    pub root: bool,
+    /// whether any module of the whole package says how visible something
+    /// in it is (see [`package_mentions_visibility`])
+    pub visibility_mentioned: bool,
+}
+
+/// Whether any of a package's modules, or a module written inside one,
+/// says how visible something is: until one does, everything is visible
+/// to the whole package.
+pub fn package_mentions_visibility(programs: &[&ast::Program]) -> bool {
+    programs.iter().any(|p| mentions_visibility(p) || p.modules.iter().any(|(_, inner)| package_mentions_visibility(&[inner])))
+}
+
+/// Rename one part of a package: [`rename_package`], with the names of the
+/// parts before it.
+#[allow(clippy::too_many_arguments)]
+pub fn rename_part(
+    package: &str,
+    modules: &[ModuleSource<'_>],
+    prelude: &ast::Program,
+    deps: &[(&str, &hir::PackageNames)],
+    first_unique: usize,
+    linear: bool,
+    part: PartOf<'_>,
+) -> RenameResult {
+    // a module written inside a file is a module of the package's like any
+    // other, under the one it is written in
+    let mut errors = Vec::new();
+    let modules = &lifted(modules, &mut errors);
     let mut r = Renamer::new(package);
+    r.errors = errors;
     r.linear_package = linear;
     // the prelude's names get scopes of their own (what it brings in with
     // `use`, then what it declares), so that redefining a builtin shadows it
@@ -276,8 +346,16 @@ pub fn rename_package(
     let n = r.scopes.len();
     let names = r.scopes[n - 2..].iter().flatten().map(|(x, &(u, _))| (x.clone(), u)).collect();
     r.base = std::mem::take(&mut r.scopes);
-    r.visibility_mentioned = modules.iter().any(|m| mentions_visibility(m.program));
+    r.visibility_mentioned = part.visibility_mentioned;
     r.modules = modules.iter().map(|m| ModuleState { path: m.path.clone(), ..ModuleState::default() }).collect();
+    // the package's earlier parts: modules of its own, renamed already
+    for names in part.siblings {
+        for path in &names.modules {
+            let exports = names.exports.iter().filter(|(m, ..)| m == path).map(|(_, x, u, vis)| (x.clone(), (*u, *vis))).collect();
+            r.modules.push(ModuleState { package: 0, path: path.clone(), exports, ..ModuleState::default() });
+        }
+        r.take_names(names);
+    }
     // what the packages depended on give
     for (i, (name, names)) in deps.iter().enumerate() {
         r.deps.push(name.to_string());
@@ -290,13 +368,7 @@ pub fn rename_package(
                 .collect();
             r.modules.push(ModuleState { package: i + 1, path: path.clone(), exports, ..ModuleState::default() });
         }
-        for (u, ty, ctors) in &names.types {
-            r.ctors.insert(*u, ctors.clone());
-            r.type_names.insert(*u, ty.clone());
-            r.note_twin(*u);
-        }
-        r.effect_ops.extend(names.effect_ops.iter().cloned());
-        r.fields.extend(names.fields.iter().cloned());
+        r.take_names(names);
     }
     r.next_unique = r.next_unique.max(first_unique);
     let first = r.next_unique;
@@ -304,8 +376,8 @@ pub fn rename_package(
         .iter()
         .enumerate()
         .map(|(i, m)| match (&m.program.decls[..], m.program.body.as_ref()) {
-            ([], Some(Spanned { node: ast::Term::Let(decls, body), .. })) if i == 0 => (&decls[..], Some(&**body)),
-            (decls, body) => (decls, body.filter(|_| i == 0)),
+            ([], Some(Spanned { node: ast::Term::Let(decls, body), .. })) if i == 0 && part.root => (&decls[..], Some(&**body)),
+            (decls, body) => (decls, body.filter(|_| i == 0 && part.root)),
         })
         .collect();
     // 1. every module's names, so that any module can mention any other's
@@ -345,7 +417,7 @@ pub fn rename_package(
         effects.extend(e);
         natives.extend(n);
         binds.extend(bs);
-        if i == 0 {
+        if i == 0 && part.root {
             body = parts[0].1.map(|b| r.rename_term(b));
             main = r.scopes.last().and_then(|own| own.get("main")).map(|&(u, _)| u);
         }
@@ -359,7 +431,7 @@ pub fn rename_package(
         exports: r
             .modules
             .iter()
-            .filter(|m| m.package == 0)
+            .take(modules.len())
             .flat_map(|m| m.exports.iter().map(|(x, &(u, vis))| (m.path.clone(), x.clone(), u, vis)))
             .collect(),
         types: datas
@@ -377,9 +449,25 @@ pub fn rename_package(
             .filter(|d: &&hir::DataDecl| own(&d.name.unique))
             .filter_map(|d| Some((d.name.unique?, r.fields.get(&d.name.unique?)?.clone())))
             .collect(),
+        defaults: datas
+            .iter()
+            .filter(|d: &&hir::DataDecl| own(&d.name.unique))
+            .filter_map(|d| Some((d.name.unique?, r.defaults.get(&d.name.unique?)?.clone())))
+            .collect(),
+        supers: datas
+            .iter()
+            .filter(|d: &&hir::DataDecl| own(&d.name.unique))
+            .filter_map(|d| Some((d.name.unique?, r.supers.get(&d.name.unique?)?.clone())))
+            .collect(),
+        methods: {
+            let mut methods: Vec<(usize, (usize, usize, usize))> = r.methods.iter().filter(|(m, _)| **m >= first).map(|(m, i)| (*m, *i)).collect();
+            methods.sort_unstable();
+            methods
+        },
     };
     let module = hir::Module {
         datas,
+        data_after: Vec::new(),
         effects,
         natives,
         groups,
@@ -391,10 +479,39 @@ pub fn rename_package(
         names: names_given,
         uniques: (first, r.next_unique),
         terminating: r.terminating,
+        tests: r.tests,
+        testing: false,
+        hints: r.hints,
+        supers: r.supers,
+        methods: r.methods,
+        overloads: r.overloads,
         version: None,
         linear_body: linear || modules.first().is_some_and(|m| m.program.linear),
     };
     RenameResult { module, spans: r.spans, errors: r.errors }
+}
+
+/// Every module of a package, and each module written inside one of their
+/// files, after them: `module Inner where` in `src/Outer.idl` is
+/// `Outer.Inner`. One whose path a module has already is an error, and is
+/// left out.
+fn lifted<'a>(modules: &[ModuleSource<'a>], errors: &mut Vec<RenameError>) -> Vec<ModuleSource<'a>> {
+    let mut all: Vec<ModuleSource<'a>> = modules.iter().map(|m| ModuleSource { path: m.path.clone(), program: m.program }).collect();
+    let mut i = 0;
+    while i < all.len() {
+        let (path, program) = (all[i].path.clone(), all[i].program);
+        for (name, inner) in &program.modules {
+            let mut at = path.clone();
+            at.push(name.node.clone());
+            if all.iter().any(|m| m.path == at) {
+                errors.push(RenameError::DuplicateModule { path: at.join("."), span: name.span });
+                continue;
+            }
+            all.push(ModuleSource { path: at, program: inner });
+        }
+        i += 1;
+    }
+    all
 }
 
 /// Whether a module says how visible anything in it is.
@@ -421,7 +538,7 @@ impl Renamer {
     /// primitive types and operations, holding the uniques they reserve.
     fn new(package: &str) -> Self {
         let builtins = Builtin::ALL.iter().map(|b| (b.name(), b.unique()));
-        let prims = Prim::ALL.iter().map(|p| (p.name(), p.unique()));
+        let prims = Prim::ALL.iter().flat_map(|p| [(p.name(), p.unique()), (p.alias(), p.unique())]);
         let global: Scope =
             builtins.chain(prims).map(|(n, u)| (n.to_string(), (u, Span::at(0)))).collect();
         Renamer {
@@ -434,6 +551,11 @@ impl Renamer {
             twins: HashMap::new(),
             fields: HashMap::new(),
             terminating: Default::default(),
+            tests: Vec::new(),
+            hints: Default::default(),
+            defaults: HashMap::new(),
+            supers: HashMap::new(),
+            methods: HashMap::new(),
             linear_package: false,
             linear: false,
             in_type: false,
@@ -445,6 +567,8 @@ impl Renamer {
             base: Vec::new(),
             visibility_mentioned: false,
             qualifiers: HashMap::new(),
+            overloads: HashMap::new(),
+            meanings: None,
         }
     }
 
@@ -502,10 +626,46 @@ impl Renamer {
                 })
                 .collect();
             self.fields.insert(u, found);
+            // a trait's methods, the definitions named as its fields are
+            if d.node.is_trait {
+                let scope = self.scopes.last().expect("scope stack is never empty");
+                for (i, f) in fields.iter().enumerate() {
+                    if let Some(&(m, _)) = scope.get(&f.node).filter(|_| !f.node.starts_with("#super")) {
+                        self.methods.insert(m, (u, i, d.node.params.len()));
+                    }
+                }
+            }
+            // a trait's superclasses, the fields named `#super0` and on
+            if d.node.is_trait {
+                let supers: Vec<usize> =
+                    self.fields.get(&u).map(|fs| fs.iter().filter(|(f, _)| f.starts_with("#super")).map(|(_, p)| *p).collect()).unwrap_or_default();
+                if !supers.is_empty() {
+                    self.supers.insert(u, supers);
+                }
+            }
+            // a trait's defaults, bound (`Describe.#twice`) with the rest
+            if !d.node.defaults.is_empty() {
+                let scope = self.scopes.last().expect("scope stack is never empty");
+                let found = d
+                    .node
+                    .defaults
+                    .iter()
+                    .filter_map(|(m, def, function)| scope.get(def).map(|&(p, _)| (m.node.clone(), p, *function)))
+                    .collect();
+                self.defaults.insert(u, found);
+            }
         }
         for (_, name, _) in &defs {
             if let (Some(u), true) = (name.unique, prog.terminating.iter().any(|x| x.node == name.text)) {
                 self.terminating.insert(u);
+            }
+            if let (Some(u), true) = (name.unique, prog.tests.iter().any(|x| x.node == name.text)) {
+                if !self.tests.contains(&u) {
+                    self.tests.push(u);
+                }
+            }
+            if let (Some(u), true) = (name.unique, prog.hints.iter().any(|x| x.node == name.text)) {
+                self.hints.insert(u);
             }
         }
         Bound { datas, data_names, effect_names, defs, natives }
@@ -591,6 +751,21 @@ impl Renamer {
         self.modules.iter().any(inside).then(|| Target::Namespace(package, path.iter().map(|s| s.to_string()).collect()))
     }
 
+    /// What another package, or an earlier part of this one, says of its
+    /// types, effects, records and traits.
+    fn take_names(&mut self, names: &hir::PackageNames) {
+        for (u, ty, ctors) in &names.types {
+            self.ctors.insert(*u, ctors.clone());
+            self.type_names.insert(*u, ty.clone());
+            self.note_twin(*u);
+        }
+        self.effect_ops.extend(names.effect_ops.iter().cloned());
+        self.fields.extend(names.fields.iter().cloned());
+        self.defaults.extend(names.defaults.iter().cloned());
+        self.supers.extend(names.supers.iter().cloned());
+        self.methods.extend(names.methods.iter().cloned());
+    }
+
     /// May the current module see something of module `owner`'s, that is
     /// this visible?  Its own, and its descendants', always; its parent's
     /// subtree, with `@pub(super)`; the package, with `@pub(pkg)` or `@pub`.
@@ -623,9 +798,24 @@ impl Renamer {
         let mut at = if let Some(m) = alias {
             Target::Module(m)
         } else if let Some(u) = self.lookup(first) {
-            Target::Name(u)
+            // the name another module of that name gives, as `use Matrix
+            // (Matrix)` brought the type in (on the first of the two passes
+            // over the `use`s): the path is that module's still. (In the
+            // module itself, `use Matrix.*` is its own type's constructors.)
+            match self.under_root(0, &[first]) {
+                Some(Target::Module(m))
+                    if Some(m) != self.current && self.modules[m].exports.get(first).map(|e| e.0) == Some(u) =>
+                {
+                    Target::Module(m)
+                }
+                _ => Target::Name(u),
+            }
         } else if first == self.package && !self.modules.is_empty() {
-            Target::Module(0)
+            // the root module, or in a part without it, what is under it
+            match self.module_at(0, &[]) {
+                Some(m) => Target::Module(m),
+                None => Target::Namespace(0, Vec::new()),
+            }
         } else if let Some(t) = self.under_root(0, &[first]) {
             t
         } else if let Some(m) = self.deps.iter().position(|d| d == first).and_then(|i| self.module_at(i + 1, &[])) {
@@ -738,9 +928,62 @@ impl Renamer {
         self.scopes.iter().rev().find_map(|s| s.get(name)).map(|&(u, _)| u)
     }
 
+    /// What a name may mean where it is written, if more than one thing: a
+    /// module's own top-level names and what its `use`s bring are one
+    /// layer, where a clash is an overload, chosen by type. A local name
+    /// shadows them, and they shadow the prelude's.
+    fn meanings(&self, name: &str) -> Option<Vec<usize>> {
+        let c = self.current?;
+        // the module's two scopes, just above the prelude's
+        let (imports, own) = (self.base.len(), self.base.len() + 1);
+        let innermost = self.scopes.iter().rposition(|s| s.contains_key(name))?;
+        if innermost != imports && innermost != own {
+            return None;
+        }
+        let mut all: Vec<usize> = Vec::new();
+        let mut add = |u: usize| {
+            let u = self.as_written(u);
+            if !all.contains(&u) {
+                all.push(u);
+            }
+        };
+        if let Some(&(u, _)) = self.scopes.get(own).and_then(|s| s.get(name)) {
+            add(u);
+        }
+        match self.modules[c].brought.get(name) {
+            Some(us) => us.iter().for_each(|&u| add(u)),
+            None => {
+                if let Some(&(u, _)) = self.scopes.get(imports).and_then(|s| s.get(name)) {
+                    add(u);
+                }
+            }
+        }
+        (all.len() > 1).then_some(all)
+    }
+
+    /// The meanings [`Renamer::use_name`] left, for the node at `id`.
+    fn overloaded_at(&mut self, id: NodeId) {
+        if let Some(us) = self.meanings.take() {
+            self.overloads.insert(id, us);
+        }
+    }
+
     fn use_name(&mut self, name: &ast::Ident) -> Ident {
+        self.meanings = None;
         if name.node == ast::TUPLE {
             return self.tuple(name.span);
+        }
+        // what a string's holes are rendered and joined with: the prelude's
+        // `display` and `debug`, and the primitive `++`, whatever else is in
+        // scope by those names
+        match name.node.as_str() {
+            "#display" => return self.prelude_name("display", name.span),
+            "#debug" => return self.prelude_name("debug", name.span),
+            // and what derived instances compare with
+            "#eq" => return self.prelude_name("==", name.span),
+            "#lt" => return self.prelude_name("<", name.span),
+            "#append" => return Ident { unique: Some(idyllic_builtins::Prim::StrAppend.unique()), text: "++".into() },
+            _ => {}
         }
         if name.node.contains('.') && name.node.len() > 1 {
             return self.use_qualified(name);
@@ -757,17 +1000,61 @@ impl Renamer {
             };
             self.errors.push(error);
         }
-        Ident { unique: found.map(|u| self.as_written(u)), text: name.node.clone() }
+        self.meanings = self.meanings(&name.node);
+        // the node holds the first meaning, the module's own if it has one
+        let first = self.meanings.as_ref().and_then(|us| us.first().copied());
+        Ident { unique: first.or(found.map(|u| self.as_written(u))), text: name.node.clone() }
+    }
+
+    /// An entry of a row, `Div` or `State Int`: its head names an effect, so
+    /// a constructor of that name is passed over for what is further out,
+    /// as a constructor `Div` brought in with `use Op.*` would otherwise
+    /// hide the effect.
+    fn rename_row_entry(&mut self, t: &LTerm) -> hir::Term {
+        let sp = t.span;
+        match &t.node {
+            ast::Term::Var(x) if !x.node.contains('.') && x.node != ast::TUPLE => {
+                let found = self.scopes.iter().rev().filter_map(|s| s.get(&x.node)).map(|&(u, _)| u).find(|u| !self.is_constructor(*u));
+                match found {
+                    Some(u) => {
+                        let i = Ident { unique: Some(self.as_written(u)), text: x.node.clone() };
+                        self.node(sp, hir::TermKind::Var(i))
+                    }
+                    None => self.rename_term(t),
+                }
+            }
+            ast::Term::App(f, a) => {
+                let f = self.rename_row_entry(f);
+                let a = self.rename_term(a);
+                self.node(sp, hir::TermKind::App(Box::new(f), Box::new(a)))
+            }
+            _ => self.rename_term(t),
+        }
+    }
+
+    /// Whether `u` is a data type's constructor.
+    fn is_constructor(&self, u: usize) -> bool {
+        self.ctors.values().any(|cs| cs.iter().any(|&(_, c)| c == u))
     }
 
     /// The prelude's `Pair`, which a tuple is made of: the type in a type,
-    /// the constructor elsewhere.
+    /// the constructor elsewhere. (In the prelude itself, its own.)
     fn tuple(&mut self, span: Span) -> Ident {
-        let found = self.base.iter().rev().find_map(|s| s.get("Pair")).map(|&(u, _)| u);
+        let found = self.base.iter().rev().find_map(|s| s.get("Pair")).map(|&(u, _)| u).or_else(|| self.lookup("Pair"));
         if found.is_none() {
             self.errors.push(RenameError::Unbound { name: "Pair".into(), span });
         }
         Ident { unique: found.map(|u| self.as_written(u)), text: "Pair".into() }
+    }
+
+    /// A name of the prelude's, as it is there: from the prelude's scopes,
+    /// or, in the prelude itself, its own.
+    fn prelude_name(&mut self, text: &str, span: Span) -> Ident {
+        let found = self.base.iter().rev().find_map(|s| s.get(text)).map(|&(u, _)| u).or_else(|| self.lookup(text));
+        if found.is_none() {
+            self.errors.push(RenameError::Unbound { name: text.into(), span });
+        }
+        Ident { unique: found, text: text.into() }
     }
 
     /// Remember a type whose constructor has its name.
@@ -848,9 +1135,13 @@ impl Renamer {
         let ops = self.effect_ops.get(&unique).cloned().unwrap_or_default();
         let imports = self.scopes.len() - 2;
         for (x, u) in std::iter::once((name, unique)).chain(ops) {
-            if public {
-                if let Some(c) = self.current {
+            if let Some(c) = self.current {
+                if public {
                     self.modules[c].exports.insert(x.clone(), (u, Visibility::Public));
+                }
+                let brought = self.modules[c].brought.entry(x.clone()).or_default();
+                if !brought.contains(&u) {
+                    brought.push(u);
                 }
             }
             self.scopes[imports].insert(x, (u, span));
@@ -978,9 +1269,64 @@ impl Renamer {
 
     /// `Point { x = 1, y = 2 }`: the constructor, given every field, in the
     /// order they are declared (and so computed in that order).
+    /// The same, with the type's arguments given first, by hand.
+    fn record_of(&mut self, name: &ast::Ident, args: &[LTerm], values: &[(ast::Ident, LTerm)], instance: &ast::Ident, span: Span) -> Option<LTerm> {
+        let built = self.record_built(name, values, Some(instance), span)?;
+        // `C f g`: the arguments go between `C` and the fields
+        fn under(t: LTerm, args: &[LTerm], span: Span) -> LTerm {
+            match t.node {
+                ast::Term::App(f, a) => Spanned::new(ast::Term::App(Box::new(under(*f, args, span)), a), t.span),
+                ctor => args
+                    .iter()
+                    .fold(Spanned::new(ctor, t.span), |f, a| Spanned::new(ast::Term::ImplicitApp(Box::new(f), Box::new(a.clone())), span)),
+            }
+        }
+        Some(under(built, args, span))
+    }
+
     fn record_literal(&mut self, name: &ast::Ident, values: &[(ast::Ident, LTerm)], span: Span) -> Option<LTerm> {
+        self.record_built(name, values, None, span)
+    }
+
+    /// The same, as the body of `instance`, if it is one: a trait's default
+    /// for a method left out is given it, `Describe.#twice @{instance}`.
+    fn record_built(&mut self, name: &ast::Ident, values: &[(ast::Ident, LTerm)], instance: Option<&ast::Ident>, span: Span) -> Option<LTerm> {
         let fields = self.record_named(name, true)?;
         let ordered = self.in_field_order(&name.node, &fields, values, true);
+        // a trait's method left out is its default, if it has one
+        let defaults = self.as_type(|r| r.use_name(name)).unique.and_then(|u| self.defaults.get(&u)).cloned().unwrap_or_default();
+        let filled: Vec<Option<LTerm>> = fields
+            .iter()
+            .zip(&ordered)
+            .map(|(f, v)| match v {
+                Some(v) => Some((*v).clone()),
+                // a superclass is what a search for it finds
+                None if f.starts_with("#super") && instance.is_some() => Some(Spanned::new(ast::Term::Search, span)),
+                None => defaults.iter().find(|(m, ..)| m == f).map(|&(_, u, function)| {
+                    let default = Spanned::new(ast::Term::Resolved(u, format!("{}.#{f}", name.node)), span);
+                    // given the instance it fills, not one searched for
+                    let default = match instance {
+                        Some(me) => {
+                            let me = Spanned::new(ast::Term::Var(me.clone()), span);
+                            Spanned::new(ast::Term::AutoApp(Box::new(default), Box::new(me)), span)
+                        }
+                        None => default,
+                    };
+                    if !function {
+                        return default;
+                    }
+                    // `\x -> default x`: under a lambda, so that the instance
+                    // it is given (the one being built) is not needed to
+                    // make itself, as Meadow has it
+                    let x = Spanned::new("#d".to_string(), span);
+                    let var = Spanned::new(ast::Term::Var(x.clone()), span);
+                    let call = Spanned::new(ast::Term::App(Box::new(default), Box::new(var)), span);
+                    let param = Spanned::new(ast::Param { name: x, unbox: false, grade: None, ty: None }, span);
+                    Spanned::new(ast::Term::Lam(Box::new(param), Box::new(call)), span)
+                }),
+            })
+            .collect();
+        let ordered: Vec<Option<&LTerm>> = filled.iter().map(Option::as_ref).collect();
         let missing: Vec<&String> = fields.iter().zip(&ordered).filter(|(_, v)| v.is_none()).map(|(f, _)| f).collect();
         if !missing.is_empty() {
             let missing: Vec<&str> = missing.iter().map(|f| f.as_str()).collect();
@@ -1104,6 +1450,7 @@ impl Renamer {
         match &t.node {
             A::Type => self.node(sp, H::Type),
             A::Hole => self.node(sp, H::Hole),
+            A::Goal(n) => self.node(sp, H::Goal(n.clone())),
             A::Inf => self.node(sp, H::Inf),
             A::Lit(l) => self.node(sp, H::Lit(l.clone())),
             // `otherwise` is `True`, unless it has been defined to be
@@ -1113,12 +1460,32 @@ impl Renamer {
             }
             A::Var(x) => {
                 let i = self.use_name(x);
-                self.node(sp, H::Var(i))
+                let node = self.node(sp, H::Var(i));
+                self.overloaded_at(node.id);
+                node
             }
             A::App(f, a) => {
                 let f = self.rename_term(f);
                 let a = self.rename_term(a);
                 self.node(sp, H::App(Box::new(f), Box::new(a)))
+            }
+            A::Resolved(u, text) => self.node(sp, H::Var(Ident { unique: Some(*u), text: text.clone() })),
+            A::Search => self.node(sp, H::Search),
+            // equations: each a clause of a match, as a definition's are
+            A::Equations(eqs) => {
+                let clauses = eqs.iter().map(|(pats, rhs)| self.rename_clause(sp, pats, None, rhs)).collect();
+                self.node(sp, H::Match(clauses))
+            }
+            A::AutoApp(f, a) => {
+                let f = self.rename_term(f);
+                let a = self.rename_term(a);
+                self.node(sp, H::AutoApp(Box::new(f), Box::new(a)))
+            }
+            // what is given is most often a type, and read as one
+            A::ImplicitApp(f, a) => {
+                let f = self.rename_term(f);
+                let a = self.as_type(|r| r.rename_term(a));
+                self.node(sp, H::ImplicitApp(Box::new(f), Box::new(a)))
             }
             A::Ann(e, a) => {
                 let e = self.rename_term(e);
@@ -1132,11 +1499,14 @@ impl Renamer {
             }
             A::Eff(t, row) => {
                 let t = self.rename_term(t);
-                let row = self.rename_term(row);
+                let row = match &row.node {
+                    A::Row(..) => self.rename_term(row),
+                    _ => self.rename_row_entry(row),
+                };
                 self.node(sp, H::Eff(Box::new(t), Box::new(row)))
             }
             A::Row(labels, tail) => {
-                let labels = labels.iter().map(|l| self.rename_term(l)).collect();
+                let labels = labels.iter().map(|l| self.rename_row_entry(l)).collect();
                 let tail = tail.as_ref().map(|t| Box::new(self.rename_term(t)));
                 self.node(sp, H::Row(labels, tail))
             }
@@ -1203,6 +1573,10 @@ impl Renamer {
             A::RecordLit(name, values) => match self.record_literal(name, values, sp) {
                 Some(built) => self.rename_term(&built),
                 // (reported; nothing to say about it after)
+                None => self.node(sp, H::Var(Ident { unique: None, text: "_".into() })),
+            },
+            A::RecordOf(name, args, values, instance) => match self.record_of(name, args, values, instance, sp) {
+                Some(built) => self.rename_term(&built),
                 None => self.node(sp, H::Var(Ident { unique: None, text: "_".into() })),
             },
             A::Proj(e, field) => match self.projection(e, field, sp) {
@@ -1308,6 +1682,7 @@ impl Renamer {
                     self.bind_pattern(&desugared, names);
                 }
             }
+            ast::Pat::Implicit(_, q) => self.bind_pattern(q, names),
             ast::Pat::Wild | ast::Pat::Lit(_) | ast::Pat::Dot(_) => {}
         }
     }
@@ -1327,12 +1702,19 @@ impl Renamer {
             }
             ast::Pat::Con(c, ps) => {
                 let c = self.as_term(|r| r.use_name(c));
-                hir::PatKind::Con(c, ps.iter().map(|q| self.rename_pattern(q, names)).collect())
+                let meanings = self.meanings.take();
+                let ps = ps.iter().map(|q| self.rename_pattern(q, names)).collect();
+                let id = self.fresh_node(p.span);
+                if let Some(us) = meanings {
+                    self.overloads.insert(id, us);
+                }
+                return hir::Pattern { id, kind: hir::PatKind::Con(c, ps) };
             }
             ast::Pat::Record(r, fs) => match self.record_pattern(r, fs, p.span, true) {
                 Some(desugared) => return self.rename_pattern(&desugared, names),
                 None => hir::PatKind::Wild,
             },
+            ast::Pat::Implicit(icit, q) => hir::PatKind::Implicit(*icit, Box::new(self.rename_pattern(q, names))),
             ast::Pat::Wild => hir::PatKind::Wild,
             ast::Pat::Lit(l) => hir::PatKind::Lit(l.clone()),
             ast::Pat::Dot(e) => hir::PatKind::Dot(self.as_term(|r| r.rename_term(e))),
@@ -1431,7 +1813,7 @@ impl Renamer {
                         Ident { unique: found, text: c.node.clone() }
                     };
                     let seq = d.node.seq.as_ref().map(|s| (own(r, &s.nil), own(r, &s.cons)));
-                    hir::DataDecl { id, name, params, kind, ctors, seq, linear: r.linear }
+                    hir::DataDecl { id, name, params, kind, ctors, seq, linear: r.linear, is_trait: d.node.is_trait }
                 })
             })
             .collect()
@@ -1573,6 +1955,27 @@ impl Renamer {
             _ => (sig, inline.as_ref()),
         };
         let ty = sig.map(|t| self.rename_sig(t));
+        // A definition whose type ends in a universe defines a type, so its
+        // body is one: `pairOf a = (a, a)` is the pair type, not a pair.
+        if sig.is_some_and(ends_in_universe) && !self.in_type {
+            return self.as_type(|r| r.rename_def_body(d, eqs, id, span, name, ty, params, rhs, result_ty));
+        }
+        self.rename_def_body(d, eqs, id, span, name, ty, params, rhs, result_ty)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn rename_def_body(
+        &mut self,
+        d: &ast::LDecl,
+        eqs: &[&ast::LDecl],
+        id: NodeId,
+        span: Span,
+        name: Ident,
+        ty: Option<hir::Term>,
+        params: &[ast::LPat],
+        rhs: &ast::Rhs,
+        result_ty: Option<&LTerm>,
+    ) -> hir::Bind {
         // One equation of variables is a lambda; anything else is matched.
         let simple = |p: &ast::LPat| matches!(p.node, ast::Pat::Bind(_) | ast::Pat::Wild);
         let rhs = match rhs {
@@ -1638,13 +2041,24 @@ impl Renamer {
     /// ScopedTypeVariables).
     fn scope_quantified(&mut self, ty: Option<&hir::Term>) {
         let mut quantified = ty;
-        while let Some(hir::Term { id, kind: hir::TermKind::Pi(Some(x), Icit::Implicit, _, _, cod) }) = quantified {
+        while let Some(hir::Term { id, kind: hir::TermKind::Pi(Some(x), Icit::Implicit | Icit::Auto, _, _, cod) }) = quantified {
             if let Some(u) = x.unique {
                 let span = self.spans.get(*id).unwrap_or(Span::at(0));
                 self.scopes.last_mut().expect("scope stack is never empty").insert(x.text.clone(), (u, span));
             }
             quantified = Some(cod);
         }
+    }
+}
+
+/// Whether a signature's type ends in a universe, `.. -> Type`: what it
+/// gives is a type.
+fn ends_in_universe(t: &LTerm) -> bool {
+    match &t.node {
+        ast::Term::Pi(_, _, _, _, cod) => ends_in_universe(cod),
+        ast::Term::Type => true,
+        ast::Term::App(f, _) => matches!(f.node, ast::Term::Type),
+        _ => false,
     }
 }
 
@@ -1683,7 +2097,7 @@ fn free_variables(t: &LTerm, bound: &mut Vec<String>, known: &dyn Fn(&str) -> bo
                 out.push(x.clone());
             }
         }
-        A::Type | A::Lit(_) | A::Hole | A::Inf => {}
+        A::Type | A::Lit(_) | A::Hole | A::Goal(_) | A::Inf | A::Resolved(..) | A::Search | A::Equations(_) => {}
         A::Pi(x, _, g, dom, cod) => {
             grades(g, bound, out);
             free_variables(dom, bound, known, out);
@@ -1696,7 +2110,7 @@ fn free_variables(t: &LTerm, bound: &mut Vec<String>, known: &dyn Fn(&str) -> bo
             }
             under(Some(&p.node.name.node), body, bound, out);
         }
-        A::App(f, a) | A::Ann(f, a) | A::Range(f, a) | A::Eff(f, a) => {
+        A::App(f, a) | A::ImplicitApp(f, a) | A::AutoApp(f, a) | A::Ann(f, a) | A::Range(f, a) | A::Eff(f, a) => {
             free_variables(f, bound, known, out);
             free_variables(a, bound, known, out);
         }
@@ -1708,6 +2122,10 @@ fn free_variables(t: &LTerm, bound: &mut Vec<String>, known: &dyn Fn(&str) -> bo
         A::BoxIntro(e) => free_variables(e, bound, known, out),
         A::Seq(items) | A::ArrayLit(items) => items.iter().for_each(|e| free_variables(e, bound, known, out)),
         A::RecordLit(_, values) => values.iter().for_each(|(_, e)| free_variables(e, bound, known, out)),
+        A::RecordOf(_, args, values, _) => {
+            args.iter().for_each(|e| free_variables(e, bound, known, out));
+            values.iter().for_each(|(_, e)| free_variables(e, bound, known, out));
+        }
         A::Proj(e, _) => free_variables(e, bound, known, out),
         A::Update(e, values) => {
             free_variables(e, bound, known, out);

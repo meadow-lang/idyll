@@ -1,0 +1,123 @@
+# What `master` has to pass: the Rust compiler's tests (compiler/, the
+# driver's and the reference interpreter's), front/'s own tests, and the
+# comparisons between the two, and every program of the Cut corpus, on each
+# of Meadow's runtimes.
+#
+# It runs on every pull request, and on the merge queue's own commit -- the
+# branch as it will be once it is on `master` -- so nothing reaches `master`
+# that was not built and tested as `master` will have it. `master` takes pull
+# requests only, and the job `check`, which passes only if every other job
+# did, is required of them.
+#
+# The jobs run side by side, each on a runner of its own: together, one after
+# another, they outgrew a job's time. Meadow is the nightly build: front/ and
+# the runtimes are what `master` of Meadow has. The front/ comparisons build
+# front/ with it, and so do the reference interpreter's, which also run
+# front/'s Cut on Glade and Silo. The Rust compiler's own tests run programs
+# on Meadow's runtimes too, and leave front/'s comparisons (IDYLL_FRONT_SKIP)
+# to the job of their own.
+
+name: ci
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  front:
+    name: front/ (its own tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          token: ${{ github.token }}
+      - working-directory: front
+        run: meadow test
+
+  compiler:
+    name: The compiler
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          token: ${{ github.token }}
+      # front/'s comparisons are the job below's
+      - working-directory: compiler
+        env:
+          IDYLL_FRONT_SKIP: "1"
+        run: cargo test --workspace --no-fail-fast
+
+  differentials:
+    name: front/ against the compiler
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          token: ${{ github.token }}
+      - working-directory: compiler
+        run: cargo test --release -p idyllic --test front --no-fail-fast
+
+  driver:
+    name: The driver
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          token: ${{ github.token }}
+      - working-directory: idyll-driver
+        run: cargo test --no-fail-fast
+
+  eval:
+    name: The reference interpreter (and front/'s Cut on Glade and Silo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          token: ${{ github.token }}
+      - working-directory: idyll-eval
+        run: cargo test --release --no-fail-fast
+
+  cut-corpus:
+    name: The Cut corpus (Glade and Silo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          token: ${{ github.token }}
+      - name: Glade
+        run: python3 scripts/cut-corpus.py cut-corpus glade
+      - name: Silo
+        run: python3 scripts/cut-corpus.py cut-corpus silo
+
+  check:
+    name: check
+    if: always()
+    needs: [front, compiler, differentials, driver, eval, cut-corpus]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job passed
+        run: |
+          echo '${{ toJSON(needs) }}'
+          test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" = false

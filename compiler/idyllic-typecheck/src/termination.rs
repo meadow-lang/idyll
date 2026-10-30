@@ -26,13 +26,14 @@
 //! top-level groups are made transparent: one nested under a binder is
 //! identified by its binding site, so its instances could not be told apart.
 
-use super::core::{CaseAlt, Core, Lvl};
+use super::core::{CaseAlt, Core, Head, Lvl};
 use super::value::{Elim, Env, Spine, Value};
 use super::{BinderInfo, Checker, Ctx};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 /// A recursive definition that may unfold.
+#[derive(Clone)]
 pub(super) struct Unfold {
     /// the environment it was defined in
     env: Env,
@@ -40,13 +41,17 @@ pub(super) struct Unfold {
     arity: usize,
     /// its body under those arguments' lambdas: the case tree
     body: Rc<Core>,
+    /// only where a `case` waits on it: an instance, which a projection of
+    /// one of its fields looks into (`Elem (List Int)` is `Int`), but which
+    /// a type otherwise shows by its name
+    pub(super) on_case: bool,
 }
 
 impl Unfold {
     /// One another package compiled: its case tree is closed, so it needs no
     /// environment.
-    pub(super) fn closed(arity: usize, body: Rc<Core>) -> Unfold {
-        Unfold { env: Env::empty(), arity, body }
+    pub(super) fn closed(arity: usize, body: Rc<Core>, on_case: bool) -> Unfold {
+        Unfold { env: Env::empty(), arity, body, on_case }
     }
 
     /// The case tree, under its parameters, closed for another package to
@@ -128,16 +133,33 @@ impl Checker {
         }
         for (u, core) in members {
             let (arity, body) = lambdas_of(core);
-            self.transparent.insert(*u, Unfold { env: ctx.env.clone(), arity, body: body.clone() });
+            self.transparent.insert(*u, Unfold { env: ctx.env.clone(), arity, body: body.clone(), on_case: false });
         }
         true
+    }
+
+    /// The instances of a recursive group checked at the top level that do
+    /// not unfold already (one that refers to itself, through a default
+    /// method, does not terminate as a definition): each unfolds where a
+    /// `case` reads a type or a superclass off it, so that a field of a
+    /// known instance computes in a type (see [`Unfold::on_case`]).
+    pub(super) fn unfold_instances(&mut self, ctx: &Ctx, members: &[(usize, Rc<Core>)]) {
+        if ctx.binders.iter().any(|b| b.info == BinderInfo::Bound) {
+            return;
+        }
+        for (u, core) in members {
+            if self.hints.contains(u) && !self.transparent.contains_key(u) {
+                let (arity, body) = lambdas_of(core);
+                self.transparent.insert(*u, Unfold { env: ctx.env.clone(), arity, body: body.clone(), on_case: true });
+            }
+        }
     }
 
     /// A transparent definition applied to `sp`, if its case tree can choose
     /// a right-hand side.
     pub(super) fn unfold(&self, u: usize, sp: &Spine) -> Option<Rc<Value>> {
         let f = self.transparent.get(&u)?;
-        if sp.len() < f.arity {
+        if sp.len() < f.arity || (f.on_case && !matches!(sp.get(f.arity), Some(Elim::Case(..)))) {
             return None;
         }
         let mut env = f.env.clone();
@@ -149,6 +171,56 @@ impl Checker {
         Some(self.apply_spine(v, &sp[f.arity..]))
     }
 
+    /// A transparent definition applied to `sp`, unfolded even where its
+    /// case tree cannot choose, its `case`s left waiting: `Elem c @{d}` at a
+    /// dictionary `d` the context binds is `case d of Container _ e .. -> e`,
+    /// a type a variable's field holds, which the typer reads a
+    /// representation off.
+    pub(super) fn unfold_stuck(&self, u: usize, sp: &Spine) -> Option<Rc<Value>> {
+        let f = self.transparent.get(&u)?;
+        if sp.len() < f.arity {
+            return None;
+        }
+        let mut env = f.env.clone();
+        for elim in &sp[..f.arity] {
+            let Elim::App(a) = elim else { return None };
+            env = env.push(a.clone());
+        }
+        let v = self.eval(&env, &f.body);
+        Some(self.force(self.apply_spine(v, &sp[f.arity..])))
+    }
+
+    /// An instance a `case` waits on, unfolded (see [`Unfold::on_case`]):
+    /// when the case reads a field a type may compute with, a type or a
+    /// superclass (a method stays a call of the instance's).
+    pub(super) fn opened(&self, v: &Rc<Value>, alts: &[CaseAlt]) -> Option<Rc<Value>> {
+        let Value::Opaque(u, _, sp) = &**v else { return None };
+        let [alt] = alts else { return None };
+        let Head::Con(ctor) = alt.head else { return None };
+        let mut body = &alt.body;
+        while let Core::Runtime(_, inner) = &**body {
+            body = inner;
+        }
+        let Core::Var(k, _) = &**body else { return None };
+        let field = alt.vars.len().checked_sub(k + 1)?;
+        if !self.ctors.get(&ctor).is_some_and(|c| c.opens.get(field) == Some(&true)) {
+            return None;
+        }
+        let f = self.transparent.get(u).filter(|f| f.on_case && sp.len() >= f.arity)?;
+        if self.opening.borrow().contains(u) {
+            return None;
+        }
+        let mut env = f.env.clone();
+        for elim in &sp[..f.arity] {
+            let Elim::App(a) = elim else { return None };
+            env = env.push(a.clone());
+        }
+        self.opening.borrow_mut().push(*u);
+        let record = self.eval_tree(&env, &f.body);
+        self.opening.borrow_mut().retain(|o| o != u);
+        Some(self.force(self.apply_spine(record?, &sp[f.arity..])))
+    }
+
     /// Evaluate a case tree, or give up where it cannot choose.
     fn eval_tree(&self, env: &Env, c: &Core) -> Option<Rc<Value>> {
         match c {
@@ -156,6 +228,11 @@ impl Checker {
             Core::Let(_, e, body) => self.eval_tree(&env.push(self.eval(env, e)), body),
             Core::Case(scrutinee, alts) => {
                 let v = self.force(self.eval(env, scrutinee));
+                // (an instance a field is read off: what it is)
+                let v = match self.choose(&v, alts) {
+                    None => self.opened(&v, alts).unwrap_or(v),
+                    Some(_) => v,
+                };
                 let (alt, fields) = self.choose(&v, alts)?;
                 let inner = fields.into_iter().fold(env.clone(), |e, f| e.push(f));
                 self.eval_tree(&inner, &alt.body)

@@ -4,6 +4,7 @@
 //! place that knows the concrete syntax.
 
 use super::*;
+use idyllic_builtins::Width;
 use std::fmt::Write;
 
 impl fmt::Display for Rep {
@@ -13,6 +14,18 @@ impl fmt::Display for Rep {
             Rep::Bool => f.write_str("bool"),
             Rep::Unit => f.write_str("unit"),
             Rep::Str => f.write_str("str"),
+            Rep::Word(w) => f.write_str(match w {
+                Width::I8 => "i8",
+                Width::I16 => "i16",
+                Width::I32 => "i32",
+                Width::U8 => "u8",
+                Width::U16 => "u16",
+                Width::U32 => "u32",
+                Width::U64 => "u64",
+            }),
+            Rep::F64 => f.write_str("f64"),
+            Rep::F32 => f.write_str("f32"),
+            Rep::Char => f.write_str("char"),
             Rep::Ptr => f.write_str("ptr"),
             Rep::Desc => f.write_str("desc"),
             Rep::Var(a) => write!(f, "'{a}"),
@@ -47,6 +60,12 @@ fn params(values: &[Binder], conts: &[String]) -> String {
     format!("({}; {})", commas(values), conts.join(", "))
 }
 
+/// A character as Cut's text reads it back, and as Meadow's Cut package
+/// writes one: its code point, `'\u{61}'`.
+fn character(c: char) -> String {
+    format!("'\\u{{{:x}}}'", c as u32)
+}
+
 fn string(s: &str) -> String {
     let mut out = String::from("\"");
     for c in s.chars() {
@@ -73,7 +92,9 @@ impl Printer {
             Producer::Var(x) => self.out.push_str(x),
             Producer::Val(s) => write!(self.out, "{s}").unwrap(),
             Producer::Int(n) => write!(self.out, "{n}").unwrap(),
+            Producer::Float(x) => self.out.push_str(&idyllic_builtins::num::fmt_float(*x)),
             Producer::Str(s) => self.out.push_str(&string(s)),
+            Producer::Char(c) => self.out.push_str(&character(*c)),
             Producer::Bool(b) => write!(self.out, "{b}").unwrap(),
             Producer::Unit => self.out.push_str("unit"),
             Producer::Desc(r) => write!(self.out, "desc({r})").unwrap(),

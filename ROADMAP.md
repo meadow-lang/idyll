@@ -100,8 +100,9 @@ and the tour has steps for it.
     (`[a; b]`) and `#[a, b]` is an array.
 - **The back ends are Glade and Silo**, which stay Meadow's (as BEAM is
   Elixir's) and become a back end Idyll compiles to through Cut; see *Back
-  ends* below. Idyll's own `rts/` and `idyllic-llvm` stay until Idyll's
-  corpus runs on both (decided with Chris, 2026-10-02).
+  ends* below. Idyll's own `rts/` and `idyllic-llvm` stayed until Idyll's
+  corpus ran on both (decided with Chris, 2026-10-02); they, and the AxCut
+  machine, were retired on 2026-10-19 (step 5).
 - **A constructor may share its type's name** (Meadow's `Pair`, made by
   `Pair`), and the `Mk` prefix is gone from Idyll's code. The bare name is
   the type where a type is written (a signature, an annotation, a function
@@ -232,8 +233,9 @@ Two decisions for this phase:
 *Done when:* `append : Vec n a -> Vec m a -> Vec (n + m) a` checks with a
 user-defined `+`, `head : Vec (S n) a -> a` needs no `Nil` case, and Meadow's
 `examples/Euler` runs. **Done** (`compiler/idyllic/tests/matching.rs`; Euler
-is `examples/euler/p5.idl`, and `head` takes its vector at `[0..1]`, since
-it drops the tail), and so are sequence literals.
+is the package `examples/euler`, Project Euler's first ten problems, and
+`head` takes its vector at `[0..1]`, since it drops the tail), and so are
+sequence literals.
 
 ## Phase 2: Effects
 
@@ -284,15 +286,15 @@ it drops the tail), and so are sequence literals.
   (`0`, `1`, `0..1`, more), and every grade works: Idyll's AxCut machine
   keeps the handlers in force on a stack of its own, and a resumption is an
   ordinary heap consumer, so resuming twice is just invoking it twice
-  (`compiler/idyllic-seq/src/machine.rs`; the reference interpreter
-  `idyll-eval` agrees). Native code compiles every grade too: a program
+  (the machine, `idyllic-seq`, retired 2026-10-19: the reference
+  interpreter `idyll-eval` agrees, and Glade and Silo run every grade
+  through Cut). Native code compiled every grade too: a program
   with a handler is compiled with its continuations on the heap, as the
   AxCut paper has them, so every call is a tail call and a resumption can
   outlive the stack; the runtime keeps the handlers in force, a handler is
   a table of clauses keyed by operation, and `perform` captures the
   handlers above the one it finds into the resumption
-  (`compiler/idyllic-llvm`, `rts/idyll_rt.c`; `tests/llvm.rs` checks it
-  against the machine, multi-shot included). Programs without a handler
+  (`idyllic-llvm` and `rts/idyll_rt.c`, retired 2026-10-19). Programs without a handler
   keep stack continuations. An operation says how often its handlers may
   resume it: unmarked, at most once, and `@many` for more, which a clause is
   checked against (decided with Chris, for the shared back end, which needs
@@ -329,10 +331,9 @@ it drops the tail), and so are sequence literals.
   program with a `main` and no expression of its own runs `main ()`, and
   `main` must be `() -> () ! Eff` (or fewer effects), inferred or written.
   An operation of the world's that no handler of the program's own takes
-  is done by the runtime, in `compiler/idyllic-world/` for the AxCut
-  machine and `idyll-eval` both, and by `idyll_op_*` functions in
-  `rts/idyll_rt.c` for native code (where a handler of the program's own
-  is searched for first). The REPL and `idyllic file.idl -- args` talk to
+  is done by the runtime: Meadow's, as the operation of its own the
+  prelude's `native` table binds it to (and, for the reference
+  interpreter, `compiler/idyllic-world/`). The REPL and `idyllic file.idl -- args` talk to
   the real world; tests to a captured one, whose output is kept, input
   empty and randomness seeded. `exit n` is the process's exit code. Giving
   up with a message is the prelude's `Abort` effect (`abort : {a : Type} ->
@@ -349,7 +350,7 @@ examples need strings to take apart first (`Std.Yield` is the generators).
 
 ## Phase 3: Modules, packages and the build system
 
-- [~] **Modules in the language**: `module`, `use`, and visibility (`@pub`,
+- [x] **Modules in the language**: `module`, `use`, and visibility (`@pub`,
   `@pub(pkg)`, `@pub(super)`). Unlike Meadow, **an interface must carry the
   bodies of transparent definitions**, not just their types, because
   importers may compute with them in types. Port `meadow-intern` and
@@ -370,13 +371,27 @@ examples need strings to take apart first (`Std.Yield` is the generators).
   and case trees of terminating recursive ones, so another package's
   functions compute in types), each package names its things from a range
   of uniques of its own, and a program is linked by nesting every package's
-  definitions in dependency order, as OCaml initialises modules. Left:
-  `module M where` inside a file, and saying which package a type is from
-  when two of one name meet. (`compiler/idyllic/tests/modules.rs`,
-  `packages.rs`)
-- [ ] **One name from several `use`s, chosen by type**, as Meadow does
-  it, after Idris (Chris, 2026-10-16). Today a later `use` of a name
-  silently replaces an earlier one. Instead, a module's own top-level
+  definitions in dependency order, as OCaml initialises modules. A module
+  may be written inside another's file, `module M where` and an indented
+  block (or braces): it is the module `M` under the file's, lifted out by
+  the renamer as Meadow lifts its `mod M { .. }`, in front/ too (done
+  2026-10-20). Two types of one name in an error say which package each is
+  from, as Meadow's do: "`Shape` is two types here: the one expected is
+  from `Shapes@0.1.0`, this one from `Figures@0.1.0`" (2026-10-20).
+  (`compiler/idyllic/tests/modules.rs`, `packages.rs`)
+- [x] **One name from several `use`s, chosen by type**, as Meadow does
+  it, after Idris (Chris, 2026-10-16). Done 2026-10-20, in the Rust
+  compiler (`idyllic-typecheck/src/overloads.rs`,
+  `compiler/idyllic/tests/overloading.rs`, Meadow's cases): the renamer
+  keeps every meaning of a name in a side table by node
+  (`hir::Module::overloads`); a term headed by an overloaded name is
+  elaborated once per meaning, as a trial on a copy of the checker, and
+  the meanings whose trial made no error fit; one is elaborated for real,
+  several put the term off behind a placeholder until the definition has
+  been checked, when it is tried again against what its type has become
+  and the placeholder is written over. A constructor in a pattern is
+  chosen by its scrutinee's type. front/ does the same (2026-10-21). It used to be that a later `use` of a name silently
+  replaced an earlier one. Instead, a module's own top-level
   names and what its `use`s bring in are one layer, where a clash is an
   *overload*: the renamer keeps every candidate, and the elaborator takes
   the one whose type fits where the name is used. Meadow's rules
@@ -410,13 +425,12 @@ examples need strings to take apart first (`Std.Yield` is the generators).
   compiled cleanly is kept (serde + postcard) under
   `target/<profile>/incremental`, on a slot of uniques of its own so that
   one package growing changes no other. Profiles choose the back end: debug
-  runs on the AxCut machine, release compiles with LLVM into
-  `target/release/native/` (falling back to the machine for what native code
-  can't do yet, unless it was asked for), and an executable is relinked only
-  when its package's fingerprint changes. Left: Meadow's `test`, `fmt`, LSP
-  and debugger, and, with the back ends shared, `aot.rs`,
-  `linker.rs`, `pgo.rs` and `runtime.rs` -- choosing and linking Glade or
-  Silo. (`idyll-driver/tests/`)
+  runs on Glade, release builds an executable with Silo into
+  `target/release/native/` (falling back to Glade where there is no
+  executable to be had, unless Silo was asked for), and an executable is
+  rebuilt only when its package's fingerprint changes. Choosing and linking
+  a runtime is Meadow's: Idyll hands `meadow cut` the program's Cut. Left:
+  Meadow's `test`, `fmt`, LSP and debugger. (`idyll-driver/tests/`)
 
 - [x] **The standard library**, `lib/Std/`, laid out as Meadow's `lib/Std` is: a
   package embedded in the compiler (`compiler/idyllic/src/stdlib.rs`),
@@ -448,14 +462,31 @@ examples need strings to take apart first (`Std.Yield` is the generators).
   entry that submits itself once it is whole, with continuation lines
   indented; the `Ctrl-F` finder (ratatui, as Meadow's), searching by name
   with nucleo and by type as Hoogle does (`find.rs`, from `meadow-find`);
-  `:t`, `:module`, `:time`, `:find`, and a choice of machine (`:machine`,
-  `:eval` for the reference interpreter, `:native` for LLVM). Idyll's own:
+  `:t`, `:module`, `:time` and `:find`; entries run on Glade. Idyll's own:
   proof search (`:prove T`, and `?` in the finder), which proposes terms
   from the goal's shape and shows only what the checker accepts
   (`prove.rs`); and `:ir`, a pop-up with every stage of the compiler for a
-  block of code: tokens, AST, HIR, Core, AxCut, inlined AxCut, LLVM IR and
-  Cut (`compiler/idyllic/src/inspect.rs`). Meadow's AxCut and Glade's
-  bytecode join `:ir` once the back end reads Cut.
+  block of code: tokens, AST, HIR, Core, Cut, and what Meadow makes of the
+  Cut, through `meadow cut --emit`: the Cut inlined, its AxCut, and Silo's
+  LLVM IR (`compiler/idyllic/src/inspect.rs`).
+
+- [x] **A package is checked a module SCC at a time** (2026-10-21).
+  Packages are the unit of the build, with a batch compiler inside, for
+  speed, that is parallel and incremental at module SCCs, so modules may be
+  mutually recursive. Done
+  2026-10-21 in Rust: `idyllic::parts` makes the graph of which module
+  names which (a `use`, a qualified name, with or without the package's
+  name; the package's name alone is the root), its SCCs are the parts, the
+  root's last with whatever reaches it. Each part is renamed
+  (`rename_part`, the earlier parts' names its own modules') and checked in
+  one batch against the parts it imports as against packages, and
+  `packages::merge` makes them one `CompiledPackage`. The driver keeps each
+  part beside its package (`incremental::Parts`, `<pkg>.part-<id>.ipk`)
+  under a fingerprint of its modules and the parts it imports, so an edit
+  checks only the parts it reaches. An instance is seen where its module is
+  imported. Not yet: the parts of one package on several threads (the
+  checker's `Rc`s keep a part to one thread; front/'s build, on Lingua's
+  `make!` parts, compiles them in parallel).
 
 *Done when:* a workspace with a git dependency builds, a second build reuses
 what it can, and the lockfile pins the dependency. **Met:** a second build
@@ -492,30 +523,200 @@ from what `idyll.lock` pinned.
     `{ x : Int | r } -> T`. A named implicit argument will be written as
     Lean writes it, `f (a := Int)`, so that braces holding `=` are always a
     record.
-- [ ] **Auto-implicit binders**, `{auto x : t}`, filled by searching the auto
+- [x] **Auto-implicit binders**, `{auto x : t}`, filled by searching the auto
   binders in scope and the registered hints. Because this works for any
   type, proof search (`{auto p : LTE n m}`) comes with it, as in Idris.
-- [ ] **Traits as sugar**: a trait is a record, a constraint is an
+  Done 2026-10-20 in the Rust compiler (`idyllic-typecheck/src/auto.rs`,
+  `compiler/idyllic/tests/auto.rs`): `{auto d : t}`, and `t => ..` for one
+  with no name; `@hint` on a signature offers a definition to the search.
+  An auto argument is inserted where an implicit one would be: the auto
+  binders in scope are tried innermost first, then the hints, each as a
+  trial on a copy of the checker, a candidate's implicit arguments made
+  metas and its own auto arguments searched for in turn (16 deep). The
+  innermost auto binder that fits is taken; of the hints exactly one must
+  fit. A search whose type still has a meta waits behind a placeholder
+  until the definition has been checked, and is reported if it never
+  becomes known. Hints are checked before everything that does not lead to
+  them (scc), and a package's hints are in its interface. front/ does all
+  of it too (2026-10-21).
+- [x] **Traits as sugar**: a trait is a record, a constraint is an
   auto-implicit binder, an instance is a hint. Superclasses are fields;
-  methods can have defaults.
-- [ ] **Grades on auto binders**: default `[]`, since a dictionary is used at
+  methods can have defaults. Done 2026-10-20 in the Rust compiler, the
+  parser desugaring all of it (`compiler/idyllic/tests/traits.rs`): `trait
+  C a => T (a : Type) where` and a block of signatures and default
+  equations is a record of the superclasses (`#super0`) and methods, a
+  function per method reading it off the record found for it (`describe :
+  {a : Type} -> {auto self : Describe a} -> a -> String`), and a definition
+  per default, `Describe.#twice`, of the method's type. `instance C a => T
+  (List a) where` and equations is a `@hint`, `@terminating` recursive
+  definition (it finds itself, for recursion at its own type) whose body
+  is the record with the trait's arguments given, so that its fields are
+  checked against known types: each method's equations one lambda over a
+  `case`, a method left out the default applied to the instance itself
+  (under a lambda when the method is a function, as Meadow has it, so the
+  instance is not needed to make itself), a superclass found by search.
+  A search goes through an auto binder's superclasses too, and hints and
+  superclass projections are checked before what does not lead to them.
+  front/ does all of it too, and agrees on the corpus's trait programs
+  pass by pass, its Cut running on Glade and Silo (2026-10-21).
+- [x] **Grades on auto binders**: default `[]`, since a dictionary is used at
   run time (plain braced implicits default to `0`). `{auto p : [0] LTE n m}`
   is an erased proof, and so must be total.
-- [ ] **Instances.** Unnamed instances are the canonical set: used by search,
+  Done 2026-10-20: an auto binder's grade is `[]` unless it says
+  otherwise, and a proof found by search, `{auto p : [0] LTE n m}`, is
+  erased; one after the last argument given is found then
+  (`compiler/idyllic/tests/auto.rs`).
+- [x] **Instances.** Unnamed instances are the canonical set: used by search,
   at most one per trait and head (checked by whether heads unify), and
   subject to an orphan rule, as in Rust: an instance lives with its trait or
   with its head type. Without the orphan rule, two libraries could each
   define an unnamed `Show Int`. Named instances are not searched, have no
   coherence requirement, may live anywhere, and are used only as
   `f @{name}`: they are the escape hatch for exactly the orphan case.
-- [ ] **Giving implicit arguments by hand**: `f {Int}` for an ordinary
-  implicit and `f @{name}` for an auto one.
-- [ ] **Instance-sensitive collections take the instance in their type**, so
+  Done 2026-10-20: two instances of a trait whose heads unify (their
+  implicit and auto binders metas) are an error; an instance whose trait
+  and whose type (its first argument's head) are both another package's is
+  an orphan; `instance name : ..` is not a hint, and `f @{name}` gives the
+  next auto argument by hand, the implicit ones before it worked out.
+- [x] **Giving implicit arguments by hand**: `f {Int}` for an ordinary
+  implicit and `f @{name}` for an auto one. Both done (2026-10-20), `f
+  {Int}` in front/ too: the argument in braces is the one the next
+  implicit binder of `f`'s type takes, and what is not given is worked
+  out (`compiler/idyllic/tests/decls.rs`, `traits.rs`).
+- [~] **Instance-sensitive collections take the instance in their type**, so
   a `Map` built with the default `Ord` and used with a named one fails to
   unify instead of silently breaking its invariants.
-- [ ] **Integer types, floating point, `Show`/`Eq`/`Ord`, and string
-  interpolation**, which all wait on traits.
-- [ ] **Arithmetic is a trait, so it works on `Nat` in types** (Chris,
+  The way to say it done 2026-10-27, in both compilers: implicit and auto
+  patterns, `{p}` and `@{p}`, name (or match) the implicit or auto
+  argument a type binds next, so a type keeps the instance it was made
+  with, `SortedBy a @{o} = Sorted a o`, and one shown in a type is shown by
+  its name, or an unnamed one as `instance Ord Int`
+  (`compiler/idyllic/tests/matching.rs`, `auto.rs`). Std's `Map` and `Set`
+  done 2026-10-28, both compilers: `MapBy k o v` and `SetBy a o`, `Map k v`
+  and `Set a` for the `Ord` a search finds. A map built with another order
+  is used by its own (`lookup 1 d` takes `d`'s `Ord`), and what wants a
+  `Map Int String` does not take it (`compiler/idyllic/tests/std.rs`). For
+  that, an auto argument the rest of its function's type mentions is
+  searched for at the end of the definition, once unification has had its
+  say, rather than as soon as its type is known, so that which instance it
+  is does not depend on the order things are checked in; and an auto
+  binder of a signature is what a search later in it finds. `HashMap`
+  done 2026-10-28 the same way, `HashMapBy k h v` keeping the `Hash k` it
+  was built with: a map built with another hash is looked in with that
+  one. For it, a metavariable unification solves takes the other side as
+  it was given, an instance by its name, rather than what that unfolds to
+  (`instance Hash Int` is passed, not a copy of its record); and a lambda
+  read back from a value, which says no binder types, takes those of the
+  parameter it is passed for, rather than `any`, which Silo cannot be
+  given an unboxed value in (`compiler/idyllic/tests/cut.rs`).
+- [x] **Associated types**: a trait's field may be a type, `Elem : Type`,
+  since a trait is a record and a record's fields may be types; an
+  instance gives it (`Elem = a`), and `Elem c` is the field of the
+  instance found for `c`. A type a function of another is said that way,
+  rather than with functional dependencies.
+  Done 2026-10-28, both compilers (`compiler/idyllic/tests/traits.rs`). A
+  record with a field that is a type lives in `Type 1` (a data type may
+  live higher than `Type` when its kind says so). `Elem c @{self} =
+  T.Elem self` is its accessor, and the methods' types read it off
+  `self`. An instance that refers to itself (through a default) is no
+  value the types may see, so it unfolds only where a `case` reads a
+  field a type may compute with off it, an associated type or a
+  superclass, and a dependency's instances the same; its methods stay
+  calls. A goal blocked on a metavariable (`T.Elem ?p`, its instance still
+  to be found) waits as one that is a metavariable does. At run time a
+  record's field that is a type holds its descriptor, and a parameter that
+  is such a record (a dictionary) brings a descriptor for each of those
+  fields with it, so a value of `Elem c` in code generic over `c` has the
+  representation that descriptor says, as a value of a type variable has
+  its descriptor's (`compiler/idyllic/tests/reps.rs`); a closure, which
+  binds no representation variable, holds one as `any`, as it does a type
+  variable's.
+  Made to carry Std's parsers (2026-10-28, both compilers): a generic
+  instance may give its own parameter, `Elem = a` (a type a constructor is
+  given, or a record's field that is a type read off, counts as no use, a
+  type having nothing at run time but its descriptor); a subtrait's
+  methods, and a record's later fields, may name the associated type of a
+  dictionary before them (a superclass field, and a projection's `self`,
+  are what a search finds, and a trait or record holding a large record
+  lives where it does); a type stuck on a metavariable inside it (`Elem ?c
+  ?d -> Bool`), not only at its head, waits for it; and a literal whose
+  type waits on a search is read after it. Left, as limitations: an
+  instance's own methods, and the defaults it takes, see its associated
+  types only through the instance being defined, which does not unfold
+  yet (give such a method in the instance); and a record's field whose
+  representation an earlier dictionary field says is `any`, as a dependent
+  pair's second field is, which wants the boxing `any` is still owed.
+  On the way, two costs: a package's definitions are exported as their
+  right-hand sides, closed over the definitions before them, not as their
+  normal forms (Std's parsers had made Std 18 MB that way, and the test
+  suites six times slower); and a top-level definition the checker found
+  pure is left out of a program that does not use it, as a value is
+  (Std's parsers had been linked into every program that used Std).
+- [x] **A data type may mention a definition**: done 2026-10-28, both
+  compilers. A data type was declared before every definition, so a
+  field could not name a type alias or a type family (`data T = T Span`
+  with `Span = (Int, Int)`). Now the SCC pass puts each data type after
+  the definitions it mentions, and what mentions it after that
+  (`idyllic_scc::interleave`, front `Scc.interleave`); the rest come first,
+  as before. (`compiler/idyllic/tests/data.rs`)
+- [ ] **Associated data types** (later, beside associated types): a
+  trait's field that is a type the instance *declares*, `data Elem =
+  ListElem Int`, fresh for each instance, rather than one it names. No two
+  instances share one, so it is injective: a value of `Elem (List Int)`
+  says its instance, and `singleton (ListElem 3)` needs no annotation,
+  where with an associated type (`Elem = Int`, which `IntSet` may say
+  too) it does. The price is that elements are wrapped, `insert (ListElem
+  1) xs`. For an instance that wants a representation of its own, as a
+  map keyed by any type does (`data Map v = PairMap (Map a (Map b v))`
+  for pairs). In record terms, a field whose value must be a data type
+  declared in the instance.
+- [x] **Integer types, floating point, `Show`/`Eq`/`Ord`, and string
+  interpolation**, which all wait on traits. `Display` and `Debug` (Meadow's
+  `Show`), and interpolation, done 2026-10-21 in both compilers: the
+  prelude's two traits, with instances for its own types; `"a ${e} b"`
+  joins its pieces and `display e` (`${e:?}` `debug e`), the prelude's
+  whatever is in scope, a hole lexed as code as Meadow's lexer does (a
+  string with a hole is read by hand, so a hole may hold strings).
+  Comparisons done 2026-10-21 in both compilers: the prelude's `PartialEq`
+  (`==`, `!=`) and `PartialOrd` (`<`, `>`, `<=`, `>=`, the last three
+  defaults), Meadow's names; `Int`'s instances are the primitives (and
+  `intGt` and the like, which a call is made a direct call of), and the
+  prelude's types have theirs. Their operands are unrestricted, as Rust's
+  comparisons borrow, since comparing a pair looks at its second only if
+  the first are equal; so a linear `Int` cannot be compared (say `[]`).
+  Meadow's `Eq`, a promise with no methods, is left out: `Eq` is
+  propositional equality here. An instance's methods are now a match, as a
+  definition's equations are (`Term::Equations`, a `Match` in the HIR),
+  rather than a lambda over a `case` of a tuple, whose fields were linear
+  in a linear module. `@derive(Display, Debug, PartialEq, PartialOrd)` on a
+  data type done the same day, in both compilers' parsers: Meadow's derived
+  instances (`C(f1, f2)`; equal constructor and fields; by constructor,
+  then fields), each type parameter constrained; the prelude's `Maybe` and
+  `Result` are derived. (Superclass projections are now checked before
+  hints, so that an instance early in a module can find a superclass
+  through one.) `Ord` done the same day: Std's `Cmp` has it, as Meadow's,
+  `compare` a default from `<`, with `min`, `max` and `clamp`; `Int`,
+  `Char` and `String` are `Ord`, and Std's `Nat` has `PartialEq`,
+  `PartialOrd` and `Ord` of its own (`equal`, `lessThan`, `compare`).
+  Integer types and floats done 2026-10-21 in both compilers, as Meadow's:
+  `Int8` to `UInt64` (`Int64` is `Int`), `Float` (`Float64`) and
+  `Float32`, builtins after `Char`. A number literal is read at the type
+  wanted (`Lit::Word`, `Lit::Float32`), an `Int` or a `Float` if nothing
+  says, and one checked against a type still unknown waits behind a
+  placeholder as an auto argument does (`literals.rs`, front/'s
+  `Literals`), so `1 + x` at `Int8` checks; a literal too big for its
+  type is an error. Each type's operations are natives, one a type
+  (`int8Add`, `floatLt`, `uint64FromInt`: `Native::Num`), each Meadow's
+  primitive (`add` at the width, `addF`, `toUInt64`, `display`), and the
+  prelude's instances of `Add` .. `Rem`, `PartialEq`, `PartialOrd`,
+  `Display` and `Debug` are made of them; `Integer` (`toInt`, `toFloat`)
+  and `Floating` (`toFloat64`, `toFloat32`, `floor`) are traits, and
+  `toInt8` .. `toUInt64` and `toInt64` go through `toInt`. Cut writes a
+  sized or `Float32` literal as an `Int` or `Float` converted; a number
+  is shown by the runtime's `display`. The reference interpreter computes
+  as `meadow_rt::num` (`idyllic_builtins::num`; front/'s `Num`). Meadow's
+  `+.` is not here: `+` is a trait's method, which a float has.
+- [x] **Arithmetic is a trait, so it works on `Nat` in types** (Chris,
   2026-10-16). `+`, `*` and the rest become a trait's methods: `Int`'s
   instance is the primitives, and `Nat`'s is `plus` and `times`. This is
   Idris's `Num`. Then a length is written as it is said:
@@ -544,6 +745,23 @@ from what `idyll.lock` pinned.
   *Done when:* the `append` above checks, Std's `Nat` proofs are stated
   with `+`, and `Int` arithmetic costs what it does today.
 
+  Done 2026-10-21, in both compilers. The prelude declares `Add`, `Sub`,
+  `Mul`, `Divide` (not Meadow's `Div`, which is the divergence effect
+  here) and `Rem`, with `Int`'s instances the primitives; Std gives `Nat`
+  `Add`, `plus`. Each method takes its operands once, as the primitive it
+  stands for, so grades still count `x + x` as two uses of `x`, and Int's
+  instances fit exactly. That is why `Nat` has no `Mul`: `times` uses its
+  second argument more than once, and an instance of an operand-linear
+  method must use each once. Once a definition is checked, a method of a
+  known instance is the instance's field (`specialize`), so the Cut of
+  every program is what it was, and a search waiting for its type is
+  tried again once an application's arguments are elaborated, as Lean
+  synthesizes instances, so `2 + 2` and `Z + m` compute in types. Std
+  checks in 311 ms, from 290. Grade arithmetic reads the methods as it
+  read the primitives. Left: literals read through the trait (`n + 1` at
+  `Nat`); comparisons, which are still the primitives, as Meadow has them
+  until `Cmp`.
+
 Meadow's `RUNTIME.md` section *Traits are dictionaries, and then they are
 not* is worth reading when the optimiser gets to removing dictionary passing.
 
@@ -555,32 +773,163 @@ and a `Map` built with one `Ord` is rejected when used with another.
 
 - [ ] **Port `lib/Std` in dependency order**: `Bool`, `Maybe`, `Either`,
   `Result`, `Tuple`, `Function`, `Ordering`, `Cmp` (done, without traits:
-  comparisons are passed along); then `String`, `Char`, `Bytes` and the
-  parsers; then collections (`List`, `Array`, `Vector` done; `Map`, `Set`,
-  `HashMap` wait for traits); then the effect modules (`Exn`, `State`,
-  `Yield`, `Fs`, `Process` done; `Stream`, `Random`, `Time`, `Test` left);
-  then `Json`. (The prelude already declares `Maybe`, `Result`
-  and the world's effects themselves; what is left of those modules is
-  their functions, and the operations phase 2 left out.)
-- [ ] **Adapt rather than copy**: `Ref`, `Mut` and `St` become linear mutable
-  references and arrays rather than effects. `Compact` is specific to
+  comparisons are passed along); then `String` and `Char` (done, as
+  Meadow's, on the prelude's string natives and a builtin `Char`), `Bytes`
+  (done, on Meadow's four byte primitives as natives) and the parsers
+  (`String.Parse`, megaparsec's combinators, with `String.Parse.Char` and
+  `String.Parse.Lexer`, done: the same messages, hints and spans as
+  Meadow's; Meadow's three stream traits are one `Stream` here, its
+  `Token` an associated type, and the character and lexeme parsers are for
+  `String` streams, Idyll's traits saying no "token is a `Char`"); then collections (`List`, `Array`, `Vector`, `Map`, `Set` done;
+  `Hash`, Meadow's hashes, and `Num.Bits`, the bit operations at each
+  width that it combines with, and `HashMap`, Meadow's hash array mapped
+  trie, done); then the effect modules (`Exn`, `State`,
+  `Yield`, `Fs`, `Process`, and `Stream`, `Random`, `Time`, `Test` done,
+  Meadow's, giving the same numbers and text for the same seeds and
+  times; a stream's producer gives back `()`, as `Yield`'s `collect`
+  takes one, and `nextFloat` is a function of `nextInt`, as the runtimes
+  compute it);
+  then `Json` (done, as Meadow's: its byte scanner first, its grammar
+  where the scanner gives up, and the same errors; its constructors named
+  as types are, `Json.Int`, are written qualified, a type and a
+  constructor sharing Idyll's one namespace). (The prelude already
+  declares `Maybe`, `Result` and the world's effects themselves; what is
+  left of those modules is their functions, and the operations phase 2
+  left out.)
+  Meadow's other modules are not placed yet: `Bench`, `Collections.Tree`
+  and `Collections.HashTable`, `Num.Float`, `Ops`, `Path`, `Log`,
+  `Terminal`, `Test.Fuzz` and `Test.Property`, `Eff`, and those on the
+  runtimes' larger natives (`Thread`, `Stm`, `Net`, `Http`, `Tls`, `Ffi`,
+  `Macro`).
+- [x] **Adapt rather than copy**: `St` becomes linear mutable references
+  and arrays (`MArray`, and a cell beside it) rather than an effect: a
+  linear value is never shared, so changing it in place is never seen, and
+  no `runSt` is needed to keep it from escaping. `Ref` and `Mut` stay as
+  Meadow has them as well (Chris, 2026-10-28), for cells that are shared:
+  MiniML's type variables are `Ref`s held all over the type tree, a
+  union-find, and its `let rec` ties the knot through a `Ref` closures
+  hold, which no linear reference can be. `Ref` and `Mut` are done: the
+  prelude's `Ref`, `newRef`, `getRef` and `setRef` are natives, Meadow's
+  primitives, the only ones whose types end in an effect, `Mut`, which has
+  no operations and so no handler; `Std.Ref` has Meadow's helpers.
+  `Std.St` is done too, linear: a cell (`StRef`, a one-place mutable
+  array) and an array (`StArray`, `MArray`), each operation giving it
+  back, and `forRange` and `while` threading it through; Meadow's tests of
+  it pass, rewritten to thread the state. `Compact` is specific to
   Meadow's garbage collector and is not ported.
+- [x] **Linear types** (Chris, 2026-10-28): `MArray` was linear only on
+  the binders of its own `@linear` module, so code elsewhere may alias one
+  and see it written in place: `let m = new 2 0 in (freeze (write m 0
+  1), freeze m)` is `(#[1; 0], #[1; 0])` on the runtimes, and the spec
+  copies. A type is to be linear itself: `MArray`, and a data type that
+  holds a linear one (`St`'s cell). A binder of one is at most `[1]` in
+  every module, by default too; it is never boxed (`[e]`) or given to an
+  unrestricted parameter; and it instantiates only a type parameter its
+  callee uses at most once (`Pair`'s, whose fields are linear, but not
+  that of a function taking `(x : [] a)`). Done
+  (`idyllic-typecheck/src/linear.rs`, and front/'s `Elab.mw`): a binder
+  of one that says no grade is `[1]`; a value of one is copied out of only
+  for its fields of linear types; a program's top-level definition of one
+  is used at most once, counted as a `let`'s are, and a library has none.
+
+- [x] **Literals in generic code**: a number literal at a type variable is
+  read through its `Integer` instance (`Floating`'s, for one with a
+  point): `0` at `n` is `fromInt 0`, the instance searched for as any auto
+  argument is, so `factorial : {n : Type} -> Integer n => .. -> n` says
+  `0` and `1`, as Meadow's generic code does. Only at a type variable: `5`
+  where a `List Int` is wanted stays a mismatch.
 
 *Done when:* Meadow's `examples/Tour`, `examples/MiniML` and
 `examples/RockPaperScissors` run, the last tested by feeding it input.
+All three run (2026-10-28), in `examples/`; their tests, until `@test`,
+are what `idyll-driver/tests/examples.rs` expects each to print:
+- `tour`, but for its `BigInt` line, which waits on `BigInt`; its sieve is
+  written in a linear array, threaded through, rather than in a `runSt`.
+- `rps`, fed its moves both by `Std.Console.withInput` (`--demo`, the
+  machine's moves seeded) and on its standard input.
+- `miniml`, its four passes as Meadow's, type variables `Ref`s; two unbound
+  variables are the same cell when their ids are, as Idyll's `Ref` has no
+  `==`. Its `--demo` session gives every answer Meadow's tests expect.
+
+On the way: Meadow's `Std.Console` (`print`, `println`, `prompt`,
+`promptUntil`, `readAll`, `withInput`, `withOutput`), whose handlers take
+part of the console and pass the rest on, performing it again from inside
+the function each clause gives back. That had been refused (`which
+Console?`): such a clause makes resuming do what the function does, more
+than the handler does, which is a sound claim, and a handler is now
+accepted when what it does fits within what resuming was found to.
 
 ## Phase 6: Testing and tooling
 
-- [ ] **`@test` functions and `idyll test`**, with Meadow's name filtering,
-  built on the `Test` effect.
-- [ ] **The formatter** (`meadow-fmt`, adapted to Idyll's layout rules),
-  breaking a long signature as the principles above set it out.
-- [ ] **The language server** (`meadow-lsp`). Joining the renamer's span
-  table with the checker's type table gives type-on-hover almost for free.
-- [ ] **The VS Code extension** (`editors/vscode`).
-- [ ] **Named holes, for type-driven development** (Chris, 2026-10-16), as
-  Idris and Agda have them. `_` is a hole the checker fills in, as it does
-  today. `?name` is a goal left for later:
+- [x] **`@test` functions and `idyll test`**, with Meadow's name filtering,
+  built on the `Test` effect. A test is checked as `main` is, `() -> ()`
+  with the runtime's effects; `idyll test [FILTER] [--exact]` builds the
+  package whole (not in parts, so every module's tests are found, and not
+  kept, its program being the tests) with `Std.Test`'s runner for its
+  program: `testsStart`, then `testCase` over each test (its `Test`
+  handled, a line said), then `testsDone`, which exits with status 1 if
+  any failed. The examples carry Meadow's tests of them (MiniML's 23 among
+  them). front/ reads `@test` and checks where it is; running tests is the
+  Rust driver's. Still to come: a test's own panic (dividing by zero)
+  stops the rest, as it is no `Test` failure, and what a test prints is not
+  kept apart.
+- [~] **The formatter**, written with Lingua's `format!` over front/'s
+  grammar (Chris, 2026-10-28: the build tools are Lingua's eDSLs, and so
+  is this), as `meadow fmt` is over Meadow's. `Idyll fmt [--check]
+  files` (front/'s driver) sets files out in place, within 100 columns, a
+  level two spaces. A block's items each start a line at its column, after
+  what opens it or under it a level in. A body that does not fit after its
+  `=` or `->` goes under it, and guards go a line each. Comments and one
+  blank line are kept. A program with errors is left as it is. The trivia
+  is in front/'s lossless tree for it, and a block's virtual close stands
+  where its last token ends. Every corpus program comes out as the same
+  program, and formatting it again changes nothing
+  (`front_formats_every_program_as_the_same_program`). A long signature
+  is broken as the principles above set it out (`format!`'s `indent N(..)`
+  and `nogroup`, which Lingua added for it). Still to come: `idyll fmt` in
+  the Rust driver.
+- [~] **The language server**, written with Lingua's `lsp!` over a
+  `database!` of front/'s queries (front/README.md, "The editor"), as the
+  formatter is written with `format!`. `Idyll lsp`:
+  - publishes what is wrong with each open file, the renamer's and the
+    checker's problems at the nodes they are about;
+  - says a term's type on hover;
+  - goes to a name's definition, and finds every place it is named;
+  - completes names, the program's and the prelude's, with their types;
+  - gives an outline of the program's own declarations;
+  - colours a file from its tree, and formats it.
+
+  Each answer is worked out again only when an edit changes what it read.
+  For that, front/'s renamer, checker and lowering keep their state in `St`
+  cells, since a query may perform nothing but asking other queries. Still
+  to come:
+  - a file checked in its package, not as a lone program;
+  - completion of the names in scope where the cursor is (locals, a
+    module's after its alias), not only the program's top level;
+  - hover, definitions and completion kept in the session, rather than
+    the file checked again for each.
+- [~] **The VS Code extension** (`editors/vscode`), as Meadow's is: a
+  client that starts front/'s `Idyll lsp`, with a TextMate grammar and
+  indentation rules for `.idl` that work without it. `build.sh` packages
+  it (`idyll-<version>.vsix`). Still to come: finding the server without
+  `idyll.server.path` (Meadow's extension searches its install
+  directories), and a release that ships the `.vsix`.
+- [~] **Named holes, for type-driven development** (Chris, 2026-10-16), as
+  Idris and Agda have them. Done, in both compilers (the differentials
+  agree on the corpus's goals):
+  - `?name` is a token and a term of its own;
+  - the checker elaborates a goal to `Runtime(Note::Goal(name), Error)`, so
+    to the checker it is anything, and its usage is unknown, so no grade
+    is held over it;
+  - each goal is a warning with its type and the variables of its
+    definition, each with its type and grade;
+  - reaching one at run time writes `reached the goal ?name` on standard
+    error and exits 1, on the CEK machine and through Cut alike;
+  - both REPLs have `:goals`, and front/'s server shows goals as warnings.
+
+  Still to come: proof search on a goal (`:prove ?name`), and tactic mode.
+  `_` is a hole the checker fills in, as it does today. `?name` is a goal
+  left for later:
   - it is reported with its type and its context: the variables in scope,
     each with its type and the grade still left of it;
   - it is a warning, not an error, so a program with goals in it still
@@ -605,6 +954,19 @@ and a `Map` built with one `Ord` is rejected when used with another.
   It is the same functions the REPL and the language server use: one
   search, one proof search, one tactic engine in `front/`, three ways to
   reach them. Its natural home is beside Lingua's `repl!` and `lsp!`.
+- [~] **front/'s REPL**, `Idyll repl`, a Lingua `repl!` over the language
+  server's session. It works as the Rust REPL does:
+  - the declarations entered so far are kept as source, and each entry is
+    checked after them;
+  - an entry of declarations alone extends them and says their types;
+  - an expression runs on the CEK machine, and its value and type are
+    said;
+  - an entry that ends in a signature waits for its equations.
+
+  Its commands are `:type`, `:reset` and `:declarations`; Tab completes
+  names, and Ctrl-F finds what has been declared. Still to come: running
+  on Glade rather than the CEK machine, and the rest of the Rust REPL's
+  commands (`:ir`, `:load`, ...).
 - [ ] **Searching and proving in the REPL**, for the REPL `front/` gets
   from Lingua's `repl!` (Chris, 2026-10-16). The Rust REPL already has
   the first two, which carry over; the third is new.
@@ -643,8 +1005,8 @@ and a `Map` built with one `Ord` is rejected when used with another.
     handing the term back. Tactics are a small `syntax!` grammar. The goal
     stack is an input of the database.
 
-  Proposed to the Lingua session in place of a hook per feature (Chris,
-  2026-10-16): **panes** and **modes**, two separate things.
+  In place of a hook per feature (2026-10-16), Lingua is to have two
+  separate things: **panes** and **modes**.
   - **A pane** is a pop-up a language declares: how it opens (a key or a
     `:` command), its state, a key function (go on, put text on the line,
     enter text, or close) and a Doodle drawing. The finder becomes Lingua's
@@ -709,7 +1071,8 @@ shows a type.
   compiler** (Chris, 2026-10-17), as F*'s Low\* has it, compiled to C by
   KaRaMeL, which HACL\* and EverCrypt are written in. Idyll stays high level:
   this is a fenced-off part of it, provably safe, not a second way to write
-  everything. Five pieces:
+  everything. The design, with a worked example, the C it compiles to, an
+  order of work and the open questions, is `docs/LOW.md`. Five pieces:
   - **A `Mem` effect**: stack frames and heap regions, `alloca`, `malloc`
     and `free`, buffers whose lengths are in their types, reads and writes
     through pointers, machine integers of fixed widths.
@@ -729,9 +1092,38 @@ shows a type.
   - **The fragment, and its compiler.** A module marked for it (say
     `@extract`) must be first-order, monomorphic once erased, closure-free,
     and use only `Mem`'s data and machine integers. A back end of its own
-    lowers it to C or LLVM; `idyllic-llvm` is half of that already. Code in
+    lowers it to C or LLVM; the retired `idyllic-llvm` (in git history
+    before 2026-10-19) is half of that already. Code in
     it is called from the rest through a foreign interface; everything else
     stays on Cut, Glade and Silo.
+
+  **For Meadow's runtime written in Idyll** (2026-10-26). Why: Meadow, its
+  runtime included, is to be written in Idyll, so that the runtime has the
+  performance of low-level code and proofs of its safety beside it. Meadow's
+  plan is `docs/MEADOW-IN-IDYLL.md` in the Meadow repository (meadow PR #32): the
+  runtime in this fragment, compiled to C and proved memory-safe, then
+  sound, replacing the Rust runtime a module at a time behind its C
+  interface, the layout and the allocator first; the compiler in high-level
+  Idyll, ported from MeadowBoot. Beyond `docs/LOW.md`'s steps 1 to 5 it
+  needs these, in the order it uses them (its *What Idyll must have first*
+  gives the reason for each; how each is designed is Idyll's to decide):
+
+  - [ ] **Words**: a `Word` type with tagged immediates, and a pointer read
+    as a word and back, with proofs.
+  - [ ] **Blocks typed by their headers**: a word buffer with a ghost map
+    from each field to what it holds.
+  - [ ] **Interior pointers**: offsets within an allocation, with in-bounds
+    proofs.
+  - [ ] **C function pointers**, and calls through them.
+  - [ ] **C-layout structs, globals**, and a thread-local for the running
+    thread's context.
+  - [ ] **C11 atomics**, trusted with simple specifications at first.
+  - [ ] **Trusted primitives with specifications**, listed in one module:
+    the stack switch, system calls, the instruction-cache flush.
+  - [ ] **A static library as output**, with exported names, `inline` and
+    `cold`, and LTO with the code LLVM emits.
+  - [ ] **128-bit products and overflow-checked arithmetic**, for big
+    integers and hashing.
 
   Rust-like borrowing in the core language (second-class `&` and `&mut`,
   lifetimes as terms, permission tokens; discussed 2026-09-30 and
@@ -821,7 +1213,8 @@ Work split: each session changes only its own repository.
   `putErr` and exiting 1. `cut-corpus/` holds every program of the test
   corpora and the tutorial's sessions that runs (188 of them, every one
   lowering) as Cut, with what it prints, its answer and its exit status
-  (`compiler/idyllic/examples/cut_corpus.rs`). Run through `meadow-cut`
+  (`idyll-eval/examples/cut_corpus.rs`, the reference interpreter's
+  answers). Run through `meadow-cut`
   (meadow f46bb2a, 2026-10-02), 185 of 188 agreed; Idyll then escaped
   strings in answers as its REPL does and marked programs using `Random`
   or the clock `nondeterministic`, after which 186 agree, the other two
@@ -845,22 +1238,37 @@ Work split: each session changes only its own repository.
     back end leaves out the top-level and recursive definitions a program
     never uses (`idyllic-typecheck/src/prune.rs`), so the prelude costs
     nothing when it isn't called.
-- [~] **Step 4**: a shared corpus, on which the reference interpreter, the
-  AxCut machine, Glade and Silo agree in CI. `cut-corpus/` is it, and the
-  reference interpreter agrees with all of it (220 programs, with records,
-  and holes lowered as their solutions, 2026-10-03); next is Meadow's lowering of
-  Cut to AxCut (its step 3.3), pure programs first, then effects, then
-  `@many`, each checked against the same corpus.
-- [ ] **Step 5**: Idyll's build tool on Glade (debug) and Silo (release);
-  `idyllic-llvm` and `rts/idyll_rt.c` retired once Idyll's corpus, tutorial
-  and benchmarks pass on both.
+- [~] **Step 4**: a shared corpus, on which the reference interpreter,
+  Glade and Silo agree in CI. `cut-corpus/` is it (241 programs: 216 pure,
+  6 with the world's effects, 19 with handlers), its answers the reference
+  interpreter's (`idyll-eval/examples/cut_corpus.rs`). Glade and Silo agree
+  with all 241 on each (2026-10-19, meadow `idyll-dev` 98daaba; 221 of them
+  since 2026-10-18, after Meadow's Cut lowering, its handler fix PR 11, and
+  Idyll's own fixes to representation variables and array elements).
+  `idyll-eval/tests/spec.rs` holds Glade to the interpreter on the whole
+  test corpus and tutorial too. Left: running it in CI.
+- [x] **Step 5**: Idyll's build tool on Glade (debug) and Silo (release),
+  done 2026-10-19. Every program is lowered to Cut and handed to `meadow
+  cut` (`compiler/idyllic/src/meadow.rs`): the REPL, `idyll run` and the
+  compiler run on Glade, a release build is an executable Silo builds
+  (`idyll-driver/src/native.rs`), and the profiles' backends are `glade`
+  and `silo`. Idyll's own runtimes are gone: the AxCut machine and its
+  inliner (`idyllic-seq`), the LLVM back end (`idyllic-llvm`), the C
+  runtime (`rts/`) and `axcut-corpus/`. The reference interpreter stays as
+  the specification, which `idyll-eval/tests/spec.rs` now holds Glade to.
+  Found on the way, and fixed: a program linked from its compiled package
+  alone lowered what its recursive definitions answer as `any`; a mutable
+  array was Cut's persistent array, which a write copies, and is Meadow's
+  `st` array now, written in place; and, in Meadow, `Process.argv` gave a
+  vector to a program without vector roles, and a val that performs was
+  never run unless read. Left: the benchmarks, rerun on Silo.
 - [ ] **Step 6**: calling between languages.
 - [~] **Arrays**: `Array a` and `#[a; b]` literals are done (see phase 1),
   natively and in Cut. Left: array patterns, and an `Array n a` sized in
   its type.
 - [x] **One integer semantics.** Decided with Chris: `Int` is the runtime's
   primitive 64-bit integer, untagged, wrapping, in registers, as Meadow's is.
-  Idyll's REPL, AxCut machine, reference interpreter and type checker all
+  Idyll's REPL, AxCut machine (since retired), reference interpreter and type checker all
   compute that way now (`Prim::on_ints` in `idyllic-builtins`); a literal
   that does not fit is a parse error. `BigInt` comes later, as a type of
   its own.
@@ -884,37 +1292,132 @@ Each pass is checked against the Rust compiler's on the same programs, as
 MeadowBoot's are against the Rust Meadow compiler: `front/` writes what a
 pass made as text, the Rust compiler the same, and
 `compiler/idyllic/tests/front.rs` compares them on every program of the
-corpora (`compiler/idyllic/tests/corpus/`), the prelude, and every `.idl`
-file of the repository: 791 programs.
+corpora (`compiler/idyllic/tests/corpus/`), the prelude, every `.idl` file
+of the repository, and every entry of the tutorial's REPL sessions: 1082
+programs. The CEK machine is held to `idyll-eval` the same way, by
+`idyll-eval/tests/front.rs`. A pass written in slices marks what it cannot
+do yet `(unsupported)`, and the tests count those apart.
 
 - [x] **Tokens and layout** (`Lex`, `Layout`): every program agrees, token
   for token.
-- [x] **Parsing** (`Syntax`, a `syntax!` grammar; `Parse`, its tree read as
-  `idyllic-ast`): every program agrees, the 165 that parse and the 626 that
-  do not. The grammar is LL, so where the Rust parser backtracks it reads
-  one form for several and works out afterwards which it was.
-- [ ] Error messages compared, not only whether there is one; Nettle for
-  them.
-- [x] **Renaming** (`Rename`, to `Hir`), for a module after the prelude:
+- [x] **Parsing** (`Syntax`, a `syntax!` grammar; `Surface`, a `lang!`
+  written from its tree by `pass!`es): every program agrees with
+  `idyllic-parser`, the ones that parse and the 626 that do not. The grammar
+  is LL, so where the Rust parser backtracks it reads one form for several,
+  and the passes work out which it was from the tree's typed nodes.
+- [x] Syntax errors as Lingua `Diagnostic`s at the nodes they are about,
+  drawn with Nettle (`Idyll errors`).
+- [ ] Error messages compared with the Rust compiler's, not only whether
+  there is one; the renamer's and the checker's at nodes too (HIR and Core
+  would carry where they came from).
+- [x] **Renaming** (`Rename`: `resolve`, a `pass!` from `Surface` to `Hir`,
+  a `lang!`, under a driver for packages and `use`s), for a module after the prelude:
   every program agrees with `idyllic-rename`, binder for binder (the test
   renumbers both sides' uniques by first appearance), the prelude included.
   A name several `use`s bring in keeps each candidate for the checker to
   choose between (phase 3), where the Rust renamer lets the last win; no
   program of the corpus meets the difference yet. Left: packages of several
   modules, and dependencies.
-- [ ] Types: simple ones first, then dependent types, case trees,
-  termination, grades and effects.
-- [ ] Core, and the CEK machine on it.
-- [ ] Cut: lowered and written out, run with `meadow cut` on Glade and Silo,
-  first on a dozen of the corpus's programs. Cut is built with
-  [`meadow-lang/Cut`](https://github.com/meadow-lang/Cut), a package of its
-  own that MeadowBoot depends on too (Chris, 2026-10-16), all of it in
-  `front/src/Emit.mw`; so far the smallest program, which runs on Glade and
-  Silo.
+- [x] **Dependency order** (`Scc`, `idyllic-scc`).
+- [x] **Types** (`Elab`, `Matching`, `Termination`, `Handlers`,
+  `Sequences`, `Decl`, `Positivity`, `Check`, on the machinery of `Grade`,
+  `Core`, `Value`, `Eval`, `Unify`): `idyllic-typecheck` ported, normalisation
+  by evaluation, pattern unification, grades as polynomials, effect rows
+  with subsumption, dependent matching, size-change termination with
+  transparent unfolding, handlers, strict positivity. The prelude is
+  checked in full. Every program that reaches the checker (392) gets the
+  same declarations, types and errors (by kind) as the Rust checker.
+- [x] **The CEK machine** (`Cek`, with a captured `World`): `idyll-eval`
+  ported. All 211 programs that run come to the same answer, in the same
+  number of steps, printing the same.
+- [x] **Cut** (`Lower`, with `Typer` and `Prune`; `CutAst`, built and written
+  by `Emit` with [`meadow-lang/Cut`](https://github.com/meadow-lang/Cut),
+  the package MeadowBoot uses too): `idyllic-cut` ported. All 212 programs
+  that lower give the same Cut (canonical: whitespace, fresh names and
+  declaration order aside). The Cut package grew what Idyll needs (roles,
+  natives, effect variables, `@many`) in its PR 2.
+- [x] Run front/'s Cut with `meadow cut` on Glade against the reference
+  interpreter's answers, in a test (`idyll-eval/tests/front.rs`): all 200
+  as the reference says, handlers included, on meadow built from its
+  `idyll-dev` branch (which has the handler fix, meadow PR 11). The Cut
+  corpus passes on Glade likewise, all 221.
+- [x] The same on Silo: front/'s Cut 200/200, the Cut corpus 221/221 (once
+  an array's element is bound at its representation, not given to a
+  continuation as if it were a pointer).
+- [x] Packages: a package of modules, and a dependency (Std), in the
+  renamer (module namespaces, visibility, `@pub use`, dependencies renamed
+  in the same run) and the checker (a dependency checked alongside, as a
+  compiled one is imported). The whole Std package agrees with the Rust
+  checker, all 475 declarations, and so do the 39 corpus programs that use
+  Std (types 431 programs in all).
+- [x] Std's users through the CEK machine and Cut too (2026-10-21): front/'s
+  `run` and `cut` take `--std`, Std checked and lowered alongside; the Rust
+  side's reference is its pipeline's, which links compiled Std in. Their Cut
+  agrees on every one of them, and runs on Glade and Silo as the reference
+  says (239 programs).
+- [x] Whole packages (2026-10-21): `Idyll build` makes a package's Cut, its
+  `main` the entry. Every package in `examples/` (hello, euler, effects,
+  vectors, linear, interpreter: modules, Std, effects and handlers,
+  dependent types, linear arrays) builds to the Rust compiler's Cut, and
+  runs to what that compiler's build prints
+  (`the_example_packages_build_and_run_alike`).
+- [x] Traits and instances (`trait`, `instance`, `@{..}`), read and
+  desugared as the Rust parser does, so that the corpus can have them.
+  Read, desugared, renamed and ordered (2026-10-20); the search for auto
+  arguments, instances' checks and the specialising of a known instance's
+  methods in the checker (`Auto.mw`, 2026-10-21): every pass agrees on the
+  corpus's trait and auto-argument programs, and their Cut runs as the
+  reference says.
+- [x] Choosing an overloaded name by type, as the Rust checker does it
+  (`overloads.rs`, ported as `Overloads.mw`, 2026-10-21): each meaning
+  tried on the checker and undone (`Tc.save`/`restore` copy every table),
+  several put off behind a placeholder until the definition is checked, a
+  pattern's constructor chosen by its scrutinee's type. With it no program
+  of the corpus is left out of the type or Cut comparisons.
+- [x] front/'s own driver (2026-10-21): `Idyll build`, `run` (`--release`
+  for Silo) and `check` on a package, a Lingua `cli!` over a `make!` with
+  each package a unit (path dependencies; Std and the prelude embedded with
+  `includeStr`, the prelude now one file, `compiler/idyllic/src/
+  prelude.idl`, that the Rust compiler includes too). A unit is compiled
+  again only when its sources or a dependency's changed; the link lowers the
+  root to Cut and `run` hands it to `meadow cut`. Every example runs through
+  it as the Rust driver runs it. Since 2026-10-21 a package is built a part
+  at a time on Lingua's `make!` parts (Lingua 67ed9c3, Cut 8af8329): the
+  module SCCs, the parts that do not import each other at once, each again
+  only when it must. Since 2026-10-22 packages and parts are compiled
+  apart, as the Rust compiler compiles them: renamed against the names
+  what they depend on gives, checked against what it compiled to, and
+  compiled to an interface (`Compiled`, `Reflect`), the program linked from
+  them (`Link`); Std is a unit of its own. front/'s compiled Std, whole and
+  part by part, agrees with Rust's line for line, and the corpus types,
+  lowers and runs alike against it. Git dependencies and the lockfile done
+  2026-10-24, on Lingua's shared resolver (`Lingua.Resolve`, shared with
+  MeadowBoot; Lingua d3b76b8, Cut 3d96fa0): `version`/`tag`/`branch`/`rev`,
+  `idyll.lock` in the Rust driver's format (the Rust driver builds `--locked`
+  from front/'s), `--offline`, `--locked`, `Idyll update [--dry-run]`; Std
+  written under `~/.idyll/std/<hash>` (`front_builds_with_a_git_dependency`).
+  Left: profiles and options as `make!` has them, workspaces, error messages drawn where
+  they are (the checker's errors are kinds only). (Lingua e15e7f9, Cut
+  071b64b: a part's room of uniques is its first module's place among the
+  package's sources, `partUnitPaths`.)
+- [ ] front/'s own REPL, once Cut moves its Lingua pin (Lingua 833e1a5, for
+  LineEditor 0.2.2).
 - [ ] CI, with MeadowBoot's prerelease for the `meadow` it needs.
+- [ ] **The rest of the passes on Lingua's `lang!`/`pass!`**, as MeadowBoot's
+  are (2026-10-18): writing the compiler on Lingua is for this. Done:
+  `Surface`, `Hir` and `Elaborated` are languages; the parser's lowering,
+  the renamer, `Scc` (`regroup`) and the checker (`elab : Hir ->
+  Elaborated`, bidirectional through its context's goal) are passes, and
+  nothing reads HIR as data any more. The checker computes with Core as data
+  inside, where normalisation by evaluation needs it. Next: the checked
+  program written out as `Elaborated`, the CEK machine and the Cut lowering
+  reading it there, and the lowering a pass from it to the Cut package's own
+  `lang!`, as MeadowBoot's `Seq` lowers its Core.
 
 *Done when:* `front/` compiles the corpus and the tutorial to Cut that Glade
-and Silo run with the answers the CEK machine gives.
+and Silo run with the answers the CEK machine gives. Done 2026-10-21, and
+whole packages too, Std's users among them. What is left is front/'s own
+driver (`idyll run` as front/), its REPL, and error messages compared.
 
 ## Not porting
 
@@ -1016,3 +1519,32 @@ Not in Meadow, but they will come up along the way:
   GHCi's behaviour, where a new definition shadows the old one and earlier
   definitions keep referring to the old, needs each entry to be a scope of
   its own.
+- **Rough edges the examples found** (2026-10-19), fixed the same day,
+  each with a test and, where it is a program, a corpus entry front/ is
+  held to:
+  - a resumption handed to a row-polymorphic function ("which Search?"),
+    a lambda inside a lambda handed to one `map` ("effects not allowed"),
+    and `(\f -> f 1) (\n -> True)`: metavariables made inside a binder
+    could not meet ones made outside. The unifier now *prunes* a
+    metavariable of the variables a solution may not mention.
+  - a `case` in parentheses with its alternatives on lines of their own:
+    `(`, `[` and `,` close the layout blocks opened inside them.
+  - a parse error in an equation's right-hand side was reported at its
+    `=`: an `=`, `->` or `|` now commits to the right-hand side.
+  - a type-level definition: `pairOf a = (a, a)` is now the pair type,
+    and `Matrix r c = Vec r (Vec c Int)` may be written, upper case.
+  - a constructor named `Div` no longer hides the effect `Div` in a row.
+  - `\() -> e` is a lambda, as `f () = e` is an equation.
+  - `use Matrix (Matrix, ..)` of a module and its type of one name: the
+    second pass over the `use`s took the path for the type.
+  - a package's `@native` types were not given to its dependents.
+  - a string could not be looked inside: `Char`, the prelude's string
+    natives, and `Std.String` and `Std.Char` as Meadow has them.
+
+  One is left, and is a question of design rather than a bug: in a module
+  that says nothing about grades, a binder is unrestricted, so a Std
+  function that uses its argument once (`Std.Tuple.mapSnd`) still takes it
+  at `[]`, and `mapSnd f (k ())` in a handler counts the resumption `k` as
+  used without limit, which an operation resumed at most once forbids.
+  Inferring the tightest grade of each binder (*Grades suggested, not
+  demanded*, above) would answer it.

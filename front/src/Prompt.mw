@@ -1,0 +1,225 @@
+-- Idyll's REPL (`repl!`), `Idyll repl`, over the same session of the
+-- compiler's queries as the language server (`Session`).
+--
+-- As the Rust driver's REPL does (`pipeline::Session`), it keeps the
+-- declarations entered so far as source (the session's `earlier`), and
+-- checks each entry after them. An entry of declarations alone, with
+-- nothing wrong with it, extends them, and says what it declares
+-- (`double : Int -> Int`). An expression is run on the CEK machine
+-- (`Cek`), and its value and type are said (`3 : Int`; a function, which
+-- has no value to show, `: Int -> Int`). What is wrong with an entry is
+-- drawn against the entry.
+
+use Lingua (repl!)
+use Lingua.Repl (Reply)
+use Lingua.Diagnostic (Diagnostic, renderAll, whereAt, isError)
+use Lingua.Lang (Meta)
+use Idyll.Session
+use Idyll.Syntax (parseIdyll)
+use Idyll.Scc (sccModule)
+use Idyll.Check (checkedAgainst)
+use Idyll.Core as C
+use Idyll.Hir (Literal)
+use Idyll.Cek as Cek
+use Idyll.World as W
+use Std.St (runSt)
+use Std.St as St
+use Std.Exn (toResult)
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Maybe as M
+use Std.Result.Result.*
+
+repl! {
+  pub Prompt "idyll" for Session
+    | text = setSessionSource
+    | eval = entered
+    | tree = treeIn
+    | errors = errorsIn
+    | completion = completedIn
+    | declarations = declaredSoFar
+    | commands = promptCommands
+    | prompt = "> "
+    | history = ".idyll_history"
+}
+
+-- A query's answer, or `fallback` if it has none (an input never set).
+fun answered fallback act = match toResult act with | Ok x -> x | Err _ -> fallback
+
+-- Std compiled, or why not.
+fun stdIn db = answered (Err "Std could not be compiled") (\() -> sessionStd db 0)
+
+-- The declarations entered so far.
+fun earlierIn db = answered "" (\() -> sessionEarlier db 0)
+
+-- What entering the entry says; the declarations entered so far are
+-- extended by it, if it is declarations alone and nothing is wrong.
+fun entered db file =
+  let before = earlierIn db in
+  let entry = answered "" (\() -> sessionSource db file) in
+  let program = before ++ S.trimEnd entry ++ "\n" in
+  match ran program (S.byteLength before) (answered (Err []) (\() -> sessionPrelude db 0)) (\u -> stdIn db) with
+  | (said, extends) ->
+      let w = if extends then setSessionEarlier db 0 program else () in
+      said
+
+-- What entering `program` (the declarations so far, `earlier` bytes of it,
+-- then an entry) says, and whether it is declarations alone that check.
+fun ran (program : String) (earlier : Int) prelude std =
+  -- (what was declared before, not to be said again)
+  let before = if earlier == 0 then [] else (match declaredIn (S.slice program 0 earlier) prelude std with | (ds, _) -> V.map (\d -> match d with | (_, n, _) -> n) ds) in
+  match preparedProgram program prelude std with
+  | Err ds -> (drawn program earlier ds, False)
+  | Ok (m, deps, renaming) ->
+      if not (V.isEmpty renaming) then (drawn program earlier renaming, False)
+      else
+        runSt (\() ->
+          let c = checkedAgainst (sccModule m) False deps in
+          -- (a warning -- a goal, a hole filled in -- is said, and stops
+          -- nothing)
+          let said = placedDiagnostics (St.getRef c.tc.placed) in
+          if V.any isError said then (drawn program earlier said, False)
+          else
+            let warned = if V.isEmpty said then "" else drawn program earlier said in
+            match c.bodyType with
+            | None ->
+                -- declarations: each new one, with its type
+                let own = V.filter (\d -> match d with | (u, name, _) -> u >= m.first and written name and not (V.elem name before)) (St.getRef c.tc.declared) in
+                (warned ++ S.join "\n" (V.map (\d -> match d with | (_, name, ty) -> "${name} : ${C.shown m.linearBody ty}") own), True)
+            | Just ty ->
+                let p = Cek.programOf c in
+                (match p.body with
+                 | None -> (warned ++ ": ${C.shown m.linearBody ty}", False)
+                 | Just term -> (warned ++ valueOf p term (C.shown m.linearBody ty), False)))
+
+-- What running a program's expression says: what it printed, then its
+-- value and type (only the type, for a value with nothing to show).
+fun valueOf p term (ty : String) =
+  let w = W.captured () in
+  let printed = \u -> getRef w.output in
+  match Cek.run p w term fuel with
+  | Ok (v, _) ->
+      let out = printed () in
+      let answer = match Cek.shown v with | Just s -> "${s} : ${ty}" | None -> ": ${ty}" in
+      if out == "" then answer else out ++ (if S.endsWith "\n" out then "" else "\n") ++ answer
+  | Err h -> printed () ++ Cek.haltShown h
+
+-- How many steps an entry is given before it is taken not to stop.
+def fuel = 5000000
+
+-- What is wrong, drawn against the entry: of what is wrong with the whole
+-- program, what is in the entry (or nowhere in particular).
+fun drawn (program : String) (earlier : Int) (ds : [Diagnostic]) : String =
+  let entry = S.slice program earlier (S.byteLength program) in
+  let mine = V.filter (\d -> match whereAt d with | Meta.Meta a b -> a >= earlier or (a == 0 and b == 0)) ds in
+  renderAll "entry" entry (V.map (\d -> shifted d earlier) mine)
+
+-- A diagnostic `by` bytes further back.
+fun shifted (d : Diagnostic) (by : Int) : Diagnostic =
+  match d with
+  | Diagnostic.Diagnostic s m w ls ns -> Diagnostic.Diagnostic s m (back w by) (V.map (\l -> (back (fst l) by, snd l)) ls) ns
+
+fun back (m : Meta) (by : Int) : Meta =
+  match m with
+  | Meta.Meta a b -> if a >= by then Meta.Meta (a - by) (b - by) else Meta.Meta 0 0
+
+-- --- the rest of what the prompt asks ---------------------------------------------
+
+fun treeIn db file = answered (fst (parseIdyll "")) (\() -> fst (sessionParsed db file))
+
+-- Where the parser's errors are, in bytes: an entry with one is not
+-- finished. Nor is one that ends in a signature, which waits for its
+-- equations (as the Rust REPL's does): its end is taken for an error.
+fun errorsIn db file =
+  answered [] (\() ->
+    let errs = V.map fst (snd (sessionParsed db file)) in
+    let text = sessionSource db file in
+    if V.isEmpty errs and awaitsEquations text then [S.byteLength text] else errs)
+
+-- Whether `text`'s last line is a signature, `name : type`, that nothing
+-- after it defines.
+fun awaitsEquations (text : String) : Bool =
+  let lines = V.filter (\l -> not (S.isEmpty (S.trim l))) (S.split "\n" text) in
+  match V.last lines with
+  | Just last ->
+      (match S.split " : " last with
+       | [] -> False
+       | parts ->
+           let name = S.trim (V.getOr "" parts 0) in
+           V.len parts > 1 and not (S.startsWith " " last) and isName name)
+  | None -> False
+
+-- A lower-case name alone: a definition's.
+fun isName (s : String) : Bool =
+  not (S.isEmpty s) and not (S.contains " " s) and not (S.contains "(" s) and (let c = S.slice s 0 1 in c == S.toLower c and c != S.toUpper c)
+
+-- Names to complete with: the declarations so far, the entry's, the
+-- prelude's.
+fun completedIn db file at =
+  let before = earlierIn db in
+  answered [] (\() -> completionsIn (before ++ sessionSource db file) (sessionPrelude db 0) (\u -> stdIn db) (S.byteLength before + at))
+
+-- What has been declared so far, for the finder: each name and its type.
+fun declaredSoFar db file =
+  let before = earlierIn db in
+  answered [] (\() ->
+    match declaredIn before (sessionPrelude db 0) (\u -> stdIn db) with
+    | (ds, first) -> V.concatMap (\d -> match d with | (u, name, ty) -> if u >= first and written name then [(name, ty, "")] else []) ds)
+
+-- The prompt's own commands.
+def promptCommands =
+  [
+    ("type", "EXPR", "what an expression is, without running it", typeOfEntry),
+    ("reset", "", "forget every declaration entered", \db rest -> (let u = setSessionEarlier db 0 "" in Reply.Said "")),
+    ("declarations", "", "the declarations entered so far, as source", \db rest -> Reply.Said (S.trimEnd (earlierIn db))),
+    ("goals", "", "the goals (?name) left in what has been declared, each with its type", goalsSoFar)
+  ]
+
+fun goalsSoFar db rest =
+  let goals = goalsIn (earlierIn db) (answered (Err []) (\() -> sessionPrelude db 0)) (\u -> stdIn db) in
+  Reply.Said (if V.isEmpty goals then "(no goals)" else S.join "\n" goals)
+
+fun typeOfEntry db rest =
+  let before = earlierIn db in
+  let program = before ++ rest ++ "\n" in
+  match preparedProgram program (answered (Err []) (\() -> sessionPrelude db 0)) (\u -> stdIn db) with
+  | Err ds -> Reply.Said (drawn program (S.byteLength before) ds)
+  | Ok (m, deps, renaming) ->
+      if not (V.isEmpty renaming) then Reply.Said (drawn program (S.byteLength before) renaming)
+      else
+        runSt (\() ->
+          let c = checkedAgainst (sccModule m) False deps in
+          let wrong = V.filter isError (placedDiagnostics (St.getRef c.tc.placed)) in
+          if not (V.isEmpty wrong) then Reply.Said (drawn program (S.byteLength before) wrong)
+          else
+            match c.bodyType with
+            | Just ty -> Reply.Said "${rest} : ${C.shown m.linearBody ty}"
+            | None -> Reply.Said "${rest} is no expression")
+
+-- --- tests ---------------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+-- What entering each entry in turn says.
+fun enteredAll (entries : [String]) =
+  let db = batchSession () in
+  V.map (\e -> (let u = setSessionSource db 0 e in entered db 0)) entries
+
+@test fun anExpressionIsItsValueAndType () =
+  assertEq (enteredAll ["1 + 2"]) ["3 : Int"] "as the Rust REPL says it"
+
+@test fun declarationsStayForLaterEntries () =
+  assertEq
+    (enteredAll ["double : Int -> Int\ndouble n = n + n", "double 21"])
+    ["double : Int -> Int", "42 : Int"]
+    "declared, then used"
+
+@test fun goalsAreListed () =
+  let db = batchSession () in
+  let w = setSessionSource db 0 "half : Int -> Int\nhalf n = ?todo" in
+  let said = entered db 0 in
+  assertEq (goalsIn (earlierIn db) (sessionPrelude db 0) (\u -> stdIn db)) ["?todo : Int"] "the goal, with its type"
+
+@test fun anEntryThatIsWrongIsForgotten () =
+  let said = enteredAll ["x : Int\nx = True", "x"] in
+  assertEq (V.map (\s -> S.isEmpty s) said) [False, False] "both say something"

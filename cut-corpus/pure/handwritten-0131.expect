@@ -1,0 +1,21 @@
+-- | -- a function only a solved implicit argument calls is kept, not pruned
+-- | data Nat = Z | S Nat
+-- | 
+-- | use Nat.*
+-- | 
+-- | data Proxy : Nat -> Type where
+-- |   P : (n : [0] Nat) -> Proxy n
+-- | 
+-- | twice : Nat -> Nat
+-- | twice Z = Z
+-- | twice (S n) = S (S (twice n))
+-- | 
+-- | pick : {n : [] Nat} -> Proxy n -> Nat
+-- | pick {n} _ = n
+-- | 
+-- | f : Nat -> Nat
+-- | f m = pick (Proxy.P (twice m))
+-- | 
+-- | f (S Z)
+answer: S (S Z)
+exit: 0

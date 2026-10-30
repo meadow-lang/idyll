@@ -1,0 +1,24 @@
+-- | -- a trait with a default, two instances, one for lists wanting its elements', and a constraint
+-- | trait Describe (a : Type) where
+-- |   describe : a -> String
+-- |   twice : a -> String
+-- |   twice x = describe x ++ describe x
+-- | 
+-- | instance Describe Int where
+-- |   describe n = showInt n
+-- | 
+-- | instance Describe Bool where
+-- |   describe True = "yes"
+-- |   describe False = "no"
+-- |   twice b = "twice " ++ describe b
+-- | 
+-- | instance Describe a => Describe (List a) where
+-- |   describe Nil = "."
+-- |   describe (x :: xs) = describe x ++ "," ++ describe xs
+-- | 
+-- | both : {a : Type} -> Describe a => a -> a -> String
+-- | both x y = describe x ++ "&" ++ describe y
+-- | 
+-- | (describe 3, twice False, describe (1 :: 2 :: Nil), both True False)
+answer: ("3", "twice no", "1,2,.", "yes&no")
+exit: 0

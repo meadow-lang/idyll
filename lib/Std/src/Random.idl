@@ -1,0 +1,142 @@
+-- Random numbers, as Meadow's `Std.Random`: the prelude's `Random` effect,
+-- which with no handler the runtime answers with real entropy, and a pure
+-- generator to handle it with when the same numbers are wanted twice:
+-- `withSeed 42 (\u -> between 1 7)` is the same roll every time, which is
+-- what makes code that rolls dice testable.
+--
+-- The generator is SplitMix64, the runtimes' own: one multiply-xor-shift
+-- chain, no state beyond a single `Int`. Fast, and good enough for
+-- shuffling, sampling and tests; not cryptographic.
+
+use Std.Num.Bits (Bits, bitXor, bitOr, ushr)
+use Std.Collections.Vector (Vector)
+use Std.Collections.Vector as V
+
+-- --- the pure generator ------------------------------------------------------
+--
+-- `step s` is the next value and the state to go on from. Threading the
+-- state by hand is the honest interface; `withSeed` hides it behind the
+-- effect.
+
+gamma : Int
+gamma = 0 - 7046029254386353131
+
+mixA : Int
+mixA = 0 - 4658895280553007687
+
+mixB : Int
+mixB = 0 - 7723592293110705685
+
+mix : (z0 : [] Int) -> Int
+mix z0 =
+  let z1 = bitXor z0 (ushr z0 30) * mixA in
+  let z2 = bitXor z1 (ushr z1 27) * mixB in
+  bitXor z2 (ushr z2 31)
+
+-- One step: the next value and the state to continue from.
+@pub
+step : (s : Int) -> (Int, Int)
+step s = let s2 = s + gamma in (mix s2, s2)
+
+-- A state to start from. Any `Int` will do; odd ones are traditional.
+@pub
+seed : (n : Int) -> Int
+seed n = bitOr n 1
+
+-- `v` modulo `m`, always from 0 up to `m`: `%` follows the sign of what is
+-- divided, and the generator gives negative values half the time.
+posMod : (v : Int) -> (m : [] Int) -> Int
+posMod v m = let r = v % m in if r < 0 then r + m else r
+
+-- From `lo` up to but not including `hi`, from a pure state; `lo` if there
+-- is nothing between them.
+@pub
+stepBetween : (lo : [] Int) -> (hi : [] Int) -> (s : Int) -> (Int, Int)
+stepBetween lo hi s = case step s of
+  (v, s2) -> if hi <= lo then (lo, s2) else (lo + posMod v (hi - lo), s2)
+
+-- From 0 up to 1, from the top 53 bits, the ones a `Float` holds exactly.
+@pub
+stepFloat : (s : Int) -> (Float, Int)
+stepFloat s = case step s of
+  (v, s2) -> (unitFloat v, s2)
+
+unitFloat : (v : Int) -> Float
+unitFloat v = toFloat (ushr v 11) / 9007199254740992.0
+
+-- --- handling ----------------------------------------------------------------
+
+-- Run `act` with the pure generator, from `n`: the same `n` gives the same
+-- numbers, on every machine and every run.
+@pub
+withSeed : {a : Type} -> (n : Int) -> (act : (u : ()) -> a ! {Random | r}) -> a ! r
+withSeed n act = seeded act (seed n)
+
+-- Like `withSeed`, but also giving back the state it ended in, so that a run
+-- can be continued.
+@pub
+withSeedFrom : {a : Type} -> (n : Int) -> (act : (u : ()) -> a ! {Random | r}) -> (a, Int) ! r
+withSeedFrom n act = seededFrom act (seed n)
+
+-- `act`, as a function of the state it starts in: each clause is one,
+-- passing on the state that follows it.
+seeded : {a : Type} -> (act : (u : ()) -> a ! {Random | r}) -> ((st : Int) -> a ! r) ! r
+seeded act = handle act () with
+  return x -> \(st : Int) -> x
+  nextInt u k -> \(st : Int) -> case step st of
+    (v, s2) -> k v s2
+  nextSeed u k -> \(st : Int) -> case step st of
+    (v, s2) -> k v s2
+  intBetween lo hi k -> \(st : Int) -> case stepBetween lo hi st of
+    (v, s2) -> k v s2
+
+seededFrom : {a : Type} -> (act : (u : ()) -> a ! {Random | r}) -> ((st : Int) -> (a, Int) ! r) ! r
+seededFrom act = handle act () with
+  return x -> \(st : Int) -> (x, st)
+  nextInt u k -> \(st : Int) -> case step st of
+    (v, s2) -> k v s2
+  nextSeed u k -> \(st : Int) -> case step st of
+    (v, s2) -> k v s2
+  intBetween lo hi k -> \(st : Int) -> case stepBetween lo hi st of
+    (v, s2) -> k v s2
+
+-- --- derived -----------------------------------------------------------------
+
+-- From `lo` up to but not including `hi`: `intBetween`, by Meadow's name.
+@pub
+between : (lo : Int) -> (hi : Int) -> Int ! Random
+between lo hi = intBetween lo hi
+
+-- From 0 up to 1. Meadow's runtimes give its own operation this way, from
+-- the top 53 bits of a number, so it is the same number whether they or
+-- `withSeed` answer.
+@pub
+nextFloat : (u : ()) -> Float ! Random
+nextFloat u = unitFloat (nextInt ())
+
+@pub
+bool : (u : ()) -> Bool ! Random
+bool u = between 0 2 == 1
+
+-- One of the elements, chosen uniformly; `Nothing` if there are none.
+@pub
+choose : {a : Type} -> (v : Vector a) -> Maybe a ! Random
+choose v = if V.isEmpty v then Nothing else V.get v (between 0 (V.len v))
+
+-- The elements in an order chosen uniformly: Fisher-Yates, from the back.
+@pub
+shuffle : {a : Type} -> (v : Vector a) -> Vector a ! Random
+shuffle v = shuffleFrom (V.len v - 1) v
+
+@terminating
+shuffleFrom : {a : Type} -> (i : Int) -> (v : Vector a) -> Vector a ! Random
+shuffleFrom i v =
+  if i <= 0 then v
+  else
+    let j = between 0 (i + 1) in
+    shuffleFrom (i - 1) (swapAt v i j)
+
+swapAt : {a : Type} -> (v : Vector a) -> (i : Int) -> (j : Int) -> Vector a
+swapAt v i j = case (V.get v i, V.get v j) of
+  (Just x, Just y) -> V.set (V.set v i y) j x
+  (p, q) -> v

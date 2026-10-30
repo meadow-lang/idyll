@@ -1,5 +1,10 @@
 # Benchmarks
 
+> The results below were measured with Idyll's own native back end
+> (AxCut, LLVM and a C runtime), retired on 2026-10-19. `idyllic -o` now
+> builds with Silo, Meadow's native runtime, through Cut; the numbers have
+> yet to be taken again.
+
 Three small programs, in Idyll (compiled through AxCut and LLVM) and in C,
 Rust, Go, Haskell, Python and JavaScript. `./run.sh [RUNS]` builds what the
 machine has compilers for, checks that every language prints the same answer,

@@ -67,13 +67,10 @@ the whole tutorial:
 - records, modules and packages;
 - a standard library (`lib/Std`).
 
-It runs programs in three ways:
-- on an abstract machine;
-- through LLVM to native code;
-- as Cut, which Meadow's reference interpreter runs with the same answers
-  on the shared corpus (`cut-corpus/`).
-
-Glade and Silo come next, once Meadow lowers Cut to its runtimes.
+It lowers every program to Cut, the IR it shares with Meadow, and runs it
+on Meadow's runtimes: Glade, Meadow's bytecode, for the REPL and debug
+builds, and Silo, native code, for release builds. Idyll has no runtime
+of its own, so running a program needs `meadow` installed.
 
 The compiler in Meadow (`front/`) has just begun. It reads Idyll's tokens
 and parses programs exactly as the Rust compiler does, on every one of 791
@@ -87,14 +84,13 @@ Traits, more of the standard library and the tooling are still to come. The
 
 | Directory      | What it is                                                                          |
 | -------------- | ----------------------------------------------------------------------------------- |
-| `compiler/`    | The Rust compiler, `idyllic`, a crate per pass: lexer, layout, parser, renamer, type checker, the AxCut and Cut lowerings, LLVM |
+| `compiler/`    | The Rust compiler, `idyllic`, a crate per pass: lexer, layout, parser, renamer, type checker, the Cut lowering |
 | `idyll-eval/`  | The reference interpreter the Rust compiler is tested against                       |
 | `idyll-driver/`| The `idyll` command: the REPL, its tour, and the build system                       |
-| `front/`       | The compiler in Meadow, with Lingua                                                 |
+| `front/`       | The compiler in Meadow, with Lingua; [front/README.md](front/README.md) explains it |
 | `lib/Std/`     | The standard library                                                                |
-| `rts/`         | The C runtime for native code, until Glade and Silo replace it                      |
-| `cut-corpus/`, `axcut-corpus/` | Every runnable test program, as Cut and as AxCut, with its expected output |
-| `examples/`, `bench/` | Example programs and benchmarks                                              |
+| `cut-corpus/`  | Every runnable test program, as Cut, with its expected output                       |
+| `examples/`, `bench/` | Example packages, each run with `idyll run` ([examples/README.md](examples/README.md)), and benchmarks |
 
 ## Getting started
 
@@ -114,7 +110,8 @@ The Meadow compiler in `front/` needs
 [Meadow](https://github.com/meadow-lang/meadow) installed. Then
 `meadow test` runs its tests, and `meadow run . -- parse file.idl` prints a
 program's syntax tree. `compiler/idyllic/tests/front.rs` checks it against
-the Rust compiler.
+the Rust compiler. [front/README.md](front/README.md) explains how it works,
+pass by pass.
 
 ## AI disclosure
 

@@ -43,31 +43,31 @@ fn rejects(src: &str, expected: &[&str]) {
 
 #[test]
 fn a_signature_and_an_equation() {
-    ok("id : {a : Type} -> a -> a\nid x = x\n", &["id : {a : Type} -> a -> a"], None);
+    ok("id : {a : Type} -> a -> a\nid x = x\n", &["id : {a : Type} -> (_ : [1] a) -> a"], None);
 }
 
 #[test]
 fn a_program_may_end_in_an_expression() {
-    ok("id : {a : Type} -> a -> a\nid x = x\n\nid 3\n", &["id : {a : Type} -> a -> a"], Some("Int"));
+    ok("id : {a : Type} -> a -> a\nid x = x\n\nid 3\n", &["id : {a : Type} -> (_ : [1] a) -> a"], Some("Int"));
 }
 
 #[test]
 fn a_signature_is_optional_when_the_type_can_be_inferred() {
-    ok("one = 1\nsucc (n : Int) = n + one\n", &["one : Int", "succ : (n : Int) -> Int"], None);
+    ok("one = 1\nsucc (n : Int) = n + one\n", &["one : Int", "succ : (n : [1] Int) -> Int"], None);
     // and can be written inline, as in a `let`
     ok("one : Int = 1\n", &["one : Int"], None);
 }
 
 #[test]
 fn a_signature_may_come_after_its_equation_or_far_from_it() {
-    ok("f x = x\ng = f 1\nf : Int -> Int\n", &["f : Int -> Int", "g : Int"], None);
+    ok("f x = x\ng = f 1\nf : Int -> Int\n", &["f : (_ : [1] Int) -> Int", "g : Int"], None);
 }
 
 #[test]
 fn a_signature_may_run_over_several_lines() {
     ok(
         "flip : {a b c : Type}\n    -> (a -> b -> c)\n    -> b -> a -> c\nflip f y x = f x y\n",
-        &["flip : {a : Type} -> {b : Type} -> {c : Type} -> (a -> b -> c) -> b -> a -> c"],
+        &["flip : {a : Type} -> {b : Type} -> {c : Type} -> (_ : [1] a -> b -> c) -> b -> a -> c"],
         None,
     );
 }
@@ -77,7 +77,7 @@ fn comments_and_blank_lines_mean_nothing() {
     // a comment-only line used to glue the next declaration onto the last
     ok(
         "-- the identity\nid : {a : Type} -> a -> a\nid x = x   -- linear\n\n  -- indented comment\n   \none = id 1\n\n",
-        &["id : {a : Type} -> a -> a", "one : Int"],
+        &["id : {a : Type} -> (_ : [1] a) -> a", "one : Int"],
         None,
     );
     // and a blank line used to end a `let` block
@@ -95,7 +95,7 @@ fn definitions_may_be_used_before_they_are_made() {
 
 #[test]
 fn recursion_needs_a_signature() {
-    ok("loop : Int -> Int ! Div\nloop n = loop (n + 1)\n", &["loop : Int -> Int ! Div"], None);
+    ok("loop : Int -> Int ! Div\nloop n = loop (n + 1)\n", &["loop : (_ : [1] Int) -> Int ! Div"], None);
     // and a recursion that may not end says so
     rejects(
         "loop : Int -> Int\nloop n = loop (n + 1)\n",
@@ -126,7 +126,7 @@ fn mutual_recursion() {
 fn equations_take_granules_unboxing_patterns() {
     ok(
         "drop : {a : Type} -> a [0] -> ()\ndrop [x] = ()\n\ncopy : Int [2] -> Int\ncopy [x] = x + x\n",
-        &["drop : {a : Type} -> a [0] -> ()", "copy : Int [2] -> Int"],
+        &["drop : {a : Type} -> (_ : [1] a [0]) -> ()", "copy : (_ : [1] Int [2]) -> Int"],
         None,
     );
     rejects("copy : Int [2] -> Int\ncopy [x] = x\n", &["usage mismatch: x has grade 2, but is used once"]);
@@ -174,29 +174,29 @@ fn forall_is_gone_and_is_just_a_name() {
 fn explicit_let_blocks_still_use_braces() {
     // `{` after `let` opens a block of declarations, not a binder
     ok("let { x = 1; y = 2 } in x + y\n", &["x : Int", "y : Int"], Some("Int"));
-    ok("let { id : {a : Type} -> a -> a; id x = x } in id 1\n", &["id : {a : Type} -> a -> a"], Some("Int"));
+    ok("let { id : {a : Type} -> a -> a; id x = x } in id 1\n", &["id : {a : Type} -> (_ : [1] a) -> a"], Some("Int"));
 }
 
 #[test]
 fn quantified_variables_scope_over_the_equation() {
-    ok("id : {a : Type} -> a -> a\nid x = (x : a)\n", &["id : {a : Type} -> a -> a"], None);
+    ok("id : {a : Type} -> a -> a\nid x = (x : a)\n", &["id : {a : Type} -> (_ : [1] a) -> a"], None);
     // they are erased, so the equation cannot compute with them
     rejects(
         "ty : {a : Type} -> () [0] -> Type\nty [u] = a\n",
         &["usage mismatch: a has grade 0, but is used once"],
     );
     // and a pattern may shadow one
-    ok("k : {a : Type} -> a -> a\nk a = a\n", &["k : {a : Type} -> a -> a"], None);
+    ok("k : {a : Type} -> a -> a\nk a = a\n", &["k : {a : Type} -> (_ : [1] a) -> a"], None);
 }
 
 #[test]
 fn implicit_arguments_are_inferred_at_each_use() {
     let prelude = "id : {a : Type} -> a -> a\nid x = x\n\n";
-    ok(&format!("{prelude}id (id True)\n"), &["id : {a : Type} -> a -> a"], Some("Bool"));
+    ok(&format!("{prelude}id (id True)\n"), &["id : {a : Type} -> (_ : [1] a) -> a"], Some("Bool"));
     // a bare name keeps its implicit binder
-    ok(&format!("{prelude}id\n"), &["id : {a : Type} -> a -> a"], Some("{a : Type} -> a -> a"));
+    ok(&format!("{prelude}id\n"), &["id : {a : Type} -> (_ : [1] a) -> a"], Some("{a : Type} -> (_ : [1] a) -> a"));
     // and instantiates where a particular type is wanted
-    ok(&format!("{prelude}(id : Int -> Int)\n"), &["id : {a : Type} -> a -> a"], Some("Int -> Int"));
+    ok(&format!("{prelude}(id : Int -> Int)\n"), &["id : {a : Type} -> (_ : [1] a) -> a"], Some("Int -> Int"));
 }
 
 #[test]
@@ -204,14 +204,16 @@ fn a_polymorphic_argument_stays_polymorphic_when_nothing_says_otherwise() {
     // An implicit argument is not filled in while the expected type is still
     // unknown, so `(\x -> x) id` is `id` itself.
     let prelude = "id : {a : Type} -> a -> a\nid x = x\n\n";
-    let id_ty = "{a : Type} -> a -> a";
+    let id_ty = "{a : Type} -> (_ : [1] a) -> a";
     let sig = format!("id : {id_ty}");
     ok(&format!("{prelude}id id id 2\n"), &[&sig], Some("Int"));
     ok(&format!("{prelude}(\\x -> x) id\n"), &[&sig], Some(id_ty));
     // the result really is polymorphic: here it is used at two types
     ok(
         &format!("@linear\n\n{prelude}let [f] = ([id id] : ({{a : Type}} -> a -> a) [2]) in f (f True)\n"),
-        &[&sig],
+        // (in a linear module, a parameter that says no grade is linear:
+        // nothing is worked out)
+        &["id : {a : Type} -> a -> a"],
         Some("Bool"),
     );
     // and a known expected type still instantiates, as before
@@ -229,7 +231,7 @@ fn a_polymorphic_argument_stays_polymorphic_when_nothing_says_otherwise() {
 fn a_polymorphic_definition_can_be_passed_where_one_is_wanted() {
     ok(
         "id : {a : Type} -> a -> a\nid x = x\n\napply : ({a : Type} -> a -> a) -> Int\napply f = f 1\n\napply id\n",
-        &["id : {a : Type} -> a -> a", "apply : ({a : Type} -> a -> a) -> Int"],
+        &["id : {a : Type} -> (_ : [1] a) -> a", "apply : (_ : [1] {a : Type} -> a -> a) -> Int"],
         Some("Int"),
     );
 }
@@ -239,6 +241,25 @@ fn an_implicit_argument_nothing_determines_is_reported() {
     rejects(
         "phantom : {a : Type} -> Int -> Int\nphantom n = n\n\nphantom 1\n",
         &["unsolved metavariable: could not infer the implicit argument a"],
+    );
+}
+
+#[test]
+fn an_implicit_argument_may_be_given_by_hand() {
+    // `f {a}` gives the implicit argument the type binds next; what is not
+    // given is worked out as ever
+    let pair = "pair : {a b : Type} -> a -> b -> (a, b)\npair x y = (x, y)\n\n";
+    ok(&format!("{pair}pair {{Int}} 1 True\n"), &["pair : {a : Type} -> {b : Type} -> (_ : [1] a) -> (_ : [1] b) -> (a, b)"], Some("(Int, Bool)"));
+    ok(&format!("{pair}pair {{Int}} {{String}} 1 \"s\"\n"), &["pair : {a : Type} -> {b : Type} -> (_ : [1] a) -> (_ : [1] b) -> (a, b)"], Some("(Int, String)"));
+    // and it is what the argument is checked against
+    rejects(&format!("{pair}pair {{Int}} True 1\n"), &["type mismatch: expected Int, but this has type Bool"]);
+    // which says what nothing else could
+    let phantom = "phantom : {a : Type} -> Int -> Int\nphantom n = n\n\n";
+    ok(&format!("{phantom}phantom {{Bool}} 1\n"), &["phantom : {a : Type} -> (_ : [1] Int) -> Int"], Some("Int"));
+    // to something that takes none next, it is an error
+    rejects(
+        "f : Int -> Int\nf x = x\n\nf {Int} 3\n",
+        &["no implicit argument is taken here: given by hand, but what it is given to has type (_ : [1] Int) -> Int"],
     );
 }
 
@@ -260,7 +281,7 @@ fn grade_polymorphic_declarations() {
 fn a_let_block_is_a_block_of_declarations() {
     ok(
         "let id : {a : Type} -> a -> a\n    id x = x\n    n = id 2\n in id n\n",
-        &["id : {a : Type} -> a -> a", "n : Int"],
+        &["id : {a : Type} -> (_ : [1] a) -> a", "n : Int"],
         Some("Int"),
     );
     // nested, they are not the program's declarations
@@ -323,4 +344,60 @@ fn terminating_vouches_for_a_recursion_the_checker_cannot_see_end() {
         "@terminating\ndata T = A\n\n1",
         &["parse error: @terminating goes on a definition's signature, f : a"],
     );
+}
+
+#[test]
+fn a_closing_parenthesis_closes_the_blocks_opened_inside_it() {
+    // the `)` ends the `of` block, as Haskell's parse-error rule would, and
+    // the `in` then the `let`'s
+    ok(
+        "f : (m : Maybe Int) -> Int\nf m =\n  let x = (case m of\n    Just n -> n\n    Nothing -> 0) in\n  x + 1\n\nf (Just 4)",
+        &["f : (m : [1] Maybe Int) -> Int"],
+        Some("Int"),
+    );
+    // and so does a `]`, and indentation inside either is free
+    ok(
+        "g : (m : Maybe Int) -> List Int\ng m = #[case m of\n    Just n -> n\n    Nothing -> 0, 7]\n\ng Nothing",
+        &["g : (m : [1] Maybe Int) -> List Int"],
+        Some("List Int"),
+    );
+    ok("h : Int\nh =\n  let y = (1 +\n 2) in\n  y\n\nh", &["h : Int"], Some("Int"));
+}
+
+#[test]
+fn a_lambda_may_take_unit() {
+    // `\()` as an equation's `()`: a binder of type `()`
+    ok("f : (g : () -> Int) -> Int\nf g = g ()\n\nf (\\() -> 1)", &["f : (g : [1] () -> Int) -> Int"], Some("Int"));
+}
+
+#[test]
+fn a_parse_error_in_a_right_hand_side_is_reported_where_it_is() {
+    // not at the `=` (or `->`) that another reading of the line stopped at
+    rejects(
+        "main : () -> () ! Eff\nmain () =\n  let s = (\\y -> ) in ()\n",
+        &["parse error: found ')' expected '\\', 'let', 'case', 'if', 'handle', '(', '{', or atom"],
+    );
+    rejects(
+        "f : (m : Maybe Int) -> Int\nf m = case m of\n  Just n -> (n +)\n  Nothing -> 0\n\nf Nothing",
+        &["parse error: found ')' expected atom"],
+    );
+}
+
+#[test]
+fn a_definition_may_give_a_type() {
+    // its body is a type, so `(a, a)` is the pair type, not a pair of types
+    ok(
+        "pairOf : Type -> Type\npairOf a = (a, a)\n\nx : pairOf Int\nx = (1, 2)\n\nx",
+        &["pairOf : Type -> Type", "x : (Int, Int)"],
+        Some("(Int, Int)"),
+    );
+    // and its name may be upper case, as a type's is; its signature, which
+    // reads as an annotated expression, is one when more comes after it
+    ok(
+        "Matrix : Type -> Type\nMatrix a = (a, a)\n\nswap : (m : Matrix Int) -> Matrix Int\nswap (a, b) = (b, a)\n\nswap (1, 2)",
+        &["Matrix : Type -> Type", "swap : (m : [1] (Int, Int)) -> (Int, Int)"],
+        Some("(Int, Int)"),
+    );
+    // but last, it is still the program's expression
+    ok("Nil : List Int", &[], Some("List Int"));
 }

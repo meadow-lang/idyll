@@ -1,0 +1,137 @@
+-- Rock paper scissors, at the terminal, after Meadow's
+-- `examples/RockPaperScissors`.
+--
+-- The point of the example is the two effects. `Console` reads what you
+-- type and `Random` picks for the machine, and neither is a special case:
+-- both are effects like any other, so the whole game can be played with no
+-- terminal and no entropy anywhere near it, by `Std.Console.withInput` and
+-- `Std.Random.withSeed`. `idyll run -- --demo` plays a game that way.
+
+use Std.Console (prompt, println, withInput, withOutput)
+use Std.Test (assertEq, assertTrue)
+use Std.Random as R
+use Std.String as S
+use Std.Collections.Vector as V
+
+@derive(Debug, PartialEq)
+data Choice = Rock | Paper | Scissors
+
+use Choice.*
+
+@derive(Debug, PartialEq)
+data Outcome = Win | Lose | Draw
+
+use Outcome.*
+
+choiceName : (c : Choice) -> String
+choiceName Rock = "rock"
+choiceName Paper = "paper"
+choiceName Scissors = "scissors"
+
+-- Forgiving on purpose: case and the space around it are not answers.
+parseChoice : (s : String) -> Maybe Choice
+parseChoice s = choiceOf (S.toLower (S.trim s))
+
+choiceOf : (w : String) -> Maybe Choice
+choiceOf w =
+  if w == "rock" then Just Rock else if w == "r" then Just Rock
+  else if w == "paper" then Just Paper else if w == "p" then Just Paper
+  else if w == "scissors" then Just Scissors else if w == "s" then Just Scissors
+  else Nothing
+
+-- Who beats whom, once. Everything else is worked out from this.
+beats : (c : Choice) -> Choice
+beats Rock = Scissors
+beats Paper = Rock
+beats Scissors = Paper
+
+judge : (you : Choice) -> (me : Choice) -> Outcome
+judge you me = if you == me then Draw else if beats you == me then Win else Lose
+
+outcomeLine : (o : Outcome) -> String
+outcomeLine Win = "You win!"
+outcomeLine Lose = "You lose!"
+outcomeLine Draw = "It's a tie."
+
+randomChoice : () -> Choice ! Random
+randomChoice u = case R.between 0 3 of
+  0 -> Rock
+  1 -> Paper
+  other -> Scissors
+
+-- One round. `Nothing` means the input ran out, which is how the game ends
+-- when the input is a file rather than a person.
+round : () -> Maybe Outcome ! {Console, Random, Div}
+round u = case prompt "your move (rock / paper / scissors, or quit): " of
+  Nothing -> Nothing
+  Just typed -> answered (S.toLower (S.trim typed))
+
+answered : (answer : String) -> Maybe Outcome ! {Console, Random, Div}
+answered answer =
+  if answer == "quit" then Nothing
+  else if answer == "q" then Nothing
+  else case parseChoice answer of
+    Nothing -> let u = println ("I do not know what that is: " ++ answer) in round ()
+    Just you -> played you (randomChoice ())
+
+played : (you : Choice) -> (me : Choice) -> Maybe Outcome ! Console
+played you me =
+  let o = judge you me in
+  let u = println ("I played " ++ choiceName me ++ ". " ++ outcomeLine o) in
+  Just o
+
+tally : (wins : Int) -> (losses : Int) -> (draws : Int) -> (Int, Int, Int) ! {Console, Random, Div}
+tally wins losses draws = case round () of
+  Nothing -> (wins, losses, draws)
+  Just Win -> tally (wins + 1) losses draws
+  Just Lose -> tally wins (losses + 1) draws
+  Just Draw -> tally wins losses (draws + 1)
+
+game : () -> () ! {Console, Random, Div}
+game u =
+  let w = println "Rock paper scissors. Ctrl-D or `quit` to stop." in
+  case tally 0 0 0 of
+    (wins, losses, draws) -> println ("\nYou won " ++ display wins ++ ", lost " ++ display losses ++ ", drew " ++ display draws ++ ".")
+
+-- `--demo`: a whole game with the moves given and the machine's seeded, so
+-- what it prints is the same every time.
+main : () -> () ! Eff
+main () = if demoAsked (args ()) then R.withSeed 7 (\(v : ()) -> withInput (V.fromList ("rock" :: "nonsense" :: "paper" :: "quit" :: Nil)) game) else game ()
+
+demoAsked : (given : List String) -> Bool
+demoAsked (first :: rest) = first == "--demo"
+demoAsked Nil = False
+
+-- --- tests -------------------------------------------------------------------
+
+-- Each choice beats one other and loses to one, so following `beats` three
+-- times comes back to where it started.
+@test
+beatingIsACycle : () -> () ! Test
+beatingIsACycle u = assertEq (beats (beats (beats Rock))) Rock "rock -> scissors -> paper -> rock"
+
+@test
+judgingAgreesWithBeating : () -> () ! Test
+judgingAgreesWithBeating u =
+  let a = assertEq (judge Rock Scissors) Win "rock beats scissors" in
+  let b = assertEq (judge Scissors Rock) Lose "and loses the other way round" in
+  assertEq (judge Paper Paper) Draw "a draw"
+
+@test
+inputIsForgiving : () -> () ! Test
+inputIsForgiving u =
+  let a = assertEq (parseChoice "ROCK") (Just Rock) "case" in
+  let b = assertEq (parseChoice " p ") (Just Paper) "space and shorthand" in
+  let c = assertEq (parseChoice "Scissors") (Just Scissors) "a capital" in
+  assertEq (parseChoice "banana") Nothing "not a move"
+
+-- The whole game, with no terminal and no entropy: `withInput` gives the
+-- moves and `Random` is seeded, so what it prints is the same every time.
+-- It runs `game` itself: if the loop, the tally or the reading broke, this
+-- fails.
+@test
+playsAFullRound : () -> () ! {Test, Console, Div}
+playsAFullRound u =
+  let played = withOutput (\(v : ()) -> R.withSeed 7 (\(w : ()) -> withInput (V.fromList ("rock" :: "nonsense" :: "paper" :: "quit" :: Nil)) game)) in
+  case played of
+    (x, transcript) -> assertTrue (S.contains "You won 1, lost 0, drew 1." transcript) "the game plays through to its summary"

@@ -1,0 +1,17 @@
+-- | -- one name, two meanings: the prelude's `Just`, brought in, and the module's own, chosen by type
+-- | use Maybe.*
+-- | use Box.*
+-- | 
+-- | data Box = Just Int | Empty
+-- | 
+-- | unbox : Box -> Int
+-- | unbox (Just n) = n
+-- | unbox Empty = 0
+-- | 
+-- | orZero : Maybe Int -> Int
+-- | orZero (Just n) = n
+-- | orZero Nothing = 0
+-- | 
+-- | (unbox (Just 3), orZero (Just 4), let b = Just 7 in unbox b)
+answer: (3, 4, 7)
+exit: 0

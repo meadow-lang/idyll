@@ -1,0 +1,144 @@
+-- Source text to `Expr`, with `Std.String.Parse`.
+--
+-- The input is the source `String` itself, read a character at a time, with
+-- `Std.String.Parse.Lexer`'s space between tokens: every token parser is a
+-- `lexeme`, so the grammar never mentions space again, and `--` starts a
+-- comment to the end of the line. The one place that needs care is the
+-- keywords: `string` is atomic, but `let` is also how `letter` starts, so
+-- `keyword` checks that no other character of a name follows.
+
+use Syntax (Expr)
+use Std.String.Parse as P
+use Std.String.Parse (Parser)
+use Std.String.Parse.Char as C
+use Std.String.Parse.Lexer as L
+use Std.Char as Ch
+use Std.Collections.Vector as V
+use Std.Collections.Vector (Vector)
+
+-- --- tokens ----------------------------------------------------------------
+
+isIdentStart : (c : Char) -> Bool
+isIdentStart c = if Ch.isAlpha c then True else charCode c == 95
+
+isIdentChar : (c : Char) -> Bool
+isIdentChar c = if isIdentStart c then True else Ch.isDigit c
+
+-- White space and `--` comments: what may sit between two tokens.
+sc : Parser String ()
+sc = L.space C.space1 (L.skipLineComment "--") (P.empty : Parser String ())
+
+lexeme : {a : Type} -> (p : Parser String a) -> Parser String a
+lexeme p = L.lexeme sc p
+
+symbol : (s : String) -> Parser String String
+symbol s = L.symbol sc s
+
+-- A keyword is a word that does not start a longer name, so `let` is not
+-- the first three characters of `letter`.
+keyword : (s : String) -> Parser String String
+keyword s = lexeme (P.try (P.thenSkip (C.string s) (P.notFollowedBy (P.satisfy isIdentChar))))
+
+reserved : Vector String
+reserved = V.fromList ("let" :: "rec" :: "in" :: "fun" :: "if" :: "then" :: "else" :: "true" :: "false" :: Nil)
+
+isReserved : (name : String) -> Bool
+isReserved name = V.any (\(r : String) -> r == name) reserved
+
+-- A name, refusing the reserved words, so `let` cannot be a variable.
+--
+-- In a `try` for a reason worth knowing: the reserved check comes after the
+-- characters are read, so without it `ident` fails on `in` having eaten it
+-- already, and a failure that read something is not one that `many` or
+-- `alt` will back out of. `try` puts back what it read, which makes "this
+-- is a keyword" "this is no name, look elsewhere" again.
+ident : Parser String String
+ident = P.label "an identifier" (P.try (P.bind (lexeme (P.lift2 (\(c : Char) (cs : String) -> Ch.toString c ++ cs) (P.satisfy isIdentStart) (P.takeWhileP isIdentChar))) named))
+
+named : (name : String) -> Parser String String
+named name = if isReserved name then P.fail ("`" ++ name ++ "` is a keyword, not a name") else P.pure name
+
+intLit : Parser String Expr
+intLit = P.map (\(n : Int) -> Expr.Int n) (lexeme L.decimal)
+
+boolLit : Parser String Expr
+boolLit = P.alt (P.mapTo (Expr.Bool True) (keyword "true")) (P.mapTo (Expr.Bool False) (keyword "false"))
+
+-- --- the grammar -----------------------------------------------------------
+--
+-- Layered by precedence, loosest first. Each layer `defer`s to the next, so
+-- the recursion is built lazily: without `defer` these would be a circle of
+-- values rather than of functions, and making one would not end.
+
+-- `f x y`: application binds tightest, and to the left.
+@terminating
+appE : (u : ()) -> Parser String Expr
+appE u = P.keep (P.many (P.defer atomE)) (P.keep (P.defer atomE) (P.pure (\(f : Expr) (args : Vector Expr) -> V.foldl (\(g : Expr) (a : Expr) -> Expr.App g a) f args)))
+
+-- A chain of operators that associate to the left, at one precedence.
+binaryE : (ops : Vector String) -> (next : (u : ()) -> Parser String Expr) -> Parser String Expr
+binaryE ops next = P.chainl1 (P.defer next) (P.choice (V.map (\(o : String) -> P.mapTo (\(l : Expr) (r : Expr) -> Expr.Bin o l r) (symbol o)) ops))
+
+@terminating
+mulE : (u : ()) -> Parser String Expr
+mulE u = binaryE (V.fromList ("*" :: "/" :: Nil)) appE
+
+@terminating
+addE : (u : ()) -> Parser String Expr
+addE u = binaryE (V.fromList ("+" :: "-" :: Nil)) mulE
+
+@terminating
+cmpE : (u : ()) -> Parser String Expr
+cmpE u = binaryE (V.fromList ("==" :: "<=" :: ">=" :: "<" :: ">" :: Nil)) addE
+
+@terminating
+atomE : (u : ()) -> Parser String Expr
+atomE u = P.choice (V.fromList (intLit :: boolLit :: P.map (\(n : String) -> Expr.Var n) ident :: P.between (symbol "(") (symbol ")") (P.defer exprE) :: Nil))
+
+-- `fun x y -> e` is `fun x -> fun y -> e`.
+@terminating
+lamE : (u : ()) -> Parser String Expr
+lamE u =
+  let whole = P.pure (\(names : Vector String) (body : Expr) -> V.foldr (\(n : String) (acc : Expr) -> Expr.Lam n acc) body names) in
+  P.keep (P.defer exprE) (P.skip (symbol "->") (P.keep (P.some ident) (P.skip (keyword "fun") whole)))
+
+@terminating
+ifE : (u : ()) -> Parser String Expr
+ifE u =
+  let whole = P.pure (\(c : Expr) (t : Expr) (e : Expr) -> Expr.If c t e) in
+  P.keep (P.defer exprE) (P.skip (keyword "else") (P.keep (P.defer exprE) (P.skip (keyword "then") (P.keep (P.defer exprE) (P.skip (keyword "if") whole)))))
+
+-- What `let [rec] name args = rhs in body` read: whether `rec`, the name,
+-- the arguments, the right-hand side and the body.
+data LetParts = LetParts (Maybe String) String (Vector String) Expr Expr
+
+-- `let rec f x = e` is `LetRec f x e`; arguments after the first curry into
+-- the right-hand side, and `let rec` with none is refused, since a
+-- recursive value that is no function has nothing to stand on.
+@terminating
+letE : (u : ()) -> Parser String Expr
+letE u =
+  let whole = P.pure (\(isRec : Maybe String) (name : String) (args : Vector String) (rhs : Expr) (body : Expr) -> LetParts isRec name args rhs body) in
+  let parts = P.keep (P.defer exprE) (P.skip (keyword "in") (P.keep (P.defer exprE) (P.skip (symbol "=") (P.keep (P.many ident) (P.keep ident (P.keep (P.optional (keyword "rec")) (P.skip (keyword "let") whole))))))) in
+  P.bind parts built
+
+lams : (args : Vector String) -> (body : Expr) -> Expr
+lams args body = V.foldr (\(a : String) (acc : Expr) -> Expr.Lam a acc) body args
+
+built : (read : LetParts) -> Parser String Expr
+built (LetParts.LetParts Nothing name args rhs body) = P.pure (Expr.Let name (lams args rhs) body)
+built (LetParts.LetParts (Just r) name args rhs body) = case V.get args 0 of
+  Nothing -> P.fail "an argument after `let rec`"
+  Just first -> P.pure (Expr.LetRec name first (lams (V.drop args 1) rhs) body)
+
+@terminating
+exprE : (u : ()) -> Parser String Expr
+exprE u = P.choice (V.fromList (P.defer letE :: P.defer lamE :: P.defer ifE :: P.defer cmpE :: Nil))
+
+-- A whole program: an expression, and nothing after it. An error says at
+-- which offset, and what went wrong there.
+@pub
+parse : (src : String) -> Result String Expr
+parse src = case P.runParser (P.skipThen sc (P.thenSkip (P.defer exprE) P.eof)) src of
+  Ok e -> Ok e
+  Err err -> Err (P.showError err)

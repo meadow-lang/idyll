@@ -1,0 +1,93 @@
+-- Assertions for tests, as Meadow's `Std.Test`. A failure is the prelude's
+-- `Test` effect, not a value given back, so an assertion in a helper five
+-- calls down still stops the test and still says what it was. With no
+-- handler in the way the runtime takes `fail` as the program failing; a
+-- `handle` comes first, which is how `didFail` checks that something does
+-- fail.
+
+-- --- assertions --------------------------------------------------------------
+
+@pub
+assert : (cond : Bool) -> (msg : String) -> () ! Test
+assert cond msg = if cond then () else fail msg
+
+@pub
+refuteThat : (cond : Bool) -> (msg : String) -> () ! Test
+refuteThat cond msg = if cond then fail ("expected false: " ++ msg) else ()
+
+-- The assertion to reach for: the message says what was being checked, and
+-- the values speak for themselves.
+@pub
+assertEq : {a : Type} -> {auto e : PartialEq a} -> {auto d : Debug a} -> (actual : [] a) -> (expected : [] a) -> (msg : String) -> () ! Test
+assertEq actual expected msg =
+  if actual == expected then () else fail (msg ++ ": expected " ++ debug expected ++ ", got " ++ debug actual)
+
+@pub
+assertNeq : {a : Type} -> {auto e : PartialEq a} -> {auto d : Debug a} -> (actual : [] a) -> (unexpected : [] a) -> (msg : String) -> () ! Test
+assertNeq actual unexpected msg =
+  if actual != unexpected then () else fail (msg ++ ": expected anything but " ++ debug unexpected)
+
+@pub
+assertTrue : (actual : Bool) -> (msg : String) -> () ! Test
+assertTrue actual msg = assertEq actual True msg
+
+@pub
+assertFalse : (actual : Bool) -> (msg : String) -> () ! Test
+assertFalse actual msg = assertEq actual False msg
+
+-- Fail whatever happens: for an alternative that should never be reached.
+@pub
+failWith : (msg : String) -> () ! Test
+failWith msg = fail msg
+
+-- --- checking that something fails -------------------------------------------
+
+-- What `act` gave, or the message of the assertion it failed: the one
+-- place the `Test` effect is handled rather than left to the runtime.
+outcome : {a : Type} -> (act : (u : ()) -> a ! {Test | r}) -> Result String a ! r
+outcome act = handle act () with
+  return x -> Ok x
+  fail msg k -> Err msg
+
+-- Run `act` and say whether it failed an assertion.
+@pub
+didFail : {a : Type} -> (act : (u : ()) -> a ! {Test | r}) -> Bool ! r
+didFail act = Std.Result.isErr (outcome act)
+
+-- Run `act` and say whether it failed an assertion, and with what message.
+@pub
+failure : {a : Type} -> (act : (u : ()) -> a ! {Test | r}) -> (Bool, String) ! r
+failure act = case outcome act of
+  Ok x -> (False, "")
+  Err msg -> (True, msg)
+
+-- `act` must fail; if it does not, that is the failure.
+@pub
+assertFails : {a : Type} -> (act : (u : ()) -> a ! {Test | r}) -> (msg : String) -> () ! {Test | r}
+assertFails act msg = let failed = didFail act in assert failed ("expected a failure: " ++ msg)
+
+-- --- running tests ------------------------------------------------------------
+--
+-- What `idyll test` runs a package's `@test` definitions with, in order: how
+-- many there are, then each, then how they went, in Meadow's `meadow test`
+-- lines (a failure's message under its line, rather than at the end).
+
+@pub
+testsStart : (total : Int) -> () ! Console
+testsStart total = putStrLn ("running " ++ showInt total ++ (if total == 1 then " test" else " tests"))
+
+-- One test: `body`, its failure caught, and a line saying how it went; `1`
+-- if it passed, `0` if it failed.
+@pub
+testCase : (name : String) -> (body : (u : ()) -> () ! Eff) -> Int ! Eff
+testCase name body = handle body () with
+  return x -> let u = putStrLn ("test " ++ name ++ " ... ok") in 1
+  fail message k -> let u = putStrLn ("test " ++ name ++ " ... FAILED") in let v = putStrLn ("    " ++ message) in 0
+
+-- How they went; the program fails, exit status 1, if any did.
+@pub
+testsDone : (passed : Int) -> (total : Int) -> () ! Eff
+testsDone passed total =
+  let failed = total - passed in
+  let u = putStrLn ("\ntest result: " ++ (if failed == 0 then "ok" else "FAILED") ++ ". " ++ showInt passed ++ " passed; " ++ showInt failed ++ " failed") in
+  if failed == 0 then () else exit 1

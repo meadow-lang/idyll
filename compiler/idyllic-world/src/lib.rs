@@ -3,11 +3,10 @@
 //! no handler of the program's own takes is done here, and the program goes
 //! on with what it gives back.
 //!
-//! The AxCut machine (`idyllic-seq`) and the reference interpreter
-//! (`idyll-eval`) both do the world's operations through this crate, each
-//! turning [`Answer`]s into values of its own, so the two cannot disagree
-//! about what an operation does.  Native code does the same in C
-//! (`rts/idyll_rt.c`).
+//! The reference interpreter (`idyll-eval`) does the world's operations
+//! through this crate, turning [`Answer`]s into values of its own. A
+//! compiled program does them on Meadow's runtimes, as the operations of
+//! Meadow's own each is declared to be.
 //!
 //! A [`World`] is *live*, reading and writing the real standard streams as
 //! the program goes, or *captured*: its output kept to be looked at later,

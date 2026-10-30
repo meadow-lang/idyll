@@ -53,10 +53,18 @@ pub enum TermKind {
     /// annotation, body.
     Lam(Ident, Option<GradeAnn>, Option<Box<Term>>, Box<Term>),
     App(Box<Term>, Box<Term>),
+    /// `f {a}`: an implicit argument given by hand.
+    ImplicitApp(Box<Term>, Box<Term>),
+    /// `f @{d}`: an auto argument given by hand.
+    AutoApp(Box<Term>, Box<Term>),
+    /// What a search for an auto argument of the type wanted finds.
+    Search,
     /// `e : a`.
     Ann(Box<Term>, Box<Term>),
     /// `_`: becomes a fresh metavariable during type checking.
     Hole,
+    /// `?name`: a goal left for later (see `idyllic_ast::Term::Goal`).
+    Goal(String),
     /// `[e]`: promotion, or — applied to a type — a modality's grade.
     BoxIntro(Box<Term>),
     /// The infinite grade, `∞`.
@@ -159,6 +167,9 @@ pub enum PatKind {
     /// SeqNil])])`, the two patterns a head and a tail.
     SeqNil,
     SeqCons(Vec<Pattern>),
+    /// `{p}`: the next implicit argument (`@{p}`: the next auto one),
+    /// matched against `p`. Only an equation's own patterns may be one.
+    Implicit(idyllic_ast::Icit, Box<Pattern>),
 }
 
 /// `data T (a : k) .. : kind where ..` or `data T (a : k) .. = C t .. | ..`
@@ -177,6 +188,8 @@ pub struct DataDecl {
     /// whether it was declared in a linear module, where a field that says
     /// nothing is linear (elsewhere it is `[]`, as any binder is)
     pub linear: bool,
+    /// whether it is a trait's record, which instances are of
+    pub is_trait: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -263,6 +276,12 @@ impl BindGroup {
 pub struct Module {
     /// in source order; a data type may mention those before it, and itself
     pub datas: Vec<DataDecl>,
+    /// For each data type, how many of the groups come before it: a data
+    /// type whose fields (or kinds) mention a definition, `data T = T Span`
+    /// with `Span = (Int, Int)`, is declared after it, and what uses the
+    /// type after that; the rest come before every group (see the SCC
+    /// pass). Empty: every one first.
+    pub data_after: Vec<usize>,
     pub effects: Vec<EffectDecl>,
     /// the prelude's, then the modules' in order
     pub natives: Vec<NativeDecl>,
@@ -292,12 +311,42 @@ pub struct Module {
     /// the definitions `@terminating` vouches for: they need not say
     /// `! Div`, though the checker cannot see that they end
     pub terminating: std::collections::HashSet<usize>,
+    /// the package's tests, the definitions marked `@test`, in the order
+    /// they were written
+    pub tests: Vec<usize>,
+    /// whether the program is to run the tests in `tests` rather than its
+    /// expression or `main` (`idyll test`): set by whoever compiles it
+    pub testing: bool,
+    /// the definitions `@hint` offers to the search for an auto argument
+    pub hints: std::collections::HashSet<usize>,
+    /// each trait's superclasses, as the projections of its record that
+    /// give them, by the record type: this package's and those it depends on
+    pub supers: std::collections::HashMap<usize, Vec<usize>>,
+    /// each trait's methods, by the method's unique: the trait's record, the
+    /// method's field in it, and how many parameters the trait has (the
+    /// method's implicit arguments before the record found for it)
+    pub methods: std::collections::HashMap<usize, (usize, usize, usize)>,
+    /// Every name with more than one meaning in scope where it is written,
+    /// by the node it was written at (a [`TermKind::Var`]'s term, or a
+    /// [`PatKind::Con`]'s pattern): what it may mean, the first of which
+    /// the node holds. The checker chooses by type.
+    pub overloads: std::collections::HashMap<NodeId, Vec<usize>>,
 }
 
 /// What a package gives the packages that depend on it, as their renamers
 /// see it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PackageNames {
+    /// each trait's methods with a default, the default's unique, and
+    /// whether the method is a function, by the trait's record type
+    #[serde(default)]
+    pub defaults: Vec<(usize, Vec<(String, usize, bool)>)>,
+    /// each trait's superclass projections, by the trait's record type
+    #[serde(default)]
+    pub supers: Vec<(usize, Vec<usize>)>,
+    /// each trait's methods: see [`Module::methods`]
+    #[serde(default)]
+    pub methods: Vec<(usize, (usize, usize, usize))>,
     /// its modules' paths, the root's empty
     pub modules: Vec<Vec<String>>,
     /// each module's names: module, name, unique, and how visible it is

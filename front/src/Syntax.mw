@@ -4,7 +4,7 @@
 -- The parser is an automaton worked out when this file is compiled: each
 -- choice a test of the next few tokens, nothing tried and taken back. The
 -- Rust parser (`idyllic-parser`) does take things back -- it is chumsky's --
--- and where it does, this grammar reads one form for several, and `Parse`
+-- and where it does, this grammar reads one form for several, and `View`
 -- works out afterwards which it was, as the Rust parser would have:
 --
 -- * A declaration, a signature and an expression begin alike: an item is a
@@ -19,7 +19,7 @@
 --   each other, annotated -- and its grades the start of the annotation.
 --   `(x : a) -> b` is a dependent function because what is before its arrow
 --   is binders and nothing else.
--- * Operators are read as chains, `a + b * c` flat; `Parse` groups them as
+-- * Operators are read as chains, `a + b * c` flat; `View` groups them as
 --   the Rust parser's levels do.
 -- * `{ … }` in a term is one form for an effect row, a record update and an
 --   implicit binder.
@@ -27,14 +27,16 @@
 -- `record` is a keyword only before a capital (`context`): it is a name
 -- anywhere else, as it is to the Rust lexer.
 
-use Lingua (syntax!)
+use Lingua (syntax!, format!)
 use Idyll.Layout (Token, foldToken)
 
 @pub syntax! {
   pub Idyll
   lexer Token
+  trivia { Whitespace, Comment }
   tokens {
     "mod" = Mod,
+    "module" = Module,
     "use" = Use,
     "data" = Data,
     "type" = Type,
@@ -77,35 +79,51 @@ use Idyll.Layout (Token, foldToken)
     "octal" = Octal _,
     "hexadecimal" = Hexadecimal _,
     "decimal" = Decimal _,
+    "float" = Float _,
     "string" = Str _,
     "char" = Char _,
     "qual_upper" = QualUpper _,
     "qual_lower" = QualLower _,
     "upper" = UpperIdent _,
     "lower" = LowerIdent _,
+    "goal" = Goal _,
     "conop" = ConOpIdent _,
     "op" = OpIdent _,
+    "interp_start" = InterpStart _,
+    "interp_mid" = InterpMid _,
+    "interp_end" = InterpEnd _,
     "vlbrace" = VLBrace,
     "vsemi" = VSemi,
     "vrbrace" = VRBrace,
     "error" = Error _
   }
   context {
-    "record" = LowerIdent "record" before UpperIdent _
+    "record" = LowerIdent "record" before UpperIdent _,
+    "trait" = LowerIdent "trait" before UpperIdent _,
+    "instance" = LowerIdent "instance" before UpperIdent _,
+    "instance_named" = LowerIdent "instance" before LowerIdent _
   }
   grammar {
     File = "vlbrace" entries:Entry* "vrbrace"
     Entry = Item | Sep
-    Sep = sep:(";" | "vsemi")
+    -- a `;` written, or the layout's: set out apart, as a written one keeps
+    -- the next item on its line (a line break would make the layout put its
+    -- own `;` after it)
+    Sep = WrittenSemi | LaidSemi
+    WrittenSemi = ";"
+    LaidSemi = "vsemi"
 
     -- --- items ---
 
     Item = attrs:AttrLine* body:ItemBody
-    ItemBody = DataDecl | RecordDecl | EffectDecl | UseDecl | Line
+    ItemBody = ModuleDecl | DataDecl | RecordDecl | TraitDecl | InstanceDecl | EffectDecl | UseDecl | Line
+
+    -- `module M where`, and a block of items, as a file has
+    ModuleDecl = "module" name:"upper" "where" open:("{" | "vlbrace") entries:Entry* close:("}" | "vrbrace")
 
     AttrLine = "@" name:"lower" args:AttrArgs? sep:(";" | "vsemi")?
     AttrArgs = "(" args:(AttrArg ("," AttrArg)*)? ")"
-    AttrArg = key:"lower" value:AttrValue?
+    AttrArg = key:("lower" | "upper") value:AttrValue?
     AttrValue = "=" name:CtorName
 
     -- an equation, a signature, or the program's expression
@@ -130,6 +148,14 @@ use Idyll.Layout (Token, foldToken)
 
     RecordDecl = "record" name:"upper" params:Atom* "=" "{" fields:(FieldDecl ("," FieldDecl)* ","?)? "}"
     FieldDecl = name:"lower" ":" ty:Term
+
+    -- `trait C a => T (a : Type) where`, and its methods' signatures and
+    -- defaults: the head is read as a term, as the Rust parser reads it
+    TraitDecl = "trait" head:Term "where" open:("{" | "vlbrace") entries:LetEntry* close:("}" | "vrbrace")
+    -- `instance C a => T (List a) where`, or named, `instance loud : T Int
+    -- where`, and its methods' equations
+    InstanceDecl = kw:("instance" | "instance_named") name:InstanceName? head:Term "where" open:("{" | "vlbrace") entries:LetEntry* close:("}" | "vrbrace")
+    InstanceName = name:"lower" ":"
 
     EffectDecl = "effect" name:"upper" params:Atom* body:EffectBody
     EffectBody = OpBlock | EffectAlias
@@ -166,22 +192,26 @@ use Idyll.Layout (Token, foldToken)
 
     -- a chain of operators, then perhaps an annotation or an arrow
     Op = chain:Chain tail:OpTail?
-    OpTail = Annot | Arrow
+    OpTail = Annot | Arrow | Constraint
     Annot = ":" ty:Term
     Arrow = "->" result:Term eff:Effects?
+    -- `C a => b`: an auto binder with no name
+    Constraint = "=>" result:Term eff:Effects?
     Chain = first:App links:Link*
     Link = op:("op" | "conop") operand:App
     App = atoms:(Atom Atom*)
 
-    Atom = Name | Number | StrLit | CharLit | Hole | TypeA | InfA | OpName | Paren | BoxA | SeqA
-      | Braced | RecordLit | DotA
+    Atom = Name | Number | StrLit | CharLit | Hole | GoalA | TypeA | InfA | OpName | Paren | BoxA | SeqA
+      | Braced | RecordLit | DotA | AutoA | InterpA
     -- `x@p`, a pattern's, is a name with a pattern after it
-    Name = name:("lower" | "upper" | "qual_upper" | "qual_lower") as:AsTail?
+    Name = name:("lower" | "upper" | "qual_upper" | "qual_lower") asTail:AsTail?
     AsTail = "@" pat:Atom
-    Number = value:("decimal" | "hexadecimal" | "octal" | "binary")
+    Number = value:("decimal" | "hexadecimal" | "octal" | "binary" | "float")
     StrLit = "string"
     CharLit = "char"
     Hole = "_"
+    -- `?name`: a goal left for later
+    GoalA = name:"goal"
     TypeA = "Type"
     InfA = "infinity"
     OpName = "(" op:("op" | "conop") ")"
@@ -195,10 +225,68 @@ use Idyll.Layout (Token, foldToken)
     FieldVal = name:"lower" "=" value:Term
     RecordLit = name:("upper" | "qual_upper") "{" fields:FieldVals? "}"
     DotA = "." target:Atom
+    -- `f @{d}`: an auto argument given by hand (after a name, `f@{d}`
+    -- is read as the name's `AsTail`, and told apart after)
+    AutoA = "@" "{" arg:Term "}"
+    -- `"a ${x} b ${y:?}"`: its pieces (the lexer's), each hole a term and
+    -- perhaps `:?`
+    InterpA = start:"interp_start" first:InterpHole rest:InterpRest* end:"interp_end"
+    InterpRest = mid:"interp_mid" hole:InterpHole
+    InterpHole = term:Term mark:"conop"?
 
     -- an effect row: `{Log, Div | e}`, or one effect, `State Int` (a braced
     -- one is an atom of its own), or none, `{}`
     Row = EmptyRow | App
     EmptyRow = "{" "}"
   }
+}
+
+-- How Idyll is set out, `idyll fmt` (see `Format`): within 100 columns, a
+-- level two spaces.
+@pub format! {
+  pub Style for Idyll
+  indent 2
+  width 100
+    -- the layout's `;` is a line break; a written one keeps the next item on
+    -- its line
+    | LaidSemi = tight "vsemi" newline
+    | WrittenSemi = tight ";"
+    -- a body after its `=` or `->`, or under it a level in
+    | Plain = "=" indent(line group(body))
+    -- guards a line each, a level in
+    | Line = lhs eff rhs
+    | Guards = indent(guards)
+    | Guard = newline "|" group(cond) "=" indent(line group(body))
+    | AltPlain = "->" indent(line group(body))
+    | Alt = pat rhs
+    | AltGuards = indent(guards)
+    | AltGuard = newline "|" group(cond) "->" indent(line group(body))
+    | Clause = op params "->" indent(line group(body))
+    | Lam = "\\" tight binders "->" indent(line group(body))
+    | IfE = "if" group(cond) indent(line "then" group(yes)) indent(line "else" group(no))
+    -- a block's items after what opens it, or under it a level in, each a
+    -- line of its own; a `let`'s `in` under the `let`. A block of
+    -- declarations always under it.
+    | LetE = "let" open indent(line entries) close line "in" group(body)
+    | CaseE = "case" group(scrutinee) "of" open indent(line entries) close
+    | HandleE = "handle" group(body) "with" open indent(line entries) close
+    | CtorSigs = "where" open indent(newline entries) close
+    | TraitDecl = "trait" group(head) "where" open indent(newline entries) close
+    | InstanceDecl = kw name group(head) "where" open indent(newline entries) close
+    | OpBlock = "where" open indent(newline entries) close
+    | ModuleDecl = "module" name "where" open indent(newline entries) close
+    -- a signature that does not fit an entry a line: the name alone, the
+    -- colon three spaces in and each arrow two, so every type starts in one
+    -- column. A chain of arrows breaks as one (`nogroup`: an arrow's line
+    -- breaks with the group around it).
+    | Annot = indent 2(line indent 1(":") ty)
+    -- elsewhere a type is a group of its own, so that its arrows break only
+    -- if it does not fit
+    | OpSig = attr name ":" group(ty)
+    | CtorSig = name ":" group(ty)
+    | Kind = ":" group(ty)
+    | FieldDecl = name ":" group(ty)
+    | Op = nogroup chain tail
+    | Arrow = nogroup line "->" result eff
+    | Constraint = nogroup line "=>" result eff
 }

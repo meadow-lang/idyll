@@ -6,6 +6,12 @@
 //! same uniques, which is what lets the two passes agree without threading a
 //! table between them.
 
+pub mod hash;
+pub mod num;
+pub mod strings;
+
+pub use num::{NumOp, NumTy, Width};
+
 /// The primitive constants: closed types of sort `Type`, and `Div`, the one
 /// effect that is built in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
@@ -23,11 +29,42 @@ pub enum Builtin {
     /// The effect of a computation that may not terminate.  Not an ordinary
     /// type: it has type `Effect`.
     Div,
+    /// A character: a Unicode scalar value, `'a'`.
+    Char,
+    /// The sized integers, wrapping at their width (see [`num`]).
+    Int8,
+    Int16,
+    Int32,
+    UInt8,
+    UInt16,
+    UInt32,
+    UInt64,
+    /// An IEEE double, `1.5`.
+    Float,
+    /// An IEEE single.
+    Float32,
 }
 
 impl Builtin {
-    pub const ALL: [Builtin; 7] =
-        [Builtin::Unit, Builtin::Int, Builtin::Bool, Builtin::Str, Builtin::Grade, Builtin::Effect, Builtin::Div];
+    pub const ALL: [Builtin; 17] = [
+        Builtin::Unit,
+        Builtin::Int,
+        Builtin::Bool,
+        Builtin::Str,
+        Builtin::Grade,
+        Builtin::Effect,
+        Builtin::Div,
+        Builtin::Char,
+        Builtin::Int8,
+        Builtin::Int16,
+        Builtin::Int32,
+        Builtin::UInt8,
+        Builtin::UInt16,
+        Builtin::UInt32,
+        Builtin::UInt64,
+        Builtin::Float,
+        Builtin::Float32,
+    ];
 
     /// How many there are; primitives take the uniques after these.
     pub const COUNT: usize = Builtin::ALL.len();
@@ -41,7 +78,40 @@ impl Builtin {
             Builtin::Grade => "Grade",
             Builtin::Effect => "Effect",
             Builtin::Div => "Div",
+            Builtin::Char => "Char",
+            Builtin::Float => "Float",
+            Builtin::Float32 => "Float32",
+            b => b.width().expect("a sized integer").name(),
         }
+    }
+
+    /// The width of a sized integer type.
+    pub fn width(self) -> Option<Width> {
+        Some(match self {
+            Builtin::Int8 => Width::I8,
+            Builtin::Int16 => Width::I16,
+            Builtin::Int32 => Width::I32,
+            Builtin::UInt8 => Width::U8,
+            Builtin::UInt16 => Width::U16,
+            Builtin::UInt32 => Width::U32,
+            Builtin::UInt64 => Width::U64,
+            _ => return None,
+        })
+    }
+
+    /// The number type it is, if it is one.
+    pub fn number(self) -> Option<NumTy> {
+        match self {
+            Builtin::Int => Some(NumTy::Int),
+            Builtin::Float => Some(NumTy::Float),
+            Builtin::Float32 => Some(NumTy::Float32),
+            b => b.width().map(NumTy::Word),
+        }
+    }
+
+    /// The builtin type a number type is.
+    pub fn of_number(n: NumTy) -> Builtin {
+        Builtin::ALL.into_iter().find(|b| b.number() == Some(n)).expect("every number type is a builtin")
     }
 
     /// The name unique reserved for this builtin.
@@ -86,6 +156,22 @@ impl Prim {
             Prim::IntLt => "<",
             Prim::IntEq => "==",
             Prim::StrAppend => "++",
+        }
+    }
+
+    /// Its other name, a plain one: what an instance of a trait whose
+    /// method an operator is gives (`instance Add Int where (+) = intAdd`),
+    /// the operator itself being the method's.
+    pub fn alias(self) -> &'static str {
+        match self {
+            Prim::IntAdd => "intAdd",
+            Prim::IntMul => "intMul",
+            Prim::IntSub => "intSub",
+            Prim::IntDiv => "intDiv",
+            Prim::IntMod => "intMod",
+            Prim::IntLt => "intLt",
+            Prim::IntEq => "intEq",
+            Prim::StrAppend => "stringAppend",
         }
     }
 
@@ -217,10 +303,61 @@ pub enum Native {
     MArrayFreeze,
     /// `{a : Type} -> (xs : [] Array a) -> MArray a`
     MArrayThaw,
+    /// `Ref : Type -> Type`: a mutable cell, which may be shared
+    Ref,
+    /// `{a : Type} -> (x : [] a) -> Ref a ! Mut`: a new cell holding `x`
+    NewRef,
+    /// `{a : Type} -> Ref a -> a ! Mut`: what a cell holds
+    GetRef,
+    /// `{a : Type} -> Ref a -> (x : [] a) -> () ! Mut`: put `x` in a cell
+    SetRef,
+    /// `String -> Int`: how many bytes of UTF-8 it is
+    StringByteLength,
+    /// `String -> Int -> Int`: the byte at an index, `0` to `255` (outside
+    /// the string is an error at run time)
+    StringByteAt,
+    /// `String -> Int -> Int -> String`: the bytes `[from, to)`, clamped; a
+    /// character cut in two is the replacement character
+    StringSlice,
+    /// `String -> String -> Int`: `-1`, `0` or `1` as the first sorts before,
+    /// with or after the second, byte by byte (which is by code point)
+    StringCompare,
+    /// `String -> String -> Int -> Int`: where the second is first found in
+    /// the first, at or after a byte index; `-1` if nowhere
+    StringIndexOf,
+    /// `String -> Array Char`: its characters
+    StringToChars,
+    /// `Array Char -> String`: these characters
+    CharsToString,
+    /// `Char -> Int`: a character's code point
+    CharCode,
+    /// `Int -> Char`: the character of a code point (one that is no
+    /// character, no Unicode scalar value, is an error at run time)
+    CharFromCode,
+    /// `String -> Int`, `Char -> Int`, `Bool -> Int`: Meadow's `hash`
+    /// primitive at each (see [`hash`])
+    StringHash,
+    CharHash,
+    BoolHash,
+    /// `String -> Array UInt8`: its bytes of UTF-8
+    StringToBytes,
+    /// `Array UInt8 -> String`: bytes read as UTF-8, a sequence that is
+    /// none the replacement character
+    BytesToString,
+    /// `Array UInt8 -> String`: two lower-case hex digits a byte
+    BytesToHex,
+    /// `String -> Maybe (Array UInt8)`: hex digits, two a byte, either
+    /// case; `Nothing` for an odd count or anything else
+    BytesFromHex,
+    /// An operation on numbers of one type, `int8Add : Int8 -> Int8 ->
+    /// Int8`: what the prelude's instances for the sized integers and
+    /// the floats are made of (see [`num`]).
+    Num(NumOp, NumTy),
 }
 
 impl Native {
-    pub const ALL: [Native; 18] = [
+    /// The natives with a name of their own, which are not [`Native::Num`].
+    pub const NAMED: [Native; 38] = [
         Native::Array,
         Native::ArrayLen,
         Native::ArrayGet,
@@ -239,11 +376,38 @@ impl Native {
         Native::MArraySet,
         Native::MArrayFreeze,
         Native::MArrayThaw,
+        Native::Ref,
+        Native::NewRef,
+        Native::GetRef,
+        Native::SetRef,
+        Native::StringByteLength,
+        Native::StringByteAt,
+        Native::StringSlice,
+        Native::StringCompare,
+        Native::StringIndexOf,
+        Native::StringToChars,
+        Native::CharsToString,
+        Native::CharCode,
+        Native::CharFromCode,
+        Native::StringHash,
+        Native::CharHash,
+        Native::BoolHash,
+        Native::StringToBytes,
+        Native::BytesToString,
+        Native::BytesToHex,
+        Native::BytesFromHex,
     ];
+
+    /// Every native there is.
+    pub fn all() -> impl Iterator<Item = Native> {
+        let nums = NumTy::all().flat_map(|t| NumOp::ALL.into_iter().filter(move |o| o.at(t)).map(move |o| Native::Num(o, t)));
+        Native::NAMED.into_iter().chain(nums)
+    }
 
     /// The name it is declared by.
     pub fn name(self) -> &'static str {
         match self {
+            Native::Num(op, ty) => num_name(op, ty),
             Native::Array => "Array",
             Native::ArrayLen => "arrayLen",
             Native::ArrayGet => "arrayGet",
@@ -262,31 +426,99 @@ impl Native {
             Native::MArraySet => "marraySet",
             Native::MArrayFreeze => "marrayFreeze",
             Native::MArrayThaw => "marrayThaw",
+            Native::Ref => "Ref",
+            Native::NewRef => "newRef",
+            Native::GetRef => "getRef",
+            Native::SetRef => "setRef",
+            Native::StringByteLength => "stringByteLength",
+            Native::StringByteAt => "stringByteAt",
+            Native::StringSlice => "stringSlice",
+            Native::StringCompare => "stringCompare",
+            Native::StringIndexOf => "stringIndexOf",
+            Native::StringToChars => "stringToChars",
+            Native::CharsToString => "charsToString",
+            Native::CharCode => "charCode",
+            Native::CharFromCode => "charFromCode",
+            Native::StringHash => "stringHash",
+            Native::CharHash => "charHash",
+            Native::BoolHash => "boolHash",
+            Native::StringToBytes => "stringToBytes",
+            Native::BytesToString => "bytesToString",
+            Native::BytesToHex => "bytesToHex",
+            Native::BytesFromHex => "bytesFromHex",
         }
     }
 
     pub fn from_name(name: &str) -> Option<Native> {
-        Native::ALL.into_iter().find(|n| n.name() == name)
+        Native::all().find(|n| n.name() == name)
     }
 
     /// A type constructor, rather than an operation: erased at run time.
     pub fn is_type(self) -> bool {
-        matches!(self, Native::Array | Native::MArray)
+        matches!(self, Native::Array | Native::MArray | Native::Ref)
+    }
+
+    /// A type whose values are linear: never shared, so changed in place
+    /// unseen (see `Checker::is_linear`).
+    pub fn is_linear_type(self) -> bool {
+        matches!(self, Native::MArray)
+    }
+
+    /// An operation on cells, whose type ends in the effect `Mut`: what
+    /// it does is seen, so it is no function of its arguments.
+    pub fn is_mutation(self) -> bool {
+        matches!(self, Native::NewRef | Native::GetRef | Native::SetRef)
     }
 
     /// How many arguments it takes at run time (after its erased ones).
     pub fn arity(self) -> usize {
         match self {
-            Native::Array | Native::MArray => 0,
+            Native::Num(op, _) => op.arity(),
+            Native::Array | Native::MArray | Native::Ref => 0,
             Native::ArrayLen
             | Native::ArrayPop
             | Native::ArrayFromList
             | Native::ArrayToList
             | Native::MArrayLen
             | Native::MArrayFreeze
-            | Native::MArrayThaw => 1,
-            Native::ArrayGet | Native::ArrayPush | Native::ArrayConcat | Native::MArrayNew | Native::MArrayGet => 2,
-            Native::ArrayGetOr | Native::ArraySet | Native::ArraySlice | Native::MArraySet => 3,
+            | Native::MArrayThaw
+            | Native::NewRef
+            | Native::GetRef
+            | Native::StringByteLength
+            | Native::StringToChars
+            | Native::CharsToString
+            | Native::CharCode
+            | Native::CharFromCode
+            | Native::StringHash
+            | Native::CharHash
+            | Native::BoolHash
+            | Native::StringToBytes
+            | Native::BytesToString
+            | Native::BytesToHex
+            | Native::BytesFromHex => 1,
+            Native::ArrayGet
+            | Native::ArrayPush
+            | Native::ArrayConcat
+            | Native::MArrayNew
+            | Native::MArrayGet
+            | Native::SetRef
+            | Native::StringByteAt
+            | Native::StringCompare => 2,
+            Native::ArrayGetOr
+            | Native::ArraySet
+            | Native::ArraySlice
+            | Native::MArraySet
+            | Native::StringSlice
+            | Native::StringIndexOf => 3,
         }
     }
+}
+
+/// A numeric native's name, made once.
+fn num_name(op: NumOp, ty: NumTy) -> &'static str {
+    use std::collections::HashMap;
+    use std::sync::{LazyLock, Mutex};
+    static NAMES: LazyLock<Mutex<HashMap<(NumOp, NumTy), &'static str>>> = LazyLock::new(Default::default);
+    let mut names = NAMES.lock().expect("never poisoned");
+    names.entry((op, ty)).or_insert_with(|| Box::leak(op.name(ty).into_boxed_str()))
 }

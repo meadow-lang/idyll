@@ -1,0 +1,73 @@
+{
+	"name": "idyll",
+	"displayName": "Idyll",
+	"description": "Language support for Idyll: syntax highlighting, and, from front/'s language server (`Idyll lsp`), diagnostics, hover, go-to-definition, references, completion, an outline and formatting.",
+	"version": "0.1.0",
+	"publisher": "ChrisMcDearman",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/meadow-lang/idyll"
+	},
+	"categories": [
+		"Programming Languages"
+	],
+	"engines": {
+		"vscode": "^1.75.0"
+	},
+	"main": "./src/extension.js",
+	"activationEvents": [],
+	"contributes": {
+		"languages": [
+			{
+				"id": "idyll",
+				"aliases": [
+					"Idyll",
+					"idyll"
+				],
+				"extensions": [
+					".idl"
+				],
+				"configuration": "./language-configuration.json"
+			}
+		],
+		"grammars": [
+			{
+				"language": "idyll",
+				"scopeName": "source.idyll",
+				"path": "./syntaxes/idyll.tmLanguage.json"
+			}
+		],
+		"configuration": {
+			"title": "Idyll",
+			"properties": {
+				"idyll.server.path": {
+					"type": "string",
+					"default": "Idyll",
+					"description": "Path to front/'s executable, `Idyll` (built by `meadow build --release` in front/, at front/target/release/native/silo/Idyll); the extension runs `Idyll lsp`. Left at `Idyll`, it is looked for on your PATH."
+				},
+				"idyll.trace.server": {
+					"type": "string",
+					"enum": [
+						"off",
+						"messages",
+						"verbose"
+					],
+					"default": "off",
+					"description": "Log the traffic between VS Code and the language server."
+				}
+			}
+		},
+		"commands": [
+			{
+				"command": "idyll.restartServer",
+				"title": "Idyll: Restart Language Server"
+			}
+		]
+	},
+	"dependencies": {
+		"vscode-languageclient": "^9.0.1"
+	},
+	"devDependencies": {
+		"@vscode/vsce": "2.32.0"
+	}
+}

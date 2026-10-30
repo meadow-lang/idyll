@@ -1,0 +1,28 @@
+-- | -- implicit patterns: `{n}` names, or matches, the next implicit argument
+-- | data Nat = Z | S Nat
+-- | 
+-- | use Nat.*
+-- | 
+-- | data Vec : Nat -> Type -> Type where
+-- |   VNil : Vec Z a
+-- |   VCons : a -> Vec n a -> Vec (S n) a
+-- | 
+-- | use Vec.*
+-- | 
+-- | len : {n : [] Nat} -> {a : Type} -> Vec n a -> Nat
+-- | len {n} _ = n
+-- | 
+-- | isZero : {n : [] Nat} -> Bool
+-- | isZero {Z} = True
+-- | isZero {S _} = False
+-- | 
+-- | lenL : {n : [] Nat} -> Vec n Int -> Nat
+-- | lenL = \{m} v -> m
+-- | 
+-- | toList : {n : [] Nat} -> {a : Type} -> Vec n a -> List a
+-- | toList {Z} _ = (Nil : List a)
+-- | toList {S _} (VCons x xs) = x :: toList xs
+-- | 
+-- | (len (VCons 1 (VCons 2 VNil)), isZero {Z}, isZero {S Z}, lenL (VCons 3 VNil), toList (VCons 1 (VCons 2 VNil)))
+answer: (S (S Z), True, False, S Z, 1 :: 2 :: Nil)
+exit: 0

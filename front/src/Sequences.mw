@@ -1,0 +1,164 @@
+-- Sequence literals, `#[a, b, c]`, and array literals, `#[a; b; c]`: from
+-- `compiler/idyllic-typecheck/src/sequences.rs` and `natives.rs`.
+--
+-- A sequence literal is built as whatever sequence type is expected: a data
+-- type declared `@seq(nil = Nil, cons = (::))` gets its own constructors,
+-- `a :: b :: c :: Nil`, so an indexed family gets its length in its type
+-- for nothing (`#[1, 2] : Vec (S (S Z)) Int`). With nothing to say which, it
+-- is the prelude's `List`. The same form is a pattern, matched with the
+-- same constructors.
+--
+-- An array literal is the native `arrayFromList` applied to the list of its
+-- elements.
+
+use Std.St (StRef, newRef, getRef, setRef)
+use Idyll.Core (Core)
+use Idyll.Value (Value, Elim)
+use Idyll.Value as Va
+use Idyll.Tc (Tc, CtorInfo)
+use Idyll.Tc as T
+use Idyll.Eval (force, apply, eval, quote, splitComp)
+use Idyll.Unify (unify, subtype)
+use Idyll.Usage (Usage)
+use Idyll.Usage as U
+use Idyll.Ctx (Ctx)
+use Idyll.Ctx as X
+use Idyll.Elab (check, insert, applyTo, freshMeta, depends, hirOf)
+use Idyll.Hir (Ident)
+use Idyll.Hir as H
+use Idyll.Rename
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as Hm
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+fun failed () : (Core, Value, Usage) = (Core.Error, Value.Error, U.unknown ())
+
+-- The `nil` and `cons` of a type a literal can build.
+fun seqCtors (tc : Tc s) (ty : Value) : Maybe (Int, Int) ! { St s | e } =
+  match force tc ty with
+  | Value.Opaque d _ _ -> Hm.lookup d (getRef tc.seqs)
+  | _ -> None
+
+fun defaultSeq (tc : Tc s) : Maybe (Int, Int) ! { St s | e } = Hm.lookup (getRef tc.list) (getRef tc.seqs)
+
+-- A literal checked against `expected`, which is not a metavariable.
+@pub fun checkSeq (tc : Tc s) (ctx : Ctx) (t : HirExpr) (expected : Value) : (Core, Usage) ! { St s | e } =
+  match seqCtors tc expected with
+  | None ->
+      let w = T.error tc "NotASequence" in
+      (Core.Error, U.unknown ())
+  | Just ctors ->
+      let (core0, actual0, usage) = buildSeq tc ctx t ctors (Just expected) in
+      let (core, actual) = insert tc ctx core0 actual0 in
+      if subtype tc ctx.lvl actual expected then (core, usage)
+      else
+        let w = T.error tc "Mismatch" in
+        (Core.Error, usage)
+
+-- A literal with nothing to say what it is: a `List`.
+@pub fun inferSeq (tc : Tc s) (ctx : Ctx) (t : HirExpr) : (Core, Value, Usage) ! { St s | e } =
+  match defaultSeq tc with
+  | Just ctors -> buildSeq tc ctx t ctors None
+  | None -> failed ()
+
+-- `#[]` is `nil`, and `#[a, ..]` is `cons a #[..]`; with an expected type,
+-- `cons`'s result is made that type first, so that the parts are checked
+-- against what they must be.
+fun buildSeq (tc : Tc s) (ctx : Ctx) (t : HirExpr) (ctors : (Int, Int)) (expected : Maybe Value) : (Core, Value, Usage) ! { St s | e } =
+  let (nil, cons) = ctors in
+  match (hirOf tc, t) with
+  | HirExprSeqCons hd rest ->
+      let (fC0, fTy0, fU) = seqCtor tc ctx cons in
+      let (fC, fTy) = insert tc ctx fC0 fTy0 in
+      let w =
+        match expected with
+        | Just ex -> expectResult tc ctx fTy 2 ex
+        | None -> ()
+      in
+      let (pC, pTy, pU) = applyTo tc ctx fC fTy fU hd in
+      applyTo tc ctx pC pTy pU rest
+  | _ -> seqCtor tc ctx nil
+
+-- A constructor, as a term.
+fun seqCtor (tc : Tc s) (ctx : Ctx) (c : Int) : (Core, Value, Usage) ! { St s | e } =
+  let name = match T.ctorInfo tc c with | Just (CtorInfo.CtorInfo n _ _ _ _) -> n | None -> "?" in
+  match X.lookup ctx (Ident.Ident [c] name) with
+  | Just (core, ty, key) -> (core, ty, U.var key)
+  | None -> failed ()
+
+-- The result of a function of `arity` arguments unified with `expected`,
+-- if it does not depend on the arguments. A failure is left for checking
+-- the whole to report.
+fun expectResult (tc : Tc s) (ctx : Ctx) (ty : Value) (arity : Int) (expected : Value) =
+  if arity == 0 then (let b = unify tc ctx.lvl ty expected in ())
+  else
+    match force tc ty with
+    | Value.Pi _ _ _ _ _ cod ->
+        if depends tc ctx.lvl cod then ()
+        else expectResult tc ctx (fst (splitComp tc (apply tc cod Value.Error))) (arity - 1) expected
+    | _ -> ()
+
+-- The constructors a sequence pattern is matched with, for what it is
+-- matched against: with nothing known of that yet, a `List`.
+@pub fun seqPatternCtors (tc : Tc s) (ctx : Ctx) (ty0 : Value) : Maybe (Int, Int) ! { St s | e } =
+  let ty = force tc ty0 in
+  match ty with
+  | Value.Flex _ _ ->
+      (match (defaultSeq tc, Hm.lookup (getRef tc.list) (getRef tc.constants)) with
+       | (Just ctors, Just kind) ->
+           let list = getRef tc.list in
+           -- `List ?a`, a metavariable for each parameter
+           let core = params tc ctx kind (Core.Opaque list "List") in
+           if unify tc ctx.lvl ty (eval tc ctx.env core) then Just ctors else None
+       | _ -> None)
+  | _ -> seqCtors tc ty
+
+fun params (tc : Tc s) (ctx : Ctx) (kind : Value) (core : Core) : Core ! { St s | e } =
+  match force tc kind with
+  | Value.Pi _ _ _ _ _ cod ->
+      let param = freshMeta tc ctx "the type of the elements" in
+      params tc ctx (apply tc cod (eval tc ctx.env param)) (Core.App core param)
+  | _ -> core
+
+-- --- arrays ------------------------------------------------------------------------
+
+-- `#[a; b; c]`: its elements checked against `elem` (or a new metavariable
+-- for their type), and the array made of them.
+@pub fun arrayLiteral (tc : Tc s) (ctx : Ctx) (items : [HirExpr]) (elem0 : Maybe Value) : (Core, Value, Usage) ! { St s | e } =
+  let names = getRef tc.nativeNames in
+  match (Hm.lookup "Array" names, Hm.lookup "arrayFromList" names) with
+  | (Just array, Just fromList) ->
+      (match Hm.lookup (getRef tc.list) (getRef tc.seqs) with
+       | None -> failed ()
+       | Just (nil, cons) ->
+           let elem =
+             match elem0 with
+             | Just e -> e
+             | None -> eval tc ctx.env (freshMeta tc ctx "the type of the array's elements")
+           in
+           let elemC = quote tc ctx.lvl elem in
+           let (cores, usage) =
+             V.foldl
+               (\acc item -> match acc with | (cs, u) -> (match check tc ctx item elem with | (c, u2) -> (V.pushBack cs c, U.add u u2)))
+               ([], U.none ())
+               items
+           in
+           let app = \f a -> Core.App f a in
+           let empty = app (Core.Opaque nil "Nil") elemC in
+           let list = V.foldl (\rest x -> app (app (app (Core.Opaque cons "::") elemC) x) rest) empty (V.reverse cores) in
+           let core = app (app (Core.Opaque fromList "arrayFromList") elemC) list in
+           (core, eval tc ctx.env (app (Core.Opaque array "Array") elemC), usage))
+  | _ ->
+      let w = T.error tc "UnknownNative" in
+      failed ()
+
+-- The element type of an `Array a`, if `ty` is one.
+@pub fun arrayElement (tc : Tc s) (ty : Value) : Maybe Value ! { St s | e } =
+  match Hm.lookup "Array" (getRef tc.nativeNames) with
+  | None -> None
+  | Just array ->
+      (match force tc ty with
+       | Value.Opaque u _ sp ->
+           if u == array and V.len sp == 1 then (match V.get sp 0 with | Just (Elim.App a) -> Just a | _ -> None) else None
+       | _ -> None)

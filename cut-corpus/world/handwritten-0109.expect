@@ -1,0 +1,31 @@
+-- | kind : (c : Char) -> String
+-- | kind 'a' = "a"
+-- | kind '\n' = "newline"
+-- | kind '\'' = "quote"
+-- | kind c = "other"
+-- | 
+-- | main : () -> () ! Eff
+-- | main () =
+-- |   let u1 = putStrLn (kind 'a' ++ " " ++ kind '\n' ++ " " ++ kind '\'' ++ " " ++ kind 'z') in
+-- |   let u2 = printInt (charCode 'é') in
+-- |   let u3 = putStrLn (charsToString (stringToChars "héllo, wörld")) in
+-- |   let u4 = printInt (arrayLen (stringToChars "héllo")) in
+-- |   let u5 = printInt (stringByteLength "héllo") in
+-- |   let u6 = printInt (stringByteAt "abc" 2) in
+-- |   let u7 = putStrLn (stringSlice "hello" 1 4) in
+-- |   let u8 = putStrLn (stringSlice "héllo" 0 2) in
+-- |   let u9 = printInt (stringCompare "apple" "apricot") in
+-- |   let u10 = printInt (stringIndexOf "a,b,c" "," 2) in
+-- |   putStrLn (charsToString #[charFromCode 955; 'x'])
+prints: a newline quote other
+prints: 233
+prints: héllo, wörld
+prints: 5
+prints: 6
+prints: 99
+prints: ell
+prints: h�
+prints: -1
+prints: 3
+prints: λx
+exit: 0

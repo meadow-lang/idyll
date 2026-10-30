@@ -139,6 +139,10 @@ pub enum Note {
     /// alternative (or none) is taken without evaluating the scrutinee, its
     /// variables all erased.
     Forced,
+    /// A goal left for later, `?name`, in place of a term of its type: the
+    /// term under it is no value (`Core::Error`, which the checker takes for
+    /// anything); reaching it at run time stops the program, saying so.
+    Goal(String),
 }
 
 impl Core {
@@ -232,6 +236,10 @@ pub fn lit_builtin(l: &Lit) -> Builtin {
         Lit::Int(_) => Builtin::Int,
         Lit::Bool(_) => Builtin::Bool,
         Lit::Str(_) => Builtin::Str,
+        Lit::Char(_) => Builtin::Char,
+        Lit::Float(_) => Builtin::Float,
+        Lit::Float32(_) => Builtin::Float32,
+        Lit::Word(w, _) => Builtin::ALL.into_iter().find(|b| b.width() == Some(*w)).expect("every width is a builtin"),
     }
 }
 
@@ -251,6 +259,21 @@ pub fn print_linear(linear: bool) -> bool {
 /// What an unannotated explicit binder has, as types are printed now.
 fn printed_default() -> Grade {
     if LINEAR_PRINTING.with(std::cell::Cell::get) { Grade::ONE } else { Grade::DEFAULT }
+}
+
+/// Every constant a term mentions, with the name it is printed with.
+pub fn opaques(c: &Rc<Core>) -> Vec<(usize, String)> {
+    let found = std::cell::RefCell::new(Vec::new());
+    c.rewrite(0, &|c, _| {
+        if let Core::Opaque(u, name) = c {
+            let mut found = found.borrow_mut();
+            if !found.iter().any(|(v, _)| v == u) {
+                found.push((*u, name.clone()));
+            }
+        }
+        None
+    });
+    found.into_inner()
 }
 
 /// `a`, if `g` is `Pair a`: a pair's type, waiting for its second.
@@ -315,7 +338,8 @@ impl fmt::Display for Core {
                 Core::LitTy(Builtin::Unit) => write!(f, "()"),
                 Core::LitTy(b) => write!(f, "{}", b.name()),
                 Core::Lit(l) => write!(f, "{l}"),
-                Core::Var(_, n) | Core::Opaque(_, n) => write!(f, "{n}"),
+                // (an instance with no name is shown as `instance Ord Int`)
+                Core::Var(_, n) | Core::Opaque(_, n) => paren(prec > 10 && n.contains(' '), f, |f| write!(f, "{n}")),
                 Core::Meta(m) => write!(f, "?{m}"),
                 Core::Error => write!(f, "?!"),
                 Core::Runtime(_, inner) => go(inner, prec, f),
@@ -448,6 +472,20 @@ impl fmt::Display for Core {
                     write!(f, "}} -> ")?;
                     go(cod, 0, f)
                 }),
+                // an auto binder with no name is a constraint, `C a => b`
+                Core::Pi { name, icit: Icit::Auto, grade, dom, cod, .. } if name == "_" && grade.is_grade(Grade::DEFAULT) => {
+                    paren(prec > 0, f, |f| {
+                        go(dom, 1, f)?;
+                        write!(f, " => ")?;
+                        go(cod, 0, f)
+                    })
+                }
+                Core::Pi { name, icit: Icit::Auto, grade, in_type, dom, cod } => paren(prec > 0, f, |f| {
+                    write!(f, "{{auto ")?;
+                    binder(name, (grade, in_type), Grade::DEFAULT, dom, f)?;
+                    write!(f, "}} -> ")?;
+                    go(cod, 0, f)
+                }),
                 // an anonymous, default-graded binder is just an arrow
                 Core::Pi { name, grade, in_type, dom, cod, .. }
                     if name == "_"
@@ -489,6 +527,107 @@ impl Core {
     /// The same term with its leaves rewritten: `f` is given each `Var`,
     /// `Opaque` and `Meta`, with how many binders are around it there, and
     /// what it returns replaces it (`None` keeps it as it is).
+    /// Every node, outermost first: what `f` answers for one is put in its
+    /// place, and what it answers nothing for is gone into. `f` takes the
+    /// node and how many binders are around it.
+    /// Whether an error is anywhere in the term.
+    pub fn mentions_error(self: &Rc<Core>) -> bool {
+        let found = std::cell::Cell::new(false);
+        self.transform(0, &|c, _| {
+            if matches!(**c, Core::Error) {
+                found.set(true);
+            }
+            found.get().then(|| c.clone())
+        });
+        found.get()
+    }
+
+    pub fn transform(self: &Rc<Core>, depth: usize, f: &dyn Fn(&Rc<Core>, usize) -> Option<Rc<Core>>) -> Rc<Core> {
+        if let Some(replaced) = f(self, depth) {
+            return replaced;
+        }
+        let go = |c: &Rc<Core>, d: usize| c.transform(d, f);
+        match &**self {
+            Core::Var(..) | Core::Opaque(..) | Core::Meta(_) => self.clone(),
+            Core::Type(_) | Core::LitTy(_) | Core::Lit(_) | Core::Prim(_) | Core::GradeLit(_) | Core::Error => self.clone(),
+            Core::Pi { name, icit, grade, in_type, dom, cod } => Rc::new(Core::Pi {
+                name: name.clone(),
+                icit: *icit,
+                grade: go(grade, depth),
+                in_type: go(in_type, depth),
+                dom: go(dom, depth),
+                cod: go(cod, depth + 1),
+            }),
+            Core::Lam(x, b) => Rc::new(Core::Lam(x.clone(), go(b, depth + 1))),
+            Core::App(a, b) => Rc::new(Core::App(go(a, depth), go(b, depth))),
+            Core::BoxTy(a, b) => Rc::new(Core::BoxTy(go(a, depth), go(b, depth))),
+            Core::BoxIntro(a) => Rc::new(Core::BoxIntro(go(a, depth))),
+            Core::Unbox(a) => Rc::new(Core::Unbox(go(a, depth))),
+            Core::Let(x, e, b) => Rc::new(Core::Let(x.clone(), go(e, depth), go(b, depth + 1))),
+            Core::GradeAdd(a, b) => Rc::new(Core::GradeAdd(go(a, depth), go(b, depth))),
+            Core::GradeMul(a, b) => Rc::new(Core::GradeMul(go(a, depth), go(b, depth))),
+            Core::GradeRange(a, b) => Rc::new(Core::GradeRange(go(a, depth), go(b, depth))),
+            Core::Case(s, alts) => {
+                let alts = alts.iter().map(|a| CaseAlt { body: go(&a.body, depth + a.vars.len()), ..a.clone() }).collect();
+                Rc::new(Core::Case(go(s, depth), Rc::new(alts)))
+            }
+            Core::Runtime(n, a) => {
+                let n = match n {
+                    Note::Binds { grade, ty: Some(t) } => Note::Binds { grade: *grade, ty: Some(go(t, depth)) },
+                    other => other.clone(),
+                };
+                Rc::new(Core::Runtime(n, go(a, depth)))
+            }
+            Core::Comp(a, e) => Rc::new(Core::Comp(go(a, depth), go(e, depth))),
+            Core::Row(labels, tails) => Rc::new(Core::Row(
+                labels.iter().map(|l| go(l, depth)).collect(),
+                tails.iter().map(|t| go(t, depth)).collect(),
+            )),
+            Core::Handle(b, r, ops) => {
+                let ops = ops.iter().map(|op| OpClause { body: go(&op.body, depth), ..op.clone() }).collect();
+                Rc::new(Core::Handle(go(b, depth), go(r, depth), Rc::new(ops)))
+            }
+        }
+    }
+
+    /// The term with each solved metavariable replaced by its solution. One
+    /// applied to a spine has a function of it for its solution, which is
+    /// applied there and then, for each argument that is a variable (as a
+    /// metavariable's are): run as it is, it would build a closure at each
+    /// use.
+    pub fn zonked(self: &Rc<Core>, solutions: &[Option<Rc<Core>>]) -> Rc<Core> {
+        self.transform(0, &|c, _| match &**c {
+            Core::Meta(m) => solutions.get(*m).cloned().flatten().map(|s| s.zonked(solutions)),
+            Core::App(..) => {
+                let mut args = Vec::new();
+                let mut head = c;
+                while let Core::App(f, a) = &**head {
+                    args.push(a);
+                    head = f;
+                }
+                let Core::Meta(m) = &**head else { return None };
+                let mut f = solutions.get(*m).cloned().flatten()?.zonked(solutions);
+                let mut args = args.into_iter().rev().map(|a| a.zonked(solutions)).peekable();
+                while let (Core::Lam(_, body), Some(Core::Var(j, x))) = (&*f.clone(), args.peek().map(|a| &**a)) {
+                    f = body.instantiate(*j, x);
+                    args.next();
+                }
+                Some(args.fold(f, |f, a| Rc::new(Core::App(f, a))))
+            }
+            _ => None,
+        })
+    }
+
+    /// A lambda's body with its variable made `Var(j)` of the context the
+    /// lambda is in.
+    fn instantiate(self: &Rc<Core>, j: usize, x: &str) -> Rc<Core> {
+        self.transform(0, &|c, d| match &**c {
+            Core::Var(i, _) if *i == d => Some(Rc::new(Core::Var(j + d, x.to_string()))),
+            Core::Var(i, n) if *i > d => Some(Rc::new(Core::Var(i - 1, n.clone()))),
+            _ => None,
+        })
+    }
+
     pub fn rewrite(self: &Rc<Core>, depth: usize, f: &dyn Fn(&Core, usize) -> Option<Rc<Core>>) -> Rc<Core> {
         let go = |c: &Rc<Core>, d: usize| c.rewrite(d, f);
         match &**self {

@@ -1,0 +1,34 @@
+-- Backtracking, as an effect: `choose lo hi` picks a number between them,
+-- and `fail ()` says the picks so far were wrong. The search reads as if it
+-- guessed right every time; the handler tries every guess, resuming the
+-- rest of the search once for each, which `@many` allows.
+
+effect Search where
+  @many choose : Int -> Int -> Int
+  fail : () -> ()
+
+-- Nothing, if `ok`; otherwise this branch of the search is given up.
+guard : (ok : Bool) -> () ! Search
+guard ok = if ok then () else fail ()
+
+-- A right triangle with whole sides, none longer than `n`.
+triangle : (n : [] Int) -> (Int, Int, Int) ! Search
+triangle n =
+  let a = choose 1 n in
+  let b = choose a n in
+  let c = choose b n in
+  let u = guard (a * a + b * b == c * c) in
+  (a, b, c)
+
+-- `k` resumed with each of `lo` to `hi`, and every answer they found:
+-- whatever else `k` does, `each` does too (`r`).
+each : (lo : [] Int) -> (hi : [] Int) -> (k : [] (Int -> List a ! {Div | r})) -> List a ! {Div | r}
+each lo hi k = if hi < lo then Nil else Std.Collections.List.append (k lo) (each (lo + 1) hi k)
+
+-- Every answer the search can find; what else the search does is left to
+-- a handler outside this one.
+all : (body : () -> a ! {Search, Div | r}) -> List a ! {Div | r}
+all body = handle body () with
+  return x -> x :: Nil
+  choose lo hi k -> each lo hi k
+  fail u k -> Nil

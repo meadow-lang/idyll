@@ -24,12 +24,15 @@ pub struct Example {
 /// `value : type`, as the REPL reports an expression that comes to plain
 /// data: a number, a string, `True`, `()`, or a box of one.
 fn value_report(line: &str) -> Option<(&str, &str)> {
-    // a number, a string, a box, `()`, an array (`#[1; 2]`), or a
-    // constructor (`True`, `Just 3`, `1 :: Nil` starts with a digit).  No
-    // line of *source* in the tutorial starts with a capital, or an array,
-    // and goes on to a ` : `.
-    let starts_a_value = line.starts_with(|c: char| c.is_ascii_digit() || c.is_ascii_uppercase() || c == '"' || c == '[' || c == '(')
-        || line.starts_with("#[") && line.contains(';');
+    // a number, a string, a character, a box, `()`, an array (`#[1; 2]`),
+    // or a constructor (`True`, `Just 3`, `1 :: Nil` starts with a digit).
+    // No line of *source* in the tutorial starts with a capital, or an
+    // array, and goes on to a ` : `.
+    let starts_a_value = line
+        .starts_with(|c: char| c.is_ascii_digit() || c.is_ascii_uppercase() || c == '"' || c == '\'' || c == '[' || c == '(')
+        || line.starts_with("#[") && line.contains(';')
+        // a negative number, `-128 : Int8`
+        || line.strip_prefix('-').is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()));
     // a string may contain " : " itself; its report ends at the last quote
     let at = if line.starts_with('"') { line.rfind("\" : ")? + 1 } else { line.find(" : ")? };
     starts_a_value.then(|| (&line[..at], &line[at + 3..]))
@@ -152,7 +155,9 @@ pub fn examples(markdown: &str) -> Vec<Example> {
         } else if in_source && !line.contains('│') {
             ex.source.push('\n');
             ex.source.push_str(line);
-        } else if ex.diags.is_empty() && is_definition_report(line) {
+        } else if (ex.diags.is_empty() || !line.starts_with(' ')) && is_definition_report(line) {
+            // (after a warning too, at the margin: an entry that declares
+            // something with a goal in it, say)
             ex.decls.push(line.to_string());
         } else if !in_source && ex.diags.is_empty() && ex.decls.is_empty() && ex.ty.is_none() {
             // after the blank line that ends the entry, and before its

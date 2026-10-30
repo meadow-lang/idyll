@@ -1,115 +1,69 @@
--- The renamed tree: `compiler/idyllic-hir`, the surface syntax after name
--- resolution. Every name is resolved to the uniques it may stand for;
--- equations are lambdas or matches; sequence literals are taken apart.
+-- What the passes after renaming share: an argument's `Icit`, a
+-- `Literal`, a declaration's `Visibility`, and an `Ident` -- a name as the
+-- checker's context keeps one, the uniques it may stand for and its text.
+-- (The renamed program itself is `Hir`, a Lingua language, in `Rename`.)
 --
 -- A name's uniques are a list. None is a name nothing in scope has (it is
 -- reported); one is a name resolved; several are a name brought in by more
 -- than one `use`, which the checker chooses between by type (ROADMAP,
 -- phase 3). A binder always has one.
 --
--- `dumped` writes a module out as the rename test compares it: the
--- program's own part, a line for each declaration, every name as
--- `text@unique`. The Rust side (`compiler/idyllic/tests/front.rs`) writes
--- its HIR the same way, and the test renumbers the uniques of both in the
--- order they first appear, so that what is compared is which use is of
--- which binder, not how the two renamers count.
+-- And how the dumps write a literal and a name, as the Rust side does.
 
-use Idyll.Ast (Icit, Literal)
-use Idyll.Ast as A
+use Std.Macro (Reflect, Datum)
 use Std.Collections.Vector as V
 use Std.String as S
 use Std.Maybe.Maybe.*
 
+-- Whether an argument is written, or left for the checker to work out.
+@derive(PartialEq, Reflect)
+-- `Auto`: `{auto d : t}`, or `t => ..`, found by search
+@pub data Icit = Explicit | Implicit | Auto
+
+@derive(PartialEq)
+-- A number with a point in it is a `Float`, or a `Float32` once read at
+-- one; an integer read at a sized type is a `Word`, by its type's name, of
+-- the number it stands for (a `UInt64` past `Int`'s as the `Int` with its
+-- bits). The parser makes only `Int`s and `Float`s; the checker reads one at
+-- the type wanted (see `Literals`).
+@pub data Literal = Unit | Int Int | Bool Bool | Str String | Char Char | Float Float | Float32 Float32 | Word String Int
+
+-- Kept as Meadow's `@derive(Reflect)` would keep it, but for a `Char`,
+-- kept as its code point, and a `Float32`, as a `Float`: Meadow's
+-- `Reflect` has neither.
+impl Reflect Literal {
+  fun toDatum l =
+    match l with
+    | Literal.Unit -> Datum.Tag "Unit" []
+    | Literal.Int n -> Datum.Tag "Int" [Datum.Int n]
+    | Literal.Bool b -> Datum.Tag "Bool" [Datum.Bool b]
+    | Literal.Str s -> Datum.Tag "Str" [Datum.Str s]
+    | Literal.Char c -> Datum.Tag "Char" [Datum.Int (charCode c)]
+    | Literal.Float x -> Datum.Tag "Float" [Datum.Float x]
+    | Literal.Float32 x -> Datum.Tag "Float32" [Datum.Float (toFloat64 x)]
+    | Literal.Word w n -> Datum.Tag "Word" [Datum.Str w, Datum.Int n]
+  fun fromDatum d =
+    match d with
+    | Datum.Tag tag args ->
+        (match (tag, V.get args 0, V.get args 1) with
+         | ("Unit", _, _) -> Ok Literal.Unit
+         | ("Int", Just (Datum.Int n), _) -> Ok (Literal.Int n)
+         | ("Bool", Just (Datum.Bool b), _) -> Ok (Literal.Bool b)
+         | ("Str", Just (Datum.Str s), _) -> Ok (Literal.Str s)
+         | ("Char", Just (Datum.Int c), _) -> Ok (Literal.Char (charFromCode c))
+         | ("Float", Just (Datum.Float x), _) -> Ok (Literal.Float x)
+         | ("Float32", Just (Datum.Float x), _) -> Ok (Literal.Float32 (toFloat32 x))
+         | ("Word", Just (Datum.Str w), Just (Datum.Int n)) -> Ok (Literal.Word w n)
+         | _ -> Err "not a literal")
+    | _ -> Err "not a literal"
+}
+
+-- How far a declaration is seen: its module, the module above, its
+-- package, or anywhere.
+@derive(PartialEq, Reflect)
+@pub data Visibility = Private | Super | Package | Public
+
 @pub data Ident = Ident [Int] String
-
-@pub data Grade = Grade Term (Maybe Term)
-
-@pub data Term
-  = Type
-  | Var Ident
-  | Lit Literal
-  | Pi (Maybe Ident) Icit (Maybe Grade) Term Term
-  | Lam Ident (Maybe Grade) (Maybe Term) Term
-  | App Term Term
-  | Ann Term Term
-  | Hole
-  | BoxIntro Term
-  | Inf
-  | Range Term Term
-  | LetBox Ident Term Term
-  | Let [Group] Term
-  | Case Term [Clause]
-  | Match [Clause]
-  | Omitted
-  | Eff Term Term
-  | Row [Term] (Maybe Term)
-  | Handle Term [HandleClause]
-  | SeqNil
-  | SeqCons Term Term
-  | ArrayLit [Term]
-
--- `op x k -> body`; no operation for `return x -> body`.
-@pub data HandleClause = HandleClause (Maybe Ident) [Ident] Term
-
-@pub data Clause = Clause [Pattern] Rhs
-
-@pub data Rhs = Plain Term | Guarded [(Term, Term)] | Impossible
-
-@pub data Pattern
-  = Var Ident
-  | Wild
-  | Lit Literal
-  | Con Ident [Pattern]
-  | As Ident Pattern
-  | Dot Term
-  | SeqNil
-  | SeqCons Pattern Pattern
-
-@pub record Bind = {
-  name : Ident,
-  ty : Maybe Term,
-  rhs : Term,
-  linear : Bool
-}
-
-@pub data Group = NonRec Bind | Rec [Bind]
-
-@pub data CtorShape = Fields [Term] | Sig Term
-
-@pub data CtorDecl = CtorDecl Ident CtorShape
-
-@pub record DataDecl = {
-  name : Ident,
-  params : [(Ident, Maybe Term)],
-  kind : Maybe Term,
-  ctors : [CtorDecl],
-  seq : Maybe (Ident, Ident),
-  linear : Bool
-}
-
-@pub data OpDecl = OpDecl Ident Term Bool
-
-@pub record EffectDecl = {
-  name : Ident,
-  params : [(Ident, Maybe Term)],
-  ops : [OpDecl]
-}
-
-@pub data NativeDecl = NativeDecl Ident Term
-
-@pub record Module = {
-  datas : [DataDecl],
-  effects : [EffectDecl],
-  natives : [NativeDecl],
-  groups : [Group],
-  body : Maybe Term,
-  main : Maybe Int,
-  -- the first unique the program named its own things with: what came
-  -- before is the builtins' and the prelude's
-  first : Int,
-  terminating : [Int],
-  linearBody : Bool
-}
 
 -- The one unique of a binder.
 @pub fun uniqueOf (x : Ident) : Int =
@@ -118,58 +72,106 @@ use Std.Maybe.Maybe.*
 
 @pub fun textOf (x : Ident) : String = match x with | Ident.Ident _ t -> t
 
--- The binders a signature quantifies over, in front of it: the implicit
--- `Pi`s it starts with.
-@pub fun quantified (t : Term) : [Ident] =
-  match t with
-  | Term.Pi (Just x) Icit.Implicit _ _ cod -> V.append [x] (quantified cod)
-  | _ -> []
-
--- --- building ----------------------------------------------------------------
---
--- What the renamer builds its terms with. It reads the parser's tree, whose
--- `Term`, `Grade`, `Clause` and `Rhs` share these names, so it names this
--- module's through these functions, `H.app f a`.
-
-@pub fun universe () : Term = Term.Type
-@pub fun var (x : Ident) : Term = Term.Var x
-@pub fun lit (l : Literal) : Term = Term.Lit l
-@pub fun pi (x : Maybe Ident) (icit : Icit) (g : Maybe Grade) (dom : Term) (cod : Term) : Term = Term.Pi x icit g dom cod
-@pub fun lam (x : Ident) (g : Maybe Grade) (ty : Maybe Term) (body : Term) : Term = Term.Lam x g ty body
-@pub fun app (f : Term) (a : Term) : Term = Term.App f a
-@pub fun ann (e : Term) (ty : Term) : Term = Term.Ann e ty
-@pub fun hole () : Term = Term.Hole
-@pub fun boxed (e : Term) : Term = Term.BoxIntro e
-@pub fun inf () : Term = Term.Inf
-@pub fun range (a : Term) (b : Term) : Term = Term.Range a b
-@pub fun letBox (x : Ident) (e : Term) (body : Term) : Term = Term.LetBox x e body
-@pub fun letIn (gs : [Group]) (body : Term) : Term = Term.Let gs body
-@pub fun caseOf (e : Term) (cs : [Clause]) : Term = Term.Case e cs
-@pub fun matching (cs : [Clause]) : Term = Term.Match cs
-@pub fun omitted () : Term = Term.Omitted
-@pub fun eff (b : Term) (e : Term) : Term = Term.Eff b e
-@pub fun row (ls : [Term]) (tail : Maybe Term) : Term = Term.Row ls tail
-@pub fun handled (e : Term) (cs : [HandleClause]) : Term = Term.Handle e cs
-@pub fun seqNil () : Term = Term.SeqNil
-@pub fun seqCons (h : Term) (tl : Term) : Term = Term.SeqCons h tl
-@pub fun arrayLit (es : [Term]) : Term = Term.ArrayLit es
-@pub fun grade (s : Term) (r : Maybe Term) : Grade = Grade.Grade s r
-@pub fun clause (ps : [Pattern]) (r : Rhs) : Clause = Clause.Clause ps r
-@pub fun plain (e : Term) : Rhs = Rhs.Plain e
-@pub fun guarded (gs : [(Term, Term)]) : Rhs = Rhs.Guarded gs
-@pub fun impossible () : Rhs = Rhs.Impossible
-@pub fun bind (name : Ident) (ty : Maybe Term) (rhs : Term) (linear : Bool) : Bind = Bind { name, ty, rhs, linear }
+-- Every unique a name may stand for.
+@pub fun uniquesOf (x : Ident) : [Int] = match x with | Ident.Ident us _ -> us
 
 -- --- writing -----------------------------------------------------------------
 
+-- A string as the Rust side writes it: in quotes, with `\`, `"` and the
+-- control characters escaped. Any other byte is itself.
+-- A character as `idyllic_ast::show_char` writes one: in single quotes,
+-- escaped as a one-character string is, but for `'`, `'\''`, and `"`, which
+-- needs no escape here.
+@pub fun showChar (c : Char) : String =
+  let n = charCode c in
+  if n == 39 then "'\\''"
+  else if n == 34 then "'\"'"
+  else
+    let d = debugString (charsToString #[c]) in
+    "'" ++ stringSlice d 1 (stringByteLength d - 1) ++ "'"
+
+-- Rust's `Debug` for a string: in quotes, `\`, `"` and control characters
+-- escaped, anything else as it is.
+@pub fun debugString (s : String) : String =
+  let n = stringByteLength s in
+  let byte = \i -> toInt (stringByteAt s i) in
+  let escape =
+    \b ->
+      if b == 92 then "\\\\"
+      else if b == 34 then "\\\""
+      else if b == 10 then "\\n"
+      else if b == 9 then "\\t"
+      else if b == 13 then "\\r"
+      else if b == 0 then "\\0"
+      else if b < 32 or b == 127 then "\\u{" ++ hexDigits b ++ "}"
+      else ""
+  in
+  let cut = V.filter (\i -> escape (byte i) != "") (V.range 0 n) in
+  let starts = V.append [0] (V.map (\i -> i + 1) cut) in
+  let ends = V.append cut [n] in
+  let runs =
+    V.map
+      (\k ->
+        let run = stringSlice s (V.getOr 0 starts k) (V.getOr n ends k) in
+        match V.get cut k with
+        | Just i -> run ++ escape (byte i)
+        | None -> run)
+      (V.range 0 (V.len starts))
+  in
+  "\"" ++ S.join "" runs ++ "\""
+
+fun hexDigits (n : Int) : String =
+  let digit = \d -> stringSlice "0123456789abcdef" d (d + 1) in
+  if n < 16 then digit n else hexDigits (n / 16) ++ digit (n % 16)
+
+@pub fun quoted (s : String) : String =
+  let n = stringByteLength s in
+  let byte = \i -> toInt (stringByteAt s i) in
+  -- the bytes that are escaped, and the runs between them copied whole, so
+  -- that no character is cut
+  let cut = V.filter (\i -> escaped (byte i) != "") (V.range 0 n) in
+  let starts = V.append [0] (V.map (\i -> i + 1) cut) in
+  let ends = V.append cut [n] in
+  let runs =
+    V.map
+      (\k ->
+        let run = stringSlice s (V.getOr 0 starts k) (V.getOr n ends k) in
+        match V.get cut k with
+        | Just i -> run ++ escaped (byte i)
+        | None -> run)
+      (V.range 0 (V.len starts))
+  in
+  "\"" ++ S.join "" runs ++ "\""
+
+-- How byte `b` is escaped, or "" if it is not.
+fun escaped (b : Int) : String =
+  if b == 92 then "\\\\"
+  else if b == 34 then "\\\""
+  else if b == 10 then "\\n"
+  else if b == 9 then "\\t"
+  else if b == 13 then "\\r"
+  else if b < 32 or b == 127 then "\\u{" ++ hex b ++ "}"
+  else ""
+
+fun hex (n : Int) : String =
+  let digit = \d -> stringSlice "0123456789abcdef" d (d + 1) in
+  if n < 16 then digit n else hex (n / 16) ++ digit (n % 16)
+
+@pub fun literal (l : Literal) : String =
+  match l with
+  | Literal.Unit -> "(lit ())"
+  | Literal.Int n -> "(lit ${show n})"
+  | Literal.Bool b -> if b then "(lit True)" else "(lit False)"
+  | Literal.Str s -> "(lit ${quoted s})"
+  | Literal.Char c -> "(lit ${showChar c})"
+  | Literal.Float x -> "(lit ${display x})"
+  | Literal.Float32 x -> "(lit ${display x})"
+  | Literal.Word w n -> "(lit ${wordText w n})"
+
+-- A sized integer's value, as text: a `UInt64` read as one.
+@pub fun wordText (w : String) (n : Int) : String = if w == "UInt64" then display (toUInt64 n) else show n
+
 fun sx (parts : [String]) : String = "(" ++ S.join " " parts ++ ")"
-
-fun opt (f : a -> String) (m : Maybe a) : String =
-  match m with
-  | Just x -> f x
-  | None -> "-"
-
-fun flag (yes : String) (b : Bool) : String = if b then yes else "-"
 
 @pub fun ident (x : Ident) : String =
   match x with
@@ -177,115 +179,3 @@ fun flag (yes : String) (b : Bool) : String = if b then yes else "-"
       if V.isEmpty us then t ++ "@?"
       else if V.len us == 1 then t ++ "@" ++ show (V.getOr 0 us 0)
       else sx (V.append ["overload"] (V.map (\u -> t ++ "@" ++ show u) us))
-
-fun gradeText (g : Grade) : String =
-  match g with
-  | Grade.Grade s r -> sx ["grade", term s, opt term r]
-
-@pub fun term (t : Term) : String =
-  match t with
-  | Term.Type -> "Type"
-  | Term.Var x -> ident x
-  | Term.Lit l -> A.literal l
-  | Term.Pi x icit g dom cod ->
-      sx ["pi", opt ident x, (match icit with | Icit.Explicit -> "e" | Icit.Implicit -> "i"), opt gradeText g, term dom, term cod]
-  | Term.Lam x g ty body -> sx ["lam", ident x, opt gradeText g, opt term ty, term body]
-  | Term.App f a -> sx ["app", term f, term a]
-  | Term.Ann e ty -> sx ["ann", term e, term ty]
-  | Term.Hole -> "_"
-  | Term.BoxIntro e -> sx ["box", term e]
-  | Term.Inf -> "inf"
-  | Term.Range a b -> sx ["range", term a, term b]
-  | Term.LetBox x e body -> sx ["letbox", ident x, term e, term body]
-  | Term.Let gs body -> sx ["let", sx (V.map group gs), term body]
-  | Term.Case e cs -> sx (V.append ["case", term e] (V.map clauseText cs))
-  | Term.Match cs -> sx (V.append ["match"] (V.map clauseText cs))
-  | Term.Omitted -> "?"
-  | Term.Eff b e -> sx ["eff", term b, term e]
-  | Term.Row ls tail -> sx ["row", sx (V.map term ls), opt term tail]
-  | Term.Handle e cs -> sx (V.append ["handle", term e] (V.map handleClause cs))
-  | Term.SeqNil -> "nil"
-  | Term.SeqCons h tl -> sx ["cons", term h, term tl]
-  | Term.ArrayLit es -> sx (V.append ["array"] (V.map term es))
-
-fun handleClause (c : HandleClause) : String =
-  match c with
-  | HandleClause.HandleClause op xs body -> sx ["clause", opt ident op, sx (V.map ident xs), term body]
-
-fun clauseText (c : Clause) : String =
-  match c with
-  | Clause.Clause ps r -> sx ["clause", sx (V.map pattern ps), rhsText r]
-
-fun rhsText (r : Rhs) : String =
-  match r with
-  | Rhs.Plain e -> sx ["=", term e]
-  | Rhs.Guarded gs -> sx (V.append ["guards"] (V.map (\g -> match g with | (c, e) -> sx [term c, term e]) gs))
-  | Rhs.Impossible -> "impossible"
-
-@pub fun pattern (p : Pattern) : String =
-  match p with
-  | Pattern.Var x -> ident x
-  | Pattern.Wild -> "_"
-  | Pattern.Lit l -> A.literal l
-  | Pattern.Con c ps -> sx (V.append ["con", ident c] (V.map pattern ps))
-  | Pattern.As x q -> sx ["as", ident x, pattern q]
-  | Pattern.Dot e -> sx ["dot", term e]
-  | Pattern.SeqNil -> "pnil"
-  | Pattern.SeqCons h tl -> sx ["pcons", pattern h, pattern tl]
-
--- A binding; `term`, if it is one `@terminating` vouches for.
-fun bindText (terminating : [Int]) (b : Bind) : String =
-  sx ["bind", ident b.name, opt term b.ty, term b.rhs, flag "linear" b.linear, flag "terminating" (V.elem (uniqueOf b.name) terminating)]
-
-fun group (g : Group) : String =
-  match g with
-  | Group.NonRec b -> sx ["nonrec", bindText [] b]
-  | Group.Rec bs -> sx (V.append ["rec"] (V.map (bindText []) bs))
-
-fun typeParam (p : (Ident, Maybe Term)) : String = match p with | (x, k) -> sx [ident x, opt term k]
-
-fun ctorDecl (c : CtorDecl) : String =
-  match c with
-  | CtorDecl.CtorDecl x (CtorShape.Fields ts) -> sx [ident x, sx (V.append ["fields"] (V.map term ts))]
-  | CtorDecl.CtorDecl x (CtorShape.Sig ty) -> sx [ident x, sx ["sig", term ty]]
-
-fun dataDecl (d : DataDecl) : String =
-  sx [
-    "data",
-    ident d.name,
-    sx (V.map typeParam d.params),
-    opt term d.kind,
-    sx (V.map ctorDecl d.ctors),
-    opt (\s -> match s with | (n, c) -> sx ["seq", ident n, ident c]) d.seq,
-    flag "linear" d.linear
-  ]
-
-fun effectDecl (e : EffectDecl) : String =
-  sx [
-    "effect",
-    ident e.name,
-    sx (V.map typeParam e.params),
-    sx (V.map (\o -> match o with | OpDecl.OpDecl x ty many -> sx ["op", ident x, flag "many" many, term ty]) e.ops)
-  ]
-
-fun nativeDecl (n : NativeDecl) : String =
-  match n with
-  | NativeDecl.NativeDecl x ty -> sx ["native", ident x, term ty]
-
--- The program's own part of a module, a line each: its data types,
--- effects, natives and bindings, then its body, its `main` and whether it is
--- linear.
-@pub fun dumped (m : Module) : String =
-  let own = \x -> uniqueOf x >= m.first in
-  let binds = V.concatMap (\g -> match g with | Group.NonRec b -> [b] | Group.Rec bs -> bs) m.groups in
-  S.join
-    "\n"
-    (V.concat [
-       V.map dataDecl (V.filter (\(d : DataDecl) -> own d.name) m.datas),
-       V.map effectDecl (V.filter (\(e : EffectDecl) -> own e.name) m.effects),
-       V.map nativeDecl (V.filter (\n -> match n with | NativeDecl.NativeDecl x _ -> own x) m.natives),
-       V.map (bindText m.terminating) (V.filter (\(b : Bind) -> own b.name) binds),
-       (match m.body with | Just e -> [sx ["body", term e]] | None -> []),
-       (match m.main with | Just u -> [sx ["main", "main@" ++ show u]] | None -> []),
-       [sx ["linear", if m.linearBody then "true" else "false"]]
-     ])

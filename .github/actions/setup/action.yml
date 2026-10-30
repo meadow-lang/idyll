@@ -1,0 +1,38 @@
+name: setup
+description: Rust, its build cache, and (unless told not to) Meadow's nightly
+inputs:
+  meadow:
+    description: whether to install Meadow
+    default: "true"
+  token:
+    description: a token for GitHub's API, so the installer is not held to the unauthenticated limit
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache Rust builds
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: |
+          compiler -> ../target
+          idyll-driver -> ../target
+          idyll-eval -> ../target
+
+    - name: Install Meadow (nightly)
+      if: inputs.meadow == 'true'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+      run: |
+        curl -fsSL https://raw.githubusercontent.com/meadow-lang/meadow/master/scripts/meadowup-init.sh | sh -s -- --version nightly
+        echo "$HOME/.meadow/bin" >> "$GITHUB_PATH"
+
+    - name: Versions
+      shell: bash
+      run: |
+        rustc --version
+        if command -v meadow >/dev/null; then meadow --version; fi
+        clang --version

@@ -2,10 +2,9 @@
 //!
 //! This is the specification of what an Idyll program *computes*.  It is
 //! meant to be read, and to be obviously right, rather than to be fast: the
-//! compiler lowers the same Core to AxCut, runs it on the paper's abstract
-//! machine (`idyllic_seq::machine`), and compiles it to native code, and all
-//! of that has to agree with what happens here.  `tests/spec.rs` holds it to
-//! that.
+//! compiler lowers the same Core to Cut, which Meadow's runtimes run --
+//! Glade, its bytecode, and Silo, native code -- and what they compute has
+//! to agree with what happens here.  `tests/spec.rs` holds Glade to that.
 //!
 //! # The machine
 //!
@@ -66,7 +65,8 @@
 //! nothing to show.
 
 use idyllic_ast::Lit;
-use idyllic_builtins::{Builtin, IntResult, Native, Prim};
+use idyllic_builtins::num::{self, Number};
+use idyllic_builtins::{strings, Builtin, IntResult, Native, Prim};
 use idyllic_typecheck::core::{CaseAlt, Core, Head, Note, OpClause};
 use idyllic_typecheck::handlers::OpInfo;
 use idyllic_typecheck::natives::NativeInfo;
@@ -84,7 +84,11 @@ use std::rc::Rc;
 #[derive(Clone, Debug)]
 pub enum Value {
     Int(i64),
+    /// A sized integer or a float (an `Int` is [`Value::Int`]).
+    Num(Number),
     Str(Rc<str>),
+    /// A character, a Unicode scalar value.
+    Char(char),
     Bool(bool),
     Unit,
     /// A constructor applied to all its fields.
@@ -110,6 +114,9 @@ pub enum Value {
     /// The rest of a handled computation, from where it performed an
     /// operation up to and including its handler: frames to put back.
     Resumption(Rc<Vec<Frame>>),
+    /// A mutable cell (`newRef`), which may be shared: every value that is
+    /// it sees what is put in it.
+    Ref(Rc<std::cell::RefCell<Rc<Value>>>),
     /// A type, a grade, or something never used: nothing at run time.
     Erased,
 }
@@ -219,8 +226,18 @@ impl Value {
             }
             Value::Box(inner) => out.push(Garbage::Value(std::mem::replace(inner, hollow()))),
             Value::Closure { env, .. } => out.extend(env.0.take().map(Garbage::Cell)),
-            // (a resumption's frames are few, and dropped the ordinary way)
-            Value::Int(_) | Value::Str(_) | Value::Bool(_) | Value::Unit | Value::Erased | Value::Resumption(_) => {}
+            // (a resumption's frames are few, and dropped the ordinary way;
+            // and a cell, which may be shared, when its last holder is: one
+            // that holds itself, a knot tied through it, is never dropped)
+            Value::Int(_)
+            | Value::Num(_)
+            | Value::Str(_)
+            | Value::Char(_)
+            | Value::Bool(_)
+            | Value::Unit
+            | Value::Erased
+            | Value::Resumption(_)
+            | Value::Ref(_) => {}
         }
     }
 }
@@ -281,6 +298,8 @@ enum Control {
     Perform(usize, Vec<Rc<Value>>),
     /// A resumption, given a value: its frames go back on.
     Resume(Rc<Vec<Frame>>, Rc<Value>),
+    /// A goal, `?name`, reached: the program stops, saying so.
+    Goal(String),
 }
 
 /// Why evaluation stopped without an answer.
@@ -396,6 +415,12 @@ impl Program<'_> {
                     kont.extend(frames.iter().cloned());
                     Control::Return(value)
                 }
+                // as a program that gives up does: said on standard error,
+                // then exit status 1
+                Control::Goal(name) => {
+                    let _ = world.perform("putErr", &[Arg::Str(format!("reached the goal ?{name}\n").into())]);
+                    return Err(EvalError::Exited(1));
+                }
             };
         }
     }
@@ -422,7 +447,11 @@ impl Program<'_> {
             }
             Core::Lit(lit) => value(match lit {
                 Lit::Int(n) => Value::Int(*n),
+                Lit::Word(w, b) => Value::Num(Number::Word(*w, *b)),
+                Lit::Float(x) => Value::Num(Number::Float(f64::from_bits(*x))),
+                Lit::Float32(x) => Value::Num(Number::Float32(f32::from_bits(*x))),
                 Lit::Str(s) => Value::Str(s.as_str().into()),
+                Lit::Char(c) => Value::Char(*c),
                 Lit::Bool(b) => Value::Bool(*b),
                 Lit::Unit => Value::Unit,
             }),
@@ -457,6 +486,7 @@ impl Program<'_> {
             },
             // never looked at, so never computed
             Core::Runtime(Note::Erased, _) => value(Value::Erased),
+            Core::Runtime(Note::Goal(name), _) => Ok(Control::Goal(name.clone())),
             // a match its type decides: the one alternative, all erased
             Core::Runtime(Note::Forced, inner) => match &**inner {
                 Core::Case(_, alts) => match alts.first() {
@@ -692,10 +722,53 @@ fn native(n: Native, args: &[Rc<Value>]) -> Result<Value, EvalError> {
             EvalError::Stopped(format!("index {i} is out of bounds for an array of length {}", items.len()))
         })
     };
+    let text = |v: &Rc<Value>| match &**v {
+        Value::Str(s) => Ok(s.clone()),
+        _ => stuck(format!("{} is given something that is not a string", n.name())),
+    };
+    // a byte array: an array of `UInt8`s
+    let byte = |b: u8| Rc::new(Value::Num(Number::Word(idyllic_builtins::Width::U8, u64::from(b))));
+    let bytes = |v: &Rc<Value>| {
+        array(v)?
+            .iter()
+            .map(|b| match **b {
+                Value::Num(Number::Word(_, w)) => Ok(w as u8),
+                _ => stuck(format!("{} is given something that is not a byte", n.name())),
+            })
+            .collect::<Result<Vec<u8>, _>>()
+    };
     // `Pair [a] b`: how a native gives back two things, the first boxed
     let pair = |a: Rc<Value>, b: Rc<Value>| Value::Con { name: "Pair".into(), tag: 0, fields: vec![Rc::new(Value::Box(a)), b] };
     Ok(match n {
-        Native::Array | Native::MArray => Value::Erased,
+        Native::Num(op, ty) => {
+            let numbers = args
+                .iter()
+                .map(|a| match &**a {
+                    Value::Int(n) => Ok(Number::Int(*n)),
+                    Value::Num(n) => Ok(*n),
+                    _ => stuck(format!("{} is given something that is not a number", n.name())),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            match num::apply(op, ty, &numbers).map_err(EvalError::Stopped)? {
+                num::Answer::Num(Number::Int(n)) => Value::Int(n),
+                num::Answer::Num(n) => Value::Num(n),
+                num::Answer::Bool(b) => Value::Bool(b),
+                num::Answer::Text(s) => Value::Str(s.into()),
+            }
+        }
+        Native::Array | Native::MArray | Native::Ref => Value::Erased,
+        Native::NewRef => Value::Ref(Rc::new(std::cell::RefCell::new(args[0].clone()))),
+        Native::GetRef => match &*args[0] {
+            Value::Ref(cell) => cell.borrow().as_ref().clone(),
+            _ => return stuck("getRef is given something that is not a cell"),
+        },
+        Native::SetRef => match &*args[0] {
+            Value::Ref(cell) => {
+                *cell.borrow_mut() = args[1].clone();
+                Value::Unit
+            }
+            _ => return stuck("setRef is given something that is not a cell"),
+        },
         Native::ArrayLen => Value::Int(array(&args[0])?.len() as i64),
         Native::ArrayGet => {
             let items = array(&args[0])?;
@@ -768,6 +841,58 @@ fn native(n: Native, args: &[Rc<Value>]) -> Result<Value, EvalError> {
             pair(items[at(&items, int(&args[1])?)?].clone(), args[0].clone())
         }
         Native::MArrayFreeze | Native::MArrayThaw => args[0].as_ref().clone(),
+        Native::StringByteLength => Value::Int(text(&args[0])?.len() as i64),
+        Native::StringByteAt => {
+            let (s, i) = (text(&args[0])?, int(&args[1])?);
+            Value::Int(strings::byte_at(&s, i).ok_or_else(|| {
+                EvalError::Stopped(format!("index {i} is out of bounds for a string of {} bytes", s.len()))
+            })?)
+        }
+        Native::StringSlice => Value::Str(strings::slice(&text(&args[0])?, int(&args[1])?, int(&args[2])?).into()),
+        Native::StringCompare => Value::Int(strings::compare(&text(&args[0])?, &text(&args[1])?)),
+        Native::StringIndexOf => Value::Int(strings::index_of(&text(&args[0])?, &text(&args[1])?, int(&args[2])?)),
+        Native::StringToChars => Value::Array(text(&args[0])?.chars().map(|c| Rc::new(Value::Char(c))).collect()),
+        Native::CharsToString => {
+            let chars = array(&args[0])?
+                .iter()
+                .map(|v| match **v {
+                    Value::Char(c) => Ok(c),
+                    _ => stuck("charsToString is given something that is not a character"),
+                })
+                .collect::<Result<String, _>>()?;
+            Value::Str(chars.into())
+        }
+        Native::CharCode => match *args[0] {
+            Value::Char(c) => Value::Int(i64::from(u32::from(c))),
+            _ => return stuck("charCode is given something that is not a character"),
+        },
+        Native::CharFromCode => {
+            let code = int(&args[0])?;
+            Value::Char(
+                strings::from_code(code)
+                    .ok_or_else(|| EvalError::Stopped(format!("{code} is not a Unicode scalar value")))?,
+            )
+        }
+        Native::StringHash => Value::Int(idyllic_builtins::hash::string(&text(&args[0])?)),
+        Native::CharHash => match *args[0] {
+            Value::Char(c) => Value::Int(idyllic_builtins::hash::char(c)),
+            _ => return stuck("charHash is given something that is not a character"),
+        },
+        Native::BoolHash => match *args[0] {
+            Value::Bool(b) => Value::Int(idyllic_builtins::hash::bool(b)),
+            _ => return stuck("boolHash is given something that is not a truth value"),
+        },
+        Native::StringToBytes => Value::Array(text(&args[0])?.bytes().map(byte).collect()),
+        Native::BytesToString => Value::Str(String::from_utf8_lossy(&bytes(&args[0])?).into()),
+        Native::BytesToHex => Value::Str(strings::to_hex(&bytes(&args[0])?).into()),
+        Native::BytesFromHex => match strings::from_hex(&text(&args[0])?) {
+            Some(bs) => Value::Con {
+                name: "Just".into(),
+                tag: 1,
+                fields: vec![Rc::new(Value::Array(bs.into_iter().map(byte).collect()))],
+            },
+            None => Value::Con { name: "Nothing".into(), tag: 0, fields: Vec::new() },
+        },
     })
 }
 
@@ -791,7 +916,9 @@ pub fn show(v: &Value) -> Option<String> {
     let atom = |s: String| if s.contains(' ') && !s.starts_with(['[', '"', '#', '(']) { format!("({s})") } else { s };
     match v {
         Value::Int(n) => Some(n.to_string()),
+        Value::Num(n) => Some(n.to_string()),
         Value::Str(s) => Some(format!("{:?}", &**s)),
+        Value::Char(c) => Some(idyllic_ast::show_char(*c)),
         Value::Bool(true) => Some("True".into()),
         Value::Bool(false) => Some("False".into()),
         Value::Unit => Some("()".into()),
@@ -841,6 +968,7 @@ pub fn show(v: &Value) -> Option<String> {
         | Value::Op { .. }
         | Value::Native { .. }
         | Value::Resumption(_)
+        | Value::Ref(_)
         | Value::Erased => None,
     }
 }

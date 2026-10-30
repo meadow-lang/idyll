@@ -1,0 +1,86 @@
+-- Running the program, once it has been typed.
+--
+-- A tree-walking interpreter over the same `Expr` the checker saw. The
+-- checker has run already, so this code never has to ask whether a value
+-- is the right shape: the alternatives that throw are unreachable for any
+-- program that typed, and are there so that a bug in the checker fails
+-- loudly rather than doing arithmetic on a closure.
+--
+-- The environment maps names to `Ref Value` rather than to `Value`, for one
+-- reason: `let rec`. A recursive closure has to capture an environment that
+-- holds itself, which cannot be built from the bottom up out of values that
+-- never change. With a cell, the binding is made first, then the closure
+-- that captures it, and then the cell is filled: the knot tied. That is the
+-- same `Mut` the type checker uses, doing the same job a level down.
+--
+-- `Value` and `Expr` both have an `Int` and a `Bool`, so this file writes
+-- both types' constructors under their types: `Value.Int`, `Expr.Int`.
+
+use Syntax (Expr)
+use Std.String as S
+use Std.Exn (Exn, throw, toResult)
+
+-- A closure's environment is a list, for the reason `Infer.idl` gives.
+@pub
+data Value = Int Int | Bool Bool | Closure String Expr (List (String, Ref Value))
+
+effect Runs = {Mut, Exn String, Div}
+
+@pub
+showValue : (v : Value) -> String
+showValue (Value.Int n) = S.fromInt n
+showValue (Value.Bool b) = if b then "true" else "false"
+showValue (Value.Closure p b env) = "<function>"
+
+lookupCell : (env : List (String, Ref Value)) -> (name : String) -> Ref Value ! Exn String
+lookupCell Nil name = throw ("unbound at run time: " ++ name)
+lookupCell ((x, cell) :: rest) name = if x == name then cell else lookupCell rest name
+
+asInt : (v : Value) -> Int ! Exn String
+asInt (Value.Int n) = n
+asInt other = throw ("expected a number, got " ++ showValue other)
+
+asBool : (v : Value) -> Bool ! Exn String
+asBool (Value.Bool b) = b
+asBool other = throw ("expected a boolean, got " ++ showValue other)
+
+applyOp : (op : String) -> (l : Value) -> (r : Value) -> Value ! Exn String
+applyOp op l r =
+  if op == "+" then Value.Int (asInt l + asInt r)
+  else if op == "-" then Value.Int (asInt l - asInt r)
+  else if op == "*" then Value.Int (asInt l * asInt r)
+  else if op == "/" then (if asInt r == 0 then throw "division by zero" else Value.Int (asInt l / asInt r))
+  else if op == "==" then Value.Bool (asInt l == asInt r)
+  else if op == "<" then Value.Bool (asInt l < asInt r)
+  else if op == ">" then Value.Bool (asInt l > asInt r)
+  else if op == "<=" then Value.Bool (asInt l <= asInt r)
+  else if op == ">=" then Value.Bool (asInt l >= asInt r)
+  else throw ("unknown operator: " ++ op)
+
+eval : (env : List (String, Ref Value)) -> (e : Expr) -> Value ! Runs
+eval env (Expr.Int n) = Value.Int n
+eval env (Expr.Bool b) = Value.Bool b
+eval env (Expr.Var name) = getRef (lookupCell env name)
+eval env (Expr.Lam param body) = Value.Closure param body env
+eval env (Expr.App f a) =
+  let fv = eval env f in
+  let av = eval env a in
+  case fv of
+    Value.Closure param body closed -> eval ((param, newRef av) :: closed) body
+    other -> throw ("not a function: " ++ showValue other)
+eval env (Expr.Let name rhs body) = eval ((name, newRef (eval env rhs)) :: env) body
+-- The knot: a cell first, then the closure that captures the environment
+-- the cell is in, then the cell filled with the closure. What it held first
+-- is never read: making a `fun` does not run its body.
+eval env (Expr.LetRec name param rhs body) =
+  let cell = newRef (Value.Int 0) in
+  let inner = (name, cell) :: env in
+  let ignored = setRef cell (Value.Closure param rhs inner) in
+  eval inner body
+eval env (Expr.If c t f) = if asBool (eval env c) then eval env t else eval env f
+eval env (Expr.Bin op l r) = applyOp op (eval env l) (eval env r)
+
+-- Run an expression. `Err` is whatever was thrown.
+@pub
+run : (e : Expr) -> Result String String ! {Mut, Div}
+run e = toResult (\(u : ()) -> showValue (eval Nil e))

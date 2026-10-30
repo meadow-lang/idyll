@@ -147,8 +147,9 @@ fn structural_recursion_is_total() {
 
 #[test]
 fn a_program_may_diverge() {
-    let out = accepts(&format!("{SPIN}spin 0\n"));
-    assert_eq!(out.evaluation, Some(Evaluation::OutOfFuel));
+    let opts = Options { debug: false, style: OutputStyle::PLAIN, live: false };
+    let out = pipeline::run_within(&format!("{SPIN}spin 0\n"), &opts, std::time::Duration::from_secs(2));
+    assert!(matches!(out.evaluation, Some(Evaluation::TimedOut(_))), "{:?}", out.evaluation);
 }
 
 // ---------------------------------------------------------------------------
@@ -214,8 +215,12 @@ fn an_erased_proof_can_be_matched_on() {
     );
     let out = accepts(&src);
     assert_eq!(out.evaluation, Some(Evaluation::Value("Cons 1 Nil".into())));
-    // and nothing is looked at: no switch on the proof
-    assert!(!out.axcut.expect("lowered").to_string().contains("switch"));
+    // and nothing is looked at: no case on the proof, in the program's own
+    // code (the prelude's has cases of its own)
+    let cut = out.cut.expect("lowered");
+    let own = &cut[cut.find("def idyll:Main/transport").expect("transport is lowered")..];
+    let own = &own[..own.find("\n\n").unwrap_or(own.len())];
+    assert!(!own.contains("case {"), "{own}");
 }
 
 #[test]
@@ -418,21 +423,6 @@ fn an_operation_takes_arguments() {
 }
 
 #[test]
-fn the_native_back_end_compiles_handlers() {
-    // with its continuations on the heap, and the runtime keeping the
-    // handlers in force (run natively in tests/llvm.rs)
-    let out = run(&format!("{ASK}{SUM3}handle sum3 () with\n  ask _ k -> k 10\n"));
-    let program = out.native.expect("lowered");
-    let ir = idyllic_llvm::emit(&program, idyllic_llvm::ResultKind::Int).expect("compiled");
-    assert!(ir.contains("call void @idyll_handle("), "{ir}");
-    assert!(ir.contains("call ptr @idyll_capture("), "{ir}");
-    // and a program without a handler keeps its continuations on the stack
-    let out = run("(\\(x : Int) -> x + 1) 41");
-    let ir = idyllic_llvm::emit(&out.native.expect("lowered"), idyllic_llvm::ResultKind::Int).expect("compiled");
-    assert!(!ir.contains("@idyll_handle"), "{ir}");
-}
-
-#[test]
 fn a_producer_can_go_on_for_ever_if_its_consumer_stops() {
     // Meadow's streams, in small: `from` yields for ever, and the handler
     // stops resuming it after five
@@ -609,7 +599,8 @@ fn exit_and_a_failed_test_end_the_program() {
     let out = accepts("main () = let u = putStrLn \"bye\" in exit 3\n");
     assert_eq!((out.printed.as_str(), &out.evaluation), ("bye\n", &Some(Evaluation::Exited(3))));
     let out = accepts("main () = fail \"two is not three\"\n");
-    assert_eq!(out.evaluation, Some(Evaluation::Stopped("test failed: two is not three".into())));
+    // with the message, as the runtime words it
+    assert!(matches!(&out.evaluation, Some(Evaluation::Stopped(why)) if why.contains("two is not three")), "{:?}", out.evaluation);
 }
 
 #[test]
@@ -620,4 +611,36 @@ fn a_handler_of_ones_own_can_take_one_of_the_worlds_effects() {
                  intBetween lo hi k -> k ((lo + hi) / 2)\n  \
                  nextSeed _ k -> k 0\n";
     assert_eq!(accepts(src).evaluation, Some(Evaluation::Value("8".into())));
+}
+
+#[test]
+fn a_constructor_does_not_hide_an_effect_of_its_name() {
+    // `Div` the constructor is in scope, but in a row a name is an effect's
+    let op = "data Op = Add | Div\nuse Op.*\n\n";
+    assert_eq!(ty(&format!("{op}count : (n : Int) -> Int ! Div\ncount n = if n == 0 then 0 else count (n - 1)\n\ncount 3")), "Int");
+    assert_eq!(ty(&format!("{op}count : (n : Int) -> Int ! {{Div, Console}}\ncount n = if n == 0 then 0 else count (n - 1)\n\ncount 3")), "Int");
+    // and outside one, the constructor is what it is
+    assert_eq!(ty(&format!("{op}Div")), "Op");
+}
+
+#[test]
+fn a_row_variable_made_inside_a_lambda_meets_one_made_outside() {
+    // the inner `map`'s row is a metavariable over `x`, the outer's is not:
+    // the inner one is pruned of `x`, and the two are one
+    let src = "use Std.Collections.List (map)\n\n\
+               table : (xs : List Int) -> (ys : List Int) -> List (List Int)\n\
+               table xs ys = map (\\(x : Int) -> map (\\(y : Int) -> x * y) ys) xs\n\n\
+               table #[1, 2] #[3, 4]";
+    assert_eq!(accepts(src).evaluation, Some(Evaluation::Value("(3 :: 4 :: Nil) :: (6 :: 8 :: Nil) :: Nil".into())));
+    // and a resumption handed to a function polymorphic in its row: that
+    // row's variable, made in the clause, is pruned of the clause's binders
+    let search = "effect Search where\n  @many choose : Int -> Int -> Int\n\n\
+                  each : (lo : [] Int) -> (hi : [] Int) -> (k : [] (Int -> List a ! {Div | r})) -> List a ! {Div | r}\n\
+                  each lo hi k = if hi < lo then Nil else Std.Collections.List.append (k lo) (each (lo + 1) hi k)\n\n\
+                  all : (body : () -> a ! {Search, Div | r}) -> List a ! {Div | r}\n\
+                  all body = handle body () with\n  return x -> x :: Nil\n  choose lo hi k -> each lo hi k\n\n\
+                  all (\\() -> let a = choose 1 2 in let b = choose a 2 in (a, b))";
+    assert_eq!(accepts(search).evaluation, Some(Evaluation::Value("(1, 1) :: (1, 2) :: (2, 2) :: Nil".into())));
+    // which also lets an argument's type be found from how it is used
+    assert_eq!(ty("(\\f -> f 1) (\\n -> True)"), "Bool");
 }

@@ -1,0 +1,134 @@
+-- Sets of values in order, backed by a binary search tree, as Meadow's
+-- `Std.Collections.Set` is; but of any type with an `Ord`, not only `Int`.
+-- Reach these as `Set.insert` etc.
+--
+-- As a `Map` is, a set is only in order by the `Ord` it was built with,
+-- which is part of its type: `SetBy a o`, and `Set a` for the `Ord a` a
+-- search finds where it is written.
+
+use Std.Ordering (Ordering)
+use Std.Ordering.Ordering.*
+use Std.Cmp (Ord, compare)
+use Std.Collections.Vector (Vector)
+use Std.Collections.Vector as V
+
+@pub
+data SetBy (a : Type) (o : Ord a) = Leaf | Node (SetBy a o) a (SetBy a o)
+
+use SetBy.*
+
+-- A set ordered by the `Ord a` found where it is written.
+@pub
+Set : (a : Type) -> {auto o : Ord a} -> Type
+Set a @{o} = SetBy a o
+
+@pub
+empty : {a : Type} -> {auto o : Ord a} -> Set a
+empty = Leaf
+
+@pub
+null : {a : Type} -> {auto o : Ord a} -> (s : Set a) -> Bool
+null Leaf = True
+null (Node l x r) = False
+
+@pub
+size : {a : Type} -> {auto o : Ord a} -> (s : Set a) -> Int
+size Leaf = 0
+size (Node l x r) = 1 + size l + size r
+
+@pub
+insert : {a : Type} -> {auto o : Ord a} -> (x : a) -> (s : Set a) -> Set a
+insert x Leaf = Node Leaf x Leaf
+insert x (Node l y r) = case compare x y of
+  Less -> Node (insert x l) y r
+  Greater -> Node l y (insert x r)
+  Equal -> Node l y r
+
+@pub
+member : {a : Type} -> {auto o : Ord a} -> (x : a) -> (s : Set a) -> Bool
+member x Leaf = False
+member x (Node l y r) = case compare x y of
+  Less -> member x l
+  Greater -> member x r
+  Equal -> True
+
+@pub
+minElem : {a : Type} -> {auto o : Ord a} -> (s : Set a) -> Maybe a
+minElem Leaf = Nothing
+minElem (Node Leaf x r) = Just x
+minElem (Node l@(Node ll lx lr) x r) = minElem l
+
+@pub
+maxElem : {a : Type} -> {auto o : Ord a} -> (s : Set a) -> Maybe a
+maxElem Leaf = Nothing
+maxElem (Node l x Leaf) = Just x
+maxElem (Node l x r@(Node rl rx rr)) = maxElem r
+
+deleteMin : {a : Type} -> {auto o : Ord a} -> (s : Set a) -> Set a
+deleteMin Leaf = Leaf
+deleteMin (Node Leaf x r) = r
+deleteMin (Node l@(Node ll lx lr) x r) = Node (deleteMin l) x r
+
+-- Two subtrees, every element of the first below every one of the second,
+-- as one.
+joined : {a : Type} -> {auto o : Ord a} -> (l : Set a) -> (r : Set a) -> Set a
+joined Leaf r = r
+joined l Leaf = l
+joined l r = case minElem r of
+  Nothing -> l
+  Just m -> Node l m (deleteMin r)
+
+@pub
+delete : {a : Type} -> {auto o : Ord a} -> (x : a) -> (s : Set a) -> Set a
+delete x Leaf = Leaf
+delete x (Node l y r) = case compare x y of
+  Less -> Node (delete x l) y r
+  Greater -> Node l y (delete x r)
+  Equal -> joined l r
+
+-- Every element, ascending.
+@pub
+toVec : {a : Type} -> {auto o : Ord a} -> (s : Set a) -> Vector a
+toVec s = pushInOrder V.empty s
+
+pushInOrder : {a : Type} -> {auto o : Ord a} -> (acc : Vector a) -> (s : Set a) -> Vector a
+pushInOrder acc Leaf = acc
+pushInOrder acc (Node l x r) = pushInOrder (V.pushBack (pushInOrder acc l) x) r
+
+@pub
+fromVec : {a : Type} -> {auto o : Ord a} -> (xs : Vector a) -> Set a
+fromVec xs = V.foldl (\(acc : Set a) (x : a) -> insert x acc) empty xs
+
+-- Every element, ascending, as a `List`.
+@pub
+toList : {a : Type} -> {auto o : Ord a} -> (s : Set a) -> List a
+toList s = consInOrder Nil s
+
+consInOrder : {a : Type} -> {auto o : Ord a} -> (acc : List a) -> (s : Set a) -> List a
+consInOrder acc Leaf = acc
+consInOrder acc (Node l x r) = consInOrder (x :: consInOrder acc r) l
+
+@pub
+fromList : {a : Type} -> {auto o : Ord a} -> (xs : List a) -> Set a
+fromList Nil = empty
+fromList (x :: rest) = insert x (fromList rest)
+
+-- Everything in either.
+@pub
+union : {a : Type} -> {auto o : Ord a} -> (s : Set a) -> (t : Set a) -> Set a
+union s t = V.foldl (\(acc : Set a) (x : a) -> insert x acc) s (toVec t)
+
+-- What is in the first and not the second.
+@pub
+diff : {a : Type} -> {auto o : Ord a} -> (s : Set a) -> (t : Set a) -> Set a
+diff s t = V.foldl (\(acc : Set a) (x : a) -> delete x acc) s (toVec t)
+
+-- What is in both.
+@pub
+intersect : {a : Type} -> {auto o : Ord a} -> (s : Set a) -> (t : Set a) -> Set a
+intersect s t = fromVec (V.filter (\(x : a) -> member x t) (toVec s))
+
+-- Whether everything in the first is in the second.
+@pub
+subset : {a : Type} -> {auto o : Ord a} -> (s : Set a) -> (t : Set a) -> Bool
+subset s t = V.foldl (\(acc : Bool) (x : a) -> if acc then member x t else False) True (toVec s)

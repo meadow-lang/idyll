@@ -1,0 +1,535 @@
+-- The types of an elaborated program after checking, for whoever lowers
+-- it: `compiler/idyllic-typecheck/src/typer.rs`.
+--
+-- Cut is typed by representations: for every value the program computes,
+-- the lowering must say how it is held at run time, a 64-bit integer, a
+-- pointer, a value whose representation a type variable stands for. That is
+-- a question about the value's type, which the checker knew and the
+-- elaborated program does not say. So the checker's state is kept, and the
+-- type of any term worked out again by normalisation by evaluation: from
+-- the types the elaborator noted on binders, the constants' types, and the
+-- constructors', whose fields are instantiated as matching does. `rep`
+-- reads a representation off a type.
+--
+-- A scope is a checker's context, with the types of the variables in it.
+
+use Std.St (StRef, newRef, getRef, setRef)
+use Idyll.Hir (Icit)
+use Idyll.Core (Core, Builtin, Prim, Note, Head, CaseAlt)
+use Idyll.Core as C
+use Idyll.Value (Value, Elim, Closure)
+use Idyll.Value as Va
+use Idyll.Grade as G
+use Idyll.Tc (Tc, Meta, MetaInfo, MetaTy, CtorInfo, OpInfo)
+use Idyll.Tc as T
+use Idyll.Eval (force, apply, eval, quote, toPoly, splitComp, unfoldStuck)
+use Idyll.Unify (unify, rowKind)
+use Idyll.Ctx (Ctx, Info, Entry)
+use Idyll.Ctx as X
+use Idyll.Elab (freshMeta)
+use Idyll.Decl (initial)
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as Hm
+use Std.String as S
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+-- How a value is represented at run time, as the checker sees it: what a
+-- type variable bound at a level stands for, and nothing at all for a type.
+-- `Number`: a sized integer or a float, by its type's name. `Field l i`:
+-- whatever the type is that a field of the record bound at level `l` holds
+-- (the field by its place among a `case` alternative's variables), an
+-- associated type, `Elem c` at a dictionary `d`, which a descriptor passed
+-- with `d` says. `Desc`: a type held at run time, as a record's field that
+-- is a type holds one, its descriptor.
+@derive(PartialEq)
+@pub data TRep = I64 | Bool | Unit | Str | Char | Number String | Ptr | Var Int | Field Int Int | Desc | Any | Erased
+
+-- What a value of a type looks like written out, as the REPL shows one.
+@pub data Shown
+  = Int
+  | Bool
+  | Unit
+  | Str
+  | Char
+  -- a sized integer or a float, as Meadow's `display` writes it
+  | Number
+  | Box Value
+  | Array Value
+  -- data: the type written out, and each constructor that can make a
+  -- value of it, with its unique, name and fields' types
+  | Data String [(Int, String, [Value])]
+  | Nothing
+
+-- Where an elaborated program starts: the builtins, then the primitives.
+@pub fun scope (tc : Tc s) : Ctx ! { St s | e } = initial tc
+
+@pub fun bind (tc : Tc s) (s : Ctx) (name : String) (ty : Core) : Ctx ! { St s | e } = X.bind s None name (eval tc s.env ty)
+
+@pub fun bindUnknown (s : Ctx) (name : String) : Ctx = X.bind s None name Value.Error
+
+-- `s` with `name` defined as `rhs`, a `let`.
+@pub fun define (tc : Tc s) (s : Ctx) (name : String) (rhs : Core) : Ctx ! { St s | e } =
+  let ty = M.unwrapOr Value.Error (tyOf tc s rhs) in
+  X.extend s None name ty Info.Defined (eval tc s.env rhs)
+
+@pub fun varType (s : Ctx) (lvl : Int) : Value = X.typeAt s lvl
+
+-- How a term's value is represented: `Any` if its type cannot be worked out.
+@pub fun repOf (tc : Tc s) (s : Ctx) (c : Core) : TRep ! { St s | e } =
+  match tyOf tc s c with
+  | Just ty -> rep tc s ty
+  | None -> TRep.Any
+
+fun isTypeNative (tc : Tc s) (u : Int) : Bool ! { St s | e } =
+  match Hm.lookup u (getRef tc.nativeInfo) with
+  | Just (name, _) -> name == "Array" or name == "MArray" or name == "Ref"
+  | None -> False
+
+fun isUniverse (tc : Tc s) (v : Value) : Bool ! { St s | e } = match force tc v with | Value.Type _ -> True | _ -> False
+
+-- How a value of type `ty` is represented.
+@pub fun rep (tc : Tc s) (s : Ctx) (ty : Value) : TRep ! { St s | e } =
+  match force tc ty with
+  | Value.LitTy Builtin.Int -> TRep.I64
+  | Value.LitTy Builtin.Bool -> TRep.Bool
+  | Value.LitTy Builtin.Unit -> TRep.Unit
+  | Value.LitTy Builtin.Str -> TRep.Str
+  | Value.LitTy Builtin.Char -> TRep.Char
+  | Value.LitTy (Builtin.Number n) -> TRep.Number n
+  | Value.LitTy _ -> TRep.Erased
+  | Value.Type _ -> TRep.Erased
+  | Value.Row _ -> TRep.Erased
+  | Value.Pi _ _ _ _ _ _ -> TRep.Ptr
+  | Value.BoxTy _ _ -> TRep.Ptr
+  | Value.Comp a _ -> rep tc s a
+  -- a data type or an array is on the heap; an effect is no value at all
+  | Value.Opaque u _ _ ->
+      if Hm.member u (getRef tc.datas) then TRep.Ptr
+      else if isTypeNative tc u then TRep.Ptr
+      else if Hm.member u (getRef tc.effects) then TRep.Erased
+      else fieldRepOf tc (force tc ty)
+  -- a type variable, which a descriptor stands for
+  | Value.Rigid l _ [] -> if l < s.lvl and isUniverse tc (X.typeAt s l) then TRep.Var l else TRep.Any
+  | v -> fieldRepOf tc v
+
+fun fieldRepOf (tc : Tc s) (v : Value) : TRep ! { St s | e } =
+  match fieldOf tc v 4 with
+  | Just (l, i) -> TRep.Field l i
+  | None -> TRep.Any
+
+-- The record variable and the field of it that a type is, if it is one: a
+-- `case` on the variable choosing a field that is a type, or a definition
+-- that unfolds to one (`Elem c @{d}`, through `Container.Elem d`), at most
+-- `depth` deep.
+fun fieldOf (tc : Tc s) (v : Value) (depth : Int) : Maybe (Int, Int) ! { St s | e } =
+  match v with
+  | Value.Rigid l _ sp ->
+      (match (if V.len sp == 1 then V.head sp else None) with
+       | Just (Elim.Case _ alts) ->
+           (match (if V.len alts == 1 then V.head alts else None) with
+            | Just (CaseAlt.CaseAlt (Head.Con ctor) _ vars body) ->
+                (match peel body with
+                 | Core.Var k _ ->
+                     let field = V.len vars - k - 1 in
+                     if field >= 0 and V.any (\f -> fst f == field) (typeFields tc ctor) then Just (l, field) else None
+                 | _ -> None)
+            | _ -> None)
+       | _ -> None)
+  | Value.Opaque u _ sp ->
+      if depth <= 0 then None
+      else
+        (match unfoldStuck tc u sp with
+         | Just w -> fieldOf tc w (depth - 1)
+         | None -> None)
+  | _ -> None
+
+fun peel (c : Core) : Core =
+  match c with
+  | Core.Runtime _ inner -> peel inner
+  | _ -> c
+
+-- A constructor's fields that are types, each by its place among a `case`
+-- alternative's variables (after the constructor's parameters), with its
+-- name: what a record holds as descriptors at run time.
+@pub fun typeFields (tc : Tc s) (ctor : Int) : [(Int, String)] ! { St s | e } =
+  match Hm.lookup ctor (getRef tc.constants) with
+  | None -> []
+  | Just ty -> typeFieldsFrom tc (ctorParams tc ctor) (scope tc).lvl 0 ty []
+
+fun typeFieldsFrom (tc : Tc s) (params : Int) (lvl : Int) (i : Int) (ty : Value) (acc : [(Int, String)]) : [(Int, String)] ! { St s | e } =
+  match force tc ty with
+  | Value.Pi name _ _ _ dom cod ->
+      let acc2 = if i >= params and isUniverse tc dom then V.pushBack acc (i, name) else acc in
+      typeFieldsFrom tc params (lvl + 1) (i + 1) (apply tc cod (Va.vvar lvl name)) acc2
+  | _ -> acc
+
+-- The fields that are types of the record a value of type `ty` is, if it
+-- is a record (a data type with one constructor) with any: its
+-- constructor, and those fields. A parameter of such a type comes with a
+-- descriptor for each.
+@pub fun recordTypeFields (tc : Tc s) (ty : Value) : Maybe (Int, [(Int, String)]) ! { St s | e } =
+  match force tc ty with
+  | Value.Opaque u _ _ ->
+      (match Hm.lookup u (getRef tc.datas) with
+       | Just ctors ->
+           (match (if V.len ctors == 1 then V.head ctors else None) with
+            | Just ctor ->
+                let fields = typeFields tc ctor in
+                if V.isEmpty fields then None else Just (ctor, fields)
+            | None -> None)
+       | None -> None)
+  | _ -> None
+
+-- How a value of the type that field `field` of `r` (a term in `s`, of a
+-- record whose constructor is `ctor`) holds is represented: what a
+-- descriptor passed with the record says.
+@pub fun fieldRep (tc : Tc s) (s : Ctx) (r : Core) (ctor : Int) (field : Int) : TRep ! { St s | e } =
+  match T.ctorInfo tc ctor with
+  | None -> TRep.Any
+  | Just (CtorInfo.CtorInfo nm _ _ params fields) ->
+      let vars = V.map (\i -> "#f" ++ show i) (V.range 0 (params + fields)) in
+      let k = V.len vars - 1 - field in
+      let alt = CaseAlt.CaseAlt (Head.Con ctor) nm vars (Core.Var k ("#f" ++ show field)) in
+      rep tc s (eval tc s.env (Core.Case r [alt]))
+
+@pub fun repOfType (tc : Tc s) (s : Ctx) (ty : Core) : TRep ! { St s | e } = rep tc s (eval tc s.env ty)
+
+-- Whether a binder of type `ty` is a type parameter, which a descriptor
+-- stands for at run time.
+@pub fun isTypeBinder (tc : Tc s) (s : Ctx) (ty : Core) : Bool ! { St s | e } = isUniverse tc (eval tc s.env ty)
+
+-- The kind of the effect variable a binder of type `ty` binds, if it binds
+-- one: `False` for `Effect`, `True` for `Effect []`.
+@pub fun effectBinderKind (tc : Tc s) (s : Ctx) (ty : Core) : Maybe Bool ! { St s | e } = rowKind tc (eval tc s.env ty)
+
+-- Whether a term is a type: what an erased argument for a type parameter is.
+@pub fun isType (tc : Tc s) (s : Ctx) (c : Core) : Bool ! { St s | e } =
+  match tyOf tc s c with
+  | Just t -> isUniverse tc t
+  | None -> False
+
+-- The parameters a term of function type still takes: each one's
+-- representation (a type variable of the function's own is `Any`), whether
+-- it is a type parameter, whether it is erased, and whether it is a record
+-- with fields that are types (which a descriptor for each comes with).
+@pub fun functionParams (tc : Tc s) (s : Ctx) (c : Core) : [(TRep, Bool, Bool, Bool)] ! { St s | e } =
+  match tyOf tc s c with
+  | None -> []
+  | Just t -> paramsFrom tc s s t []
+
+fun paramsFrom (tc : Tc s) (s : Ctx) (inner : Ctx) (t : Value) (acc : [(TRep, Bool, Bool, Bool)]) : [(TRep, Bool, Bool, Bool)] ! { St s | e } =
+  match force tc t with
+  | Value.Pi name _ grade _ dom cod ->
+      let isTy = isUniverse tc dom in
+      let erased = match Va.asConstant (toPoly tc (force tc grade)) with | Just g -> G.isZero g | None -> False in
+      let r =
+        match rep tc inner dom with
+        | TRep.Var l -> if l >= s.lvl then TRep.Any else TRep.Var l
+        | TRep.Field l i -> if l >= s.lvl then TRep.Any else TRep.Field l i
+        | other -> other
+      in
+      let dict = not erased and M.isSome (recordTypeFields tc dom) in
+      let lvl = inner.lvl in
+      paramsFrom tc s (X.bind inner None name dom) (apply tc cod (Va.vvar lvl name)) (V.pushBack acc (r, isTy, erased, dict))
+  | _ -> acc
+
+-- `head`'s arguments `args`: for each lambda among them whose binders the
+-- program does not say the types of (one read back from a value, as a
+-- solved metavariable's is), the grade and type of each binder, from the
+-- parameter it is passed for; what lowering it as a function of those
+-- representations needs (`Typer::annotate_args`).
+@pub fun annotateArgs (tc : Tc s) (s : Ctx) (head : Core) (args : [Core]) : [Maybe [(Maybe G.Grade, Core)]] ! { St s | e } =
+  let none = V.map (\x -> None) args in
+  if not (V.any isLam args) then none
+  else
+    match tyOf tc s head with
+    | None -> none
+    | Just t -> annotateFrom tc s t args 0 []
+
+fun isLam (c : Core) : Bool = match c with | Core.Lam _ _ -> True | _ -> False
+
+fun annotateFrom (tc : Tc s) (s : Ctx) (t : Value) (args : [Core]) (i : Int) (acc : [Maybe [(Maybe G.Grade, Core)]]) : [Maybe [(Maybe G.Grade, Core)]] ! { St s | e } =
+  match V.get args i with
+  | None -> acc
+  | Just a ->
+      (match force tc (fst (splitComp tc t)) with
+       | Value.Pi _ _ _ _ dom cod ->
+           let n = if isLam a then Just (lamNotes tc s a dom) else None in
+           annotateFrom tc s (apply tc cod (eval tc s.env a)) args (i + 1) (V.pushBack acc n)
+       | _ -> V.append acc (V.map (\x -> None) (V.drop args i)))
+
+-- A lambda's binders' grades and types, as `ty` (a function type) gives
+-- them.
+fun lamNotes (tc : Tc s) (s : Ctx) (c : Core) (ty : Value) : [(Maybe G.Grade, Core)] ! { St s | e } =
+  match c with
+  | Core.Lam x body ->
+      (match force tc (fst (splitComp tc ty)) with
+       | Value.Pi _ _ grade _ dom cod ->
+           let noted = quote tc s.lvl dom in
+           let g = Va.asConstant (toPoly tc (force tc grade)) in
+           let lvl = s.lvl in
+           V.append [(g, noted)] (lamNotes tc (X.bind s None x dom) body (apply tc cod (Va.vvar lvl x)))
+       | _ -> [])
+  | _ -> []
+
+-- Whether a term is nothing at run time: a type, an effect row, a grade, or
+-- a function that makes one.
+@pub fun isTypeFormer (tc : Tc s) (s : Ctx) (c : Core) : Bool ! { St s | e } =
+  match tyOf tc s c with
+  | None -> False
+  | Just t -> formerFrom tc s.lvl t
+
+fun formerFrom (tc : Tc s) (lvl : Int) (t : Value) : Bool ! { St s | e } =
+  match force tc t with
+  | Value.Type _ -> True
+  | Value.LitTy Builtin.Effect -> True
+  | Value.LitTy Builtin.Grade -> True
+  | Value.Pi name _ _ _ _ cod -> formerFrom tc (lvl + 1) (apply tc cod (Va.vvar lvl name))
+  | _ -> False
+
+@pub fun ctorParams (tc : Tc s) (c : Int) : Int ! { St s | e } =
+  match T.ctorInfo tc c with
+  | Just (CtorInfo.CtorInfo _ _ _ params _) -> params
+  | None -> 0
+
+-- A constructor's shape: its erased arguments, each with whether it is a
+-- type parameter, and its fields' representations, where `Var i` is the
+-- type parameter that is its `i`th erased argument.
+@pub fun ctorShape (tc : Tc s) (c : Int) : Maybe ([Bool], [TRep]) ! { St s | e } =
+  match Hm.lookup c (getRef tc.constants) with
+  | None -> None
+  | Just ty ->
+      let s = scope tc in
+      Just (shapeFrom tc (ctorParams tc c) s.lvl s 0 ty [] [])
+
+fun shapeFrom (tc : Tc s) (params : Int) (base : Int) (s : Ctx) (i : Int) (ty : Value) (kinds : [Bool]) (fields : [TRep]) : ([Bool], [TRep]) ! { St s | e } =
+  match force tc ty with
+  | Value.Pi name _ _ _ dom cod ->
+      let lvl = s.lvl in
+      let (kinds2, fields2) =
+        if i < params then (V.pushBack kinds (isUniverse tc dom), fields)
+        -- a type, held as its descriptor
+        else if isUniverse tc dom then (kinds, V.pushBack fields TRep.Desc)
+        else
+          let r = match rep tc s dom with | TRep.Var l -> if l >= base then TRep.Var (l - base) else TRep.Any | TRep.Field _ _ -> TRep.Any | other -> other in
+          (kinds, V.pushBack fields r)
+      in
+      shapeFrom tc params base (X.bind s None name dom) (i + 1) (apply tc cod (Va.vvar lvl name)) kinds2 fields2
+  | _ -> (kinds, fields)
+
+-- An operation's shape: its arguments' representations, after the erased
+-- ones, and its result's; a type variable of its own is `Any`.
+@pub fun opShape (tc : Tc s) (op : Int) : Maybe ([TRep], TRep) ! { St s | e } =
+  match (Hm.lookup op (getRef tc.constants), Hm.lookup op (getRef tc.ops)) with
+  | (Just ty, Just (OpInfo.OpInfo _ _ _ erased arity _)) -> Just (opFrom tc erased arity (scope tc) 0 ty [])
+  | _ -> None
+
+fun noVar (r : TRep) : TRep = match r with | TRep.Var _ -> TRep.Any | TRep.Field _ _ -> TRep.Any | other -> other
+
+fun opFrom (tc : Tc s) (erased : Int) (arity : Int) (s : Ctx) (i : Int) (ty : Value) (params : [TRep]) : ([TRep], TRep) ! { St s | e } =
+  let finish = \t -> (params, noVar (rep tc s (fst (splitComp tc t)))) in
+  if i >= erased + arity then finish ty
+  else
+    match force tc ty with
+    | Value.Pi name _ _ _ dom cod ->
+        let lvl = s.lvl in
+        let params2 = if i >= erased then V.pushBack params (noVar (rep tc s dom)) else params in
+        opFrom tc erased arity (X.bind s None name dom) (i + 1) (apply tc cod (Va.vvar lvl name)) params2
+    | fty -> finish fty
+
+-- The scope inside an alternative of a `case` on `scrutinee`.
+@pub fun altScope (tc : Tc s) (s : Ctx) (scrutinee : Core) (alt : CaseAlt) : Ctx ! { St s | e } = altCtx tc s scrutinee alt
+
+-- The types of an alternative's variables, in the scope it makes.
+@pub fun altTypes (tc : Tc s) (s : Ctx) (scrutinee : Core) (alt : CaseAlt) : [Value] ! { St s | e } =
+  let inner = altScope tc s scrutinee alt in
+  V.map (\l -> X.typeAt inner l) (V.range s.lvl inner.lvl)
+
+@pub fun evalType (tc : Tc s) (s : Ctx) (ty : Core) : Value ! { St s | e } = eval tc s.env ty
+
+-- A type written out, as a key: `None` if it has an unsolved metavariable.
+@pub fun typeKey (tc : Tc s) (linear : Bool) (s : Ctx) (ty : Value) : Maybe String ! { St s | e } =
+  let key = C.shown linear (quote tc s.lvl ty) in
+  if S.contains "?" key then None else Just key
+
+-- What a value of `ty` looks like written out.
+@pub fun shown (tc : Tc s) (linear : Bool) (s : Ctx) (ty0 : Value) : Shown ! { St s | e } =
+  let ty = force tc ty0 in
+  match ty with
+  | Value.LitTy Builtin.Int -> Shown.Int
+  | Value.LitTy Builtin.Bool -> Shown.Bool
+  | Value.LitTy Builtin.Unit -> Shown.Unit
+  | Value.LitTy Builtin.Str -> Shown.Str
+  | Value.LitTy Builtin.Char -> Shown.Char
+  | Value.LitTy (Builtin.Number _) -> Shown.Number
+  | Value.BoxTy _ a -> Shown.Box a
+  | Value.Opaque u _ sp ->
+      (match Hm.lookup u (getRef tc.nativeInfo) with
+       | Just ("Array", _) ->
+           if V.len sp == 1 then (match V.get sp 0 with | Just (Elim.App a) -> Shown.Array a | _ -> Shown.Nothing) else Shown.Nothing
+       | _ ->
+           (match Hm.lookup u (getRef tc.datas) with
+            | None -> Shown.Nothing
+            | Just cs ->
+                let key = C.shown linear (quote tc s.lvl ty) in
+                -- (a metavariable left in it: something it was not told)
+                if S.contains "?" key then Shown.Nothing
+                else
+                  let tag = \c -> match T.ctorInfo tc c with | Just (CtorInfo.CtorInfo _ _ t _ _) -> t | None -> 0 in
+                  let sorted = V.foldl (\acc c -> V.concat [V.filter (\d -> tag d <= tag c) acc, [c], V.filter (\d -> tag d > tag c) acc]) [] cs in
+                  -- one that cannot make a value of this type, as `Nil` a
+                  -- `Vec (S n) a`, has no value to show
+                  let out =
+                    V.concatMap
+                      (\c ->
+                        let name = match T.ctorInfo tc c with | Just (CtorInfo.CtorInfo n _ _ _ _) -> n | None -> "" in
+                        match ctorFields tc s c ty with
+                        | Just fields -> [(c, name, fields)]
+                        | None -> [])
+                      sorted
+                  in
+                  Shown.Data key out))
+  | _ -> Shown.Nothing
+
+-- The types of the fields of constructor `c` making a value of `ty`, if it
+-- can make one.
+fun ctorFields (tc : Tc s) (s : Ctx) (c : Int) (ty : Value) : Maybe [Value] ! { St s | e } =
+  match (Hm.lookup c (getRef tc.constants), T.ctorInfo tc c) with
+  | (Just cty0, Just (CtorInfo.CtorInfo _ _ _ params fs)) ->
+      (match fieldsFrom tc s params (params + fs) 0 cty0 [] with
+       | Just (cty, fields) -> if unify tc s.lvl (fst (splitComp tc cty)) ty then Just fields else None
+       | None -> None)
+  | _ -> None
+
+fun fieldsFrom (tc : Tc s) (s : Ctx) (params : Int) (all : Int) (i : Int) (cty : Value) (fields : [Value]) : Maybe (Value, [Value]) ! { St s | e } =
+  if i >= all then Just (cty, fields)
+  else
+    match force tc cty with
+    | Value.Pi _ _ _ _ dom cod ->
+        -- every argument a metavariable: the parameters are what the type
+        -- says, and a field another's type depends on is unknown
+        let v = eval tc s.env (freshMeta tc s "a constructor's argument") in
+        fieldsFrom tc s params all (i + 1) (apply tc cod v) (if i >= params then V.pushBack fields dom else fields)
+    | _ -> None
+
+fun altCtx (tc : Tc s) (ctx : Ctx) (scrutinee : Core) (alt : CaseAlt) : Ctx ! { St s | e } =
+  match alt with
+  | CaseAlt.CaseAlt (Head.Con u) _ vars _ ->
+      let unknown = \c -> V.foldl (\acc x -> X.bind acc None x Value.Error) c vars in
+      (match (Hm.lookup u (getRef tc.constants), tyOf tc ctx scrutinee) with
+       | (Just ty0, Just scrutTy) ->
+           let params = ctorParams tc u in
+           (match altVars tc params 0 vars ctx ty0 with
+            | None -> unknown ctx
+            | Just (inner, ty) ->
+                let result = force tc (fst (splitComp tc ty)) in
+                let sty = force tc scrutTy in
+                -- argument by argument, so that an index unification cannot
+                -- solve leaves the rest to be solved all the same
+                let w =
+                  match (result, sty) with
+                  | (Value.Opaque a _ xs, Value.Opaque b _ ys) ->
+                      if a == b and V.len xs == V.len ys then
+                        V.foldl
+                          (\acc xy -> match xy with | (Elim.App x, Elim.App y) -> (let r = unify tc inner.lvl x y in ()) | _ -> ())
+                          ()
+                          (V.zip xs ys)
+                      else (let r = unify tc inner.lvl result sty in ())
+                  | _ -> (let r = unify tc inner.lvl result sty in ())
+                in
+                inner)
+       | _ -> unknown ctx)
+  | _ -> ctx
+
+fun altVars (tc : Tc s) (params : Int) (i : Int) (vars : [String]) (inner : Ctx) (ty : Value) : Maybe (Ctx, Value) ! { St s | e } =
+  match V.get vars i with
+  | None -> Just (inner, ty)
+  | Just x ->
+      (match force tc ty with
+       | Value.Pi _ _ _ _ dom cod ->
+           if i < params then
+             -- an erased argument: whatever makes the constructor's type the
+             -- scrutinee's, which unification works out
+             let v = eval tc inner.env (freshMeta tc inner "a constructor's argument") in
+             altVars tc params (i + 1) vars (X.extend inner None x dom Info.Defined v) (apply tc cod v)
+           else
+             let lvl = inner.lvl in
+             altVars tc params (i + 1) vars (X.bind inner None x dom) (apply tc cod (Va.vvar lvl x))
+       | _ -> None)
+
+-- The unique the renamer reserves for a primitive: its place after the
+-- builtins, in `idyllic-builtins`' order.
+fun primUnique (p : Prim) : Int =
+  let order = [Prim.IntAdd, Prim.IntMul, Prim.IntSub, Prim.IntLt, Prim.IntEq, Prim.IntDiv, Prim.IntMod, Prim.StrAppend] in
+  V.len C.builtins + V.foldl (\acc i -> if V.getOr Prim.IntAdd order i == p then i else acc) 0 (V.range 0 (V.len order))
+
+-- The type of a term in a scope, if it can be worked out.
+@pub fun tyOf (tc : Tc s) (ctx : Ctx) (c : Core) : Maybe Value ! { St s | e } =
+  match c with
+  | Core.Var i _ -> if i < ctx.lvl then Just (X.typeAt ctx (ctx.lvl - i - 1)) else None
+  | Core.Opaque u _ -> Hm.lookup u (getRef tc.constants)
+  | Core.Lit l -> Just (Value.LitTy (C.literalBuiltin l))
+  | Core.Prim p ->
+      (match Hm.lookup (primUnique p) ctx.names with
+       | Just (Entry.Local l) -> Just (X.typeAt ctx l)
+       | _ -> None)
+  -- (a hole's solution carries no type of its own)
+  | Core.Meta m ->
+      (match T.meta tc m with
+       | Just entry ->
+           (match T.infoOf entry with
+            | MetaInfo.MetaInfo _ _ (Just (MetaTy.MetaTy _ spine ty)) -> if V.isEmpty spine then Just ty else None
+            | _ -> None)
+       | None -> None)
+  | Core.Type n -> Just (Value.Type (n + 1))
+  | Core.LitTy Builtin.Div -> Just (Value.LitTy Builtin.Effect)
+  | Core.LitTy _ -> Just (Value.Type 0)
+  | Core.Pi _ _ _ _ _ _ -> Just (Value.Type 0)
+  | Core.BoxTy _ _ -> Just (Value.Type 0)
+  | Core.Comp _ _ -> Just (Value.Type 0)
+  | Core.GradeLit _ -> Just (Value.LitTy Builtin.Grade)
+  | Core.GradeAdd _ _ -> Just (Value.LitTy Builtin.Grade)
+  | Core.GradeMul _ _ -> Just (Value.LitTy Builtin.Grade)
+  | Core.GradeRange _ _ -> Just (Value.LitTy Builtin.Grade)
+  | Core.Row _ _ -> Just (Value.LitTy Builtin.Effect)
+  | Core.Runtime (Note.Binds grade (Just dom)) inner ->
+      (match inner with
+       | Core.Lam x body ->
+           let domV = eval tc ctx.env dom in
+           let under = X.bind ctx None x domV in
+           let bodyTy = M.unwrapOr Value.Error (tyOf tc under body) in
+           let cod = Closure.Closure ctx.env (quote tc under.lvl bodyTy) in
+           let g = Va.polyValue (Va.polyConstant (M.unwrapOr G.default grade)) in
+           Just (Value.Pi x Icit.Explicit g (Va.polyValue (Va.polyConstant G.defaultInType)) domV cod)
+       -- what comes out of the box
+       | Core.Unbox _ -> Just (eval tc ctx.env dom)
+       | _ -> tyOf tc ctx inner)
+  | Core.Runtime Note.Erased _ -> None
+  | Core.Runtime _ inner -> tyOf tc ctx inner
+  | Core.Lam _ _ -> None
+  | Core.App f a ->
+      (match M.map (\t -> force tc t) (tyOf tc ctx f) with
+       | Just (Value.Pi _ _ _ _ _ cod) -> Just (fst (splitComp tc (apply tc cod (eval tc ctx.env a))))
+       | _ -> None)
+  | Core.BoxIntro e -> M.map (\a -> Value.BoxTy (Va.polyValue (Va.polyConstant G.any)) a) (tyOf tc ctx e)
+  | Core.Unbox e ->
+      (match M.map (\t -> force tc t) (tyOf tc ctx e) with
+       | Just (Value.BoxTy _ a) -> Just a
+       | _ -> None)
+  | Core.Let x rhs body ->
+      let ty = M.unwrapOr Value.Error (tyOf tc ctx rhs) in
+      tyOf tc (X.extend ctx None x ty Info.Defined (eval tc ctx.env rhs)) body
+  | Core.Case s alts ->
+      V.foldl
+        (\acc alt ->
+          match acc with
+          | Just t -> Just t
+          | None -> tyOf tc (altCtx tc ctx s alt) (match alt with | CaseAlt.CaseAlt _ _ _ b -> b))
+        None
+        alts
+  | Core.Handle _ r _ ->
+      (match M.map (\t -> force tc t) (tyOf tc ctx r) with
+       | Just (Value.Pi _ _ _ _ _ cod) -> Just (fst (splitComp tc (apply tc cod (Va.vvar ctx.lvl "x"))))
+       | _ -> None)
+  | Core.Error -> None

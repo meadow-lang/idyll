@@ -377,7 +377,7 @@ pub mod shape {
                 *next += 1;
                 let rest = flatten(cod, vars, next);
                 vars.pop();
-                if *icit == Icit::Implicit {
+                if *icit != Icit::Explicit {
                     return rest;
                 }
                 match rest {

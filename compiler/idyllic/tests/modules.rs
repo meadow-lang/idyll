@@ -116,6 +116,35 @@ fn modules_use_each_other() {
 }
 
 #[test]
+fn a_module_may_be_written_inside_a_file() {
+    // `module M where`, indented: the module `M` under the file's, a
+    // namespace of its own as a file's is, and it may have its own inside
+    let src = "module Shapes where\n  use Shape.*\n\n  data Shape = Circle Int | Square Int\n\n  \
+               area : Shape -> Int\n  area (Circle r) = 3 * r * r\n  area (Square w) = w * w\n\n  \
+               module Units where\n    unit : Int\n    unit = 1\n\n\
+               use Shapes (Shape, area)\nuse Shapes.Shape.*\nuse Shapes.Units (unit)\n\n\
+               (area (Circle 2), area (Square 3), unit, Shapes.Units.unit)\n";
+    assert_eq!(value(src), "(12, 9, 1, 1)");
+    // in braces too
+    assert_eq!(value("module M where { two : Int; two = 2 }\n\nM.two + 1\n"), "3");
+    // what it defines is its own: not in scope outside it unless used
+    rejects("module M where\n  two : Int\n  two = 2\n\ntwo\n", &["name not in scope: two: used here"]);
+}
+
+#[test]
+fn a_module_inside_a_file_is_one_of_the_packages() {
+    // in another file of the package it is the module under that file's
+    let shapes = "module Units where\n  unit : Int\n  unit = 7\n";
+    assert_eq!(printed("use Shapes.Units (unit)\n\nmain () = printInt unit\n", &[("Shapes", shapes)]), "7\n");
+    // and it may not be one the package has already
+    let out = run("use Shapes (unit)\n\n1\n", &[("Shapes", "module Units where\n  unit : Int\n  unit = 1\n"), ("Shapes.Units", "unit : Int\nunit = 2\n")]);
+    assert!(diags(&out).iter().any(|d| d.starts_with("the package has a module Shapes.Units already")), "{:?}", diags(&out));
+    // nor end in an expression, which only the root's last line may be
+    let out = pipeline::run("module M where\n  two : Int\n  two = 2\n  two + 1\n\n1\n", &OPTIONS);
+    assert!(out.diagnostics.iter().any(|d| d.labels.iter().any(|l| l.message.contains("has no expression of its own"))), "{:?}", diags(&out));
+}
+
+#[test]
 fn every_form_of_use() {
     let shapes = "@pub\ndata Shape = Square Int | Rect Int Int\n\nuse Shape.*\n\n\
                   @pub\narea : (s : [] Shape) -> Int\n\

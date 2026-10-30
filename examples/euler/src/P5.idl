@@ -1,0 +1,17 @@
+-- Problem 5: the smallest number that every number from 1 to 20 divides.
+-- 2520 is already the least common multiple of 1 to 10, so only 11 to 20
+-- need folding in.
+
+gcd : (a : Int) -> (b : Int) -> Int ! Div
+gcd a 0 = a
+gcd a b = gcd b (a % b)
+
+lcm : (a : Int) -> (b : Int) -> Int ! Div
+lcm a b = a / gcd a b * b
+
+-- The least common multiple of `acc` and every number from `n` to 20.
+upTo20 : (n : Int) -> (acc : Int) -> Int ! Div
+upTo20 n acc = if 20 < n then acc else upTo20 (n + 1) (lcm acc n)
+
+answer : Int ! Div
+answer = upTo20 11 2520

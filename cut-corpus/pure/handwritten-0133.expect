@@ -1,0 +1,32 @@
+-- | -- an associated type: a trait's field that is a type, which each instance gives
+-- | trait Container (c : Type) where
+-- |   Elem : Type
+-- |   empty : c
+-- |   insert : Elem -> c -> c
+-- |   toList : c -> List Elem
+-- | 
+-- | instance Container (List Int) where
+-- |   Elem = Int
+-- |   empty = Nil
+-- |   insert x xs = x :: xs
+-- |   toList xs = xs
+-- | 
+-- | record Bag = { items : List String }
+-- | 
+-- | instance Container Bag where
+-- |   Elem = String
+-- |   empty = Bag { items = Nil }
+-- |   insert x b = Bag { items = x :: b.items }
+-- |   toList b = b.items
+-- | 
+-- | firstOr : {c : Type} -> {auto d : Container c} -> Elem c -> c -> Elem c
+-- | firstOr d xs = case toList xs of
+-- |   Nil -> d
+-- |   (x :: rest) -> x
+-- | 
+-- | e : Elem Bag
+-- | e = "an element"
+-- | 
+-- | (toList (insert 1 (insert 2 (empty : List Int))), toList (insert "a" (empty : Bag)), firstOr 0 (empty : List Int), e)
+answer: (1 :: 2 :: Nil, "a" :: Nil, 0, "an element")
+exit: 0

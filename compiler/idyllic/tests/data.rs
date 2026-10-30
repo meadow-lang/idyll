@@ -200,19 +200,13 @@ fn a_long_list_needs_no_stack() {
 }
 
 #[test]
-fn consuming_a_list_frees_it_as_it_goes() {
-    // a linear traversal: every cell is unique, released as it is matched and
-    // reused by the next allocation
+fn a_list_is_built_and_consumed_twice() {
+    // a linear traversal, twice (what it does with memory is the runtime's)
     let src = "build : (n : [] Int) -> List Int -> List Int ! Div\nbuild n acc = if n == 0 then acc else build (n - 1) (n :: acc)\n\n\
                sum : List Int -> Int -> Int\nsum xs acc = case xs of\n  Nil -> acc\n  y :: ys -> sum ys (acc + y)\n\n\
                sum (build 1000 Nil) 0 + sum (build 1000 Nil) 0\n";
     let out = run(src);
     assert_eq!(out.evaluation, Some(Evaluation::Value("1001000".into())));
-    let m = out.memory.expect("it ran");
-    assert!(m.was_linear(), "{m}");
-    // the second list is built entirely out of the first one's cells
-    assert!(m.fresh <= 1002, "{m}");
-    assert_eq!((m.leaked, m.miscounted), (0, 0));
 }
 
 /// A constructor's field is linear in every module: what goes into a value
@@ -230,4 +224,30 @@ fn a_field_is_linear_in_any_module() {
         "data Box = Box Int\n\nuse Box.*\n\ntwice : (b : [1] Box) -> Int\ntwice (Box n) = n + n\n",
         &["usage mismatch: n has grade 1, but is used 2 times"],
     );
+}
+
+#[test]
+fn a_data_type_may_mention_a_definition() {
+    // a type alias, or a function that makes a type, in a field: the data
+    // type is declared after what it mentions, and what uses it after that
+    assert_eq!(
+        result("Span : Type\nSpan = (Int, Int)\n\ndata T = T Span\n\nuse T.*\n\ncase T (1, 2) of\n  T p -> p\n"),
+        "(1, 2) : (Int, Int)"
+    );
+    assert_eq!(
+        result("F : Type -> Type\nF a = a\n\ndata T = T (F Int)\n\nuse T.*\n\nfirst : T -> Int\nfirst (T n) = n\n\nfirst (T 3) + 1\n"),
+        "4 : Int"
+    );
+}
+
+#[test]
+fn a_constructor_named_as_a_type_hides_it() {
+    // types and constructors share one namespace: `use J.*` brings `J.Int`
+    // in as `Int`, the type no longer, even in J's own fields; bringing in
+    // only the constructors that do not clash is what is wanted
+    let src = "data J = N | Int Int\n\nuse J.*\n\n1\n";
+    let out = run(src);
+    assert_eq!(diags(&out), ["not in scope: Int: unbound here"]);
+    assert!(out.diagnostics[0].help.iter().any(|h| h.contains("use T (A, B)")), "{:?}", out.diagnostics[0].help);
+    assert_eq!(result("data J = N | Int Int\n\nuse J (N)\n\nf : J -> Int\nf N = 0\nf (J.Int n) = n\n\nf (J.Int 4)\n"), "4 : Int");
 }

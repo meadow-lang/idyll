@@ -1,0 +1,9 @@
+-- | -- byte arrays: to and from strings and hex, and wider integers read and written by their bytes
+-- | use Std.Bytes
+-- | 
+-- | b : Array UInt8
+-- | b = #[0x34; 0x12; 0xff]
+-- | 
+-- | (bytesToHex (stringToBytes "hé!"), bytesToString (stringToBytes "hé"), bytesFromHex "0aFf", bytesFromHex "abc", bytesGetU16LE b 0, bytesGetU16BE b 0, bytesToHex (bytesSetU32BE (stringToBytes "abcd") 0 305419896), bytesGetU64LE (bytesSetU64LE (stringToBytes "12345678") 0 (toUInt64 (0 - 1))) 0)
+answer: ("68c3a921", "hé", Just #[10; 255], Nothing, 4660, 13330, "12345678", 18446744073709551615)
+exit: 0

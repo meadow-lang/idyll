@@ -90,6 +90,29 @@ pub fn build(entry: &Path, profile: Profile, opts: &Options) -> BuildOutput {
     build_resolved(entry, profile, opts, &mut resolver)
 }
 
+/// The package at `entry` built to run its tests, those `tests` selects
+/// (`idyll test`): what runs is `Std.Test`'s runner over them, in order.
+pub fn build_tests(entry: &Path, profile: Profile, opts: &Options, tests: &pipeline::TestSelection) -> BuildOutput {
+    let lock_dir = crate::lock::dir_for(entry);
+    let mut resolver = crate::package::Resolver::for_entry(&lock_dir);
+    let graph = match discover_with(&[entry], &mut resolver) {
+        Ok(g) => g,
+        Err(d) => return BuildOutput::failed(d),
+    };
+    let package = target_of(&graph, graph.root());
+    let cache = cache_for(&package, profile);
+    let compiled = compile_graph_testing(&graph, opts, cache.as_ref(), Some(tests));
+    let root = graph.root();
+    BuildOutput {
+        program: program_of(&graph, &compiled, root),
+        problem: None,
+        reported: compiled.reported,
+        package,
+        compiled: compiled.compiled,
+        fingerprint: Some(compiled.fingerprints[root]),
+    }
+}
+
 /// [`build`], resolving dependencies with `resolver` rather than the one the
 /// command line set up: how a test fetches into a cache of its own.
 pub fn build_resolved(
@@ -265,6 +288,13 @@ fn identities(graph: &PackageGraph) -> Vec<String> {
 /// Compile every package of `graph`, dependencies first -- reading back from
 /// `cache` each one whose inputs are what they were when it was saved.
 fn compile_graph(graph: &PackageGraph, opts: &Options, cache: Option<&Cache>) -> Compiled {
+    compile_graph_testing(graph, opts, cache, None)
+}
+
+/// [`compile_graph`]; with `tests`, the root package's program is its tests
+/// (`idyll test`), compiled afresh and not kept, since it is no build of the
+/// package another could reuse.
+fn compile_graph_testing(graph: &PackageGraph, opts: &Options, cache: Option<&Cache>, tests: Option<&pipeline::TestSelection>) -> Compiled {
     let n = graph.packages.len();
     let mut packages: Vec<Option<CompiledPackage>> = (0..n).map(|_| None).collect();
     let mut fingerprints = vec![0u64; n];
@@ -304,7 +334,8 @@ fn compile_graph(graph: &PackageGraph, opts: &Options, cache: Option<&Cache>) ->
             floor = incremental::align(floor + 1);
             continue;
         };
-        let reused = cache.and_then(|c| c.load(&idents[pid], fingerprint));
+        let testing = tests.filter(|_| pid == graph.root());
+        let reused = cache.filter(|_| testing.is_none()).and_then(|c| c.load(&idents[pid], fingerprint));
         let cp = match reused {
             Some(cp) => {
                 clean[pid] = true;
@@ -323,7 +354,19 @@ fn compile_graph(graph: &PackageGraph, opts: &Options, cache: Option<&Cache>) ->
                     .zip(&pkg.dep_names)
                     .map(|(&d, alias)| (alias.as_str(), packages[d].as_ref().expect("topological order")))
                     .collect();
-                let deps = Deps { all: &all, direct: &direct, first_unique: floor };
+                // its parts compiled before, whose inputs did not change
+                let parts = cache.map(|cache| incremental::Parts {
+                    cache,
+                    ident: idents[pid].clone(),
+                    salt: incremental::parts_salt(pkg, &dep_prints, floor),
+                });
+                let deps = Deps {
+                    all: &all,
+                    direct: &direct,
+                    first_unique: floor,
+                    parts: parts.as_ref().map(|p| p as &dyn pipeline::PartStore),
+                    tests: testing,
+                };
                 // Every package is compiled as a program, its `main` to be
                 // run, whether or not it is the one asked for: what a
                 // dependent links is only its definitions, and one compiled
@@ -352,6 +395,7 @@ fn compile_graph(graph: &PackageGraph, opts: &Options, cache: Option<&Cache>) ->
                 };
                 clean[pid] = quiet && pkg.deps.iter().all(|&d| clean[d]);
                 if clean[pid]
+                    && testing.is_none()
                     && let Some(cache) = cache
                 {
                     cache.store(&idents[pid], &cp, fingerprint);

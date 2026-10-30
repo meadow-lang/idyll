@@ -1,0 +1,11 @@
+-- Problem 6: the difference between the square of the sum and the sum of
+-- the squares of the first hundred natural numbers.
+
+-- The sum of `f n` for each `n` from `from` to 100.
+total : (f : Int -> Int) -> (from : Int) -> Int ! Div
+total f from = if 100 < from then 0 else f from + total f (from + 1)
+
+answer : Int ! Div
+answer =
+  let s = total (\n -> n) 1 in
+  s * s - total (\n -> n * n) 1

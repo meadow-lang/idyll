@@ -7,42 +7,219 @@
 --   Layout   the offside rule: virtual braces and semicolons
 --            (`idyllic-layout`)
 --   Syntax   the grammar, and the lossless tree Lingua parses it into
---   Parse    that tree read as the Rust parser's abstract syntax (`Ast`,
---            `idyllic-parser`)
+--   View     what that tree means, read off its typed nodes as the Rust
+--            parser reads its abstract syntax (`idyllic-parser`); what is
+--            wrong with it, at the nodes it is about
 --   Rename   names resolved, equations and records desugared (`Hir`,
 --            `idyllic-rename`), against the prelude
+--   Scc      definitions in dependency order (`idyllic-scc`)
+--   Types    the type checker (`Check`, `Elab`, `Decl`, and the machinery
+--            under them; `idyllic-typecheck`)
+--   Run      the reference interpreter, a CEK machine on the checked Core
+--            (`Cek`, `World`; `idyll-eval`)
+--   Cut      the checked Core lowered to Cut (`Lower`, with `Typer` and
+--            `Prune`; `idyllic-cut`) and written with the Cut package
+--            (`Emit`)
 --
 -- Run as `Idyll <pass> <file>...`, it writes each file's dump for the pass,
 -- each after a line `== <file>`: what the differential tests compare with
--- the Rust compiler's.
+-- the Rust compiler's. `Idyll errors <file>...` draws what is wrong with
+-- each file's syntax, where it is.
 
 use Idyll.Layout (dumped)
 use Idyll.Syntax (parseIdyll)
-use Idyll.Parse as Parse
-use Idyll.Rename (renameModule)
+use Idyll.Surface (SurfaceProgram)
+use Idyll.Surface as Surface
+use Idyll.Rename (renameModule, renamePackage)
+use Idyll.Rename as Rename
 use Idyll.Hir as Hir
+use Std.String as S
+use Std.Maybe as M
+use Idyll.Scc (sccModule)
+use Idyll.Check (checkModule, checkModuleWith, checked, checkedAgainst, checkedWith, Checked)
+use Idyll.Compiled (compiledOf)
+use Idyll.Parts as Parts
+use Std.Macro (toDatum, fromDatum)
+use Idyll.Link (merged, emptyCompiled)
+use Idyll.Link (linked, toLink)
+use Std.St (runSt)
+use Std.St as St
+use Idyll.Interface
+use Std.Sort (sortOn)
+use Idyll.Typer as Ty
+use Idyll.Lower as Lo
+use Idyll.Cek as Cek
+use Idyll.World as W
+use Idyll.Core as C
+use Idyll.Hir (Literal)
+use Idyll.Driver as D
+use Lingua (cli!)
+use Std.Fs (writeString)
+use Idyll.Format as Fmt
+use Idyll.Session as Session
+use Idyll.Server (serveServer)
+use Idyll.Prompt (runPrompt)
 use Lingua.Green (dump)
+use Lingua.Diagnostic (renderAll)
 use Std.Collections.Vector as V
 use Std.Result.Result.*
 use Std.Maybe.Maybe.*
 
+-- The command line: the driver's commands, on packages, and the passes'
+-- dumps, which the differential tests compare with the Rust compiler's
+-- (`--prelude` and `--std` say what a program is checked after). For a
+-- dump of `build` or `run`, `--prelude` says it is one.
+cli! {
+  pub Tool "idyll" "Idyll, built by its compiler written in Meadow"
+    options {
+      offline : Flag "Never fetch a dependency: build from what is cached"
+      locked : Flag "Refuse a build that would change idyll.lock"
+    }
+    options Dump {
+      prelude : Option String "The prelude each program is checked after: a pass's dump, not a build" value "FILE"
+      std : Option String "Std's sources, for a program that names Std" value "DIR"
+    }
+    | build "Build a package into Cut, which Meadow runs" { path : Maybe String "the package (here, if left out)" } with Dump
+    | run "Build a package and run it on Meadow; with --prelude, run each file on the CEK machine" {
+        paths : [String] "the package (here, if left out); with --prelude, the files"
+        release : Flag "Run it as native code, built by Silo"
+      } with Dump
+    | check "Check a package and what it depends on" { path : Maybe String "the package (here, if left out)" }
+    | update "Move git dependencies forward to what their references name now" {
+        names : [String] "just these dependencies (every one, if none)"
+        dryRun : Flag "Say what would change, and change nothing"
+      }
+    | lsp "Serve the language server, on standard input and output" {}
+    | repl "Read entries, and say what each is: declarations stay for those after" {}
+    | fmt "Set each file out, in place" {
+        files : [String] "the files"
+        check : Flag "Change nothing: say which files are not set out, and fail if any is not"
+      }
+    | tokens "Each file's tokens, laid out" { files : [String] "the files" }
+    | tree "Each file's lossless tree" { files : [String] "the files" }
+    | parse "Each file's syntax tree, as S-expressions" { files : [String] "the files" }
+    | errors "What is wrong with each file's syntax, drawn where it is" { files : [String] "the files" }
+    | rename "Each file renamed: its HIR" { files : [String] "the files" } with Dump
+    | types "Each file's declarations' types, and its errors" { files : [String] "the files" } with Dump
+    | cut "Each file lowered to Cut" { files : [String] "the files" } with Dump
+    | parted "A package's parts, and their dumps" { name : String "the package's name"  dir : String "its sources" } with Dump
+    | compiled "A package compiled: its interface" { name : String "the package's name"  dir : String "its sources" } with Dump
+    | package "A package checked whole: its declarations' types" { name : String "the package's name"  dir : String "its sources" } with Dump
+}
+
 fun main () =
-  let args = argv () in
-  match V.get args 0 with
-  | Just "tokens" -> V.foldl (\u f -> each f dumpTokens) () (V.drop args 1)
-  | Just "tree" -> V.foldl (\u f -> each f dumpTree) () (V.drop args 1)
-  | Just "parse" -> V.foldl (\u f -> each f Parse.dumped) () (V.drop args 1)
-  | Just "rename" ->
-      (match (V.get args 1, V.get args 2) with
-       | (Just "--prelude", Just path) ->
-           (match readToString path with
-            | Ok text ->
-                (match Parse.parsed text with
-                 | Ok prelude -> V.foldl (\u f -> each f (renamed prelude)) () (V.drop args 3)
-                 | Err _ -> writeError "the prelude does not parse\n")
-            | Err e -> writeError "could not read the prelude: ${e}\n")
-       | _ -> writeError "usage: Idyll rename --prelude <file> <file>...\n")
-  | _ -> writeError "usage: Idyll (tokens | tree | parse | rename --prelude <file>) <file>...\n"
+  match argsTool () with
+  | (every, Tool.Build r) ->
+      (match r.dump.prelude with
+       | None -> D.buildCommand every.offline every.locked r.path
+       | Just path -> withPrelude path (\prelude -> builtDump prelude r.dump.std (M.unwrapOr "." r.path)))
+  | (every, Tool.Run r) ->
+      (match r.dump.prelude with
+       | None -> D.runCommand every.offline every.locked (V.get r.paths 0) r.release
+       | Just path -> withPrelude path (\prelude -> eachAgainstStd prelude r.dump.std r.paths ran ranAgainst))
+  | (every, Tool.Check r) -> D.checkCommand every.offline every.locked r.path
+  | (every, Tool.Update r) -> D.updateCommand r.names r.dryRun
+  | (every, Tool.Lsp) -> serveServer ()
+  | (every, Tool.Repl) -> runPrompt ()
+  | (every, Tool.Fmt r) -> if V.foldl (\ok f -> fmtFile r.check f and ok) True r.files then () else exit 1
+  | (every, Tool.Tokens r) -> V.foldl (\u f -> each f dumpTokens) () r.files
+  | (every, Tool.Tree r) -> V.foldl (\u f -> each f dumpTree) () r.files
+  | (every, Tool.Parse r) -> V.foldl (\u f -> each f Surface.dumped) () r.files
+  | (every, Tool.Errors r) -> V.foldl (\u f -> each f (errorsIn f)) () r.files
+  | (every, Tool.Rename r) -> withPreludeOf r.dump.prelude (\prelude -> V.foldl (\u f -> each f (renamed prelude)) () r.files)
+  | (every, Tool.Types r) -> withPreludeOf r.dump.prelude (\prelude -> eachAgainstStd prelude r.dump.std r.files typed typedAgainst)
+  | (every, Tool.Cut r) -> withPreludeOf r.dump.prelude (\prelude -> eachAgainstStd prelude r.dump.std r.files cutOf cutAgainst)
+  | (every, Tool.Parted r) -> withPreludeOf r.dump.prelude (\prelude -> packageDump prelude r.name r.dir (\modules texts -> partedDump prelude r.name modules texts))
+  | (every, Tool.Compiled r) -> withPreludeOf r.dump.prelude (\prelude -> packageDump prelude r.name r.dir (\modules texts -> compiledDump prelude r.name modules))
+  | (every, Tool.Package r) -> withPreludeOf r.dump.prelude (\prelude -> packageDump prelude r.name r.dir (\modules texts -> packageTypes prelude r.name modules))
+
+-- `idyll fmt` of `file`: set out in place, or with `check` only said if it
+-- is not. Whether it is set out now; a file with errors is left as it is.
+fun fmtFile (check : Bool) (file : String) : Bool ! { Fs | e } =
+  match readToString file with
+  | Err e ->
+      let w = writeError "${file}: could not read it: ${e}\n" in
+      False
+  | Ok text ->
+      (match Fmt.formatted text with
+       | Err ds ->
+           let w = writeError (renderAll file text ds) in
+           False
+       | Ok out ->
+           if out == text then True
+           else if check then
+             let w = writeError "${file}: not set out\n" in
+             False
+           else
+             (match writeString (file, out) with
+              | Ok _ -> True
+              | Err e ->
+                  let w = writeError "${file}: could not write it: ${e}\n" in
+                  False))
+
+-- The prelude at `path`, read and parsed, to `k`; or why not, said.
+fun withPrelude (path : String) k =
+  match readToString path with
+  | Ok text ->
+      (match Surface.parsed text with
+       | Ok prelude -> k prelude
+       | Err _ -> writeError "the prelude does not parse\n")
+  | Err e -> writeError "could not read the prelude: ${e}\n"
+
+-- The same, the prelude being one a dump needs.
+fun withPreludeOf (path : Maybe String) k =
+  match path with
+  | Just p -> withPrelude p k
+  | None -> writeError "this dump needs --prelude <file>\n"
+
+-- Each file's dump: `alone` of it, or, with Std's sources (`--std`),
+-- `against` Std compiled once, as the Rust compiler compiles it, every
+-- program checked against that.
+fun eachAgainstStd prelude (std : Maybe String) (files : [String]) alone against =
+  match std with
+  | None -> V.foldl (\u f -> each f (alone prelude)) () files
+  | Just dir ->
+      (match packageModules dir with
+       | Ok mods ->
+           (match Session.compiledPackage prelude "Std" mods [] with
+            | Ok (names, compiled) -> V.foldl (\u f -> each f (against prelude names compiled)) () files
+            | Err why -> writeError "Std: ${why}\n")
+       | Err why -> writeError "Std: ${why}\n")
+
+-- A package's dump: its modules read from `dir`, and their texts, to
+-- `dumpOf`, under a line `== <name>`.
+fun packageDump prelude (name : String) (dir : String) dumpOf =
+  match packageModules dir with
+  | Ok modules ->
+      let texts = V.map (\m -> readToStringOr "" (dir ++ "/" ++ moduleFile (fst m))) modules in
+      let u = writeOutput "== ${name}\n" in
+      writeOutput "${dumpOf modules texts}\n"
+  | Err why -> writeError "${name}: ${why}\n"
+
+-- A package built to run, as the build differential compares it: its
+-- modules, with Std if it names it, lowered to Cut, its `main` the entry.
+fun builtDump prelude (std : Maybe String) (dir : String) =
+  match (std, packageModules (dir ++ "/src")) with
+  | (Just stdDir, Ok modules) ->
+      (match packageModules stdDir with
+       | Ok stdMods ->
+           -- Std only if the package uses it, which it does by naming it, as
+           -- the Rust compiler links it only then
+           let named = V.any (\f -> match readToString (dir ++ "/src/" ++ f) with | Ok t -> S.contains "Std" t | Err _ -> False) (D.idlFiles (dir ++ "/src") []) in
+           writeOutput "${built prelude (if named then [("Std", stdMods)] else []) (packageName dir) modules}\n"
+       | Err why -> writeError "Std: ${why}\n")
+  | (None, _) -> writeError "a build's dump needs --std <dir>\n"
+  | (_, Err why) -> writeError "${dir}: ${why}\n"
+
+-- A package built to run, as Cut: `(error)` if it does not rename or check.
+fun built prelude deps (name : String) (modules : [([String], SurfaceProgram)]) : String =
+  match renamePackage name modules prelude deps with
+  | (m, problems) -> if V.isEmpty problems then Lo.cutTextAt (sccModule m) "Main" True else "(error: ${S.join "; " problems})"
+
+-- A package's name, as its `Idyll.toml` says (`name = "Hello"`), or the
+-- directory's; with its version, `Hello@0.1.0`, if it says one, as the Rust
+-- compiler names a package's symbols.
+fun packageName (dir : String) : String ! { Fs | e } = D.nameOfManifest dir (readToStringOr "" (dir ++ "/Idyll.toml"))
 
 -- `file`'s dump, under a line naming it.
 fun each (file : String) dumpOf =
@@ -59,11 +236,290 @@ fun dumpTree (text : String) : String =
   | (g, errs) ->
       V.foldl (\s e -> match e with | (at, msg) -> s ++ "error at ${show at}: ${msg}\n") "" errs ++ dump display g
 
+-- What is wrong with `file`'s syntax, `text`, drawn where it is; `ok` if
+-- nothing is.
+fun errorsIn (file : String) (text : String) : String =
+  match Surface.parsed text with
+  | Ok _ -> "ok"
+  | Err ds -> renderAll file text ds
+
 -- A program renamed after the prelude, as `Hir` writes it; `(error)` if it
 -- does not parse, or anything in it is wrong.
-fun renamed prelude (text : String) : String ! { Mut | e } =
-  match Parse.parsed text with
+fun renamed prelude (text : String) : String =
+  match Surface.parsed text with
   | Err _ -> "(error)"
   | Ok prog ->
       (match renameModule prog prelude with
-       | (m, problems) -> if V.isEmpty problems then Hir.dumped m else "(error)")
+       | (m, problems) -> if V.isEmpty problems then Rename.dumped m else "(error)")
+
+-- A program checked after the prelude, as `Check` writes it; `(error)` if
+-- it does not parse or rename.
+fun typed prelude (text : String) : String = typedWith prelude None text
+
+-- A program's Cut: checked against Std compiled, if it names Std, and
+-- linked with it.
+fun cutAgainst prelude (names : Rename.PackageNames) (std : Compiled) (text : String) : String =
+  match Surface.parsed text with
+  | Err _ -> "(error)"
+  | Ok prog ->
+      if not (S.contains "Std" text) then cutOf prelude text
+      else
+        let vis = Rename.mentionsVisibility (Rename.programOf prog) in
+        (match Rename.renamePackageWith "Main" [([], prog)] prelude [("Std", names)] [] std.high True vis with
+         -- (a `main` with no expression is the program, as the Rust
+         -- compiler's `compile` makes it)
+         | (m, own, problems) -> if V.isEmpty problems then Lo.cutTextLinked (sccModule m) own "Main" True [std] else "(error)")
+
+-- A program checked against Std compiled, if it names Std, as the test
+-- compares it.
+fun typedAgainst prelude (names : Rename.PackageNames) (std : Compiled) (text : String) : String =
+  match Surface.parsed text with
+  | Err _ -> "(error)"
+  | Ok prog ->
+      if not (S.contains "Std" text) then typed prelude text
+      else
+        let vis = Rename.mentionsVisibility (Rename.programOf prog) in
+        (match Rename.renamePackageWith "Main" [([], prog)] prelude [("Std", names)] [] std.high True vis with
+         | (m, _, problems) -> if V.isEmpty problems then checkModuleWith (sccModule m) [std] else "(error)")
+
+-- The same, with the standard library's modules given: a program that
+-- names `Std` is the root of a package that depends on it.
+fun typedWith prelude std (text : String) : String =
+  match Surface.parsed text with
+  | Err _ -> "(error)"
+  | Ok prog ->
+      let renamed =
+        match std with
+        | Just mods -> if S.contains "Std" text then renamePackage "Main" [([], prog)] prelude [("Std", mods)] else renameModule prog prelude
+        | None -> renameModule prog prelude
+      in
+      (match renamed with
+       | (m, problems) -> if V.isEmpty problems then checkModule (sccModule m) else "(error)")
+
+-- A whole package checked, its modules each a path and a program.
+-- A package checked whole and compiled, as those that depend on it see it:
+-- a line for each of its constants (its type, whether the types may see
+-- its value, how many arguments it unfolds after), its top-level `let`s,
+-- its recursive definitions, its hints and its traits, sorted. The Rust
+-- side writes its `CompiledPackage` the same way
+-- (`the_compiled_packages_agree`).
+-- The file a module of a package is in, under its `src/`: the root's
+-- `Lib.idl`.
+fun moduleFile (path : [String]) : String = if V.isEmpty path then "Lib.idl" else S.join "/" path ++ ".idl"
+
+-- A package compiled a part at a time (`Parts`), each part against the
+-- parts it imports, and the parts made one (`Link.merged`), written as
+-- `compiled` writes a package compiled whole.
+fun partedDump prelude (name : String) (modules : [([String], SurfaceProgram)]) (texts : [String]) : String =
+  let paths = V.map (\m -> S.join "." (fst m)) modules in
+  let programs = V.map (\m -> Rename.programOf (snd m)) modules in
+  let vis = V.any (\p -> Rename.mentionsVisibility p) programs in
+  let ps = Parts.parts name paths texts in
+  let step =
+    \acc p ->
+      match acc with
+      | Err why -> Err why
+      | Ok (done, next) ->
+          let imported = V.concatMap (\k -> match V.get done k with | Just d -> [d] | None -> []) (Parts.partImports p) in
+          let mods = V.concatMap (\i -> match V.get modules i with | Just m -> [m] | None -> []) (Parts.partModules p) in
+          let slotFirst = 16384 * V.foldl (\acc i -> if acc < 0 or i < acc then i else acc) (0 - 1) (Parts.partModules p) in
+          (match Rename.renamePackageWith name mods prelude [] (V.map fst imported) slotFirst (Parts.partRoot p) vis with
+           | (m, names, problems) ->
+               if not (V.isEmpty problems) then Err (S.join "; " problems)
+               else
+                 let grouped = sccModule m in
+                 let checked0 =
+                   runSt (\() ->
+                     let c = checkedAgainst grouped False (V.map snd imported) in
+                     let errors = St.getRef c.tc.errors in
+                     if not (V.isEmpty errors) then Err errors else Ok (compiledOf c grouped names))
+                 in
+                 match checked0 with
+                 | Err errors -> Err "${S.join "+" (V.map (\i -> V.getOr "" paths i) (Parts.partModules p))}: ${S.join ", " errors}"
+                 | Ok compiled0 ->
+                   -- (kept as a build keeps it, and read back)
+                   match fromDatum (toDatum compiled0) with
+                   | Err why -> Err "a compiled part does not read back: ${why}"
+                   | Ok (compiled : Compiled) -> Ok (V.pushBack done (names, compiled), ((compiled.high + 4095) / 4096) * 4096))
+  in
+  match V.foldl step (Ok ([], 0)) ps with
+  | Err why -> "(error: ${why})"
+  | Ok (done, _) -> dumpCompiled (merged (V.map snd done))
+
+fun compiledDump prelude (name : String) (modules : [([String], SurfaceProgram)]) : String =
+  let programs = V.map (\m -> Rename.programOf (snd m)) modules in
+  let vis = V.any (\p -> Rename.mentionsVisibility p) programs in
+  match Rename.renamePackageWith name modules prelude [] [] 0 True vis with
+  | (m, names, problems) ->
+      if not (V.isEmpty problems) then "(error: ${S.join "; " problems})"
+      else
+        let grouped = sccModule m in
+        runSt (\() ->
+          let c = checked grouped in
+          let errors = St.getRef c.tc.errors in
+          if not (V.isEmpty errors) then "(error: ${S.join ", " errors})"
+          else
+            dumpCompiled (compiledOf c grouped names))
+
+-- A compiled package, a line for each of its constants, `let`s, recursive
+-- definitions, hints and traits, sorted.
+fun dumpCompiled (p : Compiled) : String =
+          let nameOf = \u -> M.unwrapOr "?" (M.map (\k -> match k with | Constant.Constant _ n _ _ _ -> n) (V.find (\k -> match k with | Constant.Constant v _ _ _ _ -> v == u) p.constants)) in
+          let constants =
+            V.map
+              (\k ->
+                match k with
+                | Constant.Constant _ n ty value unfold ->
+                    let v = if M.isSome value then " = .." else "" in
+                    let f = match unfold with | Just (Unfold.Unfold arity _) -> " unfold ${show arity}" | Just (Unfold.OnCase arity _) -> " unfold ${show arity}" | None -> "" in
+                    "constant ${n} : ${C.shown False ty}${v}${f}")
+              p.constants
+          in
+          let lets = V.map (\l -> match l with | TopLet.TopLet _ n _ -> "let ${n}") p.lets in
+          let recs = V.map (\r -> match r with | RecDef.RecDef _ n _ _ local -> if local then "rec ${n} local" else "rec ${n}") p.recDefs in
+          let hints = V.map (\u -> "hint ${nameOf u}") p.hints in
+          let traits = V.map (\u -> "trait ${nameOf u}") p.traits in
+          S.join "\n" (sortOn (\l -> l) (V.concat [constants, lets, recs, hints, traits]))
+
+fun packageTypes prelude (name : String) (modules : [([String], SurfaceProgram)]) : String =
+  match renamePackage name modules prelude [] with
+  | (m, problems) -> if V.isEmpty problems then checkModule (sccModule m) else "(error: ${S.join "; " problems})"
+
+-- A package's modules, read from its source directory: each `.idl` file
+-- under it, its path the file's (`Collections/List.idl` is
+-- `Collections.List`), `Main.idl` or `Lib.idl` the root, as the Rust driver
+-- has it; the root first, then the rest each after the modules it imports
+-- (`Parts`).
+fun packageModules (dir : String) : Result String [([String], SurfaceProgram)] ! { Fs | e } =
+  let files = D.idlFiles dir [] in
+  let modules =
+    V.map
+      (\rel ->
+        let path = V.take (S.split "/" rel) (V.len (S.split "/" rel)) in
+        let last = M.unwrapOr "" (V.last path) in
+        let segs = V.pushBack (V.take path (V.len path - 1)) (S.take last (S.byteLength last - 4)) in
+        let p = if V.len segs == 1 and (V.getOr "" segs 0 == "Lib" or V.getOr "" segs 0 == "Main") then [] else segs in
+        (p, rel))
+      files
+  in
+  let sorted = V.foldl (\acc m -> V.concat [V.filter (\x -> not (S.lessThan (key m) (key x))) acc, [m], V.filter (\x -> S.lessThan (key m) (key x)) acc]) [] modules in
+  let read =
+    V.foldl
+      (\acc m ->
+        match acc with
+        | Err why -> Err why
+        | Ok done ->
+            (match readToString (dir ++ "/" ++ snd m) with
+             | Err e -> Err e
+             | Ok text ->
+                 (match Surface.parsed text with
+                  | Ok prog -> Ok (V.pushBack done (fst m, text, prog))
+                  | Err _ -> Err "${snd m} does not parse")))
+      (Ok [])
+      sorted
+  in
+  -- each after the modules it imports, so that a module's instances are
+  -- there for the searches of those that use it
+  match read with
+  | Err why -> Err why
+  | Ok ms ->
+      let paths = V.map (\m -> match m with | (p, _, _) -> S.join "." p) ms in
+      let texts = V.map (\m -> match m with | (_, t, _) -> t) ms in
+      -- (the root still first, which the renamer takes for the root)
+      let parted = V.concatMap Parts.partModules (Parts.parts "Std" paths texts) in
+      let order = V.append (V.filter (\i -> V.getOr "" paths i == "") parted) (V.filter (\i -> V.getOr "" paths i != "") parted) in
+      Ok (V.concatMap (\i -> match V.get ms i with | Just (p, _, prog) -> [(p, prog)] | None -> []) order)
+
+-- How modules sort: the root first, then by path.
+fun key (m : ([String], String)) : String = if V.isEmpty (fst m) then "" else S.join "." (fst m)
+
+-- How many steps a program is given before it is taken not to stop.
+def fuel = 5000000
+
+-- A program run after the prelude, as the run differential compares it:
+-- its answer as the REPL shows it (or `-`, for a function or a type) and
+-- how many steps it took, or how it stopped; and what it printed. `(error)`
+-- if it does not check, `(no expression)` if it has nothing to run.
+fun ran prelude (text : String) : String ! { Mut | e } = ranWith prelude None text
+
+-- The same, with the standard library's modules given (see `cutWith`).
+fun ranWith prelude std (text : String) : String ! { Mut | e } =
+  match Surface.parsed text with
+  | Err _ -> "(error)"
+  | Ok prog ->
+      let renamed =
+        match std with
+        | Just mods -> if S.contains "Std" text then renamePackage "Main" [([], prog)] prelude [("Std", mods)] else renameModule prog prelude
+        | None -> renameModule prog prelude
+      in
+      (match renamed with
+       | (m, problems) ->
+           if not (V.isEmpty problems) then "(error)"
+           else
+             runSt (\() ->
+               let c = checked (sccModule m) in
+               if not (V.isEmpty (St.getRef c.tc.unsupported)) then "(unsupported)"
+               else if not (V.isEmpty (St.getRef c.tc.errors)) then "(error)"
+               else
+                 (let p = Cek.programOf c in
+                  match p.body with
+                  | None -> "(no expression)"
+                  | Just term -> runCore p term)))
+
+-- A program run on the CEK machine: checked against Std compiled, if it
+-- names Std, and linked with it.
+fun ranAgainst prelude (names : Rename.PackageNames) (std : Compiled) (text : String) : String ! { Mut | e } =
+  match Surface.parsed text with
+  | Err _ -> "(error)"
+  | Ok prog ->
+      if not (S.contains "Std" text) then ran prelude text
+      else
+        let vis = Rename.mentionsVisibility (Rename.programOf prog) in
+        (match Rename.renamePackageWith "Main" [([], prog)] prelude [("Std", names)] [] std.high True vis with
+         | (m, own, problems) ->
+             if not (V.isEmpty problems) then "(error)"
+             else
+               let grouped = sccModule m in
+               runSt (\() ->
+                 let c = checkedWith grouped True [std] in
+                 if not (V.isEmpty (St.getRef c.tc.unsupported)) then "(unsupported)"
+                 else if not (V.isEmpty (St.getRef c.tc.errors)) then "(error)"
+                 else
+                   let compiled = compiledOf c grouped own in
+                   let p = Cek.programOf (linked c compiled (toLink compiled [std])) in
+                   match p.body with
+                   | None -> "(no expression)"
+                   | Just term -> runCore p term))
+
+fun runCore p term : String ! { Mut | e } =
+  let w = W.captured () in
+  let result = Cek.run p w term fuel in
+  if not (V.isEmpty (getRef w.missing)) then "(unsupported: the world's ${S.join ", " (getRef w.missing)})"
+  else
+    let outcome =
+      match result with
+      | Ok (v, steps) -> ["answer: " ++ M.unwrapOr "-" (Cek.shown v), "steps: " ++ show steps]
+      | Err h -> ["stopped: " ++ Cek.haltShown h]
+    in
+    let printed = if getRef w.output == "" then [] else ["printed: " ++ C.literalShown (Literal.Str (getRef w.output))] in
+    let errors = if getRef w.errors == "" then [] else ["errors: " ++ C.literalShown (Literal.Str (getRef w.errors))] in
+    S.join "\n" (V.concat [outcome, printed, errors])
+
+-- A program lowered to Cut, as its text: `(error)` if it does not check,
+-- `(not lowered: ..)` with why, if it cannot be.
+fun cutOf prelude (text : String) : String = cutWith prelude None text
+
+-- The same, with the standard library's modules given: a program that
+-- names `Std` is the root of a package that depends on it, Std checked and
+-- lowered alongside.
+fun cutWith prelude std (text : String) : String =
+  match Surface.parsed text with
+  | Err _ -> "(error)"
+  | Ok prog ->
+      let renamed =
+        match std with
+        | Just mods -> if S.contains "Std" text then renamePackage "Main" [([], prog)] prelude [("Std", mods)] else renameModule prog prelude
+        | None -> renameModule prog prelude
+      in
+      (match renamed with
+       | (m, problems) -> if not (V.isEmpty problems) then "(error)" else Lo.cutText (sccModule m) "Main")

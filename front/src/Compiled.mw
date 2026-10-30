@@ -1,0 +1,195 @@
+-- A checked package, compiled: `Checker::compile_package` in
+-- `compiler/idyllic-typecheck/src/packages.rs`. What a package that
+-- depends on it is checked against (see `Interface`): each of its own
+-- constants with its type, closed, a definition's value where the types may
+-- see it, and how a recursive definition unfolds; its tables; and its code,
+-- for the program it is linked into.
+
+use Std.St (StRef, newRef, getRef, setRef)
+use Idyll.Core (Core)
+use Idyll.Core as C
+use Idyll.Value as Va
+use Idyll.Tc (Tc, Meta)
+use Idyll.Eval (eval, quote)
+use Idyll.Ctx (Ctx, Binder, Entry, Info)
+use Idyll.Ctx as X
+use Idyll.Check (Checked)
+use Idyll.Scc (interleave)
+use Idyll.Rename
+use Idyll.Interface
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as Hm
+use Std.Sort (sortOn)
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+-- A term quoted at level `at`, closed: a variable for a top-level
+-- definition below `limit` is the constant it is to everyone else.
+@pub fun closeAt (ctx : Ctx) (at : Int) (limit : Int) (c : Core) : Core =
+  C.transform c 0 (\x d ->
+    match x with
+    | Core.Var i n ->
+        if i >= d and i - d < at then
+          let level = at - 1 - (i - d) in
+          if level >= limit then None
+          else
+            (match V.get ctx.binders level with
+             | Just (Binder.Binder _ _ _ (Just u) _) -> Just (Core.Opaque u n)
+             | _ -> None)
+        else None
+    | _ -> None)
+
+-- The same, for a term quoted in the top-level context itself.
+@pub fun close (ctx : Ctx) (c : Core) : Core = closeAt ctx ctx.lvl ctx.lvl c
+
+-- How a recursive definition unfolds, closed for another package: its case
+-- tree normalised where it was defined, under its parameters.
+fun exportUnfold (tc : Tc s) (ctx : Ctx) (u : (Va.Env, Int, Core)) : Unfold ! { St s | e } =
+  match u with
+  | (env, arity, body) ->
+      let top = Va.envLen env in
+      let env2 = V.foldl (\e i -> Va.push e (Va.vvar (top + i) "x")) env (V.range 0 arity) in
+      let b = quote tc (top + arity) (eval tc env2 body) in
+      Unfold.Unfold arity (closeAt ctx (top + arity) top b)
+
+-- An unfolding, as an instance's (`Unfold.OnCase`) if `yes`.
+fun onCaseIf (yes : Bool) (u : Unfold) : Unfold =
+  match u with
+  | Unfold.Unfold arity body -> if yes then Unfold.OnCase arity body else u
+  | _ -> u
+
+fun uniqueOf (h : HirArena) (x : HirIdent) : Int = V.getOr (0 - 1) (hirIdentUniques h x) 0
+
+fun bindsOf (h : HirArena) (g : HirGroup) : [HirBind] =
+  match (h, g) with
+  | HirGroupNonRec b -> [b]
+  | HirGroupRec bs -> bs
+
+-- The package `c` checked `m` into, as those that depend on it see it,
+-- `names` what its modules give.
+@pub fun compiledOf (c : Checked s) (m : Renamed) (names : PackageNames) : Compiled ! { St s | e } =
+  let tc = c.tc in
+  let ctx = c.top in
+  let h = hirArena m.hir in
+  let root = hirRoot m.hir in
+  let (low, high, name) = M.unwrapOr (m.first, m.first, "") (V.last m.ranges) in
+  let own = \u -> u >= low and u < high in
+  let constantOf =
+    \u text ->
+      M.map
+        (\ty ->
+          let unfold = M.map (\t -> onCaseIf (V.elem u (getRef tc.onCase)) (exportUnfold tc ctx t)) (Hm.lookup u (getRef tc.transparent)) in
+          Constant.Constant u text (close ctx (quote tc ctx.lvl ty)) None unfold)
+        (Hm.lookup u (getRef tc.constants))
+  in
+  let constantNamed = \x -> M.unwrapOr [] (M.map (\k -> [k]) (constantOf (uniqueOf h x) (hirIdentText h x))) in
+  let ctorName = \cn -> match (h, cn) with | HirCtorFields n _ -> n | HirCtorSig n _ -> n in
+  let fromDatas =
+    V.concatMap
+      (\d -> V.append (constantNamed (hirDataName h d)) (V.concatMap (\cn -> constantNamed (ctorName cn)) (hirDataCtors h d)))
+      (V.filter (\d -> own (uniqueOf h (hirDataName h d))) (hirModuleDatas h root))
+  in
+  let fromEffects =
+    V.concatMap
+      (\e -> V.append (constantNamed (hirEffectName h e)) (V.concatMap (\op -> constantNamed (hirOpName h op)) (hirEffectOps h e)))
+      (V.filter (\e -> own (uniqueOf h (hirEffectName h e))) (hirModuleEffects h root))
+  in
+  let fromNatives = V.concatMap (\n -> constantNamed (hirNativeName h n)) (V.filter (\n -> own (uniqueOf h (hirNativeName h n))) (hirModuleNatives h root)) in
+  -- the definitions: one with a slot has a value the types may see unless
+  -- computing it has effects; a recursive one is a constant already
+  let placeholders = getRef tc.placeholders in
+  let metas = getRef tc.metas in
+  let solutions =
+    V.map
+      (\i -> match V.get metas i with | Just (Meta.Solved v _) -> if V.elem i placeholders then None else Just (quote tc 0 v) | _ -> None)
+      (V.range 0 (V.len metas))
+  in
+  -- (in the order they were checked: `Scc.interleave`)
+  let (inOrder, after, checkedGroups) = interleave h (hirModuleDatas h root) (hirModuleGroups h root) in
+  let groups = V.zip checkedGroups c.lets in
+  let (defs, code, base) =
+    V.foldl
+      (\acc gw ->
+        match (acc, gw) with
+        | ((ks, cs, b), (g, wrap)) ->
+            let binds = bindsOf h g in
+            if not (V.any (\bd -> own (uniqueOf h (hirBindName h bd))) binds) then acc
+            else
+              let step =
+                V.foldl
+                  (\inner bd ->
+                    match inner with
+                    | (ks2, b2) ->
+                        let u = uniqueOf h (hirBindName h bd) in
+                        let text = hirIdentText h (hirBindName h bd) in
+                        (match Hm.lookup u ctx.names with
+                         | Just (Entry.Local level) ->
+                             (match V.get ctx.binders level with
+                              | Just (Binder.Binder info _ ty _ _) ->
+                                  -- its right-hand side, as it was written (closed over the
+                                  -- definitions before it, by their names): not what it
+                                  -- computes to, which takes in all it uses, and can be many
+                                  -- times the size
+                                  let written =
+                                    match (wrap, (h, g)) with
+                                    | (Just (n, rhs), HirGroupNonRec bd0) -> Just (closeAt ctx level level (C.zonked rhs solutions))
+                                    | _ -> None
+                                  in
+                                  let value = if info == Info.Defined then Just (M.unwrapOr (close ctx (quote tc ctx.lvl (X.value ctx level))) written) else None in
+                                  (V.pushBack ks2 (Constant.Constant u text (close ctx (quote tc ctx.lvl ty)) value None), if b2 < 0 then level else b2)
+                              | None -> (ks2, b2))
+                         | _ -> (V.append ks2 (M.unwrapOr [] (M.map (\k -> [k]) (constantOf u text))), b2)))
+                  (ks, b)
+                  binds
+              in
+              let lets =
+                match wrap with
+                | Just (n, rhs) ->
+                    (match (h, g) with
+                     | HirGroupNonRec bd -> V.pushBack cs (TopLet.TopLet (uniqueOf h (hirBindName h bd)) n rhs)
+                     | _ -> cs)
+                | None -> cs
+              in
+              (fst step, lets, snd step))
+      ([], [], 0 - 1)
+      groups
+  in
+  let firstOwn = V.foldl (\acc i -> if acc >= 0 then acc else (match V.get ctx.binders i with | Just (Binder.Binder _ _ _ (Just u) _) -> if own u then i else acc | _ -> acc)) (0 - 1) (V.range 0 ctx.lvl) in
+  let start = if base >= 0 then base else if firstOwn >= 0 then firstOwn else ctx.lvl in
+  let recNames = getRef tc.recNames in
+  let locals = getRef tc.localRecs in
+  let recDefs =
+    V.concatMap
+      (\d -> match d with | (u, l, core) -> if own u then [RecDef.RecDef u (Hm.getOr "" u recNames) l core (V.elem u locals)] else [])
+      (getRef tc.recDefs)
+  in
+  let nativeInfo = getRef tc.nativeInfo in
+  let isType = getRef tc.natives in
+  Compiled {
+    name,
+    low,
+    high,
+    names,
+    constants = V.concat [fromDatas, fromEffects, fromNatives, defs],
+    ctors = V.concatMap (\kv -> if own (fst kv) then [CtorEntry.CtorEntry (fst kv) (snd kv)] else []) (Hm.toVec (getRef tc.ctors)),
+    datas = V.concatMap (\kv -> if own (fst kv) then [DataEntry.DataEntry (fst kv) (snd kv)] else []) (Hm.toVec (getRef tc.datas)),
+    positive = V.concatMap (\kv -> if own (fst kv) then [Positive.Positive (fst kv) (snd kv)] else []) (Hm.toVec (getRef tc.positive)),
+    seqs = V.concatMap (\kv -> match kv with | (u, (n, cs)) -> if own u then [SeqEntry.SeqEntry u n cs] else []) (Hm.toVec (getRef tc.seqs)),
+    effects = V.concatMap (\kv -> if own (fst kv) then [EffectEntry.EffectEntry (fst kv) (snd kv)] else []) (Hm.toVec (getRef tc.effects)),
+    ops = V.concatMap (\kv -> if own (fst kv) then [OpEntry.OpEntry (fst kv) (snd kv)] else []) (Hm.toVec (getRef tc.ops)),
+    natives =
+      V.concatMap
+        (\kv -> match kv with | (u, (n, params)) -> if own u then [NativeEntry.NativeEntry u n params (Hm.getOr False u isType)] else [])
+        (Hm.toVec nativeInfo),
+    base = start,
+    lets = code,
+    recDefs,
+    body = M.map (\b -> Body.Body (fst b) (snd b)) c.answer,
+    main = c.ranMain,
+    symbols = V.concatMap (\kv -> match kv with | (u, (p, path)) -> if own u then [Symbol.Symbol u p path] else []) (Hm.toVec c.symbols),
+    metaSolutions = solutions,
+    hints = sortOn (\u -> u) (V.filter own (getRef tc.hints)),
+    traits = V.filter own (getRef tc.traits),
+    instanceFields = sortOn (\f -> match f with | Fields.Fields u _ -> u) (V.concatMap (\kv -> if own (fst kv) then [Fields.Fields (fst kv) (snd kv)] else []) (Hm.toVec (getRef tc.instanceFields))),
+    opens = sortOn (\f -> match f with | OpensEntry.OpensEntry u _ -> u) (V.concatMap (\kv -> if own (fst kv) then [OpensEntry.OpensEntry (fst kv) (snd kv)] else []) (Hm.toVec (getRef tc.opens)))
+  }

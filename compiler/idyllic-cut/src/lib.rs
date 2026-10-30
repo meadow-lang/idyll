@@ -18,7 +18,17 @@ use std::fmt;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Rep {
     I64,
+    /// a sized integer, `i8` to `u64`; `u8` is also what `stringByteAt`
+    /// gives, which `toInt` makes an `i64`
+    Word(idyllic_builtins::Width),
+    /// an IEEE double, and an IEEE single
+    F64,
+    F32,
     Bool,
+    /// a Unicode scalar value: what `stringToChars` gives and
+    /// `charsToString` takes, which `charCode` and `charFromCode` go between
+    /// it and an `i64`
+    Char,
     Unit,
     Str,
     Ptr,
@@ -28,6 +38,18 @@ pub enum Rep {
     Var(String),
     /// boxed, and self-describing at run time
     Any,
+}
+
+impl Rep {
+    /// How a number of type `n` is held.
+    pub fn number(n: idyllic_builtins::NumTy) -> Rep {
+        match n {
+            idyllic_builtins::NumTy::Int => Rep::I64,
+            idyllic_builtins::NumTy::Word(w) => Rep::Word(w),
+            idyllic_builtins::NumTy::Float => Rep::F64,
+            idyllic_builtins::NumTy::Float32 => Rep::F32,
+        }
+    }
 }
 
 /// A flat, globally unique name: `idyll:App/Math.double`.  Kept as its parts;
@@ -117,7 +139,11 @@ pub enum Producer {
     /// a top-level value, by its symbol
     Val(Symbol),
     Int(i64),
+    /// written with a point, always: `2.0`
+    Float(f64),
     Str(String),
+    /// a character, `'a'`
+    Char(char),
     Bool(bool),
     Unit,
     /// a descriptor for a representation known when compiled

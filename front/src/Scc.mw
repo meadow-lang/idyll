@@ -1,0 +1,375 @@
+-- The dependency order of definitions: `compiler/idyllic-scc`, as a pass
+-- (`regroup`, from `Hir` to `Hir`).
+--
+-- The renamer makes every `let` and the top level one recursive group,
+-- which is the safe guess. This pass makes the groups the definitions'
+-- strongly connected components: a definition that does not, through the
+-- others, mention itself is not recursive; definitions that mention each
+-- other are one recursive group; and each group comes after the groups it
+-- uses (Tarjan's algorithm finds them in that order). A definition by
+-- matching with a signature is recursive even if it never calls itself,
+-- since the checker then keeps it a constant that unfolds only when its
+-- cases can choose.
+--
+-- The data types are put in order too: a data type's kind, and its
+-- parameters' kinds, may mention only the types before it.
+--
+-- The hints come before what may want them, which is everything they do
+-- not need themselves, since a search for an auto argument finds only what
+-- has been checked; so do a trait's superclass projections, which a search
+-- may go through without their being named. A hint with its signature is
+-- recursive, as an instance's methods find the instance itself.
+--
+-- The pass has two cases, the two places groups are: the module, and a
+-- `let`. Everything else it copies as it is. Its context is the hints and
+-- what comes early, which only the module's own groups are ordered by.
+
+use Std.St (StRef, newRef, getRef, setRef, runSt)
+use Lingua (pass!)
+use Idyll.Rename
+use Idyll.Rename (Hir!)
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as Hm
+use Std.Collections.HashMap (HashMap)
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+-- A package's definitions put in order, for the checker.
+@pub fun sccModule (r : Renamed) : Renamed =
+  let early = V.append r.hints (V.concatMap snd (Hm.toVec r.supers)) in
+  { r | hir = regroup (Early r.hints early) r.hir }
+
+-- The hints, and what comes first: the hints and the superclass projections.
+data Early = Early [Int] [Int]
+
+def none = Early [] []
+
+pass! {
+  pub regroup : Hir -> Hir with k
+    | Module { raw datas, effects, natives, raw groups, body } ->
+        Module {
+          datas = V.map (\d -> regroupData src out k d) (orderDatas src datas),
+          effects,
+          natives,
+          -- each top-level group apart: the prelude's come before the program's
+          groups = V.concatMap (\g -> sccGroups src out k [g]) groups,
+          body
+        }
+    | Let { raw groups, body } -> Let { groups = sccGroups src out none groups, body }
+}
+
+-- --- data types ----------------------------------------------------------------
+
+fun dataUnique (a : HirArena) (d : HirData) : Int = V.getOr (0 - 1) (hirIdentUniques a (hirDataName a d)) 0
+
+fun orderDatas (a : HirArena) (datas : [HirData]) : [HirData] =
+  let index =
+    V.foldl (\acc i -> match V.get datas i with | Just d -> Hm.insert (dataUnique a d) i acc | None -> acc) Hm.empty (V.range 0 (V.len datas))
+  in
+  let needs =
+    V.map
+      (\i ->
+        match V.get datas i with
+        | Just d ->
+            let kinds =
+              V.append (V.concatMap (\p -> vecOf (hirTypeParamKindSig a p)) (hirDataParams a d)) (vecOf (hirDataKindSig a d))
+            in
+            let mentioned = V.foldl (\s k -> freeInto a k s) Hm.empty kinds in
+            sortInts (V.filter (\j -> j != i) (V.concatMap (\u -> vecOf (Hm.lookup u index)) (Hm.keys mentioned)))
+        | None -> [])
+      (V.range 0 (V.len datas))
+  in
+  -- (what it has seen and the order, its own state)
+  runSt (\() ->
+    let seen = newRef Hm.empty in
+    let order = newRef [] in
+    let w = V.foldl (\acc i -> visitData i needs seen order) () (V.range 0 (V.len datas)) in
+    V.concatMap (\i -> vecOf (V.get datas i)) (getRef order))
+
+fun visitData (i : Int) (needs : [[Int]]) seen order =
+  if Hm.member i (getRef seen) then ()
+  else
+    let w = setRef seen (Hm.insert i True (getRef seen)) in
+    let w2 = V.foldl (\acc j -> visitData j needs seen order) () (V.getOr [] needs i) in
+    setRef order (V.pushBack (getRef order) i)
+
+fun sortInts (xs : [Int]) : [Int] =
+  V.foldl (\acc x -> V.concat [V.filter (\y -> y <= x) acc, [x], V.filter (\y -> y > x) acc]) [] xs
+
+-- --- groups ------------------------------------------------------------------
+
+fun bindsOf (a : HirArena) (g : HirGroup) : [HirBind] =
+  match (a, g) with
+  | HirGroupNonRec b -> [b]
+  | HirGroupRec bs -> bs
+
+-- The definitions of `groups` split into their components, dependencies
+-- first, each component's members in the order they came -- and written,
+-- each with what is under it regrouped too.
+fun sccGroups (a : HirArena) out (k : Early) (groups : [HirGroup]) =
+  let hints = match k with | Early.Early h _ -> h in
+  let early = match k with | Early.Early _ e -> e in
+  let binds = V.concatMap (bindsOf a) groups in
+  let n = V.len binds in
+  let uniqueOf = \b -> V.getOr (0 - 1) (hirIdentUniques a (hirBindName a b)) 0 in
+  let indexOf = V.foldl (\acc i -> match V.get binds i with | Just b -> Hm.insert (uniqueOf b) i acc | None -> acc) Hm.empty (V.range 0 n) in
+  let edges =
+    V.map
+      (\b ->
+        let free = V.foldl (\s t -> freeInto a t s) (freeInto a (hirBindRhs a b) Hm.empty) (vecOf (hirBindTy a b)) in
+        sortInts (V.concatMap (\u -> vecOf (Hm.lookup u indexOf)) (Hm.keys free)))
+      binds
+  in
+  V.map
+    (\comp ->
+      let members = sortInts comp in
+      let bs = V.concatMap (\i -> vecOf (V.get binds i)) members in
+      let selfEdge = V.len members == 1 and V.elem (V.getOr 0 members 0) (V.getOr [] edges (V.getOr 0 members 0)) in
+      let byMatching =
+        match (V.len bs, V.get bs 0) with
+        | (1, Just b) -> M.isSome (hirBindTy a b) and kindHirExpr a (hirBindRhs a b) == HirExprKind.Match
+        | _ -> False
+      in
+      let hint =
+        match (V.len bs, V.get bs 0) with
+        | (1, Just b) -> M.isSome (hirBindTy a b) and V.elem (uniqueOf b) hints
+        | _ -> False
+      in
+      let written = V.map (\b -> regroupBind a out k b) bs in
+      let m = match V.get bs 0 with | Just b -> metaHirBind a b | None -> metaHirGroup a (V.getOr 0 groups 0) in
+      match (V.len bs, V.get written 0) with
+      | (1, Just b) if not selfEdge and not byMatching and not hint -> newHirGroupNonRec out m b
+      | _ -> newHirGroupRec out m written)
+    (earlyFirst (V.map (\b -> V.elem (uniqueOf b) early) binds) (V.map (\b -> V.elem (uniqueOf b) hints) binds) edges (components n edges))
+
+-- The components, dependencies first as Tarjan's algorithm finds them, with
+-- each holding one that is `early` (a hint, a superclass projection) and
+-- what it needs moved as far forward as they can go: the projections first,
+-- in the order they come, then the hints (a search for a hint's own auto
+-- arguments may go through a projection it does not name).
+fun earlyFirst (early : [Bool]) (isHint : [Bool]) (edges : [[Int]]) (comps : [[Int]]) : [[Int]] =
+  if not (V.any (\b -> b) early) then comps
+  else
+    let componentOf =
+      V.foldl
+        (\acc c -> V.foldl (\acc2 v -> Hm.insert v c acc2) acc (V.getOr [] comps c))
+        Hm.empty
+        (V.range 0 (V.len comps))
+    in
+    runSt (\() ->
+      let done = newRef Hm.empty in
+      let order = newRef [] in
+      let earlies = V.filter (\i -> V.getOr False early i) (V.range 0 (V.len early)) in
+      let firsts = V.append (V.filter (\i -> not (V.getOr False isHint i)) earlies) (V.filter (\i -> V.getOr False isHint i) earlies) in
+      let w1 = V.foldl (\acc v -> emitComponent (Hm.getOr 0 v componentOf) comps edges componentOf done order) () firsts in
+      let w2 = V.foldl (\acc c -> emitComponent c comps edges componentOf done order) () (V.range 0 (V.len comps)) in
+      V.map (\c -> V.getOr [] comps c) (getRef order))
+
+fun emitComponent (c : Int) (comps : [[Int]]) (edges : [[Int]]) componentOf done order =
+  if Hm.member c (getRef done) then ()
+  else
+    let w = setRef done (Hm.insert c True (getRef done)) in
+    let w2 =
+      V.foldl
+        (\acc v -> V.foldl (\acc2 x -> emitComponent (Hm.getOr 0 x componentOf) comps edges componentOf done order) () (V.getOr [] edges v))
+        ()
+        (V.getOr [] comps c)
+    in
+    setRef order (V.pushBack (getRef order) c)
+
+-- The strongly connected components of a graph of `n` nodes, by Tarjan's
+-- algorithm: each comes out after every component it reaches.
+@pub fun components (n : Int) (edges : [[Int]]) : [[Int]] =
+  runSt (\() ->
+    let t =
+      Tarjan {
+        index = newRef Hm.empty,
+        low = newRef Hm.empty,
+        onStack = newRef Hm.empty,
+        stack = newRef [],
+        next = newRef 0,
+        components = newRef []
+      }
+    in
+    let w = V.foldl (\acc v -> if Hm.member v (getRef t.index) then () else visit t v edges) () (V.range 0 n) in
+    getRef t.components)
+
+-- Tarjan's state, the algorithm's own.
+record Tarjan s = {
+  index : StRef s (HashMap Int Int),
+  low : StRef s (HashMap Int Int),
+  onStack : StRef s (HashMap Int Bool),
+  stack : StRef s [Int],
+  next : StRef s Int,
+  components : StRef s [[Int]]
+}
+
+fun visit (t : Tarjan s) (v : Int) (edges : [[Int]]) =
+  let i = getRef t.next in
+  let w1 = setRef t.index (Hm.insert v i (getRef t.index)) in
+  let w2 = setRef t.low (Hm.insert v i (getRef t.low)) in
+  let w3 = setRef t.next (i + 1) in
+  let w4 = setRef t.stack (V.pushBack (getRef t.stack) v) in
+  let w5 = setRef t.onStack (Hm.insert v True (getRef t.onStack)) in
+  let w6 =
+    V.foldl
+      (\acc w ->
+        match Hm.lookup w (getRef t.index) with
+        | None ->
+            let u = visit t w edges in
+            lower t v (Hm.getOr 0 w (getRef t.low))
+        | Just wi -> if Hm.getOr False w (getRef t.onStack) then lower t v wi else ())
+      ()
+      (V.getOr [] edges v)
+  in
+  if Hm.getOr 0 v (getRef t.low) == i then setRef t.components (V.pushBack (getRef t.components) (popTo t v [])) else ()
+
+fun lower (t : Tarjan s) (v : Int) (x : Int) =
+  if x < Hm.getOr 0 v (getRef t.low) then setRef t.low (Hm.insert v x (getRef t.low)) else ()
+
+fun popTo (t : Tarjan s) (v : Int) (acc : [Int]) : [Int] ! { St s | e } =
+  match V.last (getRef t.stack) with
+  | Just w ->
+      let u = setRef t.stack (V.take (getRef t.stack) (V.len (getRef t.stack) - 1)) in
+      let u2 = setRef t.onStack (Hm.insert w False (getRef t.onStack)) in
+      if w == v then V.pushBack acc w else popTo t v (V.pushBack acc w)
+  | None -> acc
+
+-- --- free names ----------------------------------------------------------------
+
+type Names = HashMap Int Bool
+
+fun uniquesInto (a : HirArena) (x : HirIdent) (s : Names) : Names = V.foldl (\acc u -> Hm.insert u True acc) s (hirIdentUniques a x)
+
+fun uniqueOf (a : HirArena) (x : HirIdent) : Int = V.getOr (0 - 1) (hirIdentUniques a x) 0
+
+-- The uniques a term uses and does not bind, added to a set.
+@pub fun freeInto (a : HirArena) (t : HirExpr) (s : Names) : Names = united s (freeExpr a t)
+
+fun united (a : Names) (b : Names) : Names = V.foldl (\acc u -> Hm.insert u True acc) a (Hm.keys b)
+
+-- `body`'s, but the binder `x`'s.
+fun bound (a : HirArena) (x : HirIdent) (body : Names) : Names = Hm.delete (uniqueOf a x) body
+
+fun some (x : Maybe Names) : Names = M.unwrapOr Hm.empty x
+
+-- The uniques a term uses and does not bind: a name's, a constructor's in a
+-- pattern, a handled operation's. (Names are unique, so what a clause's
+-- patterns bind cannot be mistaken for anything outside it, and is left
+-- in: only the members of a group are looked up.)
+pass! {
+  free : Hir -> Names from Expr, Group
+    fold Hm.empty united
+    | Expr.Var { raw ident } -> uniquesInto src ident Hm.empty
+    | Con { raw ctor, args } -> V.foldl united (uniquesInto src ctor Hm.empty) args
+    | HandleClause { raw op, body } -> united (M.unwrapOr Hm.empty (M.map (\x -> uniquesInto src x Hm.empty) op)) body
+    | LetBox { raw name, value, body } -> united value (bound src name body)
+    | Pi { raw name, grade, dom, cod } ->
+        united (united (some grade) dom) (match name with | Just x -> bound src x cod | None -> cod)
+    | Lam { raw name, grade, ty, body } -> united (united (some grade) (some ty)) (bound src name body)
+    | Let { raw groups, body } ->
+        (let binds = V.concatMap (bindsOf src) groups in
+         let inner = united (V.foldl (\acc g -> united acc (freeGroup src g)) Hm.empty groups) body in
+         V.foldl (\acc b -> Hm.delete (uniqueOf src (hirBindName src b)) acc) inner binds)
+}
+
+fun vecOf (m : Maybe a) : [a] =
+  match m with
+  | Just x -> [x]
+  | None -> []
+
+-- --- data types among the definitions ------------------------------------------
+
+-- What a data type's declaration mentions: its parameters' kinds, its kind,
+-- and its constructors' types.
+fun dataMentions (a : HirArena) (d : HirData) : Names =
+  let kinds = V.append (V.concatMap (\p -> vecOf (hirTypeParamKindSig a p)) (hirDataParams a d)) (vecOf (hirDataKindSig a d)) in
+  let fromKinds = V.foldl (\s k -> freeInto a k s) Hm.empty kinds in
+  V.foldl
+    (\s c ->
+      match (a, c) with
+      | HirCtorFields n ts -> V.foldl (\acc t -> freeInto a t acc) s ts
+      | HirCtorSig n ty -> freeInto a ty s)
+    fromKinds
+    (hirDataCtors a d)
+
+-- A data type's own uniques: its name's and its constructors'.
+fun dataOwn (a : HirArena) (d : HirData) : [Int] =
+  V.append
+    [uniqueOf a (hirDataName a d)]
+    (V.map (\c -> match (a, c) with | HirCtorFields n ts -> uniqueOf a n | HirCtorSig n ty -> uniqueOf a n) (hirDataCtors a d))
+
+-- The data types and the groups in one order, each after what it mentions
+-- (`idyllic_scc::interleave`): a data type before every group, unless it
+-- mentions a definition (a type alias, a type family, a trait's associated
+-- type), when it comes after that definition's group, and every group that
+-- mentions it after it; otherwise everything keeps its place. The data
+-- types in their new order, how many groups come before each, and the
+-- groups.
+@pub fun interleave (a : HirArena) (datas : [HirData]) (groups : [HirGroup]) : ([HirData], [Int], [HirGroup]) =
+  let nd = V.len datas in
+  let ng = V.len groups in
+  let groupOf =
+    V.foldl
+      (\acc g -> V.foldl (\acc2 b -> Hm.insert (uniqueOf a (hirBindName a b)) g acc2) acc (V.concatMap (bindsOf a) (vecOf (V.get groups g))))
+      Hm.empty
+      (V.range 0 ng)
+  in
+  let mentions = V.map (\d -> Hm.keys (dataMentions a d)) datas in
+  if not (V.any (\m -> V.any (\u -> Hm.member u groupOf) m) mentions) then (datas, V.replicate nd 0, groups)
+  else
+    let dataOf2 = V.foldl (\acc i -> match V.get datas i with | Just d -> V.foldl (\acc2 u -> Hm.insert u i acc2) acc (dataOwn a d) | None -> acc) Hm.empty (V.range 0 nd) in
+    let n = nd + ng in
+    let dataNeeds =
+      V.map
+        (\i ->
+          let m = V.getOr [] mentions i in
+          let gs = V.concatMap (\u -> match Hm.lookup u groupOf with | Just g -> [nd + g] | None -> []) m in
+          let ds = V.concatMap (\u -> match Hm.lookup u dataOf2 with | Just j -> if j != i then [j] else [] | None -> []) m in
+          V.append gs ds)
+        (V.range 0 nd)
+    in
+    let groupNeeds =
+      V.map
+        (\g ->
+          let binds = V.concatMap (bindsOf a) (vecOf (V.get groups g)) in
+          let free = V.foldl (\s b -> V.foldl (\s2 t -> freeInto a t s2) (freeInto a (hirBindRhs a b) s) (vecOf (hirBindTy a b))) Hm.empty binds in
+          V.concatMap
+            (\u ->
+              V.append
+                (match Hm.lookup u groupOf with | Just h -> if h != g then [nd + h] else [] | None -> [])
+                (match Hm.lookup u dataOf2 with | Just j -> [j] | None -> []))
+            (Hm.keys free))
+        (V.range 0 ng)
+    in
+    let needs = V.append dataNeeds groupNeeds in
+    let place =
+      V.append
+        (V.map (\m -> V.foldl (\acc u -> match Hm.lookup u groupOf with | Just g -> if 2 * (g + 1) > acc then 2 * (g + 1) else acc | None -> acc) 0 m) mentions)
+        (V.map (\g -> 2 * g + 1) (V.range 0 ng))
+    in
+    let order = kahn needs place n [] Hm.empty in
+    let (outDatas, after, outGroups) =
+      V.foldl
+        (\acc v ->
+          match acc with
+          | (ds, af, gs) ->
+              if v < nd then (V.append ds (vecOf (V.get datas v)), V.pushBack af (V.len gs), gs)
+              else (ds, af, V.append gs (vecOf (V.get groups (v - nd)))))
+        ([], [], [])
+        order
+    in
+    (outDatas, after, outGroups)
+
+-- Whatever is ready, the one whose place is first; at a cycle, what is
+-- left, in place order.
+fun kahn (needs : [[Int]]) (place : [Int]) (n : Int) (order : [Int]) (done : HashMap Int Bool) : [Int] =
+  if V.len order >= n then order
+  else
+    let pending = V.filter (\v -> not (Hm.member v done)) (V.range 0 n) in
+    let ready = V.filter (\v -> V.all (\w -> Hm.member w done) (V.getOr [] needs v)) pending in
+    let pick = \vs -> V.foldl (\best v -> match best with | Just b -> if V.getOr 0 place v < V.getOr 0 place b then Just v else best | None -> Just v) None vs in
+    let next = match pick ready with | Just v -> Just v | None -> pick pending in
+    match next with
+    | Just v -> kahn needs place n (V.pushBack order v) (Hm.insert v True done)
+    | None -> order

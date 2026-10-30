@@ -2,8 +2,8 @@
 //!
 //! The runtimes print only strings (`docs/CUT.md`: `answer` is `none` or
 //! `str`), so a program whose value is anything else is given code that
-//! turns it into one, in the form Idyll's REPL, AxCut machine and reference
-//! interpreter show it: `42`, `True`, `()`, `"text"`, `[v]`, `#[1; 2]`,
+//! turns it into one, in the form Idyll's REPL and reference interpreter
+//! show it: `42`, `True`, `()`, `"text"`, `[v]`, `#[1; 2]`,
 //! `(1, True)`, `x :: xs`, `Just (Ok 3)`. Then every implementation's answer
 //! can be compared as text.
 //!
@@ -53,11 +53,16 @@ impl Lower<'_> {
     fn flat_rep(&mut self, s: &Scope, ty: &Rc<Value>) -> Rep {
         match self.typer.rep(s, ty) {
             typer::Rep::I64 => Rep::I64,
+            typer::Rep::Word(w) => Rep::Word(w),
+            typer::Rep::F64 => Rep::F64,
+            typer::Rep::F32 => Rep::F32,
             typer::Rep::Bool => Rep::Bool,
             typer::Rep::Unit | typer::Rep::Erased => Rep::Unit,
             typer::Rep::Str => Rep::Str,
+            typer::Rep::Char => Rep::Char,
             typer::Rep::Ptr => Rep::Ptr,
-            typer::Rep::Var(_) | typer::Rep::Any => Rep::Any,
+            typer::Rep::Desc => Rep::Desc,
+            typer::Rep::Var(_) | typer::Rep::Field(..) | typer::Rep::Any => Rep::Any,
         }
     }
 
@@ -75,6 +80,24 @@ impl Lower<'_> {
                 Statement::Prim("if".into(), vec![x], vec![branch(f, "False", k.clone()), branch(t, "True", k)])
             }
             Shown::Unit => Statement::Cut(text("()"), k),
+            Shown::Number => Statement::Prim("display".into(), vec![x], vec![k]),
+            // in single quotes, escaped as a one-character string is, but
+            // for `'`, and `"`, which needs no escape here (`show_char`)
+            Shown::Char => {
+                let escape = self.escape_def();
+                let (code, one, e) = (self.name("code"), self.name("s"), self.name("e"));
+                let quoted = concat(vec![text("'"), Producer::Var(e.clone()), text("'")], k.clone());
+                let general = prim_then(
+                    "charsToString",
+                    vec![Producer::Array(vec![x.clone()])],
+                    &one,
+                    Rep::Str,
+                    Statement::Call(escape, vec![Producer::Var(one.clone())], vec![str_binder(e, quoted)]),
+                );
+                let not_quote = test_eq(self, Producer::Var(code.clone()), Producer::Int(34), general, Statement::Cut(text("'\"'"), k.clone()));
+                let body = test_eq(self, Producer::Var(code.clone()), Producer::Int(39), not_quote, Statement::Cut(text("'\\''"), k));
+                prim_then("charCode", vec![x], &code, Rep::I64, body)
+            }
             Shown::Str => {
                 let escape = self.escape_def();
                 let e = self.name("e");

@@ -1,0 +1,337 @@
+-- A persistent hash map, keyed by any type with a `Hash`, as Meadow's
+-- `Std.Collections.HashMap` is. Reach these as `HashMap.insert` etc.
+--
+-- The structure is a hash array mapped trie, as in Rust's `im::HashMap` or
+-- Clojure's maps: each level takes five bits of the key's hash, and a node
+-- keeps a 32-bit bitmap of which of its 32 slots are in use and an array of
+-- just those. Finding a slot is `popCount` on the bitmap, so a node costs
+-- what it holds rather than 32 slots. A lookup reads at most 13 levels; an
+-- update copies one small array per level it passes through, and every map
+-- it was made from is untouched.
+--
+-- Two keys whose 64-bit hashes are the same share a collision node,
+-- searched with `==`. Deleting collapses a node left holding one entry, so a
+-- map's shape depends only on what is in it, not on the order it was built
+-- in.
+--
+-- A map is only found by the hashes it was built with, so the `Hash` is part
+-- of its type, as a `Map`'s `Ord` is: `HashMapBy k h v` is a map keyed by
+-- `k`, hashed by `h`, and `HashMap k v` is `HashMapBy k h v` for the
+-- `Hash k` a search finds where it is written.
+--
+-- The loops count an index up to a length, or follow the trie down five
+-- bits of a hash at a time, neither of which the checker sees getting
+-- smaller: `@terminating` says they end.
+
+use Std.Hash (Hash, hash)
+use Std.Num.Bits (Bits, bitAnd, bitOr, bitXor, shl, ushr, popCount)
+use Std.Collections.Vector (Vector)
+use Std.Collections.Vector as V
+use Std.Collections.Array as A
+use Std.Tuple (fst, snd)
+
+-- A node: the bitmap of occupied slots and those slots, in slot order; or,
+-- below the last level, entries whose whole hash is the one given.
+@pub
+data HNode (k : Type) (v : Type) = Bitmap Int (Array (HSlot k v)) | Collision Int (Array (k, v))
+
+-- An occupied slot: an entry with its key's hash, or the node below.
+@pub
+data HSlot (k : Type) (v : Type) = Entry Int k v | Child (HNode k v)
+
+use HNode.*
+use HSlot.*
+
+-- How many entries, and the root.
+@pub
+data HashMapBy (k : Type) (h : Hash k) (v : Type) = HashMapBy Int (HNode k v)
+
+use HashMapBy.*
+
+-- A map hashed by the `Hash k` found where it is written.
+@pub
+HashMap : (k : Type) -> {auto h : Hash k} -> (v : Type) -> Type
+HashMap k @{h} v = HashMapBy k h v
+
+-- A 64-bit hash, five bits a level: levels 0 to 12 use it up.
+bitsPerLevel : Int
+bitsPerLevel = 5
+
+lastShift : Int
+lastShift = 60
+
+noSlots : {k v : Type} -> Array (HSlot k v)
+noSlots = #[;]
+
+@pub
+empty : {k v : Type} -> {auto h : Hash k} -> HashMap k v
+empty = HashMapBy 0 (Bitmap 0 noSlots)
+
+@pub
+singleton : {k v : Type} -> {auto h : Hash k} -> (key : k) -> (val : v) -> HashMap k v
+singleton key val = insert key val empty
+
+@pub
+size : {k v : Type} -> {auto h : Hash k} -> (m : HashMap k v) -> Int
+size (HashMapBy n root) = n
+
+@pub
+isEmpty : {k v : Type} -> {auto h : Hash k} -> (m : HashMap k v) -> Bool
+isEmpty m = size m == 0
+
+-- --- arrays ------------------------------------------------------------------
+
+arrayInsert : {a : Type} -> (xs : Array a) -> (i : Int) -> (x : a) -> Array a
+arrayInsert xs i x = arrayConcat (arrayPush (arraySlice xs 0 i) x) (arraySlice xs i (arrayLen xs))
+
+arrayRemove : {a : Type} -> (xs : Array a) -> (i : Int) -> Array a
+arrayRemove xs i = arrayConcat (arraySlice xs 0 i) (arraySlice xs (i + 1) (arrayLen xs))
+
+-- The place of the pair whose key is `key`, if there is one.
+pairIndex : {k v : Type} -> {auto e : PartialEq k} -> (key : k) -> (pairs : Array (k, v)) -> Maybe Int
+pairIndex key pairs = pairFrom key pairs 0
+
+@terminating
+pairFrom : {k v : Type} -> {auto e : PartialEq k} -> (key : k) -> (pairs : Array (k, v)) -> (i : Int) -> Maybe Int
+pairFrom key pairs i =
+  if i >= arrayLen pairs then Nothing
+  else if fst (arrayGet pairs i) == key then Just i
+  else pairFrom key pairs (i + 1)
+
+-- --- slots -------------------------------------------------------------------
+
+-- The bit for hash `hk` at `shift`, and where that slot is among those in use.
+bitAt : (hk : Int) -> (shift : Int) -> Int
+bitAt hk shift = shl 1 (bitAnd (ushr hk shift) 31)
+
+slotIndex : (bitmap : Int) -> (bit : Int) -> Int
+slotIndex bitmap bit = popCount (bitAnd bitmap (bit - 1))
+
+-- Whether an entry's key, with its hash, is `key`, with its: the hashes
+-- first, which are cheap to compare.
+sameKey : {k : Type} -> {auto e : PartialEq k} -> (eh : Int) -> (ek : k) -> (hk : Int) -> (key : k) -> Bool
+sameKey eh ek hk key = if eh == hk then ek == key else False
+
+-- --- reading -----------------------------------------------------------------
+
+-- What `key` holds, if anything.
+@pub
+lookup : {k v : Type} -> {auto h : Hash k} -> (key : k) -> (m : HashMap k v) -> Maybe v
+lookup key m = lookupHashed (hash key) key m
+
+lookupHashed : {k v : Type} -> {auto h : Hash k} -> (hk : Int) -> (key : k) -> (m : HashMap k v) -> Maybe v
+lookupHashed hk key (HashMapBy n root) = lookupIn hk 0 key root
+
+@terminating
+lookupIn : {k v : Type} -> {auto e : PartialEq k} -> (hk : Int) -> (shift : Int) -> (key : k) -> (node : HNode k v) -> Maybe v
+lookupIn hk shift key (Bitmap bitmap slots) =
+  let bit = bitAt hk shift in
+  if bitAnd bitmap bit == 0 then Nothing
+  else case arrayGet slots (slotIndex bitmap bit) of
+    Child sub -> lookupIn hk (shift + bitsPerLevel) key sub
+    Entry eh ek ev -> if sameKey eh ek hk key then Just ev else Nothing
+lookupIn hk shift key (Collision ch pairs) =
+  if ch != hk then Nothing
+  else case pairIndex key pairs of
+    Just i -> Just (snd (arrayGet pairs i))
+    Nothing -> Nothing
+
+@pub
+member : {k v : Type} -> {auto h : Hash k} -> (key : k) -> (m : HashMap k v) -> Bool
+member key m = case lookup key m of
+  Just x -> True
+  Nothing -> False
+
+@pub
+getOr : {k v : Type} -> {auto h : Hash k} -> (default : v) -> (key : k) -> (m : HashMap k v) -> v
+getOr default key m = case lookup key m of
+  Just x -> x
+  Nothing -> default
+
+-- --- writing -----------------------------------------------------------------
+
+-- `m` with `key` holding `val`, in place of what it held.
+@pub
+insert : {k v : Type} -> {auto h : Hash k} -> (key : k) -> (val : v) -> (m : HashMap k v) -> HashMap k v
+insert key val m = insertHashed (hash key) key val m
+
+insertHashed : {k v : Type} -> {auto h : Hash k} -> (hk : Int) -> (key : k) -> (val : v) -> (m : HashMap k v) -> HashMap k v
+insertHashed hk key val (HashMapBy n root) = case insertIn hk 0 key val root of
+  (root2, added) -> HashMapBy (if added then n + 1 else n) root2
+
+-- The new node, and whether an entry was added rather than replaced.
+@terminating
+insertIn : {k v : Type} -> {auto e : PartialEq k} -> (hk : Int) -> (shift : Int) -> (key : k) -> (val : v) -> (node : HNode k v) -> (HNode k v, Bool)
+insertIn hk shift key val (Collision ch pairs) =
+  -- (reached only by a key whose whole hash is `ch`)
+  case pairIndex key pairs of
+    Just i -> (Collision ch (arraySet pairs i (key, val)), False)
+    Nothing -> (Collision ch (arrayPush pairs (key, val)), True)
+insertIn hk shift key val (Bitmap bitmap slots) =
+  let bit = bitAt hk shift in
+  let i = slotIndex bitmap bit in
+  if bitAnd bitmap bit == 0 then (Bitmap (bitOr bitmap bit) (arrayInsert slots i (Entry hk key val)), True)
+  else case arrayGet slots i of
+    Child sub -> case insertIn hk (shift + bitsPerLevel) key val sub of
+      (sub2, added) -> (Bitmap bitmap (arraySet slots i (Child sub2)), added)
+    Entry eh ek ev ->
+      if sameKey eh ek hk key then (Bitmap bitmap (arraySet slots i (Entry hk key val)), False)
+      else (Bitmap bitmap (arraySet slots i (Child (split (shift + bitsPerLevel) eh ek ev hk key val))), True)
+
+-- A node holding two entries with different keys whose hashes agree up to
+-- `shift`: a level for each five bits they share, then a collision node once
+-- the hashes are used up.
+@terminating
+split : {k v : Type} -> (shift : Int) -> (h1 : Int) -> (k1 : k) -> (v1 : v) -> (h2 : Int) -> (k2 : k) -> (v2 : v) -> HNode k v
+split shift h1 k1 v1 h2 k2 v2 =
+  if shift > lastShift then Collision h1 #[(k1, v1); (k2, v2)]
+  else
+    let i1 = bitAnd (ushr h1 shift) 31 in
+    let i2 = bitAnd (ushr h2 shift) 31 in
+    if i1 == i2 then Bitmap (shl 1 i1) (arrayPush noSlots (Child (split (shift + bitsPerLevel) h1 k1 v1 h2 k2 v2)))
+    else if i1 < i2 then Bitmap (bitOr (shl 1 i1) (shl 1 i2)) (arrayPush (arrayPush noSlots (Entry h1 k1 v1)) (Entry h2 k2 v2))
+    else Bitmap (bitOr (shl 1 i1) (shl 1 i2)) (arrayPush (arrayPush noSlots (Entry h2 k2 v2)) (Entry h1 k1 v1))
+
+-- `m` without `key`.
+@pub
+delete : {k v : Type} -> {auto h : Hash k} -> (key : k) -> (m : HashMap k v) -> HashMap k v
+delete key m = deleteHashed (hash key) key m
+
+deleteHashed : {k v : Type} -> {auto h : Hash k} -> (hk : Int) -> (key : k) -> (m : HashMap k v) -> HashMap k v
+deleteHashed hk key (HashMapBy n root) = case deleteIn hk 0 key root of
+  (root2, removed) -> if removed then HashMapBy (n - 1) root2 else HashMapBy n root
+
+-- The new node, and whether anything was removed.
+@terminating
+deleteIn : {k v : Type} -> {auto e : PartialEq k} -> (hk : Int) -> (shift : Int) -> (key : k) -> (node : HNode k v) -> (HNode k v, Bool)
+deleteIn hk shift key (Collision ch pairs) = case pairIndex key pairs of
+  Just i -> (Collision ch (arrayRemove pairs i), True)
+  Nothing -> (Collision ch pairs, False)
+deleteIn hk shift key (Bitmap bitmap slots) =
+  let bit = bitAt hk shift in
+  if bitAnd bitmap bit == 0 then (Bitmap bitmap slots, False)
+  else
+    let i = slotIndex bitmap bit in
+    case arrayGet slots i of
+      Entry eh ek ev ->
+        if sameKey eh ek hk key then (Bitmap (bitXor bitmap bit) (arrayRemove slots i), True)
+        else (Bitmap bitmap slots, False)
+      Child sub -> case deleteIn hk (shift + bitsPerLevel) key sub of
+        (sub2, removed) ->
+          if removed then (Bitmap bitmap (arraySet slots i (collapse sub2)), True)
+          else (Bitmap bitmap slots, False)
+
+-- What a child that just lost an entry becomes in its parent's slot. A node
+-- down to one entry is that entry, the shape the same contents would have
+-- had if that key had been inserted alone, which keeps a map's shape a
+-- function of what is in it.
+collapse : {k v : Type} -> (node : HNode k v) -> HSlot k v
+collapse (Collision ch pairs) =
+  if arrayLen pairs == 1 then Entry ch (fst (arrayGet pairs 0)) (snd (arrayGet pairs 0)) else Child (Collision ch pairs)
+collapse (Bitmap bitmap slots) =
+  if arrayLen slots == 1 then
+    case arrayGet slots 0 of
+      Entry eh ek ev -> Entry eh ek ev
+      Child sub -> Child (Bitmap bitmap slots)
+  else Child (Bitmap bitmap slots)
+
+-- What `key` holds, given to `f`, if it holds anything.
+@pub
+adjust : {k v : Type} -> {auto h : Hash k} -> (key : k) -> (f : ((x : v) -> v ! e)) -> (m : HashMap k v) -> HashMap k v ! e
+adjust key f m = case lookup key m of
+  Just x -> insert key (f x) m
+  Nothing -> m
+
+-- `insert`, combining with what `key` held as `f new old`.
+@pub
+insertWith : {k v : Type} -> {auto h : Hash k} -> (f : ((new : v) -> (old : v) -> v ! e)) -> (key : k) -> (val : v) -> (m : HashMap k v) -> HashMap k v ! e
+insertWith f key val m = case lookup key m of
+  Just old -> insert key (f val old) m
+  Nothing -> insert key val m
+
+-- What `key` holds, decided from what it held: `f` is given `Just` the value
+-- or `Nothing`, and answers `Just` a value to keep or `Nothing` to remove the
+-- key.
+@pub
+alter : {k v : Type} -> {auto h : Hash k} -> (f : ((x : Maybe v) -> Maybe v ! e)) -> (key : k) -> (m : HashMap k v) -> HashMap k v ! e
+alter f key m = case f (lookup key m) of
+  Just x -> insert key x m
+  Nothing -> delete key m
+
+-- --- whole maps --------------------------------------------------------------
+
+-- Every entry folded in as `f acc key val`, in the hashes' order: no order
+-- that means anything, but the same for the same entries.
+@pub
+foldl : {k v b : Type} -> {auto h : Hash k} -> (f : ((acc : b) -> (key : k) -> (val : v) -> b ! e)) -> (z : b) -> (m : HashMap k v) -> b ! e
+foldl f z (HashMapBy n root) = foldNode f z root
+
+@terminating
+foldNode : {k v b : Type} -> (f : ((acc : b) -> (key : k) -> (val : v) -> b ! e)) -> (z : b) -> (node : HNode k v) -> b ! e
+foldNode f z (Collision ch pairs) = A.foldl (\(acc : b) (p : (k, v)) -> f acc (fst p) (snd p)) z pairs
+foldNode f z (Bitmap bitmap slots) = A.foldl (\(acc : b) (s : HSlot k v) -> foldSlot f acc s) z slots
+
+@terminating
+foldSlot : {k v b : Type} -> (f : ((acc : b) -> (key : k) -> (val : v) -> b ! e)) -> (z : b) -> (s : HSlot k v) -> b ! e
+foldSlot f z (Entry eh ek ev) = f z ek ev
+foldSlot f z (Child sub) = foldNode f z sub
+
+-- Every `(key, value)` pair, in the fold's order.
+@pub
+toVec : {k v : Type} -> {auto h : Hash k} -> (m : HashMap k v) -> Vector (k, v)
+toVec m = foldl (\(acc : Vector (k, v)) (key : k) (val : v) -> V.pushBack acc (key, val)) V.empty m
+
+@pub
+keys : {k v : Type} -> {auto h : Hash k} -> (m : HashMap k v) -> Vector k
+keys m = foldl (\(acc : Vector k) (key : k) (val : v) -> V.pushBack acc key) V.empty m
+
+@pub
+values : {k v : Type} -> {auto h : Hash k} -> (m : HashMap k v) -> Vector v
+values m = foldl (\(acc : Vector v) (key : k) (val : v) -> V.pushBack acc val) V.empty m
+
+-- A later pair wins where a key comes again.
+@pub
+fromVec : {k v : Type} -> {auto h : Hash k} -> (ps : Vector (k, v)) -> HashMap k v
+fromVec ps = V.foldl (\(acc : HashMap k v) (p : (k, v)) -> insert (fst p) (snd p) acc) empty ps
+
+-- The same, as a `List`.
+@pub
+toList : {k v : Type} -> {auto h : Hash k} -> (m : HashMap k v) -> List (k, v)
+toList m = reverseOnto Nil (foldl (\(acc : List (k, v)) (key : k) (val : v) -> (key, val) :: acc) Nil m)
+
+reverseOnto : {a : Type} -> (acc : List a) -> (xs : List a) -> List a
+reverseOnto acc Nil = acc
+reverseOnto acc (x :: rest) = reverseOnto (x :: acc) rest
+
+@pub
+fromList : {k v : Type} -> {auto h : Hash k} -> (ps : List (k, v)) -> HashMap k v
+fromList ps = fromListOnto empty ps
+
+fromListOnto : {k v : Type} -> {auto h : Hash k} -> (m : HashMap k v) -> (ps : List (k, v)) -> HashMap k v
+fromListOnto m Nil = m
+fromListOnto m ((key, val) :: rest) = fromListOnto (insert key val m) rest
+
+-- `f` given each value, the keys and the shape as they were.
+@pub
+map : {k a b : Type} -> {auto h : Hash k} -> (f : ((x : a) -> b ! e)) -> (m : HashMap k a) -> HashMap k b ! e
+map f (HashMapBy n root) = HashMapBy n (mapNode f root)
+
+@terminating
+mapNode : {k a b : Type} -> (f : ((x : a) -> b ! e)) -> (node : HNode k a) -> HNode k b ! e
+mapNode f (Collision ch pairs) = Collision ch (A.foldl (\(acc : Array (k, b)) (p : (k, a)) -> arrayPush acc (fst p, f (snd p))) #[;] pairs)
+mapNode f (Bitmap bitmap slots) = Bitmap bitmap (A.foldl (\(acc : Array (HSlot k b)) (s : HSlot k a) -> arrayPush acc (mapSlot f s)) noSlots slots)
+
+@terminating
+mapSlot : {k a b : Type} -> (f : ((x : a) -> b ! e)) -> (s : HSlot k a) -> HSlot k b ! e
+mapSlot f (Entry eh ek ev) = Entry eh ek (f ev)
+mapSlot f (Child sub) = Child (mapNode f sub)
+
+-- The entries `keep key val` takes.
+@pub
+filter : {k v : Type} -> {auto h : Hash k} -> (keep : ((key : k) -> (val : v) -> Bool ! e)) -> (m : HashMap k v) -> HashMap k v ! e
+filter keep m = foldl (\(acc : HashMap k v) (key : k) (val : v) -> if keep key val then acc else delete key acc) m m
+
+-- Every entry of both; where a key is in both, `b`'s value wins.
+@pub
+union : {k v : Type} -> {auto h : Hash k} -> (a : HashMap k v) -> (b : HashMap k v) -> HashMap k v
+union a b = foldl (\(acc : HashMap k v) (key : k) (val : v) -> insert key val acc) a b

@@ -19,15 +19,17 @@
 //! never charged for its *types*: signatures, annotations and grades are
 //! elaborated for their meaning and their usage dropped.
 
-use super::core::{lit_builtin, Core, Level, Lvl, Note};
+use super::core::{lit_builtin, Core, Level, Lvl, MetaVar, Note};
 use super::value::{vvar, Closure, Elim, Poly, VTy, Value};
 use super::positivity::{DataShape, Field};
 use super::matching::mentions;
-use super::{BinderInfo, Checker, CtorInfo, Ctx, HoleInfo, MetaOrigin, MetaTy, RecDef, TypeErrorKind, Usage};
+use super::literals;
+use super::{BinderInfo, Checker, CtorInfo, Ctx, GoalInfo, HoleInfo, MetaEntry, MetaOrigin, MetaTy, RecDef, TypeErrorKind, Usage};
 use idyllic_ast::{Icit, Lit};
 use idyllic_builtins::{Builtin, Prim};
 use crate::grade::Grade;
 use idyllic_hir::{self as hir, NodeId, TermKind};
+use std::collections::HashSet;
 use std::rc::Rc;
 
 /// What a binding group still owes once its scope has been checked: the
@@ -53,13 +55,22 @@ fn constant_grade(g: Grade) -> ElabGrade {
     (Core::grade(g), Poly::constant(g).into_value())
 }
 
-/// `a + b` or `a * b`, with the operator resolved to the primitive (so not
-/// to a user's own `+`).  The other primitives mean nothing on grades.
-fn arithmetic(t: &hir::Term) -> Option<(Prim, &hir::Term, &hir::Term)> {
+/// `a + b` or `a * b`, with the operator resolved to the primitive, or to
+/// the prelude's trait's method that is the operator (so not to a user's
+/// own `+`): `methods` are the traits' methods.  The other primitives mean
+/// nothing on grades.
+fn arithmetic<'t>(t: &'t hir::Term, methods: &std::collections::HashMap<usize, (usize, usize, usize)>) -> Option<(Prim, &'t hir::Term, &'t hir::Term)> {
     let TermKind::App(f, b) = &t.kind else { return None };
     let TermKind::App(op, a) = &f.kind else { return None };
     let TermKind::Var(op) = &op.kind else { return None };
-    match Prim::from_unique(op.unique?)? {
+    let u = op.unique?;
+    let prim = match Prim::from_unique(u) {
+        Some(p) => p,
+        None if methods.contains_key(&u) && op.text == "+" => Prim::IntAdd,
+        None if methods.contains_key(&u) && op.text == "*" => Prim::IntMul,
+        None => return None,
+    };
+    match prim {
         p @ (Prim::IntAdd | Prim::IntMul) => Some((p, a, b)),
         Prim::IntSub | Prim::IntDiv | Prim::IntMod | Prim::IntLt | Prim::IntEq | Prim::StrAppend => None,
     }
@@ -90,6 +101,21 @@ impl Checker {
 
     /// Elaborate an explicit `_`: a meta for its value, remembered so it can
     /// be reported once unification has had a chance to fill it in.
+    /// A goal, `?name`, wanted to be a `ty`: noted, with the variables of the
+    /// definition it is in, to be reported; in its place a term that is no
+    /// value, which stops the program if it is reached.
+    fn elab_goal(&mut self, ctx: &Ctx, node: NodeId, name: &str, ty: VTy) -> Rc<Core> {
+        let from = self.local_from.min(ctx.lvl);
+        let context = ctx.binders[from..]
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| !b.name.starts_with('#') && b.name != "_")
+            .map(|(i, b)| (b.name.clone(), b.ty.clone(), b.grade.clone(), from + i))
+            .collect();
+        self.goals.push(GoalInfo { node, name: name.to_string(), lvl: ctx.lvl, ty, context });
+        Rc::new(Core::Runtime(Note::Goal(name.to_string()), Rc::new(Core::Error)))
+    }
+
     fn elab_hole(&mut self, ctx: &Ctx, node: NodeId, ty: VTy) -> Rc<Core> {
         let c = self.fresh_meta_with(ctx, node, MetaOrigin::Hole, Some(ty.clone()));
         let value = self.eval(&ctx.env, &c);
@@ -322,7 +348,7 @@ impl Checker {
     }
 
     /// The grade, if it is known outright (not a variable, not still a meta).
-    fn constant(&self, grade: &Rc<Value>) -> Option<Grade> {
+    pub(super) fn constant(&self, grade: &Rc<Value>) -> Option<Grade> {
         self.to_poly(grade.clone()).as_constant()
     }
 
@@ -338,7 +364,7 @@ impl Checker {
     /// Something supplied `grade` times.  Zero times means it is never looked
     /// at, and the backend is told not to compute it: this is where erasure
     /// stops being a promise and becomes a fact.
-    fn argument(&self, grade: &Rc<Value>, arg: Rc<Core>) -> Rc<Core> {
+    pub(super) fn argument(&self, grade: &Rc<Value>, arg: Rc<Core>) -> Rc<Core> {
         match self.constant(grade) {
             Some(g) if g.is_zero() => Rc::new(Core::Runtime(Note::Erased, arg)),
             _ => arg,
@@ -356,13 +382,78 @@ impl Checker {
 
     /// Apply a term to fresh metas for as long as its type asks for implicit
     /// arguments.
-    pub(super) fn insert(&mut self, ctx: &Ctx, node: NodeId, mut core: Rc<Core>, mut ty: VTy) -> (Rc<Core>, VTy) {
+    /// The same, but only the implicit arguments: up to an auto one, or
+    /// anything else.
+    pub(super) fn insert_implicit(&mut self, ctx: &Ctx, node: NodeId, mut core: Rc<Core>, mut ty: VTy) -> (Rc<Core>, VTy) {
         loop {
             ty = self.force(ty);
             let Value::Pi { name, icit: Icit::Implicit, grade, dom, cod, .. } = &*ty else { return (core, ty) };
             let desc = MetaOrigin::Inferred(format!("the implicit argument {name}"));
             let arg = self.fresh_meta_with(ctx, node, desc, Some(dom.clone()));
             let arg_v = self.eval(&ctx.env, &arg);
+            let (name, dom, cod) = (name.clone(), dom.clone(), cod.clone());
+            self.note_linear_want(ctx, node, &name, &dom, &cod, arg_v.clone());
+            core = Rc::new(Core::App(core, self.argument(grade, arg)));
+            ty = self.split_comp(self.apply(&cod, arg_v)).0;
+        }
+    }
+
+    /// Whether what a binder's `cod` comes to mentions its variable where
+    /// unification could find it: as an argument of a data type (`MapBy k
+    /// o v`), not inside a function's application (`Container.Elem self`,
+    /// which does not say what `self` is).
+    fn mentioned_after(&self, ctx: &Ctx, cod: &Closure, name: &str) -> bool {
+        let rest = self.quote(ctx.lvl + 1, self.apply(cod, vvar(ctx.lvl, name.to_string())));
+        self.determines(&rest, 0)
+    }
+
+    fn determines(&self, c: &Core, i: usize) -> bool {
+        match c {
+            Core::Pi { dom, cod, .. } => self.determines(dom, i) || self.determines(cod, i + 1),
+            Core::Comp(t, _) | Core::Runtime(_, t) => self.determines(t, i),
+            Core::App(..) => {
+                let mut args = Vec::new();
+                let mut head = c;
+                while let Core::App(f, a) = head {
+                    args.push(a);
+                    head = f;
+                }
+                matches!(head, Core::Opaque(u, _) if self.datas.contains_key(u))
+                    && args.iter().any(|a| matches!(&***a, Core::Var(j, _) if *j == i) || self.determines(a, i))
+            }
+            _ => false,
+        }
+    }
+
+    /// The auto arguments a type begins with, found.
+    fn insert_autos(&mut self, ctx: &Ctx, node: NodeId, mut core: Rc<Core>, mut ty: VTy) -> (Rc<Core>, VTy) {
+        loop {
+            ty = self.force(ty);
+            let Value::Pi { icit: Icit::Auto, grade, dom, cod, .. } = &*ty else { return (core, ty) };
+            let arg = self.auto_argument(ctx, node, dom.clone());
+            let arg_v = self.eval(&ctx.env, &arg);
+            core = Rc::new(Core::App(core, self.argument(grade, arg)));
+            ty = self.split_comp(self.apply(cod, arg_v)).0;
+        }
+    }
+
+    pub(super) fn insert(&mut self, ctx: &Ctx, node: NodeId, mut core: Rc<Core>, mut ty: VTy) -> (Rc<Core>, VTy) {
+        loop {
+            ty = self.force(ty);
+            let Value::Pi { name, icit: icit @ (Icit::Implicit | Icit::Auto), grade, dom, cod, .. } = &*ty else { return (core, ty) };
+            // an auto argument is found by search; an implicit one, worked out
+            let arg = if *icit == Icit::Auto {
+                let later = self.mentioned_after(ctx, cod, name);
+                self.auto_argument_in(ctx, node, dom.clone(), later)
+            } else {
+                let desc = MetaOrigin::Inferred(format!("the implicit argument {name}"));
+                self.fresh_meta_with(ctx, node, desc, Some(dom.clone()))
+            };
+            let arg_v = self.eval(&ctx.env, &arg);
+            if *icit == Icit::Implicit {
+                let (name, dom, cod) = (name.clone(), dom.clone(), cod.clone());
+                self.note_linear_want(ctx, node, &name, &dom, &cod, arg_v.clone());
+            }
             core = Rc::new(Core::App(core, self.argument(grade, arg)));
             ty = self.split_comp(self.apply(cod, arg_v)).0;
         }
@@ -399,6 +490,225 @@ impl Checker {
         flexible && self.unify(ctx.lvl, used.clone().into_value(), allowed.clone().into_value())
     }
 
+    /// A grade for a parameter that says none, to be worked out from its
+    /// uses (see [`Self::settle_grade`]).
+    /// It is a constant, so its meta is applied to nothing: a type whose
+    /// arrows' grades are being worked out does not depend on the
+    /// parameters before them for that.
+    pub(super) fn inferred_grade(&mut self, ctx: &Ctx, node: NodeId, name: &str) -> (Rc<Core>, Rc<Value>) {
+        let m = self.new_meta(node, MetaOrigin::Inferred(format!("the grade of {name}")), None);
+        self.inferred.insert(m, super::Inferred { args: 0, waiting: Vec::new() });
+        let c = Rc::new(Core::Meta(m));
+        let v = self.eval(&ctx.env, &c);
+        (c, v)
+    }
+
+    /// Two alternatives' usages joined: each count the larger of the two,
+    /// as [`Usage::join`] makes it; but a count that mentions a grade still
+    /// being worked out is a meta of its own, standing for the join, and
+    /// worked out with it. Joined coefficient by coefficient, `join(1, ?g)`
+    /// would be `0..1 + 0..1 ?g`, which is `0..2` once `?g` is `1`, where
+    /// the join is `1`: a parameter used in one equation and handed to the
+    /// recursion in the other could never be linear.
+    pub(super) fn join_usage(&mut self, node: NodeId, mut a: Usage, b: Usage) -> Usage {
+        let keys: std::collections::BTreeSet<usize> = a.counts.keys().chain(b.counts.keys()).copied().collect();
+        let mut theirs = b.counts;
+        for k in keys {
+            let p = a.counts.remove(&k).unwrap_or_default();
+            let q = theirs.remove(&k).unwrap_or_default();
+            let joined = if self.waits_on(&p).is_some() || self.waits_on(&q).is_some() {
+                let j = self.new_meta(node, MetaOrigin::Inferred("the larger of two uses".into()), None);
+                self.joins.push((j, p, q));
+                Poly::atom(Rc::new(Value::Flex(j, Default::default())))
+            } else {
+                p.join(q)
+            };
+            a.counts.insert(k, joined);
+        }
+        a.unknown |= b.unknown;
+        a.effects.extend(b.effects);
+        a
+    }
+
+    /// A join meta still standing for its join: what it joins.
+    fn unsolved_join(&self, n: MetaVar) -> Option<(Poly, Poly)> {
+        if !matches!(self.metas[n], MetaEntry::Unsolved(_)) {
+            return None;
+        }
+        self.joins.iter().find(|(j, _, _)| *j == n).map(|(_, p, q)| (p.clone(), q.clone()))
+    }
+
+    /// The first grade still being worked out that `p` mentions, itself or
+    /// in a join it mentions.
+    fn waits_on(&self, p: &Poly) -> Option<MetaVar> {
+        for (atoms, _) in p.terms() {
+            for a in atoms {
+                if let Some(m) = self.unsettled(a) {
+                    return Some(m);
+                }
+                if let Value::Flex(n, _) = &*self.force(a.clone()) {
+                    if let Some((p, q)) = self.unsolved_join(*n) {
+                        if let Some(m) = self.waits_on(&p).or_else(|| self.waits_on(&q)) {
+                            return Some(m);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Solve each join whose parts no longer wait on anything, now that a
+    /// grade is settled; one with a grade variable in it, at `[]`.
+    fn solve_joins(&mut self) {
+        loop {
+            let ready: Vec<(MetaVar, Poly, Poly)> = self
+                .joins
+                .iter()
+                .filter(|(j, p, q)| matches!(self.metas[*j], MetaEntry::Unsolved(_)) && self.waits_on(p).is_none() && self.waits_on(q).is_none())
+                .cloned()
+                .collect();
+            if ready.is_empty() {
+                break;
+            }
+            for (j, p, q) in ready {
+                let none = usize::MAX;
+                let g = match (self.grade_under(&p, none, Grade::ANY), self.grade_under(&q, none, Grade::ANY)) {
+                    (Some(a), Some(b)) => a.join(b),
+                    _ => Grade::ANY,
+                };
+                if let MetaEntry::Unsolved(info) = &self.metas[j] {
+                    let info = info.clone();
+                    let value = self.eval(&Default::default(), &Rc::new(Core::GradeLit(g)));
+                    self.metas[j] = MetaEntry::Solved(value, info);
+                }
+            }
+        }
+        self.joins.retain(|(j, _, _)| matches!(self.metas[*j], MetaEntry::Unsolved(_)));
+    }
+
+    /// The meta of a grade still being worked out, if `g` is one.
+    fn unsettled(&self, g: &Rc<Value>) -> Option<MetaVar> {
+        match &*self.force(g.clone()) {
+            Value::Flex(m, _) if self.inferred.contains_key(m) && matches!(self.metas[*m], MetaEntry::Unsolved(_)) => Some(*m),
+            _ => None,
+        }
+    }
+
+    /// Whether `used` fits `allowed`, as [`Self::grade_fits`] says; or, if
+    /// `allowed` mentions a grade still being worked out (a field's, of a
+    /// parameter that says none), true for now, the question kept for when
+    /// that grade is settled.
+    pub(super) fn fits_or_waits(
+        &mut self,
+        ctx: &Ctx,
+        node: NodeId,
+        name: &str,
+        used: &Poly,
+        allowed: Rc<Value>,
+        field: Option<Option<String>>,
+    ) -> bool {
+        let poly = self.to_poly(self.force(allowed.clone()));
+        if let Some(m) = self.waits_on(&poly).or_else(|| self.waits_on(used)) {
+            let waiting = super::Waiting { ctx: ctx.clone(), node, name: name.to_string(), used: used.clone(), allowed, field };
+            self.inferred.get_mut(&m).expect("unsettled").waiting.push(waiting);
+            return true;
+        }
+        self.grade_fits(ctx, used, allowed)
+    }
+
+    /// Settle a parameter's grade, which said none: the tightest of `1`,
+    /// `0..1` and `[]` that its uses (`used`, if known) and what waited on it
+    /// allow, as an everyday grade is; never `0`, which would erase it. In
+    /// trying each, the grade is that one wherever it occurs (a recursive
+    /// call's argument, a field of what it matched), and any other grade
+    /// still being worked out is taken at `[]`. What waited on it is then
+    /// checked against it. A `()` may be used as often as wanted, whatever
+    /// its grade says, so its grade stays `[]`, as is written least.
+    fn settle_grade(&mut self, m: MetaVar, used: Option<&Poly>, unit: bool) {
+        let waiting = self.inferred.get(&m).map(|i| i.waiting.clone()).unwrap_or_default();
+        let candidates = [Grade::ONE, Grade::range(Grade::ZERO, Grade::ONE).expect("0 <= 1"), Grade::ANY];
+        let mut chosen = Grade::ANY;
+        if let (Some(used), false) = (used, unit) {
+            for c in candidates {
+                let direct = self.grade_under(used, m, c).is_some_and(|u| u.fits(c));
+                let rest = waiting.iter().all(|w| {
+                    let allowed = self.to_poly(self.force(w.allowed.clone()));
+                    match (self.grade_under(&w.used, m, c), self.grade_under(&allowed, m, c)) {
+                        (Some(u), Some(a)) => u.fits(a),
+                        _ => false,
+                    }
+                });
+                if direct && rest {
+                    chosen = c;
+                    break;
+                }
+            }
+        }
+        self.settle_as(m, chosen);
+    }
+
+    /// `p`'s grade with the meta `m` taken at `c` and every other grade
+    /// still being worked out at `[]`; `None` if it mentions anything else
+    /// not known (a grade variable).
+    fn grade_under(&mut self, p: &Poly, m: MetaVar, c: Grade) -> Option<Grade> {
+        let p = self.renormalise(p);
+        let mut total = Grade::ZERO;
+        for (atoms, coefficient) in p.terms() {
+            let mut product = coefficient;
+            for a in atoms {
+                let g = match &*self.force(a.clone()) {
+                    Value::Flex(n, _) if *n == m => c,
+                    Value::Flex(n, _) if self.inferred.contains_key(n) => Grade::ANY,
+                    // a join still standing: worked out from its parts
+                    Value::Flex(n, _) => {
+                        let (p, q) = self.unsolved_join(*n)?;
+                        self.grade_under(&p, m, c)?.join(self.grade_under(&q, m, c)?)
+                    }
+                    _ => return None,
+                };
+                product = product * g;
+            }
+            total = total + product;
+        }
+        Some(total)
+    }
+
+    /// Solve a grade being worked out as `g`, and check what waited on it.
+    fn settle_as(&mut self, m: MetaVar, g: Grade) {
+        let Some(inferred) = self.inferred.remove(&m) else { return };
+        if let MetaEntry::Unsolved(info) = &self.metas[m] {
+            let info = info.clone();
+            let body = (0..inferred.args).fold(Rc::new(Core::GradeLit(g)), |body, _| Rc::new(Core::Lam("_".into(), body)));
+            let value = self.eval(&Default::default(), &body);
+            self.metas[m] = MetaEntry::Solved(value, info);
+        }
+        self.solve_joins();
+        for w in inferred.waiting {
+            if self.fits_or_waits(&w.ctx, w.node, &w.name, &w.used, w.allowed.clone(), w.field.clone()) {
+                continue;
+            }
+            let used = self.quote(w.ctx.lvl, w.used.into_value());
+            let allowed = self.quote(w.ctx.lvl, w.allowed);
+            let kind = match w.field {
+                Some(whole) => TypeErrorKind::FieldUsage { name: w.name, used, allowed, whole },
+                None => TypeErrorKind::UsageMismatch { name: w.name, used, allowed, in_type: false },
+            };
+            self.error(w.node, kind);
+        }
+    }
+
+    /// The grades being worked out that nothing settled (a parameter whose
+    /// definition did not check), but those in `keep`: `[]`.
+    pub(super) fn settle_rest(&mut self, keep: &HashSet<MetaVar>) {
+        // in the order they were made, as front/ settles them
+        let mut rest: Vec<MetaVar> = self.inferred.keys().copied().filter(|m| !keep.contains(m)).collect();
+        rest.sort_unstable();
+        for m in rest {
+            self.settle_as(m, Grade::ANY);
+        }
+    }
+
     /// Leaving `x`'s binder: its uses must fit its grade.  `ctx` is the
     /// context inside the binder.
     pub(super) fn leave_binder(
@@ -425,13 +735,28 @@ impl Checker {
         in_type: bool,
     ) {
         let used = usage.take(key);
-        if usage.is_unknown() || self.grade_fits(ctx, &used, allowed.clone()) {
-            return;
+        // a value of a linear type is used at most once, whatever its
+        // binder's grade (see [`linear`])
+        let ty = ctx.binders.iter().rev().find(|b| key.is_some() && b.key == key).map(|b| b.ty.clone());
+        if let Some(ty) = &ty {
+            if !in_type && !usage.is_unknown() && self.linear_usage(ctx, node, name, ty, &used) {
+                return;
+            }
         }
         // `()` is the only value of its type, so there is nothing to lose by
         // dropping one: a `Unit` may be used less than its grade says
-        let unit = ctx.binders.iter().rev().find(|b| key.is_some() && b.key == key).map(|b| self.force(b.ty.clone()));
-        if matches!(unit.as_deref(), Some(Value::LitTy(Builtin::Unit))) {
+        let unit = ty.map(|t| self.force(t));
+        let is_unit = matches!(unit.as_deref(), Some(Value::LitTy(Builtin::Unit)));
+        // a parameter that says no grade: its grade is worked out from its
+        // uses, here, and what waited on it is checked against it
+        if let Some(m) = self.unsettled(&allowed) {
+            let unknown = usage.is_unknown();
+            self.settle_grade(m, (!unknown).then_some(&used), is_unit);
+        }
+        if usage.is_unknown() || self.fits_or_waits(ctx, node, name, &used, allowed.clone(), None) {
+            return;
+        }
+        if is_unit {
             let at_most = self.to_poly(allowed.clone()).join(Poly::zero()).into_value();
             if self.grade_fits(ctx, &used, at_most) {
                 return;
@@ -452,19 +777,40 @@ impl Checker {
     /// very names, which is what lets the body's annotations mention them.
     fn check_against_sig(&mut self, ctx: &Ctx, rhs: &hir::Term, sig: &hir::Term, vsig: VTy) -> (Rc<Core>, Usage) {
         let vsig = self.force(vsig);
+        // (up to one the equations name, `f {n} xs = ..`)
         if let (
-            TermKind::Pi(Some(x), Icit::Implicit, _, _, sig_cod),
-            Value::Pi { name, icit: Icit::Implicit, grade, dom, cod, .. },
+            TermKind::Pi(Some(x), sig_icit @ (Icit::Implicit | Icit::Auto), _, _, sig_cod),
+            Value::Pi { name, icit: Icit::Implicit | Icit::Auto, grade, dom, cod, .. },
         ) = (&sig.kind, &*vsig)
         {
-            let ctx2 = ctx.bind(Some(x), name, dom.clone()).graded(grade);
-            let (cod_v, allowed) = self.split_comp(self.apply(cod, vvar(ctx.lvl, name.clone())));
-            let (body, mut usage) = self.check_against_sig(&ctx2, rhs, sig_cod, cod_v);
-            self.close_effects(&ctx2, rhs.id, &mut usage, allowed);
-            self.leave_binder(&ctx2, rhs.id, x, grade.clone(), &mut usage, false);
-            return (self.lam(ctx, name.clone(), grade, dom, body), usage);
+            if !names_implicit(rhs, *sig_icit) {
+                let ctx2 = ctx.bind(Some(x), name, dom.clone()).graded(grade);
+                // an auto binder is what a search inside may find
+                let ctx2 = if *sig_icit == Icit::Auto { ctx2.auto_bound() } else { ctx2 };
+                let (cod_v, allowed) = self.split_comp(self.apply(cod, vvar(ctx.lvl, name.clone())));
+                let (body, mut usage) = self.check_against_sig(&ctx2, rhs, sig_cod, cod_v);
+                self.close_effects(&ctx2, rhs.id, &mut usage, allowed);
+                self.leave_binder(&ctx2, rhs.id, x, grade.clone(), &mut usage, false);
+                return (self.lam(ctx, name.clone(), grade, dom, body), usage);
+            }
         }
-        self.check(ctx, rhs, vsig)
+        // equations that name an implicit argument, `f {n} xs = ..`, bind
+        // it and those after it themselves: those the signature names, as
+        // it names them
+        if names_implicit(rhs, Icit::Implicit) || names_implicit(rhs, Icit::Auto) {
+            let mut sig = sig;
+            let mut names = Vec::new();
+            while let TermKind::Pi(x, icit, _, _, cod) = &sig.kind {
+                if let (Some(x), Icit::Implicit | Icit::Auto) = (x, icit) {
+                    names.push(x.clone());
+                }
+                sig = cod;
+            }
+            self.quantified = names;
+        }
+        let checked = self.check(ctx, rhs, vsig);
+        self.quantified.clear();
+        checked
     }
 
     /// Check one dependency-ordered group, returning the context extended
@@ -490,11 +836,21 @@ impl Checker {
     }
 
     fn check_group_in(&mut self, ctx: &Ctx, group: &hir::BindGroup) -> (Ctx, Pending, LetWrap) {
+        // (what of `rec_defs` this group makes, for its overloaded names)
+        let mark = self.rec_defs.len();
+        // a top-level definition's own variables are what is bound from here
+        if self.lets == 0 {
+            self.local_from = ctx.lvl;
+        }
         match group {
             hir::BindGroup::NonRec(b) => {
                 let (rhs, ty, usage) = match &b.ty {
                     // no signature: infer, and let the definition be transparent
-                    None => self.infer(ctx, &b.rhs),
+                    // (its parameters' grades worked out from its body)
+                    None => {
+                        self.infer_spine = parameters(&b.rhs);
+                        self.infer(ctx, &b.rhs)
+                    }
                     // `x : b ! e`: computing `x` may have the effects `e`; a
                     // signature with no row allows none
                     Some(sig) => {
@@ -502,7 +858,14 @@ impl Checker {
                             TermKind::Eff(ty, row) => (&**ty, self.check_row(ctx, row)),
                             _ => (sig, Rc::new(Core::Row(Vec::new(), Vec::new()))),
                         };
+                        self.infer_spine = parameters(&b.rhs);
                         let (_, vsig) = self.check_type(ctx, sig);
+                        self.infer_spine = 0;
+                        // a name in a type is chosen before the type is
+                        // computed with
+                        if self.lets == 0 {
+                            self.settle_deferred();
+                        }
                         let (rhs, usage) = self.check_against_sig(ctx, &b.rhs, sig, vsig.clone());
                         if let Some(effects) = self.effects_of(&usage) {
                             let allowed = self.eval(&ctx.env, &allowed);
@@ -513,6 +876,16 @@ impl Checker {
                         }
                         (rhs, vsig, usage)
                     }
+                };
+                // what its overloaded names mean, once all of it is checked
+                let rhs = if self.lets == 0 {
+                    self.settle_deferred();
+                    self.resolve_rec_defs(mark);
+                    self.specialize_rec_defs(ctx, mark);
+                    let rhs = self.resolve(&rhs, ctx.lvl);
+                    self.specialize(ctx, &rhs, ctx.lvl)
+                } else {
+                    rhs
                 };
                 // what it left open is closed before its type is recorded,
                 // which is then what it was found to do
@@ -544,7 +917,15 @@ impl Checker {
                             self.error(b.id, TypeErrorKind::RecursiveBindingNeedsSignature(b.name.text.clone()));
                             Rc::new(Value::Error)
                         }
-                        Some(sig) => self.check_type(ctx, sig).1,
+                        Some(sig) => {
+                            self.infer_spine = parameters(&b.rhs);
+                            let ty = self.check_type(ctx, sig).1;
+                            self.infer_spine = 0;
+                            if self.lets == 0 {
+                                self.settle_deferred();
+                            }
+                            ty
+                        }
                     })
                     .collect();
                 // 2. declare all of them as opaque constants, so unification
@@ -569,10 +950,28 @@ impl Checker {
                     let quoted = self.quote(ctx_rec.lvl, ty.clone());
                     self.record(b.id, quoted);
                 }
+                // what their overloaded names mean, once all of them are
+                // checked
+                if self.lets == 0 {
+                    self.settle_deferred();
+                    self.resolve_rec_defs(mark);
+                    self.specialize_rec_defs(&ctx_rec, mark);
+                    members = members.into_iter().map(|(u, core)| (u, self.resolve(&core, ctx_rec.lvl))).collect();
+                    members = members.into_iter().map(|(u, core)| (u, self.specialize(&ctx_rec, &core, ctx_rec.lvl))).collect();
+                    // an instance with no parameters: what of it a method
+                    // call can be made into
+                    for (u, core) in &members {
+                        if self.hints.contains(u) {
+                            self.note_instance(&ctx_rec, *u, core);
+                        }
+                    }
+                }
                 // 4. if they terminate, they may compute in types from here
                 //    on; if they may not, they have to say so, unless
                 //    `@terminating` says they end after all
-                if !self.check_termination(&ctx_rec, &members) {
+                let terminates = self.check_termination(&ctx_rec, &members);
+                self.unfold_instances(&ctx_rec, &members);
+                if !terminates {
                     for (b, ty) in bs.iter().zip(&sigs) {
                         if b.name.unique.is_some_and(|u| self.terminating.contains(&u)) {
                             continue;
@@ -618,7 +1017,10 @@ impl Checker {
         let mut ctx = ctx.clone();
         let (mut pending, mut wraps) = (Vec::new(), Vec::new());
         for g in groups {
+            // (an enclosing definition's grades are not this group's to settle)
+            let outer: HashSet<MetaVar> = self.inferred.keys().copied().collect();
             let (next, p, w) = self.check_group(&ctx, g);
+            self.settle_rest(&outer);
             // what had to wait for the rest of the definition to be known
             self.retry_postponed(false);
             // and at the top level, the rows it left open are closed
@@ -626,6 +1028,18 @@ impl Checker {
                 self.close_opened();
             }
             ctx = next;
+            // (a top-level definition's value, by its name: what a
+            // dependency's exported right-hand side names the prelude's by)
+            if self.lets == 0 {
+                if let hir::BindGroup::NonRec(b) = g {
+                    if let Some(super::Entry::Local(level)) = b.name.unique.and_then(|u| ctx.names.get(&u)) {
+                        if ctx.binders[*level].info == BinderInfo::Defined {
+                            let value = ctx.value(*level);
+                            self.globals.entry(b.name.unique.expect("found by it")).or_insert(value);
+                        }
+                    }
+                }
+            }
             pending.push(p);
             wraps.push(w);
         }
@@ -642,12 +1056,33 @@ impl Checker {
     /// `?b := \n -> Vec n a`, after `Nil` has been checked against `?b Z`.
     /// Whether the question was kept.
     pub(super) fn postpone(&mut self, lvl: Lvl, actual: &Rc<Value>, expected: &Rc<Value>, node: NodeId) -> bool {
-        let stuck = |v: &Rc<Value>| matches!(&*self.force(v.clone()), Value::Flex(_, spine) if !spine.is_empty());
-        if !(stuck(expected) || stuck(actual)) {
+        if !(self.stuck_within(lvl, expected, 3) || self.stuck_within(lvl, actual, 3)) {
             return false;
         }
         self.postponed.push(super::Postponed { lvl, actual: actual.clone(), expected: expected.clone(), node });
         true
+    }
+
+    /// Whether a type waits on a meta, at its head or inside it, as far as
+    /// `depth` constructors down: a meta applied to something, or a
+    /// definition that would unfold but for one (`Elem ?c ?d`), as the
+    /// domain of a function type (`Elem ?c ?d -> Bool`) or an argument of a
+    /// data type (`Box c (Elem ?c ?d)`) as much as on its own.
+    fn stuck_within(&self, lvl: Lvl, v: &Rc<Value>, depth: usize) -> bool {
+        match &*self.force(v.clone()) {
+            Value::Flex(_, spine) => !spine.is_empty(),
+            Value::Opaque(u, _, sp) => {
+                self.blocked(v)
+                    || (depth > 0
+                        && self.datas.contains_key(u)
+                        && sp.iter().any(|e| matches!(e, Elim::App(a) if self.stuck_within(lvl, a, depth - 1))))
+            }
+            Value::Pi { name, dom, cod, .. } if depth > 0 => {
+                self.stuck_within(lvl, dom, depth - 1) || self.stuck_within(lvl + 1, &self.apply(cod, vvar(lvl, name.clone())), depth - 1)
+            }
+            Value::Comp(t, _) if depth > 0 => self.stuck_within(lvl, t, depth - 1),
+            _ => false,
+        }
     }
 
     /// Ask the postponed questions again, until none can be answered; with
@@ -715,9 +1150,15 @@ impl Checker {
     /// its implicit binders; the places that need a function or a particular type
     /// insert them.
     pub(super) fn infer(&mut self, ctx: &Ctx, t: &hir::Term) -> (Rc<Core>, VTy, Usage) {
+        // headed by a name with several meanings: the one that fits
+        if let Some(elaborated) = self.overloaded(ctx, t, None) {
+            return elaborated;
+        }
         let nid = t.id;
         let err = || (Rc::new(Core::Error), Rc::new(Value::Error), Usage::unknown());
         let universe = |n: Level| Rc::new(Value::Type(n));
+        // only a signature's own arrows are its spine, not a type inside one
+        let spine = std::mem::replace(&mut self.infer_spine, 0);
         let result: (Rc<Core>, VTy, Usage) = match &t.kind {
             TermKind::Type => (Rc::new(Core::Type(0)), universe(1), Usage::none()),
             // `Type n` is `Type` applied to a level, which is how it parses.
@@ -741,12 +1182,24 @@ impl Checker {
             }
             // a hole in inference position needs a meta for its type as well
             // as for its value
+            // (with nothing to say what to look for)
+            TermKind::Search => {
+                let ty_c = self.fresh_meta(ctx, nid, "what to look for");
+                let ty = self.eval(&ctx.env, &ty_c);
+                (self.auto_argument(ctx, nid, ty.clone()), ty, Usage::none())
+            }
             TermKind::Hole => {
                 let ty_c = self.fresh_meta(ctx, nid, "the type of this hole");
                 let ty = self.eval(&ctx.env, &ty_c);
                 (self.elab_hole(ctx, nid, ty.clone()), ty, Usage::none())
             }
-            TermKind::Var(x) => match (x.unique, ctx.lookup(x)) {
+            TermKind::Goal(name) => {
+                let ty_c = self.fresh_meta(ctx, nid, "the type of this goal");
+                let ty = self.eval(&ctx.env, &ty_c);
+                (self.elab_goal(ctx, nid, name, ty.clone()), ty, Usage::unknown())
+            }
+            TermKind::Var(x) => match self.meaning(nid, x) {
+                x => match (x.unique, ctx.lookup(&x)) {
                 // the renamer already reported this one; stay quiet
                 (None, _) => err(),
                 (Some(_), Some((core, ty, key))) => (core, ty, Usage::var(key)),
@@ -754,6 +1207,7 @@ impl Checker {
                     self.error(nid, TypeErrorKind::UnknownVariable(x.text.clone()));
                     err()
                 }
+                },
             },
             TermKind::Ann(e, sig) => {
                 let (_, vsig) = self.check_type(ctx, sig);
@@ -774,6 +1228,8 @@ impl Checker {
                 }
             }
             TermKind::App(f, a) => {
+                // (the head of `f x @{d}`: its auto argument is `d`)
+                let given = std::mem::take(&mut self.auto_given);
                 // `() [r]`: the unit *type*, since that is what can be boxed
                 let (f_c, f_ty, f_usage) = match (&f.kind, &a.kind) {
                     (TermKind::Lit(Lit::Unit), TermKind::BoxIntro(_)) => {
@@ -803,7 +1259,52 @@ impl Checker {
                         let (grade_c, _) = self.check_grade(ctx, grade);
                         (Rc::new(Core::BoxTy(grade_c, f_c)), universe(0), f_usage)
                     }
-                    _ => self.apply_to(ctx, f.id, (f_c, f_ty, f_usage), a),
+                    _ => {
+                        let (core, ty, usage) = self.apply_to(ctx, f.id, (f_c, f_ty, f_usage), a);
+                        // an auto argument after the last one given is
+                        // found now: what it is for is all there
+                        let (core, ty) = if given { (core, ty) } else { self.insert_autos(ctx, nid, core, ty) };
+                        // and one waiting for its type may have it now, as
+                        // Lean synthesizes an application's instances once
+                        // its arguments are elaborated: so that `2 + 2` in a
+                        // type computes, rather than waiting for the end of
+                        // the definition
+                        if !self.deferred_autos.is_empty() || !self.deferred_literals.is_empty() {
+                            self.settle_autos_in(false, true);
+                        }
+                        (core, ty, usage)
+                    }
+                }
+            }
+            // `f {a}`: `f`'s next implicit argument is `a`, rather than one
+            // worked out
+            TermKind::ImplicitApp(f, a) => {
+                let (f_c, f_ty, f_usage) = self.infer(ctx, f);
+                match &*self.force(f_ty.clone()) {
+                    Value::Pi { icit: Icit::Implicit, .. } => self.apply_to(ctx, f.id, (f_c, f_ty, f_usage), a),
+                    Value::Error => err(),
+                    _ => {
+                        let ty = self.quote(ctx.lvl, f_ty);
+                        self.error(a.id, TypeErrorKind::NoImplicitArgument(ty));
+                        err()
+                    }
+                }
+            }
+            // `f @{d}`: `f`'s next auto argument is `d`, rather than one
+            // searched for; the implicit ones before it are worked out
+            TermKind::AutoApp(f, a) => {
+                self.auto_given = matches!(f.kind, TermKind::App(..));
+                let (f_c, f_ty, f_usage) = self.infer(ctx, f);
+                self.auto_given = false;
+                let (f_c, f_ty) = self.insert_implicit(ctx, f.id, f_c, f_ty);
+                match &*self.force(f_ty.clone()) {
+                    Value::Pi { icit: Icit::Auto, .. } => self.apply_to(ctx, f.id, (f_c, f_ty, f_usage), a),
+                    Value::Error => err(),
+                    _ => {
+                        let ty = self.quote(ctx.lvl, f_ty);
+                        self.error(a.id, TypeErrorKind::NoAutoArgument(ty));
+                        err()
+                    }
                 }
             }
             // Forming a function type uses what its domain and codomain use,
@@ -812,9 +1313,17 @@ impl Checker {
             // quantifying over `Type` is not itself in `Type`, which is what
             // keeps the hierarchy from collapsing into `Type : Type`.
             TermKind::Pi(mx, icit, ann, dom, cod) => {
-                let default = if *icit == Icit::Implicit { Grade::ZERO } else { self.default_grade() };
-                let ((grade, _), (in_type, in_type_v)) = self.binder_grades(ctx, ann.as_ref(), default);
                 let name = mx.as_ref().map_or("_", |x| x.text.as_str()).to_string();
+                // an implicit argument is erased; an auto one is a value,
+                // used as often as wanted
+                let default = match icit {
+                    Icit::Implicit => Grade::ZERO,
+                    Icit::Auto => Grade::DEFAULT,
+                    Icit::Explicit => self.default_grade(),
+                };
+                let ((grade, _), (in_type, in_type_v)) = self.binder_grades(ctx, ann.as_ref(), default);
+                // a parameter of a definition that says no grade, in a module
+                // that is not linear: its grade is worked out from the body
                 let (dom_c, dom_v, dom_level, dom_usage) = match &dom.kind {
                     // a variable a signature mentions without binding it:
                     // its type is for unification to find, in whatever
@@ -827,7 +1336,26 @@ impl Checker {
                     }
                     _ => self.infer_type(ctx, dom),
                 };
+                // (a binder of a linear type that says no grade is used
+                // once, whatever the module's default: see [`linear`])
+                let grade = if *icit == Icit::Explicit && ann.is_none() && self.is_linear(&dom_v) {
+                    Rc::new(Core::GradeLit(Grade::ONE))
+                } else if spine > 0 && *icit == Icit::Explicit && ann.is_none() && !self.linear {
+                    self.inferred_grade(ctx, nid, &name).0
+                } else {
+                    grade
+                };
                 let ctx2 = ctx.bind(mx.as_ref(), &name, dom_v);
+                // an auto binder is what a search in the rest of the type may
+                // find: `{auto o : Ord k} -> Map k v` is `MapBy k o v`'s; and
+                // so is a trait's superclass, a field of its record, in the
+                // fields after it, and the record a projection reads its
+                // fields off, `self` (`Elem c` in a method of a subtrait of
+                // `Container`)
+                let dictionary = name.starts_with("#super") || name == "self";
+                let ctx2 = if *icit == Icit::Auto || dictionary { ctx2.auto_bound() } else { ctx2 };
+                // the codomain goes on with the spine, one parameter fewer
+                self.infer_spine = if *icit == Icit::Explicit { spine.saturating_sub(1) } else { spine };
                 let (cod_c, cod_level, mut cod_usage) = match &cod.kind {
                     // `a -> b ! e`
                     TermKind::Eff(ty, row) => {
@@ -861,7 +1389,14 @@ impl Checker {
                     self.error(nid, TypeErrorKind::UncheckedInTypeGrade(name.clone()));
                 }
                 let ((_, grade), (_, in_type)) = self.binder_grades(ctx, ann.as_ref(), self.default_grade());
+                // a parameter of a definition with no signature, which says
+                // no grade: its uses will. (Not any lambda's: one whose type
+                // is inferred may then be what others must have exactly, as
+                // a handler's clauses must.)
+                let grade = if spine > 0 && ann.is_none() && !self.linear { self.inferred_grade(ctx, nid, &name).1 } else { grade };
                 let ctx2 = ctx.bind(Some(x), &name, dom.clone()).graded(&grade);
+                // the body goes on with the definition's parameters
+                self.infer_spine = spine.saturating_sub(1);
                 let (body_c, body_ty, mut usage) = self.infer(&ctx2, body);
                 // what calling it does is what its body does
                 let effects = self.row(usage.take_effects().into_iter());
@@ -880,6 +1415,7 @@ impl Checker {
                 let grade_c = self.fresh_meta(ctx, nid, "the grade of this box");
                 let grade = self.eval(&ctx.env, &grade_c);
                 let (e_c, e_ty, usage) = self.infer(ctx, e);
+                self.linear_box(ctx, e.id, &e_ty);
                 let usage = usage.scale(&self.to_poly(grade.clone()));
                 (Rc::new(Core::BoxIntro(e_c)), Rc::new(Value::BoxTy(grade, e_ty)), usage)
             }
@@ -906,6 +1442,7 @@ impl Checker {
                     }
                     None => ty,
                 };
+                self.linear_lets(&ctx2, ctx.lvl, nid, &usage, &pending);
                 (Self::wrap_lets(body_c, wraps), ty, Self::leave_groups(usage, pending))
             }
             TermKind::Case(scrutinee, clauses) => self.case_of(ctx, nid, scrutinee, clauses, None),
@@ -954,6 +1491,10 @@ impl Checker {
         a: &hir::Term,
     ) -> (Rc<Core>, VTy, Usage) {
         let err = || (Rc::new(Core::Error), Rc::new(Value::Error), Usage::unknown());
+        let param = match &*f_ty {
+            Value::Pi { name, .. } => name.clone(),
+            _ => String::new(),
+        };
         let pi = match &*f_ty {
             Value::Pi { grade, dom, cod, .. } => Some((grade.clone(), dom.clone(), cod.clone())),
             Value::Error => return err(),
@@ -981,8 +1522,14 @@ impl Checker {
         };
         match pi {
             Some((grade, dom, cod)) => {
-                let (a_c, a_usage) = self.check(ctx, a, dom);
+                // (a type a constructor is given, a record's field that is a
+                // type, is used nowhere: a type has nothing at run time but
+                // its descriptor, kept all the same; so an instance may give
+                // its own parameter as an associated type, `Elem = a`)
+                let is_type = matches!(*self.force(dom.clone()), Value::Type(_));
+                let (a_c, a_usage) = self.check(ctx, a, dom.clone());
                 let mut a_v = self.eval(&ctx.env, &a_c);
+                self.note_linear_want(ctx, a.id, &param, &dom, &cod, a_v.clone());
                 // A computation with effects never reaches a type: not
                 // as an argument the result type mentions, and not as
                 // an erased one, which is never run, so its effects
@@ -1000,7 +1547,16 @@ impl Checker {
                 // everything the argument uses is used that often;
                 // and calling it has its effects
                 let (result, effects) = self.split_comp(self.apply(&cod, a_v));
-                let usage = f_usage + a_usage.scale(&self.to_poly(grade.clone())) + Usage::effect(effects);
+                // (a constructor's, a record's field)
+                let built = {
+                    let mut head = &f_c;
+                    while let Core::App(f, _) = &**head {
+                        head = f;
+                    }
+                    matches!(&**head, Core::Opaque(u, _) if self.ctors.contains_key(u))
+                };
+                let charged = if is_type && built { Poly::constant(Grade::ZERO) } else { self.to_poly(grade.clone()) };
+                let usage = f_usage + a_usage.scale(&charged) + Usage::effect(effects);
                 (Rc::new(Core::App(f_c, self.argument(&grade, a_c))), result, usage)
             }
             None => {
@@ -1075,12 +1631,23 @@ impl Checker {
         if matches!(*expected, Value::Error) {
             return (Rc::new(Core::Error), Usage::unknown());
         }
+        // headed by a name with several meanings: the one that fits (once
+        // an implicit function wanted has bound its argument)
+        if !matches!(&*expected, Value::Pi { icit: Icit::Implicit | Icit::Auto, .. }) {
+            if let Some((core, _, usage)) = self.overloaded(ctx, t, Some(&expected)) {
+                return (core, usage);
+            }
+        }
         let result = match (&t.kind, &*expected) {
             // An implicit function is wanted, and the surface language has no
             // implicit lambda to be one: bind the argument here.  It has no
             // name in the term, so it cannot be used, only inferred.
-            (_, Value::Pi { name, icit: Icit::Implicit, grade, dom, cod, .. }) => {
+            // (unless the term is equations that name it, `f {n} xs = ..`,
+            // whose matching binds it: see `matching`)
+            (_, Value::Pi { name, icit: icit @ (Icit::Implicit | Icit::Auto), grade, dom, cod, .. }) if !names_implicit(t, *icit) => {
                 let ctx2 = ctx.bind(None, name, dom.clone()).graded(grade);
+                // an auto binder is what a search inside may find
+                let ctx2 = if *icit == Icit::Auto { ctx2.auto_bound() } else { ctx2 };
                 let (cod_v, allowed) = self.split_comp(self.apply(cod, vvar(ctx.lvl, name.clone())));
                 let (body_c, mut usage) = self.check(&ctx2, t, cod_v);
                 self.close_effects(&ctx2, nid, &mut usage, allowed);
@@ -1090,7 +1657,9 @@ impl Checker {
             (TermKind::Lam(x, ann, ty_ann, body), Value::Pi { grade: pi_grade, in_type: pi_in_type, dom, cod, .. }) => {
                 if let Some(ty_ann) = ty_ann {
                     let (_, ann_v) = self.check_type(ctx, ty_ann);
-                    if !self.unify(ctx.lvl, ann_v.clone(), dom.clone()) {
+                    // (one the expected type is stuck on a meta for, `Token ?s ?d`,
+                    // is asked again once more is known)
+                    if !self.unify(ctx.lvl, ann_v.clone(), dom.clone()) && !self.postpone(ctx.lvl, &ann_v, dom, ty_ann.id) {
                         let expected = self.quote(ctx.lvl, dom.clone());
                         let given = self.quote(ctx.lvl, ann_v);
                         self.error(ty_ann.id, TypeErrorKind::BinderMismatch { expected, given });
@@ -1135,6 +1704,7 @@ impl Checker {
             // must be available `grade` times over
             (TermKind::BoxIntro(e), Value::BoxTy(grade, a)) => {
                 let (e_c, usage) = self.check(ctx, e, a.clone());
+                self.linear_box(ctx, e.id, a);
                 // a box nobody may open is never filled, so what would fill
                 // it must not have effects that then never happen
                 if self.constant(grade) == Some(Grade::ZERO) {
@@ -1150,6 +1720,18 @@ impl Checker {
             // Nothing else is overloaded: a grade *variable* is an ordinary
             // variable, and gets here by the fallback.
             (TermKind::Lit(Lit::Unit), Value::Type(_)) => (Rc::new(Core::LitTy(Builtin::Unit)), Usage::none()),
+            // a number is read at the type wanted (see `literals`)
+            (TermKind::Lit(l), Value::LitTy(b)) if literals::reads_as(l, *b) => {
+                (Rc::new(Core::Lit(self.read_number(nid, l, *b))), Usage::none())
+            }
+            // (a meta under binders is applied to them, `?a y`)
+            (TermKind::Lit(l @ (Lit::Int(_) | Lit::Float(_))), _) if self.blocked(&expected) => {
+                (self.defer_literal(ctx, nid, l, expected.clone()), Usage::none())
+            }
+            // at a type variable, through its instance (see `literals`)
+            (TermKind::Lit(l @ (Lit::Int(_) | Lit::Float(_))), Value::Rigid(_, _, sp)) if sp.is_empty() => {
+                (self.literal_through(ctx, nid, l, expected.clone()), Usage::none())
+            }
             (TermKind::Lit(Lit::Int(n)), Value::LitTy(Builtin::Grade)) => match u64::try_from(*n) {
                 Ok(n) => (Core::grade(Grade::exact(n)), Usage::none()),
                 Err(_) => {
@@ -1157,8 +1739,8 @@ impl Checker {
                     (Rc::new(Core::Error), Usage::unknown())
                 }
             },
-            (TermKind::App(..), Value::LitTy(Builtin::Grade)) if arithmetic(t).is_some() => {
-                let (op, a, b) = arithmetic(t).expect("guarded");
+            (TermKind::App(..), Value::LitTy(Builtin::Grade)) if arithmetic(t, &self.methods).is_some() => {
+                let (op, a, b) = arithmetic(t, &self.methods).expect("guarded");
                 let (a_c, _) = self.check_grade(ctx, a);
                 let (b_c, _) = self.check_grade(ctx, b);
                 let core = match op {
@@ -1198,6 +1780,11 @@ impl Checker {
             // a hole is exactly what a metavariable is for: its type is
             // whatever was expected here, so nothing needs to be inferred
             (TermKind::Hole, _) => (self.elab_hole(ctx, nid, expected.clone()), Usage::none()),
+            // a goal is whatever was expected here, as a hole is; what it will
+            // use is not known yet, so nothing is held to its grade over it
+            (TermKind::Goal(name), _) => (self.elab_goal(ctx, nid, name, expected.clone()), Usage::unknown()),
+            // what a search for something of the type expected finds
+            (TermKind::Search, _) => (self.auto_argument(ctx, nid, expected.clone()), Usage::none()),
             (TermKind::LetBox(x, boxed, body), _) => match self.unbox(ctx, x, boxed) {
                 Some((ctx2, grade, unboxed, boxed_usage)) => {
                     let (body_c, mut usage) = self.check(&ctx2, body, expected.clone());
@@ -1209,6 +1796,7 @@ impl Checker {
             (TermKind::Let(groups, body), _) => {
                 let (ctx2, pending, wraps) = self.enter_let(ctx, groups);
                 let (body_c, usage) = self.check(&ctx2, body, expected.clone());
+                self.linear_lets(&ctx2, ctx.lvl, nid, &usage, &pending);
                 (Self::wrap_lets(body_c, wraps), Self::leave_groups(usage, pending))
             }
             // Everything else: infer, fill in any implicit arguments, then
@@ -1304,6 +1892,7 @@ impl Checker {
             })
         };
         let mut ctx = ctx.clone();
+        let inherited = self.inherited_levels(datas);
         // the kind of each parameter, under the parameters before it, and
         // how many indices follow them
         let mut kinds: Vec<(Vec<Rc<Core>>, usize)> = Vec::new();
@@ -1319,12 +1908,28 @@ impl Checker {
                 under = under.bind(Some(x), &x.text, k_v);
             }
             let (kind, indices) = match &d.kind {
-                None => (Rc::new(Core::Type(0)), 0),
+                // one with a field that is a large record lives where it does
+                None => match d.name.unique.and_then(|u| inherited.get(&u)) {
+                    Some(&n) => {
+                        self.large.insert(d.name.unique.expect("found by it"), n);
+                        (Rc::new(Core::Type(n)), 0)
+                    }
+                    None => (Rc::new(Core::Type(0)), 0),
+                },
                 Some(k) => {
                     let (k_c, k_v) = self.check_type(&under, k);
                     let (indices, end) = self.telescope_end(under.lvl, k_v);
                     match &*end {
                         Value::Type(0) | Value::Error => (k_c, indices),
+                        // a large data type, one with a type among its fields
+                        // (a trait with an associated type): its fields may be
+                        // as large as it is
+                        Value::Type(n) => {
+                            if let Some(u) = d.name.unique {
+                                self.large.insert(u, *n);
+                            }
+                            (k_c, indices)
+                        }
                         _ => {
                             let end = self.quote(under.lvl + indices, end);
                             self.error(k.id, TypeErrorKind::DataKindNotType(end));
@@ -1390,7 +1995,8 @@ impl Checker {
                 self.record(c.id, shown);
                 ctx = self.declare_constant(&ctx, &c.name, ty);
                 if let (Some(u), Some(data)) = (c.name.unique, d.name.unique) {
-                    let info = CtorInfo { name: c.name.text.clone(), data, tag, params: n + implicit, fields };
+                    let opens = self.field_opens(&shape, c, fields);
+                    let info = CtorInfo { name: c.name.text.clone(), data, tag, params: n + implicit, fields, opens };
                     self.ctors.insert(u, info);
                 }
             }
@@ -1399,6 +2005,95 @@ impl Checker {
         }
         self.check_positivity(&shapes);
         ctx
+    }
+
+    /// Which of a constructor's `count` fields a type may read off a known
+    /// instance: those that are types, and a trait's superclasses.
+    fn field_opens(&self, shape: &DataShape, c: &hir::CtorDecl, count: usize) -> Vec<bool> {
+        let fields: Vec<&Field> = shape.fields.iter().filter(|f| f.ctor == c.name.text).collect();
+        let fields = &fields[fields.len().saturating_sub(count)..];
+        let mut names = Vec::new();
+        if let hir::CtorShape::Sig(sig) = &c.shape {
+            let mut t = sig;
+            while let TermKind::Pi(x, icit, _, _, cod) = &t.kind {
+                if *icit == Icit::Explicit {
+                    names.push(x.as_ref().map_or(String::new(), |x| x.text.clone()));
+                }
+                t = cod;
+            }
+        }
+        let names = &names[names.len().saturating_sub(count)..];
+        fields
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                let (_, end) = self.telescope_end(f.lvl, f.ty.clone());
+                matches!(*end, Value::Type(_)) || names.get(i).is_some_and(|n| n.starts_with("#super"))
+            })
+            .collect()
+    }
+
+    /// The universe a data type lives in: `Type`, unless its kind says more.
+    /// The data types among `datas` whose kind is not written and that have
+    /// a field of a large data type (a trait whose superclass has an
+    /// associated type, a record holding such a trait's record): the
+    /// universe each lives in, as large as the largest such field's.
+    fn inherited_levels(&self, datas: &[hir::DataDecl]) -> std::collections::HashMap<usize, super::core::Level> {
+        fn head(t: &hir::Term) -> Option<usize> {
+            match &t.kind {
+                hir::TermKind::Var(x) => x.unique,
+                hir::TermKind::App(f, _) => head(f),
+                _ => None,
+            }
+        }
+        // the batch's own large ones, by their written kinds
+        let written = |d: &hir::DataDecl| match d.kind.as_ref().map(|k| &k.kind) {
+            Some(hir::TermKind::App(f, n)) if matches!(f.kind, hir::TermKind::Type) => match &n.kind {
+                hir::TermKind::Lit(idyllic_ast::Lit::Int(n)) => usize::try_from(n.clone()).ok(),
+                _ => None,
+            },
+            _ => None,
+        };
+        let mut levels: std::collections::HashMap<usize, super::core::Level> = self.large.clone();
+        for d in datas {
+            if let (Some(u), Some(n)) = (d.name.unique, written(d)) {
+                levels.insert(u, n);
+            }
+        }
+        let mut out = std::collections::HashMap::new();
+        // (a field's type may be one of the batch's that is found large in
+        // turn)
+        loop {
+            let mut changed = false;
+            for d in datas.iter().filter(|d| d.kind.is_none()) {
+                let Some(u) = d.name.unique else { continue };
+                let fields = d.ctors.iter().flat_map(|c| match &c.shape {
+                    hir::CtorShape::Fields(fs) => fs.iter().collect::<Vec<_>>(),
+                    // (the domains of its signature)
+                    hir::CtorShape::Sig(ty) => {
+                        let (mut out, mut t) = (Vec::new(), ty);
+                        while let hir::TermKind::Pi(_, _, _, dom, cod) = &t.kind {
+                            out.push(&**dom);
+                            t = cod;
+                        }
+                        out
+                    }
+                });
+                let n = fields.filter_map(|f| head(f).and_then(|h| levels.get(&h).copied())).max().unwrap_or(0);
+                if n > 0 && levels.get(&u).copied().unwrap_or(0) < n {
+                    levels.insert(u, n);
+                    out.insert(u, n);
+                    changed = true;
+                }
+            }
+            if !changed {
+                return out;
+            }
+        }
+    }
+
+    fn data_level(&self, d: &hir::DataDecl) -> super::core::Level {
+        d.name.unique.and_then(|u| self.large.get(&u).copied()).unwrap_or(0)
     }
 
     /// How many function types a type starts with, and what it ends in.
@@ -1429,7 +2124,7 @@ impl Checker {
         let mut elaborated = Vec::new();
         for f in fields {
             let (f_c, f_v, level, _not_charged) = self.infer_type(&under, f);
-            if level > 0 {
+            if level > self.data_level(d) {
                 self.error(f.id, TypeErrorKind::LargeField { data: d.name.text.clone(), level });
             }
             shape.fields.push(Field { node: f.id, ctor: c.name.text.clone(), lvl: under.lvl, ty: f_v.clone() });
@@ -1527,7 +2222,7 @@ impl Checker {
         for (i, (lvl, icit, _, dom, mut types)) in binders.iter().cloned().enumerate() {
             let node = nodes.get(i).copied().unwrap_or(sig.id);
             let level = self.sort_of(&mut types, dom.clone());
-            if let Some(level) = level.filter(|l| *l > 0) {
+            if let Some(level) = level.filter(|l| *l > self.data_level(d)) {
                 if icit == Icit::Explicit || !forced.contains(&lvl) {
                     self.error(node, TypeErrorKind::LargeField { data: d.name.text.clone(), level });
                 }
@@ -1539,6 +2234,18 @@ impl Checker {
 }
 
 /// A constructor's signature, `C : a -> Vec n a -> Vec (S n) a`, with each of
+/// How many explicit parameters a definition's equations take: its
+/// lambdas, or its clauses' patterns. Only those of its signature's arrows
+/// are its parameters, whose grades may be worked out from it; a function
+/// it returns is a value, whose type is as written.
+fn parameters(rhs: &hir::Term) -> usize {
+    match &rhs.kind {
+        TermKind::Lam(_, _, _, body) => 1 + parameters(body),
+        TermKind::Match(clauses) => clauses.first().map_or(0, |c| super::matching::explicit_patterns(&c.pats)),
+        _ => 0,
+    }
+}
+
 /// its fields that says no grade linear, in any module, as a field of a
 /// constructor written `C a (Vec n a)` is. Only the constructor's own
 /// arrows: a field's type (`(a -> b) -> T`'s `a -> b`) keeps the module's
@@ -1550,5 +2257,14 @@ fn linear_fields(sig: &hir::Term, core: &Rc<Core>) -> Rc<Core> {
             Rc::new(Core::Pi { name: name.clone(), icit: *i, grade, in_type: in_type.clone(), dom: dom.clone(), cod: linear_fields(cod, c) })
         }
         _ => core.clone(),
+    }
+}
+
+/// Whether `t` is equations one of which names its next argument, which is
+/// `icit`: `{p}` for an implicit one, `@{p}` for an auto one.
+fn names_implicit(t: &hir::Term, icit: Icit) -> bool {
+    match &t.kind {
+        TermKind::Match(clauses) => clauses.iter().any(|c| matches!(c.pats.first().map(|p| &p.kind), Some(hir::PatKind::Implicit(i, _)) if *i == icit)),
+        _ => false,
     }
 }

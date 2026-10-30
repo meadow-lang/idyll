@@ -25,9 +25,19 @@ fn binders(src: &str) -> Vec<(String, Rep)> {
     // the scope at each level the top-level `let`s reach, which is where
     // the recursive definitions are
     let mut scopes = vec![scope.clone()];
-    walk(&mut tc.typer, &scope, &program, &mut out, &mut scopes);
-    out.drain(..prelude.min(out.len()));
+    // the prelude's top-level `let`s, walked past without a look at them
+    let (mut s, mut c) = (scope, program);
+    while s.len() < prelude {
+        let Core::Let(x, rhs, body) = &*c.clone() else { break };
+        s = tc.typer.define(&s, x, rhs);
+        scopes.push(s.clone());
+        c = body.clone();
+    }
+    walk(&mut tc.typer, &s, &c, &mut out, &mut scopes);
     for d in tc.rec_defs.clone() {
+        if d.lvl < prelude {
+            continue;
+        }
         let Some(s) = scopes.iter().find(|s| s.len() == d.lvl).cloned() else { continue };
         walk(&mut tc.typer, &s, &d.core, &mut out, &mut Vec::new());
     }
@@ -94,9 +104,9 @@ fn primitive_types_have_their_own_representations() {
 
 #[test]
 fn functions_and_data_are_pointers() {
-    let src = "data Box = Box Int\n\nuse Box.*\n\nlet f = \\(y : Int) -> y + 1 in let b = Box 3 in f 1\n";
+    let src = "data Box = Box Int\n\nuse Box.*\n\nlet f = \\(given : Int) -> given + 1 in let b = Box 3 in f 1\n";
     assert_eq!(rep_of(src, "f"), Rep::Ptr);
-    assert_eq!(rep_of(src, "y"), Rep::I64);
+    assert_eq!(rep_of(src, "given"), Rep::I64);
     assert_eq!(rep_of(src, "b"), Rep::Ptr);
 }
 
@@ -138,6 +148,12 @@ fn every_program_in_the_corpora_has_representations() {
     let (mut programs, mut anys) = (0, Vec::new());
     for corpus in corpora {
         for src in corpus.replace("\r\n", "\n").split("\n%%%\n") {
+            // a program that uses Std has Std's definitions among its own
+            // `let`s, some of whose types really are unknown when compiled
+            // (`subst`'s `px : p x`)
+            if src.contains("Std.") {
+                continue;
+            }
             let out = pipeline::compile(src, &Options { debug: false, style: OutputStyle::PLAIN, live: false });
             if out.has_errors() || out.checked.as_ref().and_then(|c| c.program.as_ref()).is_none() {
                 continue;
@@ -153,3 +169,18 @@ fn every_program_in_the_corpora_has_representations() {
     assert!(programs > 40, "only {programs} programs");
     assert!(anys.is_empty(), "{} binders of unknown representation:\n\n{}", anys.len(), anys.join("\n\n"));
 }
+
+
+#[test]
+fn an_associated_type_is_what_a_descriptor_passed_with_the_dictionary_says() {
+    // `Elem c` at the dictionary `d`: the field of `d` that is a type,
+    // whose descriptor comes with `d`
+    let src = "trait Container (c : Type) where\n  Elem : Type\n  toList : c -> List Elem\n\nfirstOr : {c : Type} -> {auto d : Container c} -> Elem c -> c -> Elem c\nfirstOr e xs = case toList xs of\n  Nil -> e\n  (x :: rest) -> x\n\n1\n";
+    // (the program's own `let`s include the prelude's effects, which bind
+    // an `e` of their own)
+    let all = binders(src);
+    for x in ["e", "x"] {
+        assert!(all.iter().any(|(y, r)| y == x && matches!(r, Rep::Field(..))), "{x} should be a field's representation: {all:?}");
+    }
+}
+

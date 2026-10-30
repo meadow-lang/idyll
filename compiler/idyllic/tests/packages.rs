@@ -26,14 +26,20 @@ fn package(name: &str, root: &str) -> PackageSource {
 }
 
 /// Compile a library against what it depends on.
+/// The first unique of package slot `slot`: above Std's, which every
+/// package depends on, as the build tool places packages after it.
+fn slot_start(slot: usize) -> usize {
+    idyllic::stdlib::compiled().uniques.end.div_ceil(CHUNK) * CHUNK + slot * CHUNK
+}
+
 fn library(name: &str, root: &str, all: &[&CompiledPackage], direct: &[(&str, &CompiledPackage)], slot: usize) -> CompiledPackage {
-    let out = pipeline::compile_package_with(&package(name, root), Deps { all, direct, first_unique: slot * CHUNK }, &OPTIONS);
+    let out = pipeline::compile_package_with(&package(name, root), Deps { all, direct, first_unique: slot_start(slot), parts: None, tests: None }, &OPTIONS);
     assert!(out.diagnostics.is_empty(), "{name}: {:#?}", diags(&out));
     out.checked.and_then(|c| c.compiled).expect("a package that checks is compiled")
 }
 
 fn program(root: &str, all: &[&CompiledPackage], direct: &[(&str, &CompiledPackage)]) -> pipeline::Output {
-    let deps = Deps { all, direct, first_unique: 9 * CHUNK };
+    let deps = Deps { all, direct, first_unique: slot_start(9), parts: None, tests: None };
     pipeline::run_package_with(&package("App", root), deps, &OPTIONS, Vec::new())
 }
 
@@ -98,7 +104,48 @@ fn a_chain_of_packages_links_in_order() {
     );
     assert!(out.diagnostics.is_empty(), "{:#?}", diags(&out));
     assert_eq!(out.printed, "40\nhello\n");
-    assert!(matches!(out.evaluation, Some(Evaluation::Value(_))), "{:?}", out.evaluation);
+    // it ran to the end: a `main` run has no answer to show
+    assert_eq!(out.evaluation, Some(Evaluation::Opaque));
+}
+
+/// A package with a trait, an instance of it, and a type of its own.
+const SHOWS: &str = "@pub\ntrait Describe (a : Type) where\n  describe : a -> String\n\n\
+                     @pub\ninstance Describe Int where\n  describe n = showInt n\n\n\
+                     @pub\ndata Shape = Square | Circle\n";
+
+#[test]
+fn another_packages_instances_are_found() {
+    let shows = library("Shows", SHOWS, &[], &[], 1);
+    let out = program("use Shows (Describe, describe)\n\ndescribe 42\n", &[&shows], &[("Shows", &shows)]);
+    assert!(out.diagnostics.is_empty(), "{:#?}", diags(&out));
+    assert_eq!(out.evaluation, Some(Evaluation::Value("\"42\"".into())));
+}
+
+#[test]
+fn an_instance_lives_with_its_trait_or_its_type() {
+    let shows = library("Shows", SHOWS, &[], &[], 1);
+    // the trait is another package's, and so is the type: an orphan
+    let orphan = program(
+        "use Shows (Describe, describe, Shape)\nuse Shows.Shape.*\n\ninstance Describe Shape where\n  describe s = \"a shape\"\n\n1\n",
+        &[&shows],
+        &[("Shows", &shows)],
+    );
+    assert!(diags(&orphan).iter().any(|d| d.starts_with("an instance Describe Shape cannot be here")), "{:#?}", diags(&orphan));
+    // the type is this package's: it lives with it
+    let own = program(
+        "use Shows (Describe, describe)\n\ndata Color = Red\n\nuse Color.*\n\ninstance Describe Color where\n  describe c = \"red\"\n\ndescribe Red\n",
+        &[&shows],
+        &[("Shows", &shows)],
+    );
+    assert!(own.diagnostics.is_empty(), "{:#?}", diags(&own));
+    assert_eq!(own.evaluation, Some(Evaluation::Value("\"red\"".into())));
+    // and a named one may live anywhere, given by hand
+    let named = program(
+        "use Shows (Describe, describe, Shape)\nuse Shows.Shape.*\n\ninstance mine : Describe Shape where\n  describe s = \"mine\"\n\ndescribe @{mine} Square\n",
+        &[&shows],
+        &[("Shows", &shows)],
+    );
+    assert!(named.diagnostics.is_empty(), "{:#?}", diags(&named));
 }
 
 #[test]
@@ -116,7 +163,7 @@ fn a_program_runs_from_compiled_packages_alone() {
     // own too, read back compiled, linked, and run
     let util = library("Util", UTIL, &[], &[], 1);
     let root = "use Util (double)\n\nmain () = printInt (double 21)\n";
-    let deps = Deps { all: &[&util], direct: &[("Util", &util)], first_unique: 2 * CHUNK };
+    let deps = Deps { all: &[&util], direct: &[("Util", &util)], first_unique: slot_start(2), parts: None, tests: None };
     let out = pipeline::check_package_with(&package("App", root), deps, &OPTIONS, true);
     assert!(out.diagnostics.is_empty(), "{:#?}", diags(&out));
     assert!(out.evaluation.is_none(), "only checked");
@@ -143,4 +190,31 @@ fn a_compiled_package_survives_being_saved() {
     let out = program("use Util (double, greeting)\n\nmain () = let a = printInt (double 21) in putStrLn greeting\n", &[&back], &[("Util", &back)]);
     assert!(out.diagnostics.is_empty(), "{:#?}", diags(&out));
     assert_eq!(out.printed, "42\nhello\n");
+}
+
+
+#[test]
+fn an_associated_type_is_read_off_another_packages_instance() {
+    // `Elem (List Int)` is what the library's instance says, and its method
+    // is found for the program as any other is
+    let lib = library("Coll", "@pub
+trait Container (c : Type) where
+  Elem : Type
+  first : c -> Maybe Elem
+
+instance Container (List Int) where
+  Elem = Int
+  first xs = case xs of
+    Nil -> Nothing
+    (x :: r) -> Just x
+", &[], &[], 1);
+    let out = program("use Coll (Container, Elem, first)
+
+e : Elem (List Int)
+e = 3
+
+(e, first (1 :: Nil))
+", &[&lib], &[("Coll", &lib)]);
+    assert!(out.diagnostics.is_empty(), "{:#?}", diags(&out));
+    assert_eq!(out.evaluation, Some(Evaluation::Value("(3, Just 1)".into())));
 }

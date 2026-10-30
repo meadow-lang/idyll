@@ -54,6 +54,38 @@ sum (reverse (Std.Collections.List.range 1 (fromInt 4)))
 }
 
 #[test]
+fn a_native_type_crosses_package_boundaries() {
+    // `MArray` is declared `@native` in Std, and a signature here names it:
+    // Std's compiled package has to give it, as it gives its data types
+    let dir = scratch("native");
+    let app = common::fixture(&dir, "App");
+    common::write(&app.join("src/Main.idl"), "use Std.Collections.MArray (MArray, new, write, freeze)
+
+filled : (n : Int) -> MArray Int
+filled n = write (new n 1) 0 7
+
+arrayGet (freeze (filled 3)) 0 + arrayLen (freeze (filled 3))
+");
+    let out = pipeline::build(&app, Profile::Debug, &common::OPTS);
+    assert!(said(&out).is_empty(), "{:?}", said(&out));
+    assert_eq!(common::value(&out), "10");
+}
+
+#[test]
+fn a_module_and_the_type_it_is_named_for_are_used_together() {
+    // `use Shape (Shape, ..)` brings the type from the module of its name;
+    // the second pass over the `use`s found the type it had brought, and
+    // took the path for it
+    let dir = scratch("module-type");
+    let app = common::fixture(&dir, "App");
+    common::write(&app.join("src/Shape.idl"), "data Shape = Circle Int | Square Int\nuse Shape.*\n\narea : Shape -> Int\narea (Circle r) = 3 * r * r\narea (Square s) = s * s\n");
+    common::write(&app.join("src/Main.idl"), "use Shape (Shape, area)\nuse Shape.Shape.*\n\nbig : Shape\nbig = Square 5\n\narea big + area (Circle 1)\n");
+    let out = pipeline::build(&app, Profile::Debug, &common::OPTS);
+    assert!(said(&out).is_empty(), "{:?}", said(&out));
+    assert_eq!(common::value(&out), "28");
+}
+
+#[test]
 fn private_names_do_not_cross_package_boundaries() {
     // `Util` exports `double`, `map`, `scale` and `sum` (all `@pub`) but not
     // `secret`.
@@ -121,9 +153,29 @@ fn modules_are_compiled_in_dependency_order() {
     assert_eq!(common::value(&out), "32");
 }
 
-/// Debug runs on the machine and release as an executable, unless
+#[test]
+fn a_recursive_definition_of_another_module_is_lowered_by_its_type() {
+    // A program run from what its build kept is linked from its compiled
+    // package alone. Its recursive definitions are constants there, and the
+    // lowering has to know their types: once it did not, and what `count`
+    // answers was given to `+` as an `any`, which no runtime has.
+    let dir = scratch("recursive");
+    let app = common::fixture(&dir, "App");
+    common::write(&app.join("src/Count.idl"), "count : (n : Int) -> Int ! Div
+count n = if n == 0 then 0 else 1 + count (n - 1)
+
+answer : Int ! Div
+answer = count 5
+");
+    common::write(&app.join("src/Main.idl"), "Count.answer + 1\n");
+    let out = pipeline::build(&app, Profile::Debug, &common::OPTS);
+    assert!(said(&out).is_empty(), "{:?}", said(&out));
+    assert_eq!(common::value(&out), "6");
+}
+
+/// Debug runs on Glade and release as an executable Silo builds, unless
 /// `Idyll.toml` or a flag says otherwise -- and a release backend nobody named
-/// gives way to the machine when there is no executable to be had.
+/// gives way to Glade when there is no executable to be had.
 #[test]
 fn a_manifest_chooses_the_backend() {
     use idyll::package::ProfileConfig;
@@ -131,11 +183,11 @@ fn a_manifest_chooses_the_backend() {
 
     let bare = Path::new("no/such/place");
     let debug = Resolved::resolve(Profile::Debug, bare, ProfileConfig::default());
-    assert_eq!(debug.backend, Backend::Machine);
+    assert_eq!(debug.backend, Backend::Glade);
     assert_eq!(debug.fallback(), None);
     let release = Resolved::resolve(Profile::Release, bare, ProfileConfig::default());
-    assert_eq!(release.backend, Backend::Native);
-    assert_eq!(release.fallback().map(|r| r.backend), Some(Backend::Machine));
+    assert_eq!(release.backend, Backend::Silo);
+    assert_eq!(release.fallback().map(|r| r.backend), Some(Backend::Glade));
 
     let dir = std::env::temp_dir().join(format!("idyll-backend-manifest-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -147,7 +199,7 @@ fn a_manifest_chooses_the_backend() {
          name = \"Chosen\"\n\
          \n\
          [profile.debug]\n\
-         backend = \"machine\"   # what it would be anyway\n\
+         backend = \"glade\"   # what it would be anyway\n\
          \n\
          [profile.release]\n\
          native = true\n",
@@ -155,21 +207,21 @@ fn a_manifest_chooses_the_backend() {
     .unwrap();
 
     let m = Manifest::load(&dir).unwrap().expect("a manifest");
-    assert_eq!(m.profile("debug").backend, Some(Backend::Machine));
-    assert_eq!(m.profile("release").backend, Some(Backend::Native));
+    assert_eq!(m.profile("debug").backend, Some(Backend::Glade));
+    assert_eq!(m.profile("release").backend, Some(Backend::Silo));
     // A profile the manifest says nothing about keeps its built-in meaning.
     assert_eq!(m.profile("bench"), ProfileConfig::default());
 
     let debug = Resolved::resolve(Profile::Debug, &dir, ProfileConfig::default());
-    assert_eq!(debug.backend, Backend::Machine);
+    assert_eq!(debug.backend, Backend::Glade);
     // Named in the manifest, so it is what the package gets or an error.
     let release = Resolved::resolve(Profile::Release, &dir, ProfileConfig::default());
-    assert_eq!(release.backend, Backend::Native);
+    assert_eq!(release.backend, Backend::Silo);
     assert_eq!(release.fallback(), None);
 
     // A flag beats the manifest.
-    let flagged = Resolved::resolve(Profile::Release, &dir, ProfileConfig { backend: Some(Backend::Machine) });
-    assert_eq!(flagged.backend, Backend::Machine);
+    let flagged = Resolved::resolve(Profile::Release, &dir, ProfileConfig { backend: Some(Backend::Glade) });
+    assert_eq!(flagged.backend, Backend::Glade);
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -277,11 +329,16 @@ fn two_packages_may_each_declare_a_type_of_one_name() {
     // One package's value is no value of the other's type.
     let crossed =
         two_shapes("crossed", "use Shapes (shapesArea)\nuse Figures (figuresUnit)\n\nshapesArea figuresUnit\n");
-    // (Meadow names each with its package and version -- `Shape` (from
-    // `Shapes@0.1.0`) -- which Idyll's message does not yet: both are
-    // printed `Shape`.)
+    // Both are printed `Shape`, and the message says which is from where,
+    // by package and version, as Meadow's does.
     let got = run_app(&crossed);
     assert!(got.contains("type mismatch: expected Shape, but this has type Shape"), "{got}");
+    let out = pipeline::build(&crossed, Profile::Debug, &common::OPTS);
+    let help: Vec<&String> = out.reported.iter().flat_map(|r| &r.diagnostics).flat_map(|d| &d.help).collect();
+    assert!(
+        help.iter().any(|h| *h == "`Shape` is two types here: the one expected is from `Shapes@0.1.0`, this one from `Figures@0.1.0`"),
+        "{help:?}"
+    );
     // Named bare, `Shape` is neither's: a dependency's type is in scope only
     // where a `use` brings it.
     let unnamed = two_shapes("unnamed", "f : Shape -> Shape\nf s = s\n\n1\n");

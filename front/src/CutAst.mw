@@ -1,0 +1,80 @@
+-- What the lowering (`Lower.mw`) keeps of a program while it writes it
+-- that Cut's language has no type for: representations, symbols and
+-- binders. Everything else -- each declaration, statement, producer and
+-- consumer -- is a row of `Cut`, the package's language, written as the
+-- lowering makes it.
+
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Maybe.Maybe.*
+
+-- How a value is represented at run time: the only types Cut has.
+@derive(PartialEq)
+-- `Number`: a sized integer or a float, by its Idyll type's name (`UInt8`
+-- is also what `stringByteAt` gives)
+@pub data Rep = I64 | Number String | Bool | Char | Unit | Str | Ptr | Desc | Var String | Any
+
+@pub fun repText (r : Rep) : String =
+  match r with
+  | Rep.I64 -> "i64"
+  | Rep.Number n -> numberRep n
+  | Rep.Char -> "char"
+  | Rep.Bool -> "bool"
+  | Rep.Unit -> "unit"
+  | Rep.Str -> "str"
+  | Rep.Ptr -> "ptr"
+  | Rep.Desc -> "desc"
+  | Rep.Var a -> "'" ++ a
+  | Rep.Any -> "any"
+
+-- What Cut calls a number type's representation: `i8`, `u64`, `f32`.
+@pub fun numberRep (n : String) : String =
+  if n == "Float" then "f64"
+  else if n == "Float32" then "f32"
+  else if S.startsWith "U" n then "u" ++ S.drop n 4
+  else "i" ++ S.drop n 3
+
+-- A flat, globally unique name, `idyll:App/Math.double`: its language, its
+-- package, and its path, the module path then the name.
+@derive(PartialEq)
+@pub data Sym = Sym String String [String]
+
+-- An Idyll name: its package, and its path there, `Math.double`, split at
+-- the dots before the name (which may be an operator with dots of its own).
+@pub fun idyll (package : String) (path : String) : Sym = Sym.Sym "idyll" package (splitPath path [])
+
+-- Something declared under a name: a constructor under its type.
+@pub fun child (s : Sym) (name : String) : Sym = match s with | Sym.Sym l p path -> Sym.Sym l p (V.pushBack path name)
+
+fun splitPath (rest : String) (acc : [String]) : [String] =
+  match S.indexOf "." rest with
+  | Just i ->
+      let head = S.slice rest 0 i in
+      let tail = S.drop rest (i + 1) in
+      if isIdent head and not (S.isEmpty tail) then splitPath tail (V.pushBack acc head) else V.pushBack acc rest
+  | None -> V.pushBack acc rest
+
+fun isAlpha (c : Int) : Bool = (c >= 65 and c <= 90) or (c >= 97 and c <= 122)
+
+fun byte (s : String) (i : Int) : Int =
+  match S.byteAt s i with
+  | Just b -> toInt b
+  | None -> 0
+
+fun isIdent (s : String) : Bool =
+  let n = S.byteLength s in
+  n > 0
+    and (let c = byte s 0 in isAlpha c or c == 95)
+    and V.all (\i -> let c = byte s i in isAlpha c or c == 95 or (c >= 48 and c <= 57)) (V.range 1 n)
+
+-- A segment as it is written: quoted if it is not a plain identifier.
+@pub fun segment (seg : String) : String =
+  if isIdent seg then seg
+  else "\"" ++ S.join "\\\"" (S.split "\"" (S.join "\\\\" (S.split "\\" seg))) ++ "\""
+
+@pub fun symText (s : Sym) : String =
+  match s with
+  | Sym.Sym l p path -> l ++ ":" ++ p ++ "/" ++ S.join "." (V.map segment path)
+
+-- A binder: a name, and how its value is represented.
+@pub data Binder = Binder String Rep

@@ -17,6 +17,9 @@ pub type LEffect = Spanned<EffectDecl>;
 pub enum Icit {
     Explicit,
     Implicit,
+    /// `{auto d : t}`, or `t => ..`: an implicit argument found by searching
+    /// the auto binders in scope and the hints, rather than by unification
+    Auto,
 }
 
 /// The grades on a binder, `(x : [s] a)` or `(x : (s, r) a)`: `subject` is
@@ -47,10 +50,38 @@ pub enum Term {
     Lam(Box<LParam>, Box<LTerm>),
     /// Application, `f a`.
     App(Box<LTerm>, Box<LTerm>),
+    /// An implicit argument given by hand, `f {Int}`: the next implicit
+    /// binder of `f`'s type is given this, rather than worked out.
+    ImplicitApp(Box<LTerm>, Box<LTerm>),
+    /// An auto argument given by hand, `f @{loud}`: the next auto binder of
+    /// `f`'s type is given this, rather than searched for (its implicit
+    /// arguments before it are still worked out).
+    AutoApp(Box<LTerm>, Box<LTerm>),
+    /// What a name already resolved to, by its unique: never written, only
+    /// made by the renamer (a trait's default, where an instance leaves a
+    /// method out), with the name it is shown by.
+    Resolved(usize, String),
+    /// A record built with its type's arguments given, as an instance's
+    /// body is: `Describe {List a} { describe = .. }`, so that its fields
+    /// are checked against types that are known; with the instance it is,
+    /// which a trait's default for a method left out is given. Made by the
+    /// parser, never written.
+    RecordOf(Ident, Vec<LTerm>, Vec<(Ident, LTerm)>, Ident),
+    /// What a search for an auto argument of the type wanted finds: an
+    /// instance's superclass field. Made by the renamer, never written.
+    Search,
+    /// Equations as a term, each its patterns and its right-hand side: a
+    /// function by matching, as a definition's equations are (an
+    /// instance's method). Made by the parser, never written.
+    Equations(Vec<(Vec<LPat>, Rhs)>),
     /// Type annotation, `e : a`.
     Ann(Box<LTerm>, Box<LTerm>),
     /// An explicit hole, `_`: elaborates to a fresh metavariable.
     Hole,
+    /// A named hole, `?name`: a goal left for later. Checked as anything
+    /// would be there, reported with its type and context, and stops the
+    /// program if it is reached.
+    Goal(String),
     /// Square brackets, `[e]`.  As a term this is promotion.  Juxtaposed to
     /// a *type* it is Granule's postfix modality instead: `a [r]` is an `a`
     /// that may be used `r` times.  Types and terms share a grammar here, so
@@ -150,6 +181,10 @@ pub enum Pat {
     /// `Point { x = p }`: a record, its fields matched by the patterns
     /// given, and any not named by anything.
     Record(Ident, Vec<(Ident, LPat)>),
+    /// `{p}`: the next implicit argument, matched against `p`; `@{p}`, the
+    /// next auto one. Where an equation or a lambda has none, its implicit
+    /// arguments are bound with no name, as they always were.
+    Implicit(Icit, Box<LPat>),
 }
 
 /// What an equation or an alternative gives, if its patterns match.
@@ -211,10 +246,17 @@ pub struct Program {
     /// the definitions `@terminating` says end, though the checker cannot
     /// see why
     pub terminating: Vec<Ident>,
+    /// the definitions `@test` makes tests, which `idyll test` runs
+    pub tests: Vec<Ident>,
+    /// the definitions `@hint` offers to the search for an auto argument
+    pub hints: Vec<Ident>,
     /// `@linear`: an unannotated binder here is linear, `[1]`, rather than
     /// unrestricted, `[]`
     pub linear: bool,
     pub body: Option<LTerm>,
+    /// `module M where ..`: a module written inside this one's file, rather
+    /// than in a file of its own; it is the module `M` under this one
+    pub modules: Vec<(Ident, Program)>,
 }
 
 /// Who may see a declaration, from outside the module it is in.
@@ -254,6 +296,30 @@ pub enum Lit {
     Int(i64),
     Bool(bool),
     Str(String),
+    /// A Unicode scalar value, `'a'`.
+    Char(char),
+    /// A number with a point in it, `1.5`, as its IEEE-754 bits: a `Float`.
+    Float(u64),
+    /// The same, at `Float32`.
+    Float32(u32),
+    /// An integer at a sized type, `5` where an `Int8` is wanted: its bits
+    /// (see `idyllic_builtins::num`). The parser makes only `Int`s; the type
+    /// checker reads one at the type wanted.
+    Word(idyllic_builtins::Width, u64),
+}
+
+/// A character as Idyll writes one: in single quotes, escaped as a string
+/// would be (`'\n'`), but for `'` itself, `'\''`, and `"`, which needs no
+/// escape here. Every back end shows a `Char` answer so.
+pub fn show_char(c: char) -> String {
+    match c {
+        '\'' => "'\\''".to_string(),
+        '"' => "'\"'".to_string(),
+        c => {
+            let s = format!("{:?}", c.to_string());
+            format!("'{}'", &s[1..s.len() - 1])
+        }
+    }
 }
 
 impl std::fmt::Display for Lit {
@@ -264,6 +330,10 @@ impl std::fmt::Display for Lit {
             Lit::Bool(true) => write!(f, "True"),
             Lit::Bool(false) => write!(f, "False"),
             Lit::Str(s) => write!(f, "{s:?}"),
+            Lit::Char(c) => f.write_str(&show_char(*c)),
+            Lit::Float(x) => f.write_str(&idyllic_builtins::num::fmt_float(f64::from_bits(*x))),
+            Lit::Float32(x) => f.write_str(&idyllic_builtins::num::fmt_float32(f32::from_bits(*x))),
+            Lit::Word(w, b) => write!(f, "{}", w.value(*b)),
         }
     }
 }
@@ -295,6 +365,12 @@ pub struct Data {
     /// a record's fields, in order: what its one constructor's fields are
     /// called (`record Point = { x : Int, y : Int }`)
     pub fields: Option<Vec<Ident>>,
+    /// a trait's methods with a default, the definition that is it
+    /// (`Describe.#twice`), and whether the method is a function: what an
+    /// instance that leaves one out gets
+    pub defaults: Vec<(Ident, String, bool)>,
+    /// whether it is a trait's record, which instances are of
+    pub is_trait: bool,
 }
 
 /// The empty sequence and adding an element to the front of one.
@@ -333,6 +409,8 @@ pub fn substitute(t: &LTerm, name: &str, by: &LTerm) -> LTerm {
             Term::Lam(p, body)
         }
         Term::App(f, a) => Term::App(go(f), go(a)),
+        Term::ImplicitApp(f, a) => Term::ImplicitApp(go(f), go(a)),
+        Term::AutoApp(f, a) => Term::AutoApp(go(f), go(a)),
         Term::Ann(e, ty) => Term::Ann(go(e), go(ty)),
         Term::BoxIntro(e) => Term::BoxIntro(go(e)),
         Term::Range(a, b) => Term::Range(go(a), go(b)),

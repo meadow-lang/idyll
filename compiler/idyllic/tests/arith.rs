@@ -41,12 +41,18 @@ fn precedence_tighter_than_annotation_and_arrow_looser_than_application() {
 
 #[test]
 fn operands_must_be_ints() {
+    // a number is read at the type wanted, which `True` says is `Bool`
     let (ty, diags) = run("1 + True");
-    assert_eq!(ty, "Int");
-    assert_eq!(diags, ["type mismatch: expected Int, but this has type Bool"]);
+    assert_eq!(ty, "Bool");
+    assert_eq!(diags, ["type mismatch: expected Bool, but this has type Int", "nothing in scope gives an Add Bool: an auto argument is wanted here"]);
 
+    // `+` is `Add`'s method, at the type of its first operand: there is no
+    // `Add String`, and `1` is no `String`
     let (_, diags) = run("\"a\" + 1");
-    assert_eq!(diags, ["type mismatch: expected Int, but this has type String"]);
+    assert_eq!(
+        diags,
+        ["nothing in scope gives an Add String: an auto argument is wanted here", "type mismatch: expected String, but this has type Int"]
+    );
 }
 
 #[test]

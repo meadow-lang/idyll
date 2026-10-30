@@ -1,0 +1,39 @@
+-- An effect of our own: a log of messages. Code that logs says so in its
+-- type, `! Log`, and has no idea where the messages go; whoever handles
+-- the effect decides.
+
+effect Log where
+  log : String -> ()
+
+-- The steps from `n` down to 1 in the Collatz sequence, logging each.
+collatz : (n : [] Int) -> Int ! {Log, Div}
+collatz n
+  | n == 1 = 0
+  | n % 2 == 0 = let u = log (showInt n ++ " is even: halve it") in 1 + collatz (n / 2)
+  | otherwise = let u = log (showInt n ++ " is odd: triple it and add one") in 1 + collatz (3 * n + 1)
+
+-- `m` in front of the messages of a run. It uses the run once, so takes it
+-- with `[1]`, as its type says once the grade is worked out.
+logged : (m : String) -> (run : (a, List String)) -> (a, List String)
+logged m (x, ms) = (x, m :: ms)
+
+-- Run `body`, keeping what it logs: its result, and the messages in order.
+-- `k` is the rest of the computation from the `log` on; the clause answers
+-- the `log` with `()`, and puts the message in front of the ones after it.
+-- `logged` takes the run once, so `k` is resumed once, as a `log` may be.
+-- (A `case` here would bind the run's parts as a lambda's binder is,
+-- unrestricted, and so use `k` without limit.)
+kept : (body : () -> a ! {Log | r}) -> (a, List String) ! r
+kept body = handle body () with
+  return x -> (x, Nil)
+  log m k -> logged m (k ())
+
+-- Run `body`, throwing away what it logs.
+quiet : (body : () -> a ! {Log | r}) -> a ! r
+quiet body = handle body () with
+  log m k -> k ()
+
+-- Run `body`, writing what it logs to the console as it goes.
+printed : (body : () -> a ! {Log, Console | r}) -> a ! {Console | r}
+printed body = handle body () with
+  log m k -> let u = putStrLn ("  log: " ++ m) in k ()

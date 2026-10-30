@@ -101,18 +101,23 @@
 //!
 //! * There is no syntax for giving an implicit argument explicitly.
 
+mod auto;
 pub mod core;
 pub mod grade;
 mod elab;
 mod eval;
 pub mod handlers;
+mod linear;
+mod literals;
 mod matching;
 pub mod natives;
+mod overloads;
 pub mod packages;
 pub mod prune;
 mod positivity;
 mod sequences;
 mod termination;
+mod tests;
 pub mod typer;
 mod unify;
 pub mod value;
@@ -273,6 +278,17 @@ pub enum MetaEntry {
 
 /// A hole, remembered so it can be reported *after* checking, by which time
 /// unification may have worked out what belongs in it.
+/// A goal, `?name`: where it is, the type wanted there, and the variables
+/// of the definition it is in (each its name, type, grade and level).
+#[derive(Clone, Debug)]
+struct GoalInfo {
+    node: NodeId,
+    name: String,
+    lvl: Lvl,
+    ty: VTy,
+    context: Vec<(String, VTy, Option<Rc<Value>>, Lvl)>,
+}
+
 #[derive(Clone, Debug)]
 struct HoleInfo {
     lvl: Lvl,
@@ -292,6 +308,9 @@ struct HoleInfo {
 pub struct TypeError {
     pub node: NodeId,
     pub kind: TypeErrorKind,
+    /// what else to say: where each of two types of one name is from, when
+    /// both are in what the error shows
+    pub notes: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -304,13 +323,51 @@ pub enum TypeErrorKind {
     UnknownVariable(String),
     /// a metavariable that unification never pinned down
     UnsolvedMeta(String),
+    /// an implicit argument given by hand, `f {a}`, to something whose type
+    /// has no implicit binder next
+    NoImplicitArgument(Rc<Core>),
+    /// nothing in scope, no auto binder and no hint, gives an auto argument
+    /// of this type; `deep` when the search went too deep looking
+    NoInstance { wanted: Rc<Core>, deep: bool },
+    /// more than one hint gives it
+    AmbiguousInstance { wanted: Rc<Core>, candidates: Vec<String> },
+    /// what an auto argument is to be was never known well enough to look
+    UnknownInstance(Rc<Core>),
+    /// an auto argument given by hand, `f @{d}`, to something whose type
+    /// has no auto binder next
+    NoAutoArgument(Rc<Core>),
+    /// an instance of a trait of another package, for a type of another
+    /// package: the trait, and the type
+    OrphanInstance { instance: Rc<Core>, trait_name: String },
+    /// two instances whose heads unify: which one a search should take
+    /// cannot be told
+    OverlappingInstances { instance: Rc<Core>, other: String },
+    /// no meaning of an overloaded name fits where it is used: its
+    /// spelling, the type wanted there if one was, and each meaning
+    NoMeaning { name: String, wanted: Option<Rc<Core>>, candidates: Vec<String> },
+    /// more than one meaning of an overloaded name still fits once its
+    /// definition is checked
+    AmbiguousName { name: String, wanted: Option<Rc<Core>>, fitting: usize, candidates: Vec<String>, example: String },
     /// an explicit `_` that unification filled in
     HoleSolved { ty: Rc<Core>, solution: Rc<Core> },
     /// an explicit `_` that nothing determined
     HoleUnsolved(Rc<Core>),
+    /// a goal, `?name`, left for later: its type, and the variables of the
+    /// definition it is in, each its name, type and grade (a warning)
+    Goal { name: String, ty: Rc<Core>, context: Vec<(String, Rc<Core>, Option<Rc<Core>>)> },
     /// a variable used a different number of times than its grade allows;
     /// `in_type` when it is a function type's uses of its own binder
     UsageMismatch { name: String, used: Rc<Core>, allowed: Rc<Core>, in_type: bool },
+    /// a variable of a linear type used more than once, whatever its
+    /// grade says
+    LinearUsage { name: String, ty: Rc<Core>, used: Rc<Core> },
+    /// a value of a linear type boxed, to be used more than once
+    LinearBox(Rc<Core>),
+    /// a linear type given for a type parameter of something that may hold
+    /// a value of that type more than once
+    LinearInstance { ty: Rc<Core>, param: String },
+    /// a top-level definition of a linear type, which every use would share
+    LinearTopLevel { name: String, ty: Rc<Core> },
     /// a field a pattern bound used a different number of times than the
     /// grade of what it came out of allows
     FieldUsage { name: String, used: Rc<Core>, allowed: Rc<Core>, whole: Option<String> },
@@ -322,6 +379,8 @@ pub enum TypeErrorKind {
     UncheckedInTypeGrade(String),
     /// a grade literal that does not fit in a machine word
     GradeTooLarge,
+    /// an integer literal that does not fit in the sized type it is read at
+    NumberTooLarge { number: String, ty: String },
     /// `lo..hi` with `lo > hi`
     EmptyRange { lo: Grade, hi: Grade },
     /// `let [x] = e` where `e` is not a box
@@ -354,6 +413,8 @@ pub enum TypeErrorKind {
     DotMismatch { expected: Rc<Core>, given: Rc<Core> },
     /// a string literal as a pattern
     StringPattern,
+    /// `{p}` or `@{p}` where no implicit (or auto) argument is to be had
+    MisplacedImplicitPattern,
     /// a data type whose kind does not end in `Type`
     DataKindNotType(Rc<Core>),
     /// a constructor whose type does not end in its data type, applied to
@@ -423,6 +484,10 @@ pub enum TypeErrorKind {
     /// a `main` that is not `() -> () ! Eff`, or has effects `Eff` does not
     /// have
     MainType(Rc<Core>),
+    /// a `@test` that is not `() -> ()` with the runtime's effects
+    TestType { name: String, ty: Rc<Core> },
+    /// tests to run, and no `Std.Test` to run them with
+    NoTestRunner,
 }
 
 /// Where a data type appears that makes it fail strict positivity.
@@ -457,8 +522,50 @@ fn times(used: &Core) -> String {
     }
 }
 
+/// What is shown of a metavariable is its number in what is shown: `?0`,
+/// `?1`, ... in the order they first appear in `text`, `seen` holding those
+/// numbered so far. (The checker's own numbers count every metavariable the
+/// prelude made too, which says nothing to the reader.)
+pub fn number_metas(seen: &mut HashMap<String, usize>, text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        out.push(c);
+        if c != '?' {
+            continue;
+        }
+        let mut end = i + 1;
+        while let Some(&(j, d)) = chars.peek() {
+            if !d.is_ascii_digit() {
+                break;
+            }
+            end = j + 1;
+            chars.next();
+        }
+        if end > i + 1 {
+            let next = seen.len();
+            let n = *seen.entry(text[i + 1..end].to_string()).or_insert(next);
+            out.push_str(&n.to_string());
+        }
+    }
+    out
+}
+
 impl TypeError {
     pub fn to_diagnostic(&self, spans: &SpanTable) -> Diagnostic {
+        let mut d = self.notes.iter().fold(self.diagnostic(spans), |d, note| d.help(note.clone()));
+        let mut seen = HashMap::new();
+        d.message = number_metas(&mut seen, &d.message);
+        for l in &mut d.labels {
+            l.message = number_metas(&mut seen, &l.message);
+        }
+        for h in &mut d.help {
+            *h = number_metas(&mut seen, h);
+        }
+        d
+    }
+
+    fn diagnostic(&self, spans: &SpanTable) -> Diagnostic {
         let here = spans.get(self.node).unwrap_or(Span::at(0));
         match &self.kind {
             TypeErrorKind::Mismatch { expected, actual } => Diagnostic::error("type mismatch")
@@ -475,8 +582,67 @@ impl TypeError {
                     .help(format!("give it a signature, as in {name} : .. = .."))
             }
             TypeErrorKind::UnknownVariable(name) => {
-                Diagnostic::error(format!("not in scope: {name}")).label(here, "unbound here")
+                // (the renamer found it, so it is declared, but not yet where
+                // this is checked)
+                Diagnostic::error(format!("not in scope: {name}")).label(here, "unbound here").help(format!(
+                    "{name} is declared, but after this needs it: a data type's own constructor in its fields is one, and a `use` of its constructors hides any type of the same name, so bring in only those it does not clash with, as in `use T (A, B)`"
+                ))
             }
+            TypeErrorKind::NoMeaning { name, wanted, candidates } => {
+                let needed = match wanted {
+                    Some(w) => format!("no `{name}` in scope has the type needed here, `{w}`"),
+                    None => format!("no `{name}` in scope fits here"),
+                };
+                Diagnostic::error(needed)
+                    .label(here, "used here")
+                    .help(format!("candidates in scope:\n  {}", candidates.join("\n  ")))
+            }
+            TypeErrorKind::AmbiguousName { name, wanted, fitting, candidates, example } => {
+                let fit = match wanted {
+                    Some(w) => format!("fit `{w}`"),
+                    None => "fit here".to_string(),
+                };
+                Diagnostic::error(format!("ambiguous `{name}`: {fitting} of the candidates in scope {fit}"))
+                    .label(here, "which one is meant?")
+                    .help(format!(
+                        "candidates in scope:\n  {}\nsay which with a type annotation, or write it in full, as `{example}`",
+                        candidates.join("\n  ")
+                    ))
+            }
+            TypeErrorKind::NoInstance { wanted, deep } => {
+                let wanted = wanted.to_string();
+                let article = if wanted.starts_with(['A', 'E', 'I', 'O', 'U']) { "an" } else { "a" };
+                let d = Diagnostic::error(format!("nothing in scope gives {article} {wanted}")).label(here, "an auto argument is wanted here");
+                if *deep {
+                    d.help("the search went round too many hints that want auto arguments of their own")
+                } else {
+                    d.help("an auto binder, {auto d : ..} or .. =>, or a definition marked @hint, of that type would")
+                }
+            }
+            TypeErrorKind::AmbiguousInstance { wanted, candidates } => {
+                Diagnostic::error(format!("more than one hint gives a {wanted}"))
+                    .label(here, "an auto argument is wanted here")
+                    .help(format!("the hints that do:\n  {}", candidates.join("\n  ")))
+            }
+            TypeErrorKind::OrphanInstance { instance, trait_name } => {
+                Diagnostic::error(format!("an instance {instance} cannot be here"))
+                    .label(here, format!("neither {trait_name} nor the type it is for is this package's"))
+                    .help("an instance lives with its trait or with its type, so that no two packages give the same one; a named instance, `instance name : ..`, may live anywhere, and is given by hand, `f @{name}`")
+            }
+            TypeErrorKind::OverlappingInstances { instance, other } => {
+                Diagnostic::error(format!("this instance {instance} overlaps another"))
+                    .label(here, format!("{other} is for the same types"))
+                    .help("two instances of a trait may not be for types that unify: a search could not tell which to take; name one, `instance name : ..`, to give it by hand")
+            }
+            TypeErrorKind::NoAutoArgument(ty) => Diagnostic::error("no auto argument is taken here")
+                .label(here, format!("given by hand, but what it is given to has type {ty}"))
+                .help("`f @{d}` gives `f` the auto argument its type binds next, as `{auto d : ..} ->` or `.. =>`"),
+            TypeErrorKind::UnknownInstance(wanted) => Diagnostic::error("cannot tell what to look for")
+                .label(here, format!("an auto argument of type {wanted} is wanted here, and what it is is never worked out"))
+                .help("say more of the type, with an annotation"),
+            TypeErrorKind::NoImplicitArgument(ty) => Diagnostic::error("no implicit argument is taken here")
+                .label(here, format!("given by hand, but what it is given to has type {ty}"))
+                .help("`f {a}` gives `f` the implicit argument its type binds next, as `{a : Type} -> ..`"),
             TypeErrorKind::UnsolvedMeta(desc) => Diagnostic::error("unsolved metavariable")
                 .label(here, format!("could not infer {desc}"))
                 .help("add a type annotation to pin it down"),
@@ -485,6 +651,21 @@ impl TypeError {
             }
             TypeErrorKind::HoleUnsolved(ty) => Diagnostic::error("unsolved hole")
                 .label(here, format!("_ : {ty}, and nothing determines it")),
+            TypeErrorKind::Goal { name, ty, context } => {
+                let d = Diagnostic::warning(format!("goal ?{name}")).label(here, format!("?{name} : {ty}"));
+                if context.is_empty() {
+                    d
+                } else {
+                    let lines: Vec<String> = context
+                        .iter()
+                        .map(|(x, t, g)| match g {
+                            Some(g) => format!("  {x} : {t}  (grade {g})"),
+                            None => format!("  {x} : {t}"),
+                        })
+                        .collect();
+                    d.help(format!("in scope:\n{}", lines.join("\n")))
+                }
+            }
             TypeErrorKind::FieldUsage { name, used, allowed, whole } => {
                 let (whole, example) = match whole {
                     Some(w) => (w.clone(), w.clone()),
@@ -497,6 +678,17 @@ impl TypeError {
                         times(used)
                     ))
             }
+            TypeErrorKind::LinearUsage { name, ty, used } => Diagnostic::error("a linear value used more than once")
+                .label(here, format!("{name} is of type {ty}, which is linear, but is used {}", times(used)))
+                .help(format!("a value of {ty} is changed in place, so it is never shared: each use must give it back for the next, as a write does")),
+            TypeErrorKind::LinearBox(ty) => Diagnostic::error("a linear value boxed")
+                .label(here, format!("this is of type {ty}, which is linear, so it may not be boxed to be used more than once")),
+            TypeErrorKind::LinearInstance { ty, param } => Diagnostic::error("a linear type for a type parameter that is shared")
+                .label(here, format!("{ty} is linear, but this may hold a value of type {param} more than once"))
+                .help(format!("{ty} is changed in place, so it is never shared: it may be given only for a parameter whose values are used at most once")),
+            TypeErrorKind::LinearTopLevel { name, ty } => Diagnostic::error("a linear value at the top level")
+                .label(here, format!("{name} is of type {ty}, which is linear, and every use of a top-level definition shares it"))
+                .help("make it a function, so that each call makes one of its own"),
             TypeErrorKind::UsageMismatch { name, used, allowed, in_type: true } => {
                 Diagnostic::error("usage mismatch").label(
                     here,
@@ -528,6 +720,8 @@ impl TypeError {
                     .label(here, format!("the type of this function is inferred, so nothing holds it to {name}'s second grade"))
                     .help("give the function a signature")
             }
+            TypeErrorKind::NumberTooLarge { number, ty } => Diagnostic::error(format!("{number} does not fit in an {ty}"))
+                .label(here, format!("an {ty} is from {}", number_range(ty))),
             TypeErrorKind::GradeTooLarge => {
                 Diagnostic::error("grade is too large").label(here, "grades are counts that fit a machine word")
             }
@@ -569,6 +763,9 @@ impl TypeError {
                 .help("give this equation a right-hand side"),
             TypeErrorKind::DotMismatch { expected, given } => Diagnostic::error("dot pattern does not match")
                 .label(here, format!("matching has worked out that this is {expected}, not {given}")),
+            TypeErrorKind::MisplacedImplicitPattern => Diagnostic::error("no implicit argument is here to match")
+                .label(here, "`{p}` matches an implicit argument, and `@{p}` an auto one, where the type has one next")
+                .help("an implicit pattern goes where its binder is, in the order the type gives them"),
             TypeErrorKind::StringPattern => Diagnostic::error("strings cannot be matched on yet")
                 .label(here, "use a guard with a comparison instead"),
             TypeErrorKind::DataKindNotType(kind) => Diagnostic::error("a data type's kind ends in Type")
@@ -585,7 +782,7 @@ impl TypeError {
                 .label(here, "level variables are not supported yet"),
             TypeErrorKind::LargeField { data, level } => Diagnostic::error("field too large for its data type")
                 .label(here, format!("this field's type lives in Type {level}, but {data} lives in Type"))
-                .help("a data type lives in Type, so its fields must be types in Type; larger data types are not supported yet"),
+                .help("a data type lives in Type, so its fields must be types in Type, unless its kind says it lives higher, as a record's or a trait's with a field that is a type does"),
             TypeErrorKind::UniverseTooLarge { what, solution, allowed, actual } => {
                 Diagnostic::error("universe too large").label(
                     here,
@@ -671,6 +868,11 @@ impl TypeError {
             TypeErrorKind::BadSeq { data, why } => {
                 Diagnostic::error(format!("{data} cannot be built with #[..]")).label(here, why.clone())
             }
+            TypeErrorKind::TestType { name, ty } => Diagnostic::error("a test has the wrong type")
+                .label(here, format!("{name} is {ty}"))
+                .help("a test takes () and gives (), with at most the effects the runtime handles, as main does: t : () -> () ! Eff"),
+            TypeErrorKind::NoTestRunner => Diagnostic::error("nothing to run the tests with")
+                .help("idyll test runs them with Std.Test's testsStart, testCase and testsDone"),
             TypeErrorKind::MainType(ty) => Diagnostic::error("main has the wrong type")
                 .label(here, format!("main is {ty}"))
                 .help("main takes () and gives (), with at most the effects the runtime handles: main : () -> () ! Eff"),
@@ -735,6 +937,9 @@ struct Binder {
     /// How often it may be used, where that is known: matching takes a
     /// value apart into fields of the same grade.
     grade: Option<Rc<Value>>,
+    /// Whether it is an auto binder, which a search for an auto argument
+    /// may find (see [`auto`]).
+    auto: bool,
 }
 
 /// How a name is referred to.
@@ -818,7 +1023,7 @@ impl Ctx {
         let mut next = self.clone();
         next.lvl = self.lvl + 1;
         next.env = self.env.push(value);
-        next.binders.push(Binder { info, name: hint.to_string(), ty, key: unique, grade: None });
+        next.binders.push(Binder { info, name: hint.to_string(), ty, key: unique, grade: None, auto: false });
         if let Some(u) = unique {
             next.names.insert(u, Entry::Local(self.lvl));
         }
@@ -845,6 +1050,14 @@ impl Ctx {
     fn graded(mut self, grade: &Rc<Value>) -> Ctx {
         if let Some(b) = self.binders.last_mut() {
             b.grade = Some(grade.clone());
+        }
+        self
+    }
+
+    /// The last binder, as an auto binder: what a search may find.
+    fn auto_bound(mut self) -> Ctx {
+        if let Some(b) = self.binders.last_mut() {
+            b.auto = true;
         }
         self
     }
@@ -925,13 +1138,20 @@ impl Ctx {
 
 /// All of the checker's mutable state.  The metacontext is the important
 /// one: solving a meta must be visible immediately to every value that
-/// already mentions it, which `&mut self` gives us for free.
+/// already mentions it, which `&mut self` gives us for free.  It is cloned
+/// to try what an overloaded name means (see [`overloads`]).
+#[derive(Clone)]
 pub struct Checker {
     metas: Vec<MetaEntry>,
     /// node id to that node's type, quoted in the node's context
     node_types: Vec<Option<Rc<Core>>>,
     errors: Vec<TypeError>,
     holes: Vec<HoleInfo>,
+    /// the goals, `?name`, to report at the end
+    goals: Vec<GoalInfo>,
+    /// the level at which the top-level definition being checked starts:
+    /// what a goal in it lists of its context is what is bound from there
+    local_from: Lvl,
     rec_defs: Vec<RecDef>,
     /// every declared constructor, by the unique of its name
     ctors: HashMap<usize, CtorInfo>,
@@ -951,6 +1171,11 @@ pub struct Checker {
     /// the type of every constant (data type, constructor, recursive
     /// definition), by its unique
     constants: HashMap<usize, VTy>,
+    /// which data types are linear, as far as worked out (see [`linear`])
+    linear_datas: HashMap<usize, bool>,
+    /// the type parameters given what may be a linear type, to check once
+    /// it is known (see [`linear`])
+    linear_wants: Vec<linear::LinearWant>,
     /// the next key for a slot the checker makes itself (see
     /// [`Binder::key`]); counts down from the top, far from the renamer's
     /// uniques
@@ -981,6 +1206,98 @@ pub struct Checker {
     /// definition they were made in has been checked, if nothing filled
     /// them. Each with how many arguments it is applied to.
     opened: Vec<(MetaVar, usize)>,
+    /// The metas a solution met applied to variables it may not mention,
+    /// with which of their arguments it may (see [`Checker::solve`]): to be
+    /// pruned of the others, and the solution tried again.
+    prunes: std::cell::RefCell<Vec<(MetaVar, Vec<bool>)>>,
+    /// The grades being worked out, of the parameters that say none in a
+    /// module that is not linear (see [`Checker::settle_grade`]).
+    inferred: HashMap<MetaVar, Inferred>,
+    /// The joins of two alternatives' uses that mention a grade still being
+    /// worked out, each standing for `join(p, q)` until it can be worked out
+    /// (see [`Checker::join_usage`]), in the order they were made.
+    joins: Vec<(MetaVar, Poly, Poly)>,
+    /// How many of the explicit arrows ahead are a definition's parameters,
+    /// on its signature's spine (or its lambdas, with none): those that say
+    /// no grade have theirs worked out.
+    infer_spine: usize,
+    /// The names with more than one meaning where they are written, by
+    /// node (see [`hir::Module::overloads`]), and the meaning chosen for
+    /// each so far.
+    overloads: HashMap<NodeId, Vec<usize>>,
+    forced: HashMap<NodeId, usize>,
+    /// The constructor chosen for each overloaded pattern.
+    pattern_choice: HashMap<NodeId, usize>,
+    /// The terms put off until their definition has been checked (see
+    /// [`overloads`]), and each placeholder's meaning once chosen, with the
+    /// level it was elaborated at.
+    deferred: Vec<overloads::Deferred>,
+    chosen: HashMap<MetaVar, (Rc<Core>, Lvl)>,
+    /// the placeholders, whose solutions are no closed terms
+    placeholders: HashSet<MetaVar>,
+    /// For messages about an overloaded name: how it is written, by node;
+    /// and each meaning, how it is written in full and where it is from.
+    overload_names: HashMap<NodeId, String>,
+    written_as: HashMap<usize, String>,
+    origin: HashMap<usize, String>,
+    /// where each type and constructor is from, by unique: its package, for
+    /// a message about two of one name
+    homes: HashMap<usize, String>,
+    /// the uniques of this package's earlier parts (see `idyllic::parts`),
+    /// which are its own as much as the module's are
+    kin: Vec<std::ops::Range<usize>>,
+    /// The definitions offered to the search for an auto argument, this
+    /// package's and those it depends on, with their names for messages;
+    /// and the searches waiting for their types (see [`auto`]).
+    hints: HashSet<usize>,
+    hint_names: HashMap<usize, String>,
+    deferred_autos: Vec<auto::DeferredAuto>,
+    /// the number literals waiting for their types (see [`literals`])
+    deferred_literals: Vec<literals::DeferredLiteral>,
+    /// the traits' records, this package's and those it depends on
+    traits: HashSet<usize>,
+    /// each trait's superclass projections, by its record type
+    supers: HashMap<usize, Vec<usize>>,
+    /// each trait's methods (see [`hir::Module::methods`]), and each
+    /// instance with no parameters, with those of its fields that are a
+    /// constant or a primitive: a method of it is that (see [`auto`])
+    methods: HashMap<usize, (usize, usize, usize)>,
+    instance_fields: HashMap<usize, Vec<Option<Rc<Core>>>>,
+    /// a signature's implicit binders that equations naming one before
+    /// them left to their matching, by name (see `check_against_sig`)
+    quantified: Vec<hir::Ident>,
+    /// the instances being unfolded (see `Checker::opened`): one whose
+    /// default reads another of its fields reads it once it is there
+    opening: std::cell::RefCell<Vec<usize>>,
+    /// that a metavariable's solution is being read off what it was
+    /// equated with keeping definitions by their names (see `Checker::solve`)
+    naming: std::cell::Cell<bool>,
+    /// the data types that live above `Type`, and where
+    large: HashMap<usize, core::Level>,
+    /// that the application being inferred is the head of `f x @{d}`, so
+    /// that its auto argument is left for `d`
+    auto_given: bool,
+}
+
+/// A parameter's grade being worked out: how many variables its meta is
+/// applied to, and the constraints on it that waited for it, to be checked
+/// once it is settled.
+#[derive(Clone)]
+struct Inferred {
+    args: usize,
+    waiting: Vec<Waiting>,
+}
+
+/// A use that had to fit a grade still being worked out.
+#[derive(Clone)]
+struct Waiting {
+    ctx: Ctx,
+    node: NodeId,
+    name: String,
+    used: Poly,
+    allowed: Rc<Value>,
+    /// a field's, with what it is a field of; `None` for a binder's
+    field: Option<Option<String>>,
 }
 
 /// What is known about a constructor.  At run time it is its `tag` and its
@@ -995,6 +1312,11 @@ pub struct CtorInfo {
     /// how many (implicit, erased) type parameters come before the fields
     pub params: usize,
     pub fields: usize,
+    /// which of its fields a type may read off a known instance (see
+    /// `Checker::opened`): a record's fields that are types, and a trait's
+    /// superclasses
+    #[serde(default)]
+    pub opens: Vec<bool>,
 }
 
 /// An elaborated recursive definition.  In Core a recursive definition is a
@@ -1020,6 +1342,7 @@ pub struct RecDef {
 
 /// A term's type, and the type it was to have, that could not be unified
 /// yet: at `lvl`, for the term at `node`.
+#[derive(Clone)]
 struct Postponed {
     lvl: Lvl,
     actual: Rc<Value>,
@@ -1105,6 +1428,9 @@ pub struct TypeCheckResult {
     /// Definitions every back end keeps, used or not (see [`prune`]): none,
     /// unless whoever lowers the program says otherwise.
     pub roots: HashSet<usize>,
+    /// The top-level definitions whose values compute with no effects,
+    /// which a back end may leave out when nothing uses them (see [`prune`])
+    pub pure: HashSet<usize>,
     /// The checker, kept to work out the types of the program's terms
     /// again for whoever lowers it (see [`typer`]).
     pub typer: typer::Typer,
@@ -1130,6 +1456,8 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         node_types: vec![None; node_count],
         errors: Vec::new(),
         holes: Vec::new(),
+        goals: Vec::new(),
+        local_from: 0,
         rec_defs: Vec::new(),
         ctors: HashMap::new(),
         datas: HashMap::new(),
@@ -1138,6 +1466,8 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         terminating: m.terminating.clone(),
         linear: false,
         constants: HashMap::new(),
+        linear_datas: HashMap::new(),
+        linear_wants: Vec::new(),
         next_key: usize::MAX,
         transparent: HashMap::new(),
         effects: HashMap::new(),
@@ -1148,20 +1478,110 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         lets: 0,
         postponed: Vec::new(),
         opened: Vec::new(),
+        prunes: Default::default(),
+        inferred: HashMap::new(),
+        joins: Vec::new(),
+        infer_spine: 0,
+        overloads: m.overloads.clone(),
+        forced: HashMap::new(),
+        pattern_choice: HashMap::new(),
+        deferred: Vec::new(),
+        chosen: HashMap::new(),
+        placeholders: HashSet::new(),
+        overload_names: HashMap::new(),
+        written_as: HashMap::new(),
+        origin: HashMap::new(),
+        homes: HashMap::new(),
+        kin: deps.iter().filter(|p| p.name == m.package).map(|p| p.uniques.clone()).collect(),
+        hints: m.hints.clone(),
+        hint_names: HashMap::new(),
+        deferred_autos: Vec::new(),
+        deferred_literals: Vec::new(),
+        traits: m.datas.iter().filter(|d| d.is_trait).filter_map(|d| d.name.unique).collect(),
+        supers: m.supers.clone(),
+        methods: m.methods.clone(),
+        instance_fields: HashMap::new(),
+        quantified: Vec::new(),
+        opening: Default::default(),
+        naming: Default::default(),
+        large: HashMap::new(),
+        auto_given: false,
     };
+    for b in m.groups.iter().flat_map(hir::BindGroup::binds) {
+        if let Some(u) = b.name.unique.filter(|u| m.hints.contains(u)) {
+            let name = match m.qualifiers.get(&u) {
+                Some(q) => format!("{q}.{}", b.name.text),
+                None => b.name.text.clone(),
+            };
+            tc.hint_names.insert(u, name);
+        }
+    }
+    for p in deps {
+        tc.hints.extend(p.hints.iter().copied());
+        tc.traits.extend(p.traits.iter().copied());
+        tc.instance_fields.extend(p.instance_fields.iter().cloned());
+        for (u, package, path) in &p.symbols {
+            if p.hints.contains(u) {
+                tc.hint_names.insert(*u, format!("{path}, from `{package}`"));
+            }
+        }
+    }
+    // (a package is known by its name and version: `Shapes@0.1.0`)
+    let this = match &m.version {
+        Some(v) => format!("`{}@{v}`", m.package),
+        None => format!("`{}`", m.package),
+    };
+    let in_prelude: HashSet<usize> = m.prelude.values().copied().collect();
+    for d in &m.datas {
+        for u in std::iter::once(&d.name).chain(d.ctors.iter().map(|c| &c.name)).filter_map(|x| x.unique) {
+            let home = if in_prelude.contains(&u) { "the prelude".to_string() } else { this.clone() };
+            tc.homes.insert(u, home);
+        }
+    }
+    for p in deps {
+        for (u, package, _) in &p.symbols {
+            tc.homes.insert(*u, format!("`{package}`"));
+        }
+    }
+    if !m.overloads.is_empty() {
+        tc.name_meanings(m, deps);
+    }
     let ctx = Ctx::initial(&tc);
     let ctx = tc.import(&ctx, deps);
     // native types first, which the data types and effects may mention; and
     // native operations once those are known, as their types may mention them
     let ctx = tc.declare_natives(&ctx, &m.natives, true);
     let ctx = tc.declare_effects(&ctx, &m.effects);
-    let ctx = tc.declare_datas(&ctx, &m.datas);
+    // the data types that mention no definition (see the SCC pass); the
+    // rest once what they mention is
+    let after = |i: usize| m.data_after.get(i).copied().unwrap_or(0);
+    let first = (0..m.datas.len()).take_while(|&i| after(i) == 0).count();
+    let ctx = tc.declare_datas(&ctx, &m.datas[..first]);
     let ctx = tc.declare_ops(&ctx, &m.effects);
     let ctx = tc.declare_natives(&ctx, &m.natives, false);
     // Top-level definitions are closed, so whatever they and the entry
     // expression use is only ever a definition or a primitive: there is no
     // binder left to hold the final usage to account.
-    let (ctx, owed, lets) = tc.enter_groups(&ctx, &m.groups);
+    let (mut ctx, mut owed, mut lets) = (ctx, Vec::new(), Vec::new());
+    let (mut g, mut d) = (0, first);
+    while g < m.groups.len() || d < m.datas.len() {
+        let upto = if d < m.datas.len() { after(d).min(m.groups.len()) } else { m.groups.len() };
+        let (next, o, l) = tc.enter_groups(&ctx, &m.groups[g..upto.max(g)]);
+        ctx = next;
+        owed.extend(o);
+        lets.extend(l);
+        g = upto.max(g);
+        let stop = (d..m.datas.len()).take_while(|&i| after(i) <= g).count();
+        if stop > 0 {
+            ctx = tc.declare_datas(&ctx, &m.datas[d..d + stop]);
+            d += stop;
+        } else if g >= m.groups.len() {
+            // (data types the groups do not reach, declared last)
+            ctx = tc.declare_datas(&ctx, &m.datas[d..]);
+            d = m.datas.len();
+        }
+    }
+    let ctx = ctx;
     // What is left over at the top is run there, where the runtime handles
     // the effects in the prelude's `Eff`, and nothing else.
     let world = tc.world(&ctx);
@@ -1173,11 +1593,21 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
     let prelude: HashSet<usize> = m.prelude.values().copied().collect();
     let main = m.groups.iter().flat_map(hir::BindGroup::binds).find(|b| b.name.unique.is_some() && b.name.unique == m.main);
     let main_fits = main.map(|b| tc.check_main(&ctx, b, world.clone()));
+    // what the program uses of its top-level definitions: its expression's
+    // uses, or `main`, used once
+    let mut uses: Option<Usage> = main.map(|b| b.name.unique.map_or_else(Usage::none, Usage::var));
     let body = match (&m.body, main.zip(main_fits)) {
         (Some(body), _) => {
             // in the root module's mode
             tc.linear = m.linear_body;
+            let mark = tc.rec_defs.len();
             let (core, ty, usage) = tc.infer(&ctx, body);
+            uses = Some(usage.clone());
+            tc.settle_deferred();
+            let core = tc.resolve(&core, ctx.lvl);
+            tc.resolve_rec_defs(mark);
+            let core = tc.specialize(&ctx, &core, ctx.lvl);
+            tc.specialize_rec_defs(&ctx, mark);
             // (a `main` that is wrong has said so already)
             if main_fits != Some(false) {
                 tc.unhandled(&ctx, body.id, &usage, &world);
@@ -1191,13 +1621,25 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         }),
         (None, _) => None,
     };
+    // `idyll test`: the tests, in place of the expression or `main`
+    let body = if m.testing && entry {
+        uses = Some(m.tests.iter().fold(Usage::none(), |u, t| u + Usage::var(*t)));
+        tc.tests_program(&ctx, m, deps, world.clone()).map(|c| (c, Rc::new(Core::LitTy(Builtin::Unit))))
+    } else {
+        body
+    };
     let ran_main = m.body.is_none() && body.is_some();
     let program = body.as_ref().map(|(core, _)| Checker::wrap_lets(core.clone(), lets.clone()));
     let body_type = body.as_ref().map(|(_, ty)| ty.clone());
+    // instances of traits: where they live, and that no two overlap
+    tc.check_instances(&ctx, m);
     tc.report_holes();
+    tc.report_goals();
     tc.retry_postponed(true);
     tc.close_opened();
     tc.close_rows();
+    tc.check_linear_wants();
+    tc.linear_top_level(&ctx, &m.groups, &owed, uses);
     tc.report_unsolved_metas();
     // the prelude's own definitions, which come first
     let prelude_lets: Vec<(String, Rc<Core>)> = m
@@ -1285,12 +1727,22 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
             hir::BindGroup::Rec(_) => None,
         })
         .collect();
+    // (those a definition, not a computation with effects, binds)
+    let pure: HashSet<usize> = toplevel
+        .iter()
+        .copied()
+        .filter(|u| matches!(ctx.names.get(u), Some(Entry::Local(level)) if ctx.binders[*level].info == BinderInfo::Defined))
+        .collect();
     let decl_types = catalog.iter().filter(|d| !d.prelude).map(|d| (d.node, d.name.clone(), d.ty.clone())).collect();
     let meta_solutions: Vec<Option<Rc<Core>>> = tc
         .metas
         .iter()
-        .map(|e| match e {
-            // metas are closed, so their solutions make sense in any context
+        .enumerate()
+        .map(|(i, e)| match e {
+            // metas are closed, so their solutions make sense in any context;
+            // but for an overloaded name's placeholders, which were written
+            // over (see [`overloads`])
+            MetaEntry::Solved(_, _) if tc.placeholders.contains(&i) => None,
             MetaEntry::Solved(v, _) => Some(tc.quote(0, v.clone())),
             MetaEntry::Unsolved(_) => None,
         })
@@ -1316,7 +1768,13 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
     let ops = tc.ops.clone();
     let node_types = std::mem::take(&mut tc.node_types);
     let metas = tc.metas.clone();
-    let errors = std::mem::take(&mut tc.errors);
+    let mut errors = std::mem::take(&mut tc.errors);
+    for e in &mut errors {
+        if let TypeErrorKind::Mismatch { expected, actual } = &mut e.kind {
+            *expected = tc.solved_in(expected);
+            *actual = tc.solved_in(actual);
+        }
+    }
     TypeCheckResult {
         body_type,
         compiled,
@@ -1336,14 +1794,61 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         symbols,
         toplevel,
         roots: HashSet::new(),
+        pure,
         catalog,
         typer: typer::Typer::new(tc),
     }
 }
 
 impl Checker {
+    /// A type an error shows, with what its metas came to since it was
+    /// reported: a number literal's type, say, which is known only once its
+    /// definition is done (see [`literals`]). A meta whose answer mentions
+    /// a variable is left as it is.
+    fn solved_in(&self, ty: &Rc<Core>) -> Rc<Core> {
+        ty.rewrite(0, &|c, _| match c {
+            Core::Meta(m) => match &self.metas[*m] {
+                MetaEntry::Solved(v, _) => {
+                    let answer = self.quote(0, v.clone());
+                    let open = std::cell::Cell::new(false);
+                    answer.rewrite(0, &|c, d| {
+                        if matches!(c, Core::Var(i, _) if *i >= d) {
+                            open.set(true);
+                        }
+                        None
+                    });
+                    (!open.get()).then(|| self.solved_in(&answer))
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+    }
+
     fn error(&mut self, node: NodeId, kind: TypeErrorKind) {
-        self.errors.push(TypeError { node, kind });
+        let notes = self.homes_of(&kind);
+        self.errors.push(TypeError { node, kind, notes });
+    }
+
+    /// For an error that shows two types: each name in them that stands for
+    /// two different types, and where each is from, as Meadow says it.
+    fn homes_of(&self, kind: &TypeErrorKind) -> Vec<String> {
+        let (a, b) = match kind {
+            TypeErrorKind::Mismatch { expected, actual } => (expected, actual),
+            TypeErrorKind::BinderMismatch { expected, given } => (expected, given),
+            _ => return Vec::new(),
+        };
+        let (ours, theirs) = (core::opaques(a), core::opaques(b));
+        let mut notes = Vec::new();
+        for (u, name) in &ours {
+            for (v, other) in &theirs {
+                if name == other && u != v && !notes.iter().any(|n: &String| n.starts_with(&format!("`{name}` "))) {
+                    let home = |u: &usize| self.homes.get(u).cloned().unwrap_or_else(|| "somewhere else".into());
+                    notes.push(format!("`{name}` is two types here: the one expected is from {}, this one from {}", home(u), home(v)));
+                }
+            }
+        }
+        notes
     }
 
     fn record(&mut self, node: NodeId, ty: Rc<Core>) {
@@ -1429,6 +1934,24 @@ impl Checker {
         self.metas.len() - 1
     }
 
+    /// Report every goal, `?name`, with its type and context: a warning, so
+    /// what is around it can still be worked on.
+    fn report_goals(&mut self) {
+        for g in std::mem::take(&mut self.goals) {
+            let ty = self.quote(g.lvl, g.ty);
+            let context = g
+                .context
+                .into_iter()
+                .map(|(x, t, grade, lvl)| {
+                    let t = self.quote(lvl, t);
+                    let grade = grade.map(|v| self.quote(lvl, v));
+                    (x, t, grade)
+                })
+                .collect();
+            self.error(g.node, TypeErrorKind::Goal { name: g.name, ty, context });
+        }
+    }
+
     /// Report every `_` in the source.  Run at the very end, so a hole that
     /// unification filled in reports the term it was filled with rather than
     /// just its type.
@@ -1492,5 +2015,13 @@ impl Checker {
         for (node, desc) in unsolved {
             self.error(node, TypeErrorKind::UnsolvedMeta(desc));
         }
+    }
+}
+
+/// The values a sized integer type has, `-128 to 127`.
+fn number_range(ty: &str) -> String {
+    match idyllic_builtins::Width::ALL.into_iter().find(|w| w.name() == ty) {
+        Some(w) => format!("{} to {}", w.value(if w.signed() { 1 << (w.bits() - 1) } else { 0 }), w.value(if w.signed() { (1u64 << (w.bits() - 1)) - 1 } else { u64::MAX })),
+        None => "what it holds".to_string(),
     }
 }

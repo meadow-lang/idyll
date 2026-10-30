@@ -13,131 +13,15 @@
 
 use idyllic_lexer::token::Token;
 use idyllic_span::LineIndex;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::OnceLock;
 
-fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("the repository")
-}
+#[path = "support/tutorial_examples.rs"]
+#[allow(dead_code)]
+mod tutorial_examples;
 
-fn meadow() -> PathBuf {
-    std::env::var_os("IDYLL_FRONT_MEADOW").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("meadow"))
-}
-
-/// `front/`, built natively, once: its executable, or why there is none.
-fn front() -> Result<PathBuf, String> {
-    static BUILT: OnceLock<Result<PathBuf, String>> = OnceLock::new();
-    BUILT
-        .get_or_init(|| {
-            let dir = repo().join("front");
-            let out = Command::new(meadow())
-                .arg("build")
-                .arg("--release")
-                .arg(&dir)
-                .output()
-                .map_err(|e| format!("no meadow to build front/ with ({e})"))?;
-            if !out.status.success() {
-                return Err(format!("front/ did not build:\n{}", String::from_utf8_lossy(&out.stderr)));
-            }
-            Ok(dir.join("target/release/native/silo").join(format!("Idyll{}", std::env::consts::EXE_SUFFIX)))
-        })
-        .clone()
-}
-
-/// Every program of the corpora, with a name for it; the prelude; and every
-/// `.idl` file of the repository (the standard library, the examples, the
-/// benchmarks).
-fn corpus() -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    for (name, text) in [
-        ("handwritten", include_str!("corpus/handwritten.txt")),
-        ("exhaustive", include_str!("corpus/exhaustive.txt")),
-        ("tutorial", include_str!("corpus/tutorial.txt")),
-    ] {
-        for (i, src) in text.replace("\r\n", "\n").split("\n%%%\n").enumerate() {
-            out.push((format!("{name}-{i:04}"), src.to_string()));
-        }
-    }
-    out.push(("prelude".to_string(), idyllic::pipeline::PRELUDE.to_string()));
-    let repo = repo();
-    let mut files = Vec::new();
-    for dir in ["lib", "examples", "bench"] {
-        idl_files(&repo.join(dir), &mut files);
-    }
-    files.sort();
-    for f in files {
-        let name = f.strip_prefix(&repo).unwrap_or(&f).to_string_lossy().replace(['/', '\\'], "-");
-        let text = std::fs::read_to_string(&f).expect("a source file").replace("\r\n", "\n");
-        out.push((name.trim_end_matches(".idl").to_string(), text));
-    }
-    out
-}
-
-fn idl_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for e in entries.flatten() {
-        let path = e.path();
-        if path.is_dir() {
-            if path.file_name().is_some_and(|n| n != "target" && n != "build") {
-                idl_files(&path, out);
-            }
-        } else if path.extension().is_some_and(|x| x == "idl") {
-            out.push(path);
-        }
-    }
-}
-
-/// What `front/` writes for each program, run as `Idyll <args> <files>`:
-/// its programs written to files of a directory of the test's own (with
-/// `extra` files beside them, which `args` may name), and front/ run on them
-/// once, its output cut at each `== <file>` line.
-fn dumps(args: &[&str], extra: &[(&str, &str)], programs: &[(String, String)]) -> Result<Vec<String>, String> {
-    let exe = front()?;
-    let dir = std::env::temp_dir().join(format!("idyll-front-{}-{}", args[0], std::process::id()));
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    for (name, text) in extra {
-        std::fs::write(dir.join(name), text).map_err(|e| e.to_string())?;
-    }
-    let files: Vec<String> = programs
-        .iter()
-        .map(|(name, src)| {
-            let f = format!("{name}.idl");
-            std::fs::write(dir.join(&f), src).map(|()| f)
-        })
-        .collect::<Result<_, _>>()
-        .map_err(|e| e.to_string())?;
-    // run where the files are, a few hundred at a time: a command line has a
-    // length it may not pass
-    let mut text = String::new();
-    for batch in files.chunks(200) {
-        let out = Command::new(&exe).args(args).args(batch).current_dir(&dir).output().map_err(|e| e.to_string())?;
-        if !out.status.success() {
-            let _ = std::fs::remove_dir_all(&dir);
-            return Err(format!("front/ failed:\n{}", String::from_utf8_lossy(&out.stderr)));
-        }
-        text.push_str(&String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n"));
-    }
-    let _ = std::fs::remove_dir_all(&dir);
-    // A program's own text can have `== ` in it, so a dump starts only at the
-    // line that names the next program's file.
-    let mut parts: Vec<String> = Vec::new();
-    for line in text.lines() {
-        let next = programs.get(parts.len()).map(|(name, _)| format!("{name}.idl"));
-        if line.starts_with("== ") && next.is_some_and(|f| line.ends_with(&f)) {
-            parts.push(String::new());
-        } else if let Some(part) = parts.last_mut() {
-            if !part.is_empty() {
-                part.push('\n');
-            }
-            part.push_str(line);
-        }
-    }
-    if parts.len() != programs.len() {
-        return Err(format!("front/ wrote {} dumps for {} programs", parts.len(), programs.len()));
-    }
-    Ok(parts)
-}
+#[path = "support/front.rs"]
+#[allow(dead_code)]
+mod harness;
+use harness::*;
 
 /// The tokens this compiler's lexer and layout make of `src`, as `front/`
 /// writes them: each as the text it covers, the virtual ones as «{» «;» «}»,
@@ -157,63 +41,6 @@ fn tokens(src: &str) -> String {
         .join(" ")
 }
 
-/// Where two dumps first differ, for a report: the line, for a dump of
-/// several, or the token.
-fn first_difference(ours: &str, theirs: &str) -> String {
-    if ours.contains('\n') || theirs.contains('\n') {
-        let (a, b): (Vec<&str>, Vec<&str>) = (ours.lines().collect(), theirs.lines().collect());
-        let at = a.iter().zip(&b).position(|(x, y)| x != y).unwrap_or(a.len().min(b.len()));
-        let line = |v: &[&str]| v.get(at).copied().unwrap_or("(nothing)").to_string();
-        return format!("at line {at}:\n    here    {}\n    front/  {}", line(&a), line(&b));
-    }
-    let (a, b): (Vec<&str>, Vec<&str>) = (ours.split(' ').collect(), theirs.split(' ').collect());
-    let at = a.iter().zip(&b).position(|(x, y)| x != y).unwrap_or(a.len().min(b.len()));
-    let around = |v: &[&str]| v[at.saturating_sub(4)..(at + 4).min(v.len())].join(" ");
-    format!("at token {at}: here `{}`, front/ `{}`", around(&a), around(&b))
-}
-
-/// Compare `front/`'s dump of each program with this compiler's.
-fn agree(pass: &str, ours: impl Fn(&str) -> String) {
-    agree_with(&[pass], &[], ours, |d| d.to_string());
-}
-
-/// The same, with `front/` run as `Idyll <args>`, `extra` files beside the
-/// programs, and both dumps put through `canon` before they are compared.
-fn agree_with(args: &[&str], extra: &[(&str, &str)], ours: impl Fn(&str) -> String, canon: impl Fn(&str) -> String) {
-    let pass = args[0];
-    let programs = corpus();
-    let theirs = match dumps(args, extra, &programs) {
-        Ok(d) => d,
-        Err(why) if why.starts_with("no meadow") => {
-            eprintln!("{why}: front/ was not checked");
-            return;
-        }
-        Err(why) => panic!("{why}"),
-    };
-    let differ: Vec<String> = programs
-        .iter()
-        .zip(&theirs)
-        .filter_map(|((name, src), theirs)| {
-            let (ours, theirs) = (canon(&ours(src)), canon(theirs));
-            // `IDYLL_FRONT_SHOW=handwritten-0003` shows both dumps of a
-            // program (several, separated by commas)
-            if std::env::var("IDYLL_FRONT_SHOW").is_ok_and(|v| v.split(',').any(|n| n == name)) {
-                eprintln!("--- {name}, {pass}, here:\n{ours}\n--- front/:\n{theirs}");
-            }
-            (ours != theirs).then(|| format!("{name}: {}", first_difference(&ours, &theirs)))
-        })
-        .collect();
-    let errors = theirs.iter().filter(|d| *d == "(error)").count();
-    eprintln!("{pass}: {} programs, {errors} of them an error to front/", programs.len());
-    assert!(
-        differ.is_empty(),
-        "{} of {} programs differ:\n{}",
-        differ.len(),
-        programs.len(),
-        differ.iter().take(20).cloned().collect::<Vec<_>>().join("\n")
-    );
-}
-
 #[test]
 fn the_tokens_and_their_layout_agree() {
     agree("tokens", tokens);
@@ -222,6 +49,79 @@ fn the_tokens_and_their_layout_agree() {
 #[test]
 fn the_parses_agree() {
     agree("parse", parsed);
+}
+
+/// A parse dump with what is named after where it is in the text -- an
+/// instance with no name of its own, `#instance@<offset>` -- named alike.
+fn unplaced(dump: &str) -> String {
+    let mut out = String::with_capacity(dump.len());
+    let mut rest = dump;
+    while let Some(at) = rest.find("#instance@") {
+        let (head, tail) = rest.split_at(at + "#instance@".len());
+        out.push_str(head);
+        rest = tail.trim_start_matches(|c: char| c.is_ascii_digit());
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `Idyll fmt` sets every program out as the same program: this compiler
+/// parses what it wrote as it parsed what was written (layout and all), and
+/// formatting it again changes nothing. Each program this compiler parses
+/// is written to a file, formatted in place, and formatted again.
+#[test]
+fn front_formats_every_program_as_the_same_program() {
+    let exe = match front() {
+        Ok(exe) => exe,
+        Err(why) if why.starts_with("no meadow") => {
+            eprintln!("{why}: front/ was not checked");
+            return;
+        }
+        Err(why) => panic!("{why}"),
+    };
+    let programs: Vec<(String, String)> = corpus().into_iter().filter(|(_, src)| parsed(src) != "(error)").collect();
+    let dir = std::env::temp_dir().join(format!("idyll-front-fmt-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a directory for the programs");
+    let files: Vec<String> = programs.iter().map(|(name, _)| format!("{name}.idl")).collect();
+    for ((_, src), file) in programs.iter().zip(&files) {
+        std::fs::write(dir.join(file), src).expect("a program written");
+    }
+    // a few hundred at a time, as a command line has a length it may not
+    // pass; a program front/ will not set out (one with errors it finds
+    // and this compiler's parser does not) is left as it is, and said
+    let format = || {
+        for batch in files.chunks(200) {
+            std::process::Command::new(&exe).arg("fmt").args(batch).current_dir(&dir).output().expect("front/ runs");
+        }
+        files.iter().map(|f| std::fs::read_to_string(dir.join(f)).expect("a program read").replace("\r\n", "\n")).collect::<Vec<_>>()
+    };
+    let once = format();
+    let twice = format();
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut differ = Vec::new();
+    let mut changed = 0;
+    for (((name, src), once), twice) in programs.iter().zip(&once).zip(&twice) {
+        if once != src {
+            changed += 1;
+        }
+        if std::env::var("IDYLL_FRONT_SHOW").is_ok_and(|v| v.split(',').any(|n| n == name)) {
+            eprintln!("--- {name}, as written:\n{src}\n--- set out:\n{once}");
+        }
+        let (before, after) = (unplaced(&parsed(src)), unplaced(&parsed(once)));
+        if before != after {
+            differ.push(format!("{name}: read as another program, {}", first_difference(&before, &after)));
+        } else if once != twice {
+            differ.push(format!("{name}: set out again, it changes:\n{}", first_difference(once, twice)));
+        }
+    }
+    eprintln!("fmt: {} programs, {changed} of them changed, {} not the same", programs.len(), differ.len());
+    assert!(
+        differ.is_empty(),
+        "{} of {} programs are not set out as the same program:\n{}",
+        differ.len(),
+        programs.len(),
+        differ.iter().take(20).cloned().collect::<Vec<_>>().join("\n")
+    );
 }
 
 #[test]
@@ -236,22 +136,568 @@ fn the_renames_agree() {
     );
 }
 
+#[test]
+fn the_types_agree() {
+    let source = idyllic::pipeline::PRELUDE;
+    let prelude = program(source).expect("the prelude parses");
+    let std_dir = repo().join("lib/Std/src");
+    let std_dir = std_dir.to_string_lossy();
+    agree_with(
+        &["types", "--prelude", "_prelude.txt", "--std", &std_dir],
+        &[("_prelude.txt", source)],
+        |src| typed(&prelude, src),
+        |d| renumbered_by(d, '?'),
+    );
+}
+
+/// The standard library, checked as the package it is, by both: each of
+/// its declarations' types, and its errors (none).
+/// A compiled package as front/'s `compiled` writes one: a line for each
+/// constant (its type, whether the types may see its value, how many
+/// arguments it unfolds after), each top-level `let`, each recursive
+/// definition, each hint and each trait, sorted.
+fn compiled_dump(p: &idyllic_typecheck::packages::CompiledPackage) -> String {
+    idyllic_typecheck::core::print_linear(false);
+    let name_of = |u: usize| p.constants.iter().find(|c| c.unique == u).map_or("?".to_string(), |c| c.name.clone());
+    let mut lines: Vec<String> = Vec::new();
+    for c in &p.constants {
+        let value = if c.value.is_some() { " = .." } else { "" };
+        let unfold = c.unfold.as_ref().map(|(arity, _)| format!(" unfold {arity}")).unwrap_or_default();
+        lines.push(format!("constant {} : {}{value}{unfold}", c.name, c.ty));
+    }
+    lines.extend(p.lets.iter().map(|(_, name, _)| format!("let {name}")));
+    lines.extend(p.rec_defs.iter().map(|d| if d.local { format!("rec {} local", d.name) } else { format!("rec {}", d.name) }));
+    lines.extend(p.hints.iter().map(|&u| format!("hint {}", name_of(u))));
+    lines.extend(p.traits.iter().map(|&u| format!("trait {}", name_of(u))));
+    lines.sort();
+    lines.join("\n")
+}
+
+/// Std compiled whole, as a package its dependents are checked against:
+/// front/'s `Compiled` and the Rust compiler's `CompiledPackage` say the
+/// same of it.
+#[test]
+fn the_compiled_packages_agree() {
+    let Ok(exe) = front() else {
+        eprintln!("no front/ to compile the Std package with");
+        return;
+    };
+    let source = idyllic::pipeline::PRELUDE;
+    let prelude = program(source).expect("the prelude parses");
+    let dir = std::env::temp_dir().join(format!("idyll-front-compiled-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a directory");
+    std::fs::write(dir.join("_prelude.txt"), source).expect("the prelude can be written");
+    let out = std::process::Command::new(&exe)
+        .args(["compiled", "--prelude", "_prelude.txt", "Std"])
+        .arg(repo().join("lib/Std/src"))
+        .current_dir(&dir)
+        .output()
+        .expect("front/ runs");
+    let _ = std::fs::remove_dir_all(&dir);
+    let text = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
+    let theirs = text.strip_prefix("== Std\n").unwrap_or(&text).trim_end().to_string();
+    let programs: Vec<(Vec<String>, idyllic_ast::Program)> = idyllic::stdlib::MODULES
+        .iter()
+        .map(|(path, text)| {
+            let path = if path.is_empty() { Vec::new() } else { path.split('.').map(String::from).collect() };
+            (path, program(text).expect("a Std module parses"))
+        })
+        .collect();
+    let modules: Vec<idyllic_rename::ModuleSource<'_>> =
+        programs.iter().map(|(path, program)| idyllic_rename::ModuleSource { path: path.clone(), program }).collect();
+    let result = idyllic_rename::rename_package("Std", &modules, &prelude, &[], idyllic_builtins::FIRST_USER_UNIQUE, false);
+    let module = idyllic_scc::scc_module(result.module);
+    let checked = idyllic_typecheck::check_module(&module, result.spans.len(), false, &[]);
+    let compiled = checked.compiled.expect("Std compiles");
+    let ours = renumbered_by(&compiled_dump(&compiled), '?');
+    let theirs = renumbered_by(&theirs, '?');
+    eprintln!("compiled: {} lines", ours.lines().count());
+    if let Ok(dir) = std::env::var("IDYLL_DUMP") {
+        let _ = std::fs::write(format!("{dir}/compiled-here.txt"), &ours);
+        let _ = std::fs::write(format!("{dir}/compiled-front.txt"), &theirs);
+    }
+    assert!(ours == theirs, "the compiled Std package differs: {}", first_difference(&ours, &theirs));
+}
+
+/// Std compiled a part at a time, each part against the parts it imports,
+/// and the parts made one: front/'s `parted` and the Rust compiler's Std,
+/// which is compiled so, say the same of it.
+#[test]
+fn the_compiled_parts_agree() {
+    let Ok(exe) = front() else {
+        eprintln!("no front/ to compile the Std package with");
+        return;
+    };
+    let source = idyllic::pipeline::PRELUDE;
+    let dir = std::env::temp_dir().join(format!("idyll-front-parted-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a directory");
+    std::fs::write(dir.join("_prelude.txt"), source).expect("the prelude can be written");
+    let out = std::process::Command::new(&exe)
+        .args(["parted", "--prelude", "_prelude.txt", "Std"])
+        .arg(repo().join("lib/Std/src"))
+        .current_dir(&dir)
+        .output()
+        .expect("front/ runs");
+    let _ = std::fs::remove_dir_all(&dir);
+    let text = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
+    let theirs = renumbered_by(text.strip_prefix("== Std\n").unwrap_or(&text).trim_end(), '?');
+    let ours = renumbered_by(&compiled_dump(&idyllic::stdlib::compiled()), '?');
+    eprintln!("parted: {} lines", ours.lines().count());
+    assert!(ours == theirs, "the Std package compiled in parts differs: {}", first_difference(&ours, &theirs));
+}
+
+#[test]
+fn the_std_package_agrees() {
+    let Ok(exe) = front() else {
+        eprintln!("no front/ to check the Std package with");
+        return;
+    };
+    let source = idyllic::pipeline::PRELUDE;
+    let prelude = program(source).expect("the prelude parses");
+    let dir = std::env::temp_dir().join(format!("idyll-front-std-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a directory");
+    std::fs::write(dir.join("_prelude.txt"), source).expect("the prelude can be written");
+    let std_dir = repo().join("lib/Std/src");
+    let out = std::process::Command::new(&exe)
+        .args(["package", "--prelude", "_prelude.txt", "Std"])
+        .arg(&std_dir)
+        .current_dir(&dir)
+        .output()
+        .expect("front/ runs");
+    let _ = std::fs::remove_dir_all(&dir);
+    let text = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
+    let theirs = text.strip_prefix("== Std\n").unwrap_or(&text).trim_end().to_string();
+    // here: the package's modules, checked as `Std` is
+    let programs: Vec<(Vec<String>, idyllic_ast::Program)> = idyllic::stdlib::MODULES
+        .iter()
+        .map(|(path, text)| {
+            let path = if path.is_empty() { Vec::new() } else { path.split('.').map(String::from).collect() };
+            (path, program(text).expect("a Std module parses"))
+        })
+        .collect();
+    // (each module after those it uses, as the package's parts have them)
+    let paths: Vec<Vec<String>> = programs.iter().map(|(p, _)| p.clone()).collect();
+    let texts: Vec<&str> = idyllic::stdlib::MODULES.iter().map(|(_, t)| *t).collect();
+    let order: Vec<usize> = idyllic::parts::parts("Std", &paths, &texts).into_iter().flat_map(|p| p.modules).collect();
+    let modules: Vec<idyllic_rename::ModuleSource<'_>> =
+        order.iter().map(|&i| idyllic_rename::ModuleSource { path: programs[i].0.clone(), program: &programs[i].1 }).collect();
+    let result = idyllic_rename::rename_package("Std", &modules, &prelude, &[], idyllic_builtins::FIRST_USER_UNIQUE, false);
+    assert!(result.errors.is_empty(), "Std renames");
+    let module = idyllic_scc::scc_module(result.module);
+    let checked = idyllic_typecheck::check_module(&module, result.spans.len(), false, &[]);
+    let ours = renumbered_by(&checked_dump(&checked), '?');
+    let theirs = renumbered_by(&theirs, '?');
+    eprintln!("std: {} declarations", ours.lines().count());
+    assert!(ours == theirs, "the Std package differs: {}", first_difference(&ours, &theirs));
+}
+
+#[test]
+fn the_cut_agrees() {
+    let source = idyllic::pipeline::PRELUDE;
+    let prelude = program(source).expect("the prelude parses");
+    let std_dir = repo().join("lib/Std/src");
+    let std_dir = std_dir.to_string_lossy();
+    agree_with(
+        &["cut", "--prelude", "_prelude.txt", "--std", &std_dir],
+        &[("_prelude.txt", source)],
+        |src| cut(&prelude, src),
+        cut_canonical,
+    );
+}
+
+/// Every example package (`examples/`), a whole program of modules using
+/// Std, built by front/ (`Idyll build`): to the same Cut as this
+/// compiler's, which runs on Meadow (on Silo where the package's debug
+/// profile says so, as `idyll run` would) to print what this compiler's
+/// build prints.
+#[test]
+fn the_example_packages_build_and_run_alike() {
+    let Ok(exe) = front() else {
+        eprintln!("no front/ to build the examples with");
+        return;
+    };
+    let opts = idyllic::pipeline::Options { debug: false, style: idyllic_diagnostics::OutputStyle::PLAIN, live: false };
+    let dir = std::env::temp_dir().join(format!("idyll-front-examples-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let prelude = dir.join("_prelude.txt");
+    std::fs::write(&prelude, idyllic::pipeline::PRELUDE).expect("the prelude can be written");
+    let std_dir = repo().join("lib/Std/src");
+    let mut packages: Vec<std::path::PathBuf> = std::fs::read_dir(repo().join("examples"))
+        .expect("the examples")
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.join("Idyll.toml").exists())
+        .collect();
+    packages.sort();
+    let mut built = Vec::new();
+    for pkg in &packages {
+        let name = pkg.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let out = std::process::Command::new(&exe)
+            .arg("build")
+            .arg("--prelude")
+            .arg(&prelude)
+            .arg("--std")
+            .arg(&std_dir)
+            .arg(pkg)
+            .output()
+            .expect("front/ runs");
+        let theirs = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
+        assert!(theirs.starts_with("cut "), "front/ did not build {name}: {theirs}{}", String::from_utf8_lossy(&out.stderr));
+        // the same Cut
+        let package = idyllic::pipeline::load_package(pkg).expect("the package reads");
+        let ours = idyllic::pipeline::compile_package(&package, &opts);
+        let ours_cut = ours.cut.unwrap_or_else(|| panic!("{name} is not lowered here: {:?}", ours.not_lowered));
+        let (a, b) = (cut_canonical(&ours_cut), cut_canonical(theirs.trim_end()));
+        if a != b && std::env::var_os("IDYLL_FRONT_KEEP").is_some() {
+            let _ = std::fs::write(std::env::temp_dir().join(format!("{name}.here.cut")), &a);
+            let _ = std::fs::write(std::env::temp_dir().join(format!("{name}.front.cut")), &b);
+        }
+        assert!(a == b, "{name}'s Cut differs: {}", first_difference(&a, &b));
+        // and it runs to what this compiler's build prints
+        let silo = std::fs::read_to_string(pkg.join("Idyll.toml")).unwrap_or_default().contains("backend = \"silo\"");
+        let file = dir.join(format!("{name}.cut"));
+        std::fs::write(&file, &theirs).expect("the Cut can be written");
+        let mut cmd = std::process::Command::new(meadow());
+        cmd.arg("cut");
+        if silo {
+            cmd.args(["--runtime", "silo"]);
+        }
+        let ran = cmd.arg(&file).output().expect("meadow runs");
+        let printed = String::from_utf8_lossy(&ran.stdout).replace("\r\n", "\n");
+        let runtime = if silo { idyllic::meadow::Runtime::Silo } else { idyllic::meadow::Runtime::Glade };
+        let expected = idyllic::pipeline::run_package_on(&package, &opts, Vec::new(), runtime);
+        assert!(expected.diagnostics.is_empty(), "{name} does not build here");
+        // (Silo says what it is building first)
+        assert!(printed.ends_with(&expected.printed), "{name} printed\n{printed}\nwhere this compiler's build prints\n{}", expected.printed);
+        assert!(!expected.printed.is_empty(), "{name} printed nothing");
+        built.push(name);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    eprintln!("examples: {} built by front/ and run alike ({})", built.len(), built.join(", "));
+    assert!(built.len() >= 6, "the examples are all there");
+}
+
+/// front/'s own command line (`Idyll run`, a `cli!` over a `make!`), run
+/// in `dir`: what it printed, and whether it succeeded.
+fn front_tool(exe: &std::path::Path, dir: &std::path::Path, args: &[&str]) -> (String, bool) {
+    // (Std, and what is fetched, in a home of the tests' own)
+    let home = std::env::temp_dir().join("idyll-front-home");
+    let out = std::process::Command::new(exe).args(args).current_dir(dir).env("IDYLL_HOME", home).output().expect("front/ runs");
+    // what it printed, the build's lines first and then the program's; and,
+    // if it failed, what it wrote as errors (Silo's build says what it is
+    // doing there too)
+    let text = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
+    let errors = String::from_utf8_lossy(&out.stderr).replace("\r\n", "\n");
+    (if out.status.success() { text } else { text + &errors }, out.status.success())
+}
+
+/// A package with a dependency by path, built and run by front/'s own
+/// `idyll run`: each package a unit of Lingua's `make!`, compiled only when
+/// what it was compiled from changed.
+#[test]
+fn front_builds_and_runs_a_package_with_a_dependency() {
+    let Ok(exe) = front() else {
+        eprintln!("no front/ to build with");
+        return;
+    };
+    let root = std::env::temp_dir().join(format!("idyll-front-make-{}", std::process::id()));
+    let (util, app) = (root.join("util"), root.join("app"));
+    for d in [&util, &app] {
+        std::fs::create_dir_all(d.join("src")).expect("a directory");
+    }
+    std::fs::write(util.join("Idyll.toml"), "[package]\nname = \"Util\"\nversion = \"0.1.0\"\n").unwrap();
+    std::fs::write(util.join("src/Lib.idl"), "@pub\nanswer : Int\nanswer = 42\n").unwrap();
+    std::fs::write(app.join("Idyll.toml"), "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n[dependencies]\nUtil = { path = \"../util\" }\n").unwrap();
+    std::fs::write(app.join("src/Main.idl"), "use Util (answer)\n\nmain : () -> () ! Eff\nmain () = putStrLn \"the answer is ${answer}\"\n").unwrap();
+    // built, both and Std (a unit of its own, written out under the root's
+    // target/), and run
+    let (said, ok) = front_tool(&exe, &app, &["run"]);
+    assert!(ok, "{said}");
+    assert!(said.contains("idyll: 3 compiled, 0 up to date") && said.contains("the answer is 42\n"), "{said}");
+    // nothing changed: nothing compiled, and the program is what it was
+    let (said, ok) = front_tool(&exe, &app, &["run"]);
+    assert!(ok && said.contains("idyll: 0 compiled, 3 up to date") && said.contains("Fresh link") && said.contains("the answer is 42\n"), "{said}");
+    // the dependency changed: both compiled again
+    std::fs::write(util.join("src/Lib.idl"), "@pub\nanswer : Int\nanswer = 6 * 7 + 1\n").unwrap();
+    let (said, ok) = front_tool(&exe, &app, &["run"]);
+    assert!(ok && said.contains("idyll: 2 compiled, 1 up to date") && said.contains("the answer is 43\n"), "{said}");
+    // the package alone changed: only it
+    std::fs::write(app.join("src/Main.idl"), "use Util (answer)\n\nmain : () -> () ! Eff\nmain () = putStrLn \"now ${answer}\"\n").unwrap();
+    let (said, ok) = front_tool(&exe, &app, &["run"]);
+    assert!(ok && said.contains("idyll: 1 compiled, 2 up to date") && said.contains("now 43\n"), "{said}");
+    // and a package that does not check says so, and runs nothing
+    std::fs::write(app.join("src/Main.idl"), "main : () -> () ! Eff\nmain () = putStrLn 5\n").unwrap();
+    let (said, ok) = front_tool(&exe, &app, &["run"]);
+    assert!(!ok && said.contains("Failed"), "{said}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `git` in `dir`, which must succeed.
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .args(["-c", "user.email=test@example.com", "-c", "user.name=test"])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("git runs");
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// A package with a dependency by git, at a version, built by front/'s own
+/// driver on Lingua's resolver: the newest release the version allows is
+/// fetched and kept in `idyll.lock`, in the Rust driver's format; a build
+/// after that needs no network; `idyll update` moves it to a newer release.
+#[test]
+fn front_builds_with_a_git_dependency() {
+    let Ok(exe) = front() else {
+        eprintln!("no front/ to build with");
+        return;
+    };
+    if std::process::Command::new("git").arg("--version").output().is_err() {
+        eprintln!("no git to make a dependency with");
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("idyll-front-git-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (json, app, home) = (root.join("json"), root.join("app"), root.join("home"));
+    for d in [&json, &app] {
+        std::fs::create_dir_all(d.join("src")).expect("a directory");
+    }
+    // the dependency, released as v1.0.0
+    std::fs::write(json.join("Idyll.toml"), "[package]\nname = \"Json\"\nversion = \"1.0.0\"\n").unwrap();
+    std::fs::write(json.join("src/Lib.idl"), "@pub\ngreet : String\ngreet = \"one\"\n").unwrap();
+    git(&json, &["init", "-q"]);
+    git(&json, &["add", "-A"]);
+    git(&json, &["commit", "-qm", "one"]);
+    git(&json, &["tag", "v1.0.0"]);
+    let url = format!("file:///{}", json.display().to_string().replace('\\', "/").trim_start_matches('/'));
+    std::fs::write(app.join("Idyll.toml"), format!("[package]\nname = \"App\"\n\n[dependencies]\nJson = {{ git = \"{url}\", version = \"1.0.0\" }}\n")).unwrap();
+    std::fs::write(app.join("src/Main.idl"), "use Json (greet)\n\nmain : () -> () ! Eff\nmain () = putStrLn greet\n").unwrap();
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new(&exe).args(args).current_dir(&app).env("IDYLL_HOME", &home).output().expect("front/ runs");
+        let text = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n") + &String::from_utf8_lossy(&out.stderr).replace("\r\n", "\n");
+        (text, out.status.success())
+    };
+    let (said, ok) = run(&["run"]);
+    assert!(ok && said.ends_with("one\n"), "{said}");
+    let lock = std::fs::read_to_string(app.join("idyll.lock")).expect("the build writes idyll.lock");
+    assert!(lock.contains("version = 1\n") && lock.contains("name = \"Json\"") && lock.contains("version = \"1.0.0\""), "{lock}");
+    assert!(lock.contains(&format!("source = \"git+{url}?version=1.0.0\"")), "{lock}");
+    // a newer release: the lock still says the old one, and needs no network
+    std::fs::write(json.join("src/Lib.idl"), "@pub\ngreet : String\ngreet = \"two\"\n").unwrap();
+    std::fs::write(json.join("Idyll.toml"), "[package]\nname = \"Json\"\nversion = \"1.1.0\"\n").unwrap();
+    git(&json, &["commit", "-qam", "two"]);
+    git(&json, &["tag", "v1.1.0"]);
+    let (said, ok) = run(&["--offline", "--locked", "run"]);
+    assert!(ok && said.ends_with("one\n"), "{said}");
+    // a dry run says what would move, and moves nothing
+    let (said, ok) = run(&["update", "--dry-run"]);
+    assert!(ok && said.contains("Updating Json 1.0.0 -> 1.1.0"), "{said}");
+    assert_eq!(std::fs::read_to_string(app.join("idyll.lock")).unwrap(), lock);
+    // `idyll update` moves it
+    let (said, ok) = run(&["update"]);
+    assert!(ok && said.contains("Updating Json 1.0.0 -> 1.1.0"), "{said}");
+    assert!(std::fs::read_to_string(app.join("idyll.lock")).unwrap().contains("version = \"1.1.0\""));
+    let (said, ok) = run(&["run"]);
+    assert!(ok && said.ends_with("two\n"), "{said}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Every example package run by front/'s own `idyll run` (on Silo where its
+/// profile says so), from a copy of it: what this compiler's build prints.
+#[test]
+fn front_runs_every_example_itself() {
+    let Ok(exe) = front() else {
+        eprintln!("no front/ to build with");
+        return;
+    };
+    let opts = idyllic::pipeline::Options { debug: false, style: idyllic_diagnostics::OutputStyle::PLAIN, live: false };
+    let root = std::env::temp_dir().join(format!("idyll-front-run-{}", std::process::id()));
+    let mut ran = Vec::new();
+    for e in std::fs::read_dir(repo().join("examples")).expect("the examples").flatten() {
+        let pkg = e.path();
+        if !pkg.join("Idyll.toml").exists() {
+            continue;
+        }
+        let name = pkg.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let copy = root.join(&name);
+        copy_tree(&pkg, &copy);
+        let silo = std::fs::read_to_string(pkg.join("Idyll.toml")).unwrap_or_default().contains("backend = \"silo\"");
+        let (said, ok) = front_tool(&exe, &copy, if silo { &["run", "--release"] } else { &["run"] });
+        assert!(ok, "{name}: {said}");
+        let package = idyllic::pipeline::load_package(&pkg).expect("the package reads");
+        let runtime = if silo { idyllic::meadow::Runtime::Silo } else { idyllic::meadow::Runtime::Glade };
+        let expected = idyllic::pipeline::run_package_on(&package, &opts, Vec::new(), runtime);
+        assert!(said.ends_with(&expected.printed), "{name} printed\n{said}\nwhere this compiler's build prints\n{}", expected.printed);
+        ran.push(name);
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    eprintln!("examples: {} run by front/'s own idyll run ({})", ran.len(), ran.join(", "));
+    assert!(ran.len() >= 6);
+}
+
+/// A directory copied, all but what a build left in it.
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).expect("a directory");
+    for e in std::fs::read_dir(from).expect("a directory").flatten() {
+        let (src, dst) = (e.path(), to.join(e.file_name()));
+        if src.is_dir() {
+            if e.file_name() != "target" {
+                copy_tree(&src, &dst);
+            }
+        } else {
+            std::fs::copy(&src, &dst).expect("a copy");
+        }
+    }
+}
+
+// --- the Cut, written out ------------------------------------------------------
+//
+// Both compilers' Cut as its text (`front/` builds it with the Cut package,
+// this compiler with its own printer), compared once canonical: with no
+// whitespace, which the two printers lay out differently; with the names
+// the lowering made (`k_23`, `d_a_4`) numbered afresh in each declaration in
+// the order they appear, since this compiler lowers the recursive
+// definitions in a hash map's order, and so numbers them differently from
+// run to run; and with the declarations sorted, for the same reason.
+
+/// What this compiler lowers `src` to, after the prelude, as Cut's text.
+fn cut(prelude: &idyllic_ast::Program, src: &str) -> String {
+    let Some(p) = program(src) else { return "(error)".to_string() };
+    // a program that names `Std` depends on it: compiled, and linked with it
+    if src.contains("Std") {
+        let opts = idyllic::pipeline::Options { debug: false, style: idyllic_diagnostics::OutputStyle::PLAIN, live: false };
+        let out = idyllic::pipeline::compile(src, &opts);
+        if out.has_errors() {
+            return "(error)".to_string();
+        }
+        let Some(mut checked) = out.checked else { return "(error)".to_string() };
+        return match idyllic_cut::lower::lower(&mut checked, "Main") {
+            Ok(program) => program.to_string(),
+            Err(why) => format!("(not lowered: {})", why.join("; ")),
+        };
+    }
+    let result = idyllic_rename::rename_module(&p, prelude);
+    if !result.errors.is_empty() {
+        return "(error)".to_string();
+    }
+    let module = idyllic_scc::scc_module(result.module);
+    let mut checked = idyllic_typecheck::check_module(&module, result.spans.len(), false, &[]);
+    if !checked.errors.is_empty() {
+        return "(error)".to_string();
+    }
+    match idyllic_cut::lower::lower(&mut checked, "Main") {
+        Ok(program) => program.to_string(),
+        Err(why) => format!("(not lowered: {})", why.join("; ")),
+    }
+}
+
+/// A Cut text in the canonical form described above.
+fn cut_canonical(text: &str) -> String {
+    if text.starts_with('(') {
+        return text.to_string();
+    }
+    let starts = ["data ", "roles {", "native {", "effect ", "val ", "def "];
+    let (mut header, mut decls): (Vec<&str>, Vec<Vec<&str>>) = (Vec::new(), Vec::new());
+    for line in text.lines() {
+        if starts.iter().any(|s| line.starts_with(s)) {
+            decls.push(vec![line]);
+        } else if let Some(d) = decls.last_mut() {
+            d.push(line);
+        } else {
+            header.push(line);
+        }
+    }
+    let squeeze = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    let mut out: Vec<String> = decls.iter().map(|d| renamed_fresh(&squeeze(&d.join("\n")))).collect();
+    out.sort();
+    let mut all = vec![squeeze(&header.join("\n"))];
+    all.extend(out);
+    all.join("\n")
+}
+
+/// Each name of the form `hint_123` numbered by where it first appears:
+/// `#0`, `#1`, ...
+fn renamed_fresh(decl: &str) -> String {
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let chars: Vec<char> = decl.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    while i < chars.len() {
+        if word(chars[i]) && (i == 0 || !word(chars[i - 1])) {
+            let start = i;
+            while i < chars.len() && word(chars[i]) {
+                i += 1;
+            }
+            let w: String = chars[start..i].iter().collect();
+            let fresh = w.rsplit_once('_').is_some_and(|(h, n)| !h.is_empty() && !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+            if fresh {
+                let n = seen.len();
+                out.push_str(&format!("#{}", seen.entry(w).or_insert(n)));
+            } else {
+                out.push_str(&w);
+            }
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+// --- the types, written out ---------------------------------------------------
+//
+// As `front/src/Check.mw` writes them: a line each, sorted, for each of the
+// program's declarations with its type (`name : type`), the type of its
+// expression (`body : type`), and each error, by the name of its kind
+// (`error: Mismatch`). Metavariables are numbered by first appearance on
+// both sides.
+
+/// What this compiler's checker makes of `src`, after the prelude, written
+/// out; a program that names `Std` is checked against it, compiled, as a
+/// package depends on it.
+fn typed(prelude: &idyllic_ast::Program, src: &str) -> String {
+    let Some(p) = program(src) else { return "(error)".to_string() };
+    let std = idyllic::stdlib::compiled();
+    let uses_std = src.contains("Std");
+    let result = if uses_std {
+        let modules = [idyllic_rename::ModuleSource { path: Vec::new(), program: &p }];
+        let first = std.uniques.end.max(idyllic_builtins::FIRST_USER_UNIQUE);
+        idyllic_rename::rename_package("Main", &modules, prelude, &[("Std", &std.names)], first, false)
+    } else {
+        idyllic_rename::rename_module(&p, prelude)
+    };
+    if !result.errors.is_empty() {
+        return "(error)".to_string();
+    }
+    let module = idyllic_scc::scc_module(result.module);
+    let deps: Vec<&idyllic_typecheck::packages::CompiledPackage> = if uses_std { vec![&*std] } else { Vec::new() };
+    let checked = idyllic_typecheck::check_module(&module, result.spans.len(), false, &deps);
+    checked_dump(&checked)
+}
+
+/// A checked module written out: its own declarations with their types, its
+/// expression's type, and its errors by kind, a line each, sorted.
+fn checked_dump(checked: &idyllic_typecheck::TypeCheckResult) -> String {
+    let mut lines: Vec<String> =
+        checked.catalog.iter().filter(|d| !d.prelude).map(|d| format!("{} : {}", d.name, d.ty)).collect();
+    lines.extend(checked.body_type.iter().map(|ty| format!("body : {ty}")));
+    for e in &checked.errors {
+        let kind = format!("{:?}", e.kind);
+        let name = kind.split(|c: char| !c.is_alphanumeric()).next().unwrap_or("").to_string();
+        lines.push(format!("error: {name}"));
+    }
+    lines.sort();
+    lines.join("\n")
+}
+
 // --- the rename, written out --------------------------------------------------
 //
 // As `front/src/Hir.mw` writes it: the program's own part of the module, a line
 // for each declaration, every name `text@unique`. `renumbered` then numbers
 // the uniques in the order they first appear, on both sides, so that what is
 // compared is which use is of which binder, not how each renamer counts.
-
-/// `src` parsed, if the lexer, the layout and the parser have nothing to say.
-fn program(src: &str) -> Option<idyllic_ast::Program> {
-    let lexed = idyllic_lexer::tokenize(src);
-    let laid = idyllic_layout::layout(&LineIndex::new(src), &lexed.tokens);
-    if !lexed.diagnostics.is_empty() || !laid.errors.is_empty() {
-        return None;
-    }
-    idyllic_parser::parse(src.len(), &laid.tokens).ok()
-}
 
 /// What this compiler's renamer makes of `src`, after the prelude, written
 /// out.
@@ -264,30 +710,22 @@ fn renamed(prelude: &idyllic_ast::Program, src: &str) -> String {
     h::module(&result.module)
 }
 
-/// Each `@123` numbered by where its number first appears: `@0`, `@1`, ...
-fn renumbered(dump: &str) -> String {
-    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let mut out = String::with_capacity(dump.len());
-    let mut chars = dump.chars().peekable();
-    while let Some(c) = chars.next() {
-        out.push(c);
-        if c == '@' {
-            let mut digits = String::new();
-            while let Some(d) = chars.peek().copied().filter(char::is_ascii_digit) {
-                digits.push(d);
-                chars.next();
-            }
-            if !digits.is_empty() {
-                let n = seen.len();
-                out.push_str(&seen.entry(digits).or_insert(n).to_string());
-            }
-        }
-    }
-    out
-}
-
 mod h {
     use idyllic_hir::*;
+
+    std::thread_local! {
+        /// the module's overloaded names, by node, while it is written out:
+        /// each as front/'s HIR has it, `(overload x@u x@v)`
+        static OVERLOADS: std::cell::RefCell<std::collections::HashMap<NodeId, Vec<usize>>> = Default::default();
+    }
+
+    /// The name at `node`, with every meaning it has there.
+    fn ident_at(node: NodeId, x: &Ident) -> String {
+        match OVERLOADS.with(|o| o.borrow().get(&node).cloned()) {
+            Some(us) => sx(std::iter::once("overload".to_string()).chain(us.iter().map(|u| format!("{}@{u}", x.text)))),
+            None => ident(x),
+        }
+    }
 
     fn sx<S: AsRef<str>>(parts: impl IntoIterator<Item = S>) -> String {
         let parts: Vec<String> = parts.into_iter().map(|s| s.as_ref().to_string()).collect();
@@ -320,20 +758,29 @@ mod h {
     fn term(t: &Term) -> String {
         match &t.kind {
             TermKind::Type => "Type".into(),
-            TermKind::Var(x) => ident(x),
+            TermKind::Var(x) => ident_at(t.id, x),
             TermKind::Lit(l) => super::w::literal(l),
             TermKind::Pi(x, icit, g, dom, cod) => sx([
                 "pi".into(),
                 opt(x, ident),
-                if *icit == Icit::Explicit { "e" } else { "i" }.into(),
+                match icit {
+                    Icit::Explicit => "e",
+                    Icit::Implicit => "i",
+                    Icit::Auto => "a",
+                }
+                .into(),
                 opt(g, grade),
                 term(dom),
                 term(cod),
             ]),
             TermKind::Lam(x, g, ty, body) => sx(["lam".into(), ident(x), opt(g, grade), opt(ty, |t| term(t)), term(body)]),
             TermKind::App(f, a) => sx(["app".into(), term(f), term(a)]),
+            TermKind::ImplicitApp(f, a) => sx(["iapp".into(), term(f), term(a)]),
+            TermKind::AutoApp(f, a) => sx(["aapp".into(), term(f), term(a)]),
+            TermKind::Search => "search".into(),
             TermKind::Ann(e, ty) => sx(["ann".into(), term(e), term(ty)]),
             TermKind::Hole => "_".into(),
+            TermKind::Goal(n) => format!("?{n}"),
             TermKind::BoxIntro(e) => sx(["box".into(), term(e)]),
             TermKind::Inf => "inf".into(),
             TermKind::Range(a, b) => sx(["range".into(), term(a), term(b)]),
@@ -372,24 +819,34 @@ mod h {
             PatKind::Var(x) => ident(x),
             PatKind::Wild => "_".into(),
             PatKind::Lit(l) => super::w::literal(l),
-            PatKind::Con(c, ps) => with(["con".to_string(), ident(c)], ps.iter().map(pattern).collect()),
+            PatKind::Con(c, ps) => with(["con".to_string(), ident_at(p.id, c)], ps.iter().map(pattern).collect()),
             PatKind::As(x, q) => sx(["as".into(), ident(x), pattern(q)]),
             PatKind::Dot(e) => sx(["dot".into(), term(e)]),
             PatKind::SeqNil => "pnil".into(),
             PatKind::SeqCons(ps) => with(["pcons"], ps.iter().map(pattern).collect()),
+            PatKind::Implicit(icit, q) => sx(["pimplicit".into(), super::w::icit(*icit).into(), pattern(q)]),
         }
     }
 
-    fn bind(b: &Bind, terminating: &std::collections::HashSet<usize>) -> String {
+    fn bind(b: &Bind, terminating: &std::collections::HashSet<usize>, hints: &std::collections::HashSet<usize>) -> String {
         let vouched = b.name.unique.is_some_and(|u| terminating.contains(&u));
-        sx(["bind".into(), ident(&b.name), opt(&b.ty, term), term(&b.rhs), flag("linear", b.linear), flag("terminating", vouched)])
+        let hinted = b.name.unique.is_some_and(|u| hints.contains(&u));
+        sx([
+            "bind".into(),
+            ident(&b.name),
+            opt(&b.ty, term),
+            term(&b.rhs),
+            flag("linear", b.linear),
+            flag("terminating", vouched),
+            flag("hint", hinted),
+        ])
     }
 
     fn group(g: &BindGroup) -> String {
         let none = Default::default();
         match g {
-            BindGroup::NonRec(b) => sx(["nonrec".into(), bind(b, &none)]),
-            BindGroup::Rec(bs) => with(["rec"], bs.iter().map(|b| bind(b, &none)).collect()),
+            BindGroup::NonRec(b) => sx(["nonrec".into(), bind(b, &none, &none)]),
+            BindGroup::Rec(bs) => with(["rec"], bs.iter().map(|b| bind(b, &none, &none)).collect()),
         }
     }
 
@@ -410,6 +867,23 @@ mod h {
             sx(d.ctors.iter().map(ctor)),
             opt(&d.seq, |(n, c)| sx(["seq".into(), ident(n), ident(c)])),
             flag("linear", d.linear),
+            flag("trait", d.is_trait),
+        ])
+    }
+
+    /// A trait's superclass projections and its methods, in their fields'
+    /// order: each method with its field and how many parameters the trait
+    /// has.
+    fn trait_line(m: &Module, d: &DataDecl) -> String {
+        let u = d.name.unique.unwrap_or(usize::MAX);
+        let supers = m.supers.get(&u).cloned().unwrap_or_default();
+        let mut methods: Vec<(usize, (usize, usize, usize))> = m.methods.iter().filter(|(_, (t, ..))| *t == u).map(|(m, i)| (*m, *i)).collect();
+        methods.sort_by_key(|(_, (_, i, _))| *i);
+        sx([
+            "trait".into(),
+            ident(&d.name),
+            sx(supers.iter().map(|p| format!("super@{p}"))),
+            sx(methods.iter().map(|(mu, (_, i, n))| sx([format!("method@{mu}"), i.to_string(), n.to_string()]))),
         ])
     }
 
@@ -421,13 +895,15 @@ mod h {
     /// The program's own part of a module, a line each: data types, effects,
     /// natives, bindings, then the body, `main` and whether it is linear.
     pub fn module(m: &Module) -> String {
+        OVERLOADS.with(|o| *o.borrow_mut() = m.overloads.clone());
         let own = |x: &Ident| x.unique.is_some_and(|u| u >= m.uniques.0);
         let mut lines: Vec<String> = Vec::new();
         lines.extend(m.datas.iter().filter(|d| own(&d.name)).map(data));
+        lines.extend(m.datas.iter().filter(|d| own(&d.name) && d.is_trait).map(|d| trait_line(m, d)));
         lines.extend(m.effects.iter().filter(|e| own(&e.name)).map(effect));
         lines.extend(m.natives.iter().filter(|n| own(&n.name)).map(|n| sx(["native".into(), ident(&n.name), term(&n.ty)])));
         let binds = m.groups.iter().flat_map(|g| g.binds());
-        lines.extend(binds.filter(|b| own(&b.name)).map(|b| bind(b, &m.terminating)));
+        lines.extend(binds.filter(|b| own(&b.name)).map(|b| bind(b, &m.terminating, &m.hints)));
         lines.extend(m.body.iter().map(|e| sx(["body".into(), term(e)])));
         lines.extend(m.main.iter().map(|u| sx(["main".to_string(), format!("main@{u}")])));
         lines.push(sx(["linear", if m.linear_body { "true" } else { "false" }]));
@@ -437,7 +913,7 @@ mod h {
 
 // --- the parse, written out ---------------------------------------------------
 //
-// As `front/src/Ast.mw` writes it: an S-expression a line for each part of the
+// As `front/src/View.mw` writes it: an S-expression a line for each part of the
 // program, nothing about where anything was written; `(error)` for a program
 // the lexer, the layout or the parser found anything wrong with.
 
@@ -495,6 +971,8 @@ mod w {
             Lit::Int(n) => format!("(lit {n})"),
             Lit::Bool(b) => format!("(lit {})", if *b { "True" } else { "False" }),
             Lit::Str(s) => format!("(lit {})", quoted(s)),
+            Lit::Char(c) => format!("(lit {})", idyllic_ast::show_char(*c)),
+            Lit::Float(_) | Lit::Float32(_) | Lit::Word(..) => format!("(lit {l})"),
         }
     }
 
@@ -522,15 +1000,30 @@ mod w {
             Term::Pi(x, icit, g, dom, cod) => sx([
                 "pi".into(),
                 opt(x, |x| x.node.clone()),
-                if *icit == Icit::Explicit { "e" } else { "i" }.into(),
+                match icit {
+                    Icit::Explicit => "e",
+                    Icit::Implicit => "i",
+                    Icit::Auto => "a",
+                }
+                .into(),
                 opt(g, grade),
                 term(dom),
                 term(cod),
             ]),
             Term::Lam(p, body) => sx(["lam".into(), param(&p.node), term(body)]),
             Term::App(f, a) => sx(["app".into(), term(f), term(a)]),
+            Term::ImplicitApp(f, a) => sx(["iapp".into(), term(f), term(a)]),
+            Term::AutoApp(f, a) => sx(["aapp".into(), term(f), term(a)]),
+            Term::Resolved(u, x) => format!("{x}@{u}"),
+            Term::RecordOf(r, args, fields, me) => with(
+                ["recordof".to_string(), r.node.clone(), sx(args.iter().map(term)), me.node.clone()],
+                fields.iter().map(|(f, e)| sx([f.node.clone(), term(e)])).collect(),
+            ),
+            Term::Search => "search".into(),
+            Term::Equations(eqs) => with(["equations"], eqs.iter().map(|(ps, r)| sx([sx(ps.iter().map(pat)), rhs(r)])).collect()),
             Term::Ann(e, ty) => sx(["ann".into(), term(e), term(ty)]),
             Term::Hole => "_".into(),
+            Term::Goal(n) => format!("?{n}"),
             Term::BoxIntro(e) => sx(["box".into(), term(e)]),
             Term::Inf => "inf".into(),
             Term::Range(a, b) => sx(["range".into(), term(a), term(b)]),
@@ -558,6 +1051,15 @@ mod w {
             Pat::Dot(e) => sx(["dot".into(), term(e)]),
             Pat::Seq(ps) => with(["pseq"], ps.iter().map(pat).collect()),
             Pat::Record(r, fs) => with(["precord".to_string(), r.node.clone()], fields(fs, pat)),
+            Pat::Implicit(i, q) => sx(["pimplicit".into(), icit(*i).into(), pat(q)]),
+        }
+    }
+
+    pub(super) fn icit(icit: Icit) -> &'static str {
+        match icit {
+            Icit::Explicit => "e",
+            Icit::Implicit => "i",
+            Icit::Auto => "a",
         }
     }
 
@@ -615,6 +1117,8 @@ mod w {
             opt(&d.seq, |s| sx(["seq".into(), s.nil.node.clone(), s.cons.node.clone()])),
             visibility(d.visibility),
             opt(&d.fields, |fs| sx(fs.iter().map(|f| f.node.clone()))),
+            flag("trait", d.is_trait),
+            sx(d.defaults.iter().map(|(m, name, function)| sx([m.node.clone(), name.clone(), flag("function", *function)]))),
         ])
     }
 
@@ -650,7 +1154,13 @@ mod w {
         lines.extend(p.decls.iter().map(decl));
         lines.extend(p.visibility.iter().map(|(x, v)| sx(["vis".into(), x.node.clone(), visibility(*v)])));
         lines.extend(p.terminating.iter().map(|x| sx(["terminating".into(), x.node.clone()])));
+        lines.extend(p.hints.iter().map(|x| sx(["hint".into(), x.node.clone()])));
         lines.extend(p.body.iter().map(|e| sx(["body".into(), term(e)])));
+        // a module inside the file, its own program indented under it
+        for (name, inner) in &p.modules {
+            lines.push(sx(["module".into(), name.node.clone()]));
+            lines.extend(program(inner).lines().map(|l| format!("  {l}")));
+        }
         lines.join("\n")
     }
 }

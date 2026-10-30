@@ -1,0 +1,316 @@
+-- Bit twiddling, as Meadow's `Std.Num.Bits` has it, on `Int` and the sized
+-- integers: `bitAnd`, `bitOr`, `bitXor`, `bitNot`, the shifts `shl`, `shr`
+-- and `ushr`, and `popCount`, each one of Meadow's primitives at the type's
+-- width. A shift amount, like every bit position here, is an `Int` whatever
+-- is shifted, taken modulo the width; `shr` is arithmetic on a signed type
+-- and logical on an unsigned one, and `ushr` is logical on both.
+
+@pub
+trait Bits (a : Type) where
+  bitAnd : (x : [] a) -> (y : [] a) -> a
+  bitOr : (x : [] a) -> (y : [] a) -> a
+  bitXor : (x : [] a) -> (y : [] a) -> a
+  bitNot : (x : [] a) -> a
+  shl : (x : [] a) -> (n : [] Int) -> a
+  shr : (x : [] a) -> (n : [] Int) -> a
+  ushr : (x : [] a) -> (n : [] Int) -> a
+  popCount : (x : [] a) -> Int
+
+instance Bits Int where
+  bitAnd = intBitAnd
+  bitOr = intBitOr
+  bitXor = intBitXor
+  bitNot = intBitNot
+  shl = intShl
+  shr = intShr
+  ushr = intUshr
+  popCount = intPopCount
+
+@native
+intBitAnd : (x : [] Int) -> (y : [] Int) -> Int
+
+@native
+intBitOr : (x : [] Int) -> (y : [] Int) -> Int
+
+@native
+intBitXor : (x : [] Int) -> (y : [] Int) -> Int
+
+@native
+intBitNot : (x : [] Int) -> Int
+
+@native
+intShl : (x : [] Int) -> (n : [] Int) -> Int
+
+@native
+intShr : (x : [] Int) -> (n : [] Int) -> Int
+
+@native
+intUshr : (x : [] Int) -> (n : [] Int) -> Int
+
+@native
+intPopCount : (x : [] Int) -> Int
+
+instance Bits Int8 where
+  bitAnd = int8BitAnd
+  bitOr = int8BitOr
+  bitXor = int8BitXor
+  bitNot = int8BitNot
+  shl = int8Shl
+  shr = int8Shr
+  ushr = int8Ushr
+  popCount = int8PopCount
+
+@native
+int8BitAnd : (x : [] Int8) -> (y : [] Int8) -> Int8
+
+@native
+int8BitOr : (x : [] Int8) -> (y : [] Int8) -> Int8
+
+@native
+int8BitXor : (x : [] Int8) -> (y : [] Int8) -> Int8
+
+@native
+int8BitNot : (x : [] Int8) -> Int8
+
+@native
+int8Shl : (x : [] Int8) -> (n : [] Int) -> Int8
+
+@native
+int8Shr : (x : [] Int8) -> (n : [] Int) -> Int8
+
+@native
+int8Ushr : (x : [] Int8) -> (n : [] Int) -> Int8
+
+@native
+int8PopCount : (x : [] Int8) -> Int
+
+instance Bits Int16 where
+  bitAnd = int16BitAnd
+  bitOr = int16BitOr
+  bitXor = int16BitXor
+  bitNot = int16BitNot
+  shl = int16Shl
+  shr = int16Shr
+  ushr = int16Ushr
+  popCount = int16PopCount
+
+@native
+int16BitAnd : (x : [] Int16) -> (y : [] Int16) -> Int16
+
+@native
+int16BitOr : (x : [] Int16) -> (y : [] Int16) -> Int16
+
+@native
+int16BitXor : (x : [] Int16) -> (y : [] Int16) -> Int16
+
+@native
+int16BitNot : (x : [] Int16) -> Int16
+
+@native
+int16Shl : (x : [] Int16) -> (n : [] Int) -> Int16
+
+@native
+int16Shr : (x : [] Int16) -> (n : [] Int) -> Int16
+
+@native
+int16Ushr : (x : [] Int16) -> (n : [] Int) -> Int16
+
+@native
+int16PopCount : (x : [] Int16) -> Int
+
+instance Bits Int32 where
+  bitAnd = int32BitAnd
+  bitOr = int32BitOr
+  bitXor = int32BitXor
+  bitNot = int32BitNot
+  shl = int32Shl
+  shr = int32Shr
+  ushr = int32Ushr
+  popCount = int32PopCount
+
+@native
+int32BitAnd : (x : [] Int32) -> (y : [] Int32) -> Int32
+
+@native
+int32BitOr : (x : [] Int32) -> (y : [] Int32) -> Int32
+
+@native
+int32BitXor : (x : [] Int32) -> (y : [] Int32) -> Int32
+
+@native
+int32BitNot : (x : [] Int32) -> Int32
+
+@native
+int32Shl : (x : [] Int32) -> (n : [] Int) -> Int32
+
+@native
+int32Shr : (x : [] Int32) -> (n : [] Int) -> Int32
+
+@native
+int32Ushr : (x : [] Int32) -> (n : [] Int) -> Int32
+
+@native
+int32PopCount : (x : [] Int32) -> Int
+
+instance Bits UInt8 where
+  bitAnd = uint8BitAnd
+  bitOr = uint8BitOr
+  bitXor = uint8BitXor
+  bitNot = uint8BitNot
+  shl = uint8Shl
+  shr = uint8Shr
+  ushr = uint8Ushr
+  popCount = uint8PopCount
+
+@native
+uint8BitAnd : (x : [] UInt8) -> (y : [] UInt8) -> UInt8
+
+@native
+uint8BitOr : (x : [] UInt8) -> (y : [] UInt8) -> UInt8
+
+@native
+uint8BitXor : (x : [] UInt8) -> (y : [] UInt8) -> UInt8
+
+@native
+uint8BitNot : (x : [] UInt8) -> UInt8
+
+@native
+uint8Shl : (x : [] UInt8) -> (n : [] Int) -> UInt8
+
+@native
+uint8Shr : (x : [] UInt8) -> (n : [] Int) -> UInt8
+
+@native
+uint8Ushr : (x : [] UInt8) -> (n : [] Int) -> UInt8
+
+@native
+uint8PopCount : (x : [] UInt8) -> Int
+
+instance Bits UInt16 where
+  bitAnd = uint16BitAnd
+  bitOr = uint16BitOr
+  bitXor = uint16BitXor
+  bitNot = uint16BitNot
+  shl = uint16Shl
+  shr = uint16Shr
+  ushr = uint16Ushr
+  popCount = uint16PopCount
+
+@native
+uint16BitAnd : (x : [] UInt16) -> (y : [] UInt16) -> UInt16
+
+@native
+uint16BitOr : (x : [] UInt16) -> (y : [] UInt16) -> UInt16
+
+@native
+uint16BitXor : (x : [] UInt16) -> (y : [] UInt16) -> UInt16
+
+@native
+uint16BitNot : (x : [] UInt16) -> UInt16
+
+@native
+uint16Shl : (x : [] UInt16) -> (n : [] Int) -> UInt16
+
+@native
+uint16Shr : (x : [] UInt16) -> (n : [] Int) -> UInt16
+
+@native
+uint16Ushr : (x : [] UInt16) -> (n : [] Int) -> UInt16
+
+@native
+uint16PopCount : (x : [] UInt16) -> Int
+
+instance Bits UInt32 where
+  bitAnd = uint32BitAnd
+  bitOr = uint32BitOr
+  bitXor = uint32BitXor
+  bitNot = uint32BitNot
+  shl = uint32Shl
+  shr = uint32Shr
+  ushr = uint32Ushr
+  popCount = uint32PopCount
+
+@native
+uint32BitAnd : (x : [] UInt32) -> (y : [] UInt32) -> UInt32
+
+@native
+uint32BitOr : (x : [] UInt32) -> (y : [] UInt32) -> UInt32
+
+@native
+uint32BitXor : (x : [] UInt32) -> (y : [] UInt32) -> UInt32
+
+@native
+uint32BitNot : (x : [] UInt32) -> UInt32
+
+@native
+uint32Shl : (x : [] UInt32) -> (n : [] Int) -> UInt32
+
+@native
+uint32Shr : (x : [] UInt32) -> (n : [] Int) -> UInt32
+
+@native
+uint32Ushr : (x : [] UInt32) -> (n : [] Int) -> UInt32
+
+@native
+uint32PopCount : (x : [] UInt32) -> Int
+
+instance Bits UInt64 where
+  bitAnd = uint64BitAnd
+  bitOr = uint64BitOr
+  bitXor = uint64BitXor
+  bitNot = uint64BitNot
+  shl = uint64Shl
+  shr = uint64Shr
+  ushr = uint64Ushr
+  popCount = uint64PopCount
+
+@native
+uint64BitAnd : (x : [] UInt64) -> (y : [] UInt64) -> UInt64
+
+@native
+uint64BitOr : (x : [] UInt64) -> (y : [] UInt64) -> UInt64
+
+@native
+uint64BitXor : (x : [] UInt64) -> (y : [] UInt64) -> UInt64
+
+@native
+uint64BitNot : (x : [] UInt64) -> UInt64
+
+@native
+uint64Shl : (x : [] UInt64) -> (n : [] Int) -> UInt64
+
+@native
+uint64Shr : (x : [] UInt64) -> (n : [] Int) -> UInt64
+
+@native
+uint64Ushr : (x : [] UInt64) -> (n : [] Int) -> UInt64
+
+@native
+uint64PopCount : (x : [] UInt64) -> Int
+
+-- A single-bit mask: `bit n` is `1` shifted left `n`.
+@pub
+bit : (n : [] Int) -> Int
+bit n = shl 1 n
+
+-- The mask with the low `n` bits set (`lowMask 8` is 255).
+@pub
+lowMask : (n : [] Int) -> Int
+lowMask n = bit n - 1
+
+-- Is bit `n` of `x` set?
+@pub
+testBit : (x : [] Int) -> (n : [] Int) -> Bool
+testBit x n = bitAnd (shr x n) 1 == 1
+
+@pub
+setBit : (x : [] Int) -> (n : [] Int) -> Int
+setBit x n = bitOr x (bit n)
+
+@pub
+clearBit : (x : [] Int) -> (n : [] Int) -> Int
+clearBit x n = bitAnd x (bitNot (bit n))
+
+@pub
+flipBit : (x : [] Int) -> (n : [] Int) -> Int
+flipBit x n = bitXor x (bit n)

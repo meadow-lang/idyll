@@ -1,0 +1,168 @@
+-- The elaborated program, as a Lingua language: `Elaborated` is Core, what
+-- the checker makes of `Hir` (`Elab`'s pass, `elab : Hir -> Elaborated`)
+-- -- every argument there, implicit ones included; variables de Bruijn
+-- indices, their names beside them for printing; matching a tree of
+-- `case`s; what the back end needs to know noted (`Runtime`).
+--
+-- The checker computes with Core as data (`Core.Core`): normalisation by
+-- evaluation reads it, makes values of it and quotes them back, in the
+-- middle of checking. What it hands on -- to the CEK machine and to the Cut
+-- lowering -- is this language.
+
+use Lingua (lang!)
+use Lingua.Lang (Meta, noMeta)
+use Idyll.Hir (Icit, Literal)
+use Idyll.Core (Core, Builtin, Prim, Head, Note, CaseAlt, OpClause)
+use Idyll.Grade (Grade)
+use Std.Collections.Vector as V
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+@pub lang! {
+  pub Elaborated
+  -- a module checked: its expression under its top-level definitions, its
+  -- recursive definitions, and what each metavariable was solved with
+  Module + Module { body : Maybe Term, defs : [Def], metas : [Solution] }
+  -- a recursive definition: a constant, whose body is in the scope of the
+  -- `level` variables around it; `local` if it is under another's
+  Def + Def { unique : Int, name : String, level : Int, body : Term, local : Bool }
+  Solution + Solution { number : Int, term : Term }
+  Term + Type { level : Int }
+  Term + LitTy { builtin : Builtin }
+  Term + Lit { lit : Literal }
+  Term + Prim { prim : Prim }
+  Term + Var { index : Int, name : String }
+  -- a recursive definition, a constructor or a data type, by its unique
+  Term + Opaque { unique : Int, name : String }
+  Term + Meta { number : Int }
+  -- `(x : (grade, inType) dom) -> cod`; the name is `_` for a plain arrow
+  Term + Pi { name : String, icit : Icit, grade : Term, inType : Term, dom : Term, cod : Term }
+  Term + Lam { name : String, body : Term }
+  Term + App { func : Term, arg : Term }
+  -- `a [r]`
+  Term + BoxTy { grade : Term, ty : Term }
+  Term + BoxIntro { expr : Term }
+  Term + Unbox { expr : Term }
+  Term + Let { name : String, value : Term, body : Term }
+  Term + GradeLit { value : Grade }
+  Term + GradeAdd { lhs : Term, rhs : Term }
+  Term + GradeMul { lhs : Term, rhs : Term }
+  Term + GradeRange { lo : Term, hi : Term }
+  Term + Case { scrutinee : Term, alts : [Alt] }
+  Term + Runtime { note : Note, expr : Term }
+  -- `b ! e`
+  Term + Comp { ty : Term, row : Term }
+  -- an effect row: the effects, then the row variables
+  Term + Row { labels : [Term], tails : [Term] }
+  -- `handle body with { return ..; op .. }`
+  Term + Handle { body : Term, ret : Term, ops : [OpClause] }
+  Term + Error {}
+  -- what an alternative matches, the constructor's name, the names its
+  -- body binds (the last innermost), and the body
+  Alt + Alt { head : Head, name : String, vars : [String], body : Term }
+  -- a handler's clause: the operation's unique and name, how many of its
+  -- implicit arguments are erased, and its body
+  OpClause + OpClause { op : Int, name : String, erased : Int, body : Term }
+  -- an argument never used at run time; the variable a lambda binds, its
+  -- grade if a constant and its type; a `case` its type forces
+  Note + Erased {}
+  Note + Binds { grade : Maybe Grade, ty : Maybe Term }
+  Note + Forced {}
+  Note + Goal { name : String }
+}
+
+-- --- writing a checked module -------------------------------------------------------
+
+-- A Core term, written into `out`'s tables.
+@pub fun termRow out (c : Core) : ElaboratedTerm ! { St s | e } =
+  let m = noMeta in
+  let go = \x -> termRow out x in
+  match c with
+  | Core.Type n -> newElaboratedTermType out m n
+  | Core.LitTy b -> newElaboratedTermLitTy out m b
+  | Core.Lit l -> newElaboratedTermLit out m l
+  | Core.Prim p -> newElaboratedTermPrim out m p
+  | Core.Var i x -> newElaboratedTermVar out m i x
+  | Core.Opaque u x -> newElaboratedTermOpaque out m u x
+  | Core.Meta k -> newElaboratedTermMeta out m k
+  | Core.Pi x icit g r dom cod -> newElaboratedTermPi out m x icit (go g) (go r) (go dom) (go cod)
+  | Core.Lam x body -> newElaboratedTermLam out m x (go body)
+  | Core.App f a -> newElaboratedTermApp out m (go f) (go a)
+  | Core.BoxTy g a -> newElaboratedTermBoxTy out m (go g) (go a)
+  | Core.BoxIntro a -> newElaboratedTermBoxIntro out m (go a)
+  | Core.Unbox a -> newElaboratedTermUnbox out m (go a)
+  | Core.Let x v body -> newElaboratedTermLet out m x (go v) (go body)
+  | Core.GradeLit g -> newElaboratedTermGradeLit out m g
+  | Core.GradeAdd a b -> newElaboratedTermGradeAdd out m (go a) (go b)
+  | Core.GradeMul a b -> newElaboratedTermGradeMul out m (go a) (go b)
+  | Core.GradeRange a b -> newElaboratedTermGradeRange out m (go a) (go b)
+  | Core.Case sc alts ->
+      newElaboratedTermCase out m (go sc) (V.map (\a -> match a with | CaseAlt.CaseAlt h x vars body -> newElaboratedAlt out m h x vars (go body)) alts)
+  | Core.Runtime note a ->
+      let n =
+        match note with
+        | Note.Erased -> newElaboratedNoteErased out m
+        | Note.Binds g ty -> newElaboratedNoteBinds out m g (M.map go ty)
+        | Note.Forced -> newElaboratedNoteForced out m
+        | Note.Goal n -> newElaboratedNoteGoal out m n
+      in
+      newElaboratedTermRuntime out m n (go a)
+  | Core.Comp a r -> newElaboratedTermComp out m (go a) (go r)
+  | Core.Row ls ts -> newElaboratedTermRow out m (V.map go ls) (V.map go ts)
+  | Core.Handle body r ops ->
+      newElaboratedTermHandle out m (go body) (go r) (V.map (\o -> match o with | OpClause.OpClause u x n b -> newElaboratedOpClause out m u x n (go b)) ops)
+  | Core.Error -> newElaboratedTermError out m
+
+-- A module checked, written out: its expression; its recursive
+-- definitions, each its unique, name, level, body and whether it is local;
+-- and each solved metavariable's solution.
+@pub fun moduleRow out (body : Maybe Core) (defs : [(Int, String, Int, Core, Bool)]) (metas : [(Int, Core)]) : ElaboratedModule ! { St s | e } =
+  newElaboratedModule
+    out
+    noMeta
+    (M.map (\b -> termRow out b) body)
+    (V.map (\d -> match d with | (u, x, l, b, local) -> newElaboratedDef out noMeta u x l (termRow out b) local) defs)
+    (V.map (\sm -> match sm with | (k, t) -> newElaboratedSolution out noMeta k (termRow out t)) metas)
+
+-- --- reading one back ---------------------------------------------------------------
+
+-- A term of the tables as the checker's data: for what asks the checker's
+-- evaluator about it (`Typer`, what a value's representation is).
+@pub fun coreOf (a : ElaboratedArena) (t : ElaboratedTerm) : Core =
+  let go = \x -> coreOf a x in
+  match (a, t) with
+  | ElaboratedTermType n -> Core.Type n
+  | ElaboratedTermLitTy b -> Core.LitTy b
+  | ElaboratedTermLit l -> Core.Lit l
+  | ElaboratedTermPrim p -> Core.Prim p
+  | ElaboratedTermVar i x -> Core.Var i x
+  | ElaboratedTermOpaque u x -> Core.Opaque u x
+  | ElaboratedTermMeta k -> Core.Meta k
+  | ElaboratedTermPi x icit g r dom cod -> Core.Pi x icit (go g) (go r) (go dom) (go cod)
+  | ElaboratedTermLam x body -> Core.Lam x (go body)
+  | ElaboratedTermApp f x -> Core.App (go f) (go x)
+  | ElaboratedTermBoxTy g x -> Core.BoxTy (go g) (go x)
+  | ElaboratedTermBoxIntro x -> Core.BoxIntro (go x)
+  | ElaboratedTermUnbox x -> Core.Unbox (go x)
+  | ElaboratedTermLet x v body -> Core.Let x (go v) (go body)
+  | ElaboratedTermGradeLit g -> Core.GradeLit g
+  | ElaboratedTermGradeAdd x y -> Core.GradeAdd (go x) (go y)
+  | ElaboratedTermGradeMul x y -> Core.GradeMul (go x) (go y)
+  | ElaboratedTermGradeRange x y -> Core.GradeRange (go x) (go y)
+  | ElaboratedTermCase sc alts -> Core.Case (go sc) (V.map (\alt -> altOf a alt) alts)
+  | ElaboratedTermRuntime n x -> Core.Runtime (noteOf a n) (go x)
+  | ElaboratedTermComp x r -> Core.Comp (go x) (go r)
+  | ElaboratedTermRow ls ts -> Core.Row (V.map go ls) (V.map go ts)
+  | ElaboratedTermHandle body r ops ->
+      Core.Handle (go body) (go r) (V.map (\o -> OpClause.OpClause (elaboratedOpClauseOp a o) (elaboratedOpClauseName a o) (elaboratedOpClauseErased a o) (go (elaboratedOpClauseBody a o))) ops)
+  | ElaboratedTermError -> Core.Error
+
+@pub fun altOf (a : ElaboratedArena) (alt : ElaboratedAlt) : CaseAlt =
+  CaseAlt.CaseAlt (elaboratedAltHead a alt) (elaboratedAltName a alt) (elaboratedAltVars a alt) (coreOf a (elaboratedAltBody a alt))
+
+@pub fun noteOf (a : ElaboratedArena) (n : ElaboratedNote) : Note =
+  match (a, n) with
+  | ElaboratedNoteErased -> Note.Erased
+  | ElaboratedNoteBinds g ty -> Note.Binds g (M.map (\t -> coreOf a t) ty)
+  | ElaboratedNoteForced -> Note.Forced
+  | ElaboratedNoteGoal n -> Note.Goal n

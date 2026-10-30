@@ -1,0 +1,203 @@
+-- Sized integers and floats, as `idyllic_builtins::num` has them: the
+-- natives each number type has (`int8Add`, `floatLt`, `uint64FromInt`),
+-- what each is on Meadow's runtimes, and what each does, for the reference
+-- interpreter.
+--
+-- A sized integer is held as the number it stands for, in an `Int`: wrapped
+-- to its width, so an `Int8` is from -128 to 127. A `UInt64` past `Int`'s
+-- largest is the `Int` with its bits, which Meadow's own `UInt64` reads.
+
+use Idyll.Core as C
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Maybe.Maybe.*
+use Std.Result.Result.*
+
+-- A number, as the reference interpreter holds one.
+@derive(PartialEq)
+@pub data Number = Int Int | Word String Int | Float Float | Float32 Float32
+
+-- What a numeric native gave.
+@derive(PartialEq)
+@pub data Answer = Num Number | Bool Bool | Text String
+
+-- What a numeric native does, in `idyllic_builtins::NumOp`'s order.
+@pub def ops : [String] =
+  ["Add", "Sub", "Mul", "Div", "Mod", "Eq", "Lt", "Show", "ToInt", "FromInt", "ToFloat", "ToFloat32", "Floor", "BitAnd", "BitOr", "BitXor", "BitNot", "Shl", "Shr", "Ushr", "PopCount", "Hash"]
+
+-- An operation on an integer's bits.
+fun isBits (op : String) : Bool = V.elem op ["BitAnd", "BitOr", "BitXor", "BitNot", "Shl", "Shr", "Ushr", "PopCount"]
+
+-- The number types a native is at: `Int`, then the builtins'.
+@pub def types : [String] = V.append ["Int"] C.numberTypes
+
+-- Whether there is a native for `op` at `t`. `Int`'s arithmetic and
+-- comparisons are primitives of their own, and its text the prelude's.
+@pub fun at (op : String) (t : String) : Bool =
+  if op == "Hash" then True
+  else if isBits op then not (C.isFloatType t)
+  else if t == "Int" then op == "ToFloat"
+  else if t == "Float" then V.elem op ["Add", "Sub", "Mul", "Div", "Eq", "Lt", "Show", "ToFloat32", "Floor"]
+  else if t == "Float32" then V.elem op ["Add", "Sub", "Mul", "Div", "Eq", "Lt", "Show", "ToFloat", "Floor"]
+  else not (op == "ToFloat32" or op == "Floor")
+
+@pub fun arity (op : String) : Int = if V.elem op ["Add", "Sub", "Mul", "Div", "Mod", "Eq", "Lt", "BitAnd", "BitOr", "BitXor", "Shl", "Shr", "Ushr"] then 2 else 1
+
+-- The native's name: the type's, small, then the operation's.
+@pub fun nativeName (op : String) (t : String) : String = S.toLower t ++ op
+
+-- The numeric native a name is, if it is one: its operation and type.
+@pub fun ofName (name : String) : Maybe (String, String) =
+  V.find (\p -> nativeName (fst p) (snd p) == name) (V.concatMap (\t -> V.map (\op -> (op, t)) (V.filter (\op -> at op t) ops)) types)
+
+-- The primitive of Meadow's runtimes it is, at `t`.
+@pub fun prim (op : String) (t : String) : String =
+  let float = C.isFloatType t in
+  if op == "Hash" then "hash"
+  else if isBits op then S.toLower (stringSlice op 0 1) ++ stringSlice op 1 (stringByteLength op)
+  else if float and V.elem op ["Add", "Sub", "Mul", "Div", "Lt"] then S.toLower op ++ "F"
+  else if op == "Show" then "display"
+  else if op == "FromInt" then "to" ++ t
+  else if op == "ToInt" or op == "ToFloat" or op == "ToFloat32" then "to" ++ stringSlice op 2 (stringByteLength op)
+  else S.toLower op
+
+-- The type of what it takes, at `t`.
+@pub fun takes (op : String) (t : String) : String = if op == "FromInt" then "Int" else t
+
+-- The types of each thing it takes, at `t`: a shift's amount is an `Int`
+-- whatever is shifted.
+@pub fun takesEach (op : String) (t : String) : [String] =
+  if V.elem op ["Shl", "Shr", "Ushr"] then [t, "Int"] else V.replicate (arity op) (takes op t)
+
+-- What it gives, at `t`: a number type's name, or `Bool`, or `String`.
+@pub fun gives (op : String) (t : String) : String =
+  if op == "Eq" or op == "Lt" then "Bool"
+  else if op == "PopCount" or op == "Hash" then "Int"
+  else if op == "Show" then "String"
+  else if op == "ToInt" or op == "Floor" then "Int"
+  else if op == "ToFloat" then "Float"
+  else if op == "ToFloat32" then "Float32"
+  else t
+
+fun bits (w : String) : Int =
+  if w == "Int8" or w == "UInt8" then 8 else if w == "Int16" or w == "UInt16" then 16 else if w == "Int32" or w == "UInt32" then 32 else 64
+
+fun signed (w : String) : Bool = w == "Int8" or w == "Int16" or w == "Int32"
+
+-- `x` wrapped to the width of `w`: its low bits, as the number they stand
+-- for.
+@pub fun wrap (w : String) (x : Int) : Int =
+  if bits w == 64 then x
+  else
+    let m = V.foldl (\acc i -> acc * 2) 1 (V.range 0 (bits w)) in
+    let r = ((x % m) + m) % m in
+    if signed w and r >= m / 2 then r - m else r
+
+-- A number as text, as Meadow's `display` writes it.
+@pub fun shown (n : Number) : String =
+  match n with
+  | Number.Int k -> show k
+  | Number.Word w k -> if w == "UInt64" then display (toUInt64 k) else show k
+  | Number.Float x -> display x
+  | Number.Float32 x -> display x
+
+fun isFinite (x : Float) : Bool = x - x == 0.0
+
+-- `op` at `t` on `args`, or the error it stops the program with.
+@pub fun apply (op : String) (t : String) (args : [Number]) : Result String Answer =
+  let wrong = Err ("`" ++ nativeName op t ++ "` was given " ++ S.join " and " (V.map shown args)) in
+  let a = V.getOr (Number.Int 0) args 0 in
+  let b = V.getOr (Number.Int 0) args 1 in
+  let truth = \c -> Ok (Answer.Bool c) in
+  let num = \n -> Ok (Answer.Num n) in
+  if V.isEmpty args then wrong
+  else if isBits op or op == "Hash" then
+    (let amount = match b with | Number.Int n -> n | Number.Word _ n -> n | _ -> 0 in
+     match a with
+     | Number.Int x -> Ok (onBits op (\v -> Number.Int v) x amount amount)
+     | Number.Word w x ->
+         if w == "Int8" then Ok (onBits op (\v -> Number.Word w (toInt v)) (toInt8 x) (toInt8 amount) amount)
+         else if w == "Int16" then Ok (onBits op (\v -> Number.Word w (toInt v)) (toInt16 x) (toInt16 amount) amount)
+         else if w == "Int32" then Ok (onBits op (\v -> Number.Word w (toInt v)) (toInt32 x) (toInt32 amount) amount)
+         else if w == "UInt8" then Ok (onBits op (\v -> Number.Word w (toInt v)) (toUInt8 x) (toUInt8 amount) amount)
+         else if w == "UInt16" then Ok (onBits op (\v -> Number.Word w (toInt v)) (toUInt16 x) (toUInt16 amount) amount)
+         else if w == "UInt32" then Ok (onBits op (\v -> Number.Word w (toInt v)) (toUInt32 x) (toUInt32 amount) amount)
+         else Ok (onBits op (\v -> Number.Word w (toInt v)) (toUInt64 x) (toUInt64 amount) amount)
+     | Number.Float x -> if op == "Hash" then num (Number.Int (hash x)) else wrong
+     | Number.Float32 x -> if op == "Hash" then num (Number.Int (hash x)) else wrong)
+  else
+    match (a, b) with
+    | (Number.Word w x, Number.Word _ y) if arity op == 2 ->
+        let unsigned = w == "UInt64" in
+        let word = \n -> num (Number.Word w (wrap w n)) in
+        if op == "Add" then word (x + y)
+        else if op == "Sub" then word (x - y)
+        else if op == "Mul" then word (x * y)
+        else if (op == "Div" or op == "Mod") and y == 0 then Err (if op == "Div" then "division by zero" else "modulo by zero")
+        else if op == "Div" then word (if unsigned then toInt (toUInt64 x / toUInt64 y) else x / y)
+        else if op == "Mod" then word (if unsigned then toInt (toUInt64 x % toUInt64 y) else x % y)
+        else if op == "Eq" then truth (x == y)
+        else if op == "Lt" then truth (if unsigned then toUInt64 x < toUInt64 y else x < y)
+        else wrong
+    | (Number.Float x, Number.Float y) if arity op == 2 ->
+        if op == "Add" then num (Number.Float (x + y))
+        else if op == "Sub" then num (Number.Float (x - y))
+        else if op == "Mul" then num (Number.Float (x * y))
+        else if op == "Div" then num (Number.Float (x / y))
+        else if op == "Eq" then truth (x == y)
+        else if op == "Lt" then truth (x < y)
+        else wrong
+    | (Number.Float32 x, Number.Float32 y) if arity op == 2 ->
+        if op == "Add" then num (Number.Float32 (x + y))
+        else if op == "Sub" then num (Number.Float32 (x - y))
+        else if op == "Mul" then num (Number.Float32 (x * y))
+        else if op == "Div" then num (Number.Float32 (x / y))
+        else if op == "Eq" then truth (x == y)
+        else if op == "Lt" then truth (x < y)
+        else wrong
+    | _ ->
+        if arity op == 2 then wrong
+        else if op == "Show" then Ok (Answer.Text (shown a))
+        else if op == "ToInt" then (match a with | Number.Word _ x -> num (Number.Int x) | _ -> wrong)
+        else if op == "FromInt" then (match a with | Number.Int x -> num (Number.Word t (wrap t x)) | _ -> wrong)
+        else if op == "ToFloat" then
+          (match a with
+           | Number.Int x -> num (Number.Float (toFloat x))
+           | Number.Word w x -> num (Number.Float (if w == "UInt64" then toFloat (toUInt64 x) else toFloat x))
+           | Number.Float32 x -> num (Number.Float (toFloat64 x))
+           | _ -> wrong)
+        else if op == "ToFloat32" then (match a with | Number.Float x -> num (Number.Float32 (toFloat32 x)) | _ -> wrong)
+        else if op == "Floor" then
+          (let x = match a with | Number.Float f -> Just f | Number.Float32 f -> Just (toFloat64 f) | _ -> None in
+           match x with
+           | Just f -> if isFinite f then num (Number.Int (floor f)) else Err ("`floor` of a non-finite Float: " ++ display f)
+           | None -> wrong)
+        else wrong
+
+-- A bitwise operation, or a hash, on `x`, at its own type: what Meadow's
+-- primitives give, which the runtimes are. `y` is the other operand, `n` a
+-- shift's amount; `back` makes the answer a `Number` again.
+fun onBits (op : String) (back : n -> Number) (x : n) (y : n) (amount : Int) : Answer =
+  if op == "Hash" then Answer.Num (Number.Int (hash x))
+  else if op == "PopCount" then Answer.Num (Number.Int (popCount x))
+  else if op == "BitAnd" then Answer.Num (back (bitAnd x y))
+  else if op == "BitOr" then Answer.Num (back (bitOr x y))
+  else if op == "BitXor" then Answer.Num (back (bitXor x y))
+  else if op == "BitNot" then Answer.Num (back (bitNot x))
+  else if op == "Shl" then Answer.Num (back (shl x amount))
+  else if op == "Shr" then Answer.Num (back (shr x amount))
+  else Answer.Num (back (ushr x amount))
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+@test fun nativesAreNamedAndComputedAsRustsAre () =
+  let a = assertEq (nativeName "FromInt" "UInt64") "uint64FromInt" "a name" in
+  let b = assertEq (prim "FromInt" "UInt64") "toUInt64" "a conversion's primitive" in
+  let c = assertEq (prim "Add" "Float32") "addF" "a float's arithmetic" in
+  let d = assertEq (apply "Add" "Int8" [Number.Word "Int8" 127, Number.Word "Int8" 1]) (Ok (Answer.Num (Number.Word "Int8" (0 - 128)))) "wrapping" in
+  let e = assertEq (apply "FromInt" "UInt8" [Number.Int (0 - 1)]) (Ok (Answer.Num (Number.Word "UInt8" 255))) "the low bits" in
+  let f = assertEq (shown (Number.Float 2.0)) "2.0" "a float's fraction" in
+  assertEq (ofName "floatFloor") (Just ("Floor", "Float")) "a native by its name"
+

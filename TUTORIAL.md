@@ -89,7 +89,7 @@ later entries can use them, until you `:reset` or leave.
 > double : Int [2] -> Int
 double [n] = n + n
 
-double : Int [2] -> Int
+double : (_ : [1] Int [2]) -> Int
 > double [21]
 42 : Int
 ```
@@ -102,7 +102,6 @@ double : Int [2] -> Int
 | `:find <query>`      | search, by name or by type (see below)           |
 | `:prove <type>`      | look for a term of a type (see below)            |
 | `:ir [stages] <code>` | the code at each stage of the compiler (see below) |
-| `:machine` / `:eval` / `:native` | choose what runs entries (see below) |
 | `:time` / `:time <expr>` | time every entry from now on, or just this one |
 | `:tour`              | a guided tour of the language (see below)        |
 | `:help`              | list the commands                                |
@@ -167,28 +166,28 @@ scroll, and **Esc** closes it. The stages are:
 | `ast`     | the parser's syntax tree                                       |
 | `hir`     | names resolved (`n#91`), definitions grouped by what they use  |
 | `core`    | the checker's elaborated Core: implicit arguments, boxes and grades explicit |
-| `axcut`   | AxCut, the sequent-calculus IR the machine runs                |
-| `inlined` | the same, inlined: what the native compiler is given           |
-| `llvm`    | LLVM IR                                                        |
-| `cut`     | Cut, the shared back end's IR (see [How programs run](#how-programs-run)) |
+| `cut`     | Cut, what Meadow's runtimes run (see [How programs run](#how-programs-run)) |
+| `inlined` | the same, inlined by Meadow: small definitions at known calls, and a value matched or called where it is made never made |
+| `axcut`   | AxCut, the sequent-calculus IR Meadow lowers the inlined Cut to, which Glade and Silo compile |
+| `llvm`    | LLVM IR, Silo's, from the AxCut                                |
 
 `:ir <code>` shows every stage, `:ir core,cut <code>` just those, and `:ir`
 alone the last entry. The code can take several lines: start them with
 **Alt-Enter**, and end with an empty line. The declarations made so far
-are in scope, and the stages from AxCut on show what the block makes
-together with whatever of the session and the prelude it uses. A block of
+are in scope, and the stages from Cut on show what the block makes
+together with whatever of the session and the prelude it uses. The stages
+after Cut are Meadow's: `meadow cut --emit` makes them. A block of
 declarations alone is shown lowered with its definitions kept, though
 nothing calls them yet. When the output isn't a terminal, the stages are
 printed one after another instead.
 
-### Machines
+### Where entries run
 
-Entries run on the AxCut machine, which also checks that a program leaves
-no memory behind. `:eval` runs them on the reference interpreter, the
-specification the compiler is tested against, and `:native` compiles each
-with LLVM and runs it (this needs `clang`, and what native code can't do yet
-runs on the machine, which it says). `:machine` goes back. `:time` reports
-how long each entry took, from checking to answer.
+Each entry is lowered to Cut and run on Glade, Meadow's bytecode, as every
+Idyll program is (see [How programs run](#how-programs-run)): the REPL needs
+`meadow` installed. An entry that is still running after 20 seconds is
+stopped, and the prompt comes back (`IDYLL_TIMEOUT` sets how many). `:time`
+reports how long each entry took, from checking to answer.
 
 ### The tour
 
@@ -280,7 +279,7 @@ means `(f 1) + (g 2)`.
 3 : Int
 > \(n : Int) -> n + 1
 : (n : Int) -> Int
-> 1 + True
+> \(n : Int) -> n + True
 Error: type mismatch
    │ ╰── expected Int, but this has type Bool
 ```
@@ -316,6 +315,63 @@ Error: type mismatch
    │ ╰── expected f (1 + n), but this has type f (n + 1)
 ```
 
+### Sized integers and floats
+
+As in Meadow, there are integers of other sizes, which wrap at their
+width: `Int8`, `Int16`, `Int32`, and unsigned `UInt8`, `UInt16`,
+`UInt32` and `UInt64` (`Int64` is another name for `Int`). A number with a
+point in it, `1.5`, is a `Float`, an IEEE double, or a `Float32`, a
+single (`Float64` is `Float`). A literal is read at the type wanted, so
+`200` is a `UInt8` where one is wanted; with nothing to say which, an
+integer is an `Int` and a number with a point a `Float`.
+
+```
+> (200 : UInt8)
+200 : UInt8
+> (127 : Int8) + 1
+-128 : Int8
+> 1.5 * 2.0
+3.0 : Float
+> (0.5 : Float32) + 0.25
+0.75 : Float32
+```
+
+What is wanted can come after the literal: in `1 + x`, the `1` waits for
+`x` to say what `+` is at.
+
+```
+> \(x : Int8) -> 1 + x
+: (x : Int8) -> Int8
+```
+
+`+`, `-`, `*` and `/` work on each (`%` on the integers), and so do the
+comparisons; division of an integer rounds toward zero, and dividing one
+by zero stops the program, as an `Int`'s does. (Meadow writes a float's
+arithmetic `+.`; here `+` is a trait's method, and a float has an
+instance of it.) Two types never mix: a conversion says which is meant.
+`toInt` and `toFloat` take any integer, `toInt8` … `toUInt64` (and
+`toInt64`) any integer too, keeping the low bits of what they narrow;
+`toFloat64` and `toFloat32` take a float, and `floor` rounds one down to
+an `Int`.
+
+```
+> (1 : Int8) + (2 : Int16)
+Error: type mismatch
+   │ ╰── expected Int8, but this has type Int16
+> toInt8 300
+44 : Int8
+> toUInt8 (0 - 1)
+255 : UInt8
+> floor (0.0 - 2.5)
+-3 : Int
+> (300 : Int8)
+Error: 300 does not fit in an Int8
+   │ ╰── an Int8 is from -128 to 127
+```
+
+A float is shown with a fraction, always, `2.0`; that is Meadow's text for
+one, the same in the REPL and on every runtime.
+
 ### Strings
 
 Strings use double quotes and have type `String`.
@@ -332,6 +388,7 @@ Supported escapes:
 | `\n` `\r` `\t` | newline, carriage return, tab           |
 | `\0` `\a` `\b` `\f` `\v` | NUL, bell, backspace, form feed, vertical tab |
 | `\\` `\"` `\'` | backslash, double quote, single quote   |
+| `\$`          | a dollar, where `${` would start a hole  |
 | `\xNN`        | code point, 1–2 hex digits               |
 | `\uNNNN`      | code point, 1–4 hex digits               |
 | `\UNNNNNNNN`  | code point, 1–8 hex digits               |
@@ -353,6 +410,70 @@ decimal, which is how a number becomes something to print:
 "forty-two" : String
 > "n = " ++ showInt (40 + 2)
 "n = 42" : String
+```
+
+A string can have *holes*: `${e}` puts `e` in, written as its type's
+`Display` says (a `String` as itself), and `${e:?}` as its `Debug` says,
+the way source writes it. A hole holds any expression, a string of its own
+included:
+
+```
+> "n = ${40 + 2}"
+"n = 42" : String
+> "${(1, "one")} or ${(1, "one"):?}"
+"(1, one) or (1, \"one\")" : String
+```
+
+`Display` and `Debug` are traits (see [Traits](#traits)): the prelude gives
+them for its own types, and a type of your own has them by an instance.
+
+### Characters
+
+A character, `'a'`, has type `Char`: one Unicode scalar value, not one
+byte. It takes the same escapes a string does, and `'\''` is a single
+quote.
+
+```
+> 'a'
+'a' : Char
+> charCode 'A'
+65 : Int
+> charFromCode 955
+'λ' : Char
+```
+
+A string is UTF-8, and the prelude takes it apart two ways, as Meadow's
+does. By its *bytes*, in constant time: `stringByteLength`,
+`stringByteAt` (a byte, as an `Int`), `stringSlice` (the bytes from one
+index up to another), `stringIndexOf` (where one string is found in
+another, from a byte on, or `-1`) and `stringCompare` (`-1`, `0` or `1`).
+And by its *characters*: `stringToChars` gives them as an array, and
+`charsToString` makes a string of some.
+
+```
+> stringByteLength "héllo"
+6 : Int
+> stringToChars "héllo"
+#['h'; 'é'; 'l'; 'l'; 'o'] : Array Char
+> stringSlice "hello" 1 3
+"el" : String
+```
+
+A byte or a code point that is out of range stops the program, as an
+array's index does. `Std.String` and `Std.Char` have the rest (see [The
+standard library](#the-standard-library)): splitting, trimming, reading a
+number, classifying characters.
+
+A character pattern is matched as a number is:
+
+```
+> kind : Char -> String
+kind 'a' = "the first letter"
+kind c = "another"
+
+kind : (_ : [1] Char) -> String
+> kind 'a'
+"the first letter" : String
 ```
 
 ### Booleans and unit
@@ -461,9 +582,10 @@ second example, `x` gets its type `Int` from the annotation.
 ## Grades
 
 Every binder has a **grade**: how many times the function uses it, as in
-[Granule](https://granule-project.github.io). A binder that says nothing
-has grade `[]`, *any number of times*, so an ordinary function is written
-as in any functional language:
+[Granule](https://granule-project.github.io). A lambda's binder that says
+nothing has grade `[]`, *any number of times*, so an ordinary function is
+written as in any functional language (a definition's parameters have
+theirs worked out instead: see [Worked-out grades](#worked-out-grades)):
 
 ```
 > \(x : Int) -> 5
@@ -552,6 +674,44 @@ type gets its grade from it:
 : (x : [2] Int) -> Int
 ```
 
+### Worked-out grades
+
+A definition's parameter that says no grade gets the tightest one its
+body allows, of the grades used every day: `1` if it is used exactly
+once, `0..1` if at most once, and `[]` otherwise. Never `0`, which would
+erase it: say `[0]` for that.
+
+```
+> inc : Int -> Int
+inc n = n + 1
+
+inc : (_ : [1] Int) -> Int
+> pick : Bool -> Int -> Int -> Int
+pick b x y = if b then x else y
+
+pick : (_ : [1] Bool) -> (_ : [0..1] Int) -> (_ : [0..1] Int) -> Int
+> double : Int -> Int
+double n = n + n
+
+double : Int -> Int
+```
+
+The grade is part of the type, so a caller sees it, and the tighter it is
+the more a caller may pass: something it may use only once can go where
+`inc` takes its argument, and not where `double` takes its. A function
+whose grades are tighter than another's fits where that one is wanted,
+as `inc` does where `Int -> Int` is. Recursion is worked out too: a
+parameter used in one equation and handed on unchanged to the recursion
+in another is used once, so `plus` below takes both its arguments
+linearly. A function of functions, like `twice f x = f (f x)`, uses `x`
+as often as `f` uses its argument, which a type `Int -> Int` leaves at
+`[]`.
+
+A lambda on its own keeps `[]`, as its type may then be what another must
+have exactly (a handler's clauses each give one), and so does a parameter
+of type `()`, which may be used as often as wanted whatever its grade
+says.
+
 ### Linear modules
 
 A module that is mostly about resources can make `1` the default instead:
@@ -570,13 +730,63 @@ Error: usage mismatch
 ```
 
 A type is printed as the module it is in reads it: there, `(x : Int)` is
-linear, and an unrestricted binder is written `(x : [] Int)`. The prelude
-is a linear module, so that the data types it declares (`List`, `Maybe`,
-`Result`, pairs) can hold anything, resources too. The standard library is
-not: its functions use what they are given as often as they like, so their
-signatures say nothing about grades, and a function from any module fits
-them. `Std.Collections.MArray`, whose arrays are changed in place, is the
-one linear module of it (see [The standard library](#the-standard-library)).
+linear, and an unrestricted binder is written `(x : [] Int)`. Nothing is
+worked out in a linear module: a parameter that says nothing is linear.
+The prelude is a linear module, so that the data types it declares
+(`List`, `Maybe`, `Result`, pairs) can hold anything, resources too. The
+standard library is not: its parameters' grades are worked out as any
+definition's are, and `Std.Collections.MArray`, whose arrays are changed
+in place, is the one linear module of it (see [The standard
+library](#the-standard-library)).
+
+### Literals at a type variable
+
+A number literal takes the type wanted (see [Numbers](#numbers)). Where
+that is a type variable, it is read through the variable's `Integer`
+instance, `fromInt` (`Floating`'s `fromFloat`, for one with a point), so
+code written once for every integer type may still say `0`:
+
+```
+> factorial : {n : Type} -> Integer n => PartialEq n => Sub n => Mul n => (k : [] n) -> n ! Div
+factorial k = if k == 0 then 1 else k * factorial (k - 1)
+
+factorial : {n : Type} -> Integer n => PartialEq n => Sub n => Mul n => (k : n) -> n ! Div
+> (factorial 20, factorial (toUInt8 5))
+(2432902008176640000, 120) : (Int, UInt8)
+```
+
+### Linear types
+
+A grade belongs to a binder, and which binder a value ends up in is not
+up to the value. Some values must never be shared whatever binder holds
+them: a mutable array, written in place, would be seen changing through
+any other name for it. So a type can be linear itself. `MArray` is, and so
+is a data type with a field of a linear type, or applied to one (`Pair
+(Int []) (MArray Int)`). In every module, linear or not:
+
+- a variable of a linear type is used at most once, whatever its grade;
+- a binder of one that says no grade is `[1]`, so a constructor's field
+  or a parameter of one charges what it is given once;
+- a value of one is never boxed, `[e]`, to be used more often;
+- a linear type is given for a type parameter only of something that holds
+  values of that type at most once: a pair, a list, `Maybe`, whose fields
+  are linear, but not `dup : {a : Type} -> (x : [] a) -> (a, a)`;
+- and a top-level definition of one is used at most once by the program,
+  a library having none (any module could use it).
+
+A value of a linear type is copied out of only for its fields of linear
+types; the rest of them, an `Int` beside an array, as often as wanted.
+
+```
+> use Std.Collections.MArray (MArray, new, write, freeze)
+> twice : (m : MArray Int) -> (Array Int, Array Int)
+twice m = (freeze (write m 0 1), freeze m)
+
+Error: a linear value used more than once
+   │ ╰── m is of type MArray Int, which is linear, but is used 2 times
+> freeze (write (new 2 0) 0 1)
+#[1; 0] : Array Int
+```
 
 ### Grades flow through calls
 
@@ -681,7 +891,7 @@ function type changes, except that an implicit argument is erased (grade
 > let id : {a : Type} -> a -> a = \x -> x in id 3
 3 : Int
 > let id : {a : Type} -> a -> a = \x -> x in id
-: {a : Type} -> a -> a
+: {a : Type} -> (_ : [1] a) -> a
 ```
 
 An implicit argument is only filled in where there is something to fill
@@ -697,9 +907,9 @@ too large a type is an error of its own:
 > id : {a : Type} -> a -> a
 id x = x
 
-id : {a : Type} -> a -> a
+id : {a : Type} -> (_ : [1] a) -> a
 > (\f -> f) id
-: {a : Type} -> a -> a
+: {a : Type} -> (_ : [1] a) -> a
 > id id 1
 1 : Int
 > id id
@@ -725,6 +935,286 @@ If nothing determines an implicit argument, that is an error:
 Error: unsolved metavariable
    │ ╰── could not infer the implicit argument a
 ```
+
+Then say it yourself: an argument in braces is the implicit one the
+function's type binds next, as Agda writes it. Those you leave out are
+still worked out.
+
+```
+> let phantom : {a : Type} -> Int -> Int = \n -> n in phantom {Bool} 1
+1 : Int
+> let pair : {a b : Type} -> a -> b -> (a, b) = \x y -> (x, y) in pair {Int} 1 True
+(1, True) : (Int, Bool)
+```
+
+The same braces in a pattern name an implicit argument where it is bound:
+`{n}` is the implicit argument the type binds next, as a lambda's binder
+or among an equation's patterns. It is still erased unless its binder
+gives it a grade, so returning one needs `[]`:
+
+```
+> let twice : {n : [] Int} -> Int = \{n} -> n * 2 in twice {21}
+42 : Int
+```
+
+In an equation, `{p}` is a pattern like any other, matched against the
+argument: here the length a vector's type carries, which is only there at
+run time because its binder says `[]`.
+
+```
+len : {n : [] Nat} -> {a : Type} -> Vec n a -> Nat
+len {n} _ = n
+
+isZero : {n : [] Nat} -> Bool
+isZero {Z} = True
+isZero {S _} = False
+```
+
+The implicit arguments no pattern takes are bound as before, by the names
+the signature gives them. A pattern in braces where the type has no
+implicit argument next is an error.
+
+### Auto arguments
+
+An *auto* argument, `{auto d : t}`, is implicit too, but it is not worked
+out from the types around it: it is *found*, by searching for something of
+type `t`, as Idris finds them. `t => ..` is one with no name. The search
+looks first at the auto binders in scope, innermost first, and then at the
+*hints*: the definitions marked `@hint`. This is what traits will be made
+of, a record of functions found by its type:
+
+```
+record Describe (a : Type) = { describe : a -> String }
+
+@hint
+describeInt : Describe Int
+describeInt = Describe { describe = \(n : Int) -> showInt n }
+
+@hint
+describeList : {a : Type} -> Describe a => Describe (List a)
+describeList = Describe { describe = \(xs : List a) -> "[" ++ items xs ++ "]" }
+
+say : {a : Type} -> {auto d : Describe a} -> a -> String
+say x = d.describe x
+
+items : {a : Type} -> Describe a => List a -> String
+items Nil = ""
+items (x :: xs) = say x ++ ";" ++ items xs
+
+say (1 :: 2 :: Nil)          -- "[1;2;]"
+```
+
+`say (1 :: 2 :: Nil)` wants a `Describe (List Int)`: `describeList` gives
+one if it is given a `Describe Int`, which `describeInt` is. Inside
+`items`, `say x` finds `items`' own auto binder. A hint may come anywhere
+in the module: hints are checked before what may want them.
+
+What is searched for has to be known first, so a search waits until the
+rest of the definition has said what its type is: in `let xs = Nil in say
+(4 :: xs)`, it is `4` that says the list holds `Int`s. Nothing that gives
+one, more than one hint that does, or a type that is never known well
+enough to look, is an error. An auto argument is used at run time, so its
+grade is `[]` unless it says otherwise.
+
+`@{d}` in a pattern names the auto argument the type binds next, as `{n}`
+names an implicit one:
+
+```
+shout : {a : Type} -> {auto d : Describe a} -> a -> String
+shout @{e} x = e.describe x ++ "!"
+```
+
+That is also how a type keeps the instance it was made with. A list sorted
+by an `Ord` is only sorted by *that* `Ord`, so the instance can be one of
+its type's arguments, and a definition that names it by `@{o}` finds it
+for you:
+
+```
+> data Sorted (a : Type) (o : Ord a) = Sorted (List a)
+use Std.Cmp (Ord)
+SortedBy : (a : Type) -> {auto o : Ord a} -> Type
+SortedBy a @{o} = Sorted a o
+
+Sorted : (a : Type) -> (o : Ord a) -> Type
+Sorted.Sorted : {a : Type} -> {o : Ord a} -> (_ : [1] List a) -> Sorted a o
+SortedBy : (a : Type) -> {auto o : Ord a} -> Type
+> (Sorted.Sorted (1 :: 2 :: Nil) : SortedBy Int)
+Sorted (1 :: 2 :: Nil) : Sorted Int (instance Ord Int)
+```
+
+An instance with no name of its own is shown by what it is an instance of.
+Two `Sorted Int`s made with different orders have different types.
+
+### Traits
+
+A *trait* is that record written as what it means: a set of methods, some
+with a default, and *instances* that give them for a type.
+
+```
+trait Describe (a : Type) where
+  describe : a -> String
+  twice : a -> String
+  twice x = describe x ++ describe x
+
+instance Describe Int where
+  describe n = showInt n
+
+instance Describe Bool where
+  describe True = "yes"
+  describe False = "no"
+  twice b = "twice " ++ describe b
+
+instance Describe a => Describe (List a) where
+  describe Nil = "."
+  describe (x :: xs) = describe x ++ "," ++ describe xs
+
+(twice 4, twice False, describe (1 :: 2 :: Nil))
+-- ("44", "twice no", "1,2,.")
+```
+
+It is sugar, as in Idris. `Describe` is a record of its methods, and each
+method a function of the record found for it: `describe : {a : Type} ->
+Describe a => a -> String`. An instance is a hint whose value is that
+record, its methods given by equations as any definition's are, the
+trait's defaults for those it leaves out. So `describe` is found by the
+type it is used at, and the instance for lists, which wants its elements',
+finds itself for the rest of the list.
+
+A trait may have *superclasses*, written as constraints before its name.
+They are fields of its record, found for each instance, and what wants the
+trait has them too:
+
+```
+trait Describe a => Loud (a : Type) where
+  shout : a -> String
+  shout x = describe x ++ "!"
+
+instance Loud Int where
+
+louder : {a : Type} -> Loud a => a -> String
+louder x = shout x ++ " (" ++ describe x ++ ")"
+```
+
+Instances are *coherent*: two of one trait whose types unify are an error,
+so a search never has two to choose from. And an instance lives with its
+trait or with its type, the package that declares one of them, so that two
+packages cannot each give the same one. A *named* instance, `instance
+loud : Describe Int where ..`, is the exception: it may live anywhere and
+overlap anything, because it is never searched for. It is only given by
+hand, with `@{..}`, which gives a function its next auto argument:
+
+```
+instance loud : Describe Int where
+  describe n = showInt n ++ "!"
+
+(describe 3, describe @{loud} 3, twice @{loud} 3)
+-- ("3", "3!", "3!3!")
+```
+
+Arithmetic is traits too, the prelude's: `+` is `Add`'s method, `-`
+`Sub`'s, `*` `Mul`'s, `/` `Divide`'s and `%` `Rem`'s, and `Int`'s
+instances are the primitives (a call at `Int` *is* the primitive, so it
+costs what it always did). Each takes its operands once, as the
+primitives do, which is how a grade counts `x + x` as two uses of `x`.
+Std gives `Nat` an `Add`, `plus`, so a length is written as it is said,
+and `Z + m` is `m` in a type:
+
+```
+use Std.Num.Nat (Nat)
+use Std.Num.Nat.Nat.*
+
+data Vec : Nat -> Type -> Type where
+  Nil : {a : Type} -> Vec Z a
+  Cons : {n : Nat} -> {a : Type} -> a -> Vec n a -> Vec (S n) a
+
+use Vec.*
+
+append : {n m : Nat} -> {a : Type} -> Vec n a -> Vec m a -> Vec (n + m) a
+append Nil ys = ys
+append (Cons x xs) ys = Cons x (append xs ys)
+
+append (Cons 1 Nil) (Cons 2 Nil)
+-- Cons 1 (Cons 2 Nil)
+```
+
+So are comparisons: `==` and `!=` are `PartialEq`'s, and `<`, `>`, `<=`
+and `>=` are `PartialOrd`'s (whose superclass is `PartialEq`), as Meadow
+and Rust name them. The prelude gives them for `Int` (the primitives),
+`Char`, `String`, `Bool` and `()`, and for pairs, lists and `Maybe` of
+types that have them. A comparison looks at its operands as often as it
+likes, as Rust's borrow theirs, so what it compares is unrestricted.
+Std's `Cmp` has `Ord`, for types whose every two values are ordered:
+`compare` says how (from `<`, unless an instance says better), and `min`,
+`max` and `clamp` want it. A type of your own needs only `==` and `<`; the
+rest are defaults:
+
+```
+data Size = Small | Large
+
+use Size.*
+
+rank : Size -> Int
+rank Small = 0
+rank Large = 1
+
+instance PartialEq Size where
+  x == y = rank x == rank y
+
+instance PartialOrd Size where
+  x < y = rank x < rank y
+
+(Small < Large, Large <= Small, Small != Large)
+-- (True, False, True)
+```
+
+An instance that only follows the type's shape can be written for you,
+with `@derive`, as Meadow writes it. `Display` and `Debug` render a
+constructor and its fields, each by its own instance, `Box(a, b)`;
+`PartialEq` says two values are the same constructor with equal fields;
+`PartialOrd` orders them by constructor, in the order they are declared,
+then by their fields, left to right. Each parameter of the type that is a
+type wants the trait too. The prelude's `Maybe` and `Result` are derived:
+
+```
+@derive(Display, Debug, PartialEq, PartialOrd)
+data Shape a = Dot | Circle Int | Box a a
+
+use Shape.*
+
+(display (Box "a" "b"), debug (Box "a" "b"), Box 1 2 < Box 1 3, "${Just 4}")
+-- ("Box(a, b)", "Box(\"a\", \"b\")", True, "Just(4)")
+```
+
+**Associated types.** A trait is a record, and a record's field may be a
+type: so a trait may have one, which each instance gives. That is how a
+type that is a function of another is said, rather than with functional
+dependencies. A container's elements are its instance's business:
+
+```
+trait Container (c : Type) where
+  Elem : Type
+  empty : c
+  insert : Elem -> c -> c
+  toList : c -> List Elem
+
+instance Container (List Int) where
+  Elem = Int
+  empty = Nil
+  insert x xs = x :: xs
+  toList xs = xs
+
+firstOr : {c : Type} -> {auto d : Container c} -> Elem c -> c -> Elem c
+firstOr d xs = case toList xs of
+  Nil -> d
+  (x :: rest) -> x
+
+firstOr 0 (insert 5 (empty : List Int))     -- 5
+```
+
+In the methods, `Elem` is the instance's own; outside, `Elem c` is the
+one the instance for `c` gives, which takes `c` by hand, since nothing
+else would say which instance it is. A trait with a field that is a type
+lives in `Type 1`, as any record with one does.
 
 The result type can depend on an argument in more interesting ways. Here
 `b` is a *function* from values to types, so the type of `f y` depends on
@@ -755,11 +1245,11 @@ can end with an expression to check against them.
 > id : {a : Type} -> a -> a
 id x = x
 
-id : {a : Type} -> a -> a
+id : {a : Type} -> (_ : [1] a) -> a
 > flip : {a b c : Type} -> (a -> b -> c) -> b -> a -> c
 flip f y x = f x y
 
-flip : {a : Type} -> {b : Type} -> {c : Type} -> (a -> b -> c) -> b -> a -> c
+flip : {a : Type} -> {b : Type} -> {c : Type} -> (_ : [1] a -> b -> c) -> b -> a -> c
 > flip (\(n : Int) (m : Int) -> n + m) 1 (id 2)
 3 : Int
 ```
@@ -787,7 +1277,7 @@ Things to know:
   succ (n : Int) = n + one
 
   one : Int
-  succ : (n : Int) -> Int
+  succ : (n : [1] Int) -> Int
   ```
 
 - The variables a signature binds implicitly are in scope in the equation,
@@ -931,15 +1421,16 @@ type. A recursion that goes on taking its argument apart is known to
 stop, needs no `Div`, and can even compute inside a type; see
 [Computing in types](#computing-in-types) and [Div](#div).
 
-A recursion doesn't have to end to be run. The REPL gives up on one that
-hasn't ended after a million steps — which is also what happens to one
-that *would* end, but not soon; for those,
-[compile the program](#compiling-to-native-code).
+A recursion doesn't have to end to be run. The REPL stops one that
+hasn't ended after 20 seconds — which is also what happens to one that
+*would* end, but not soon; for those, run the program with `idyll run`,
+which waits as long as it takes, or
+[compile it to native code](#compiling-to-native-code).
 
 ```
 > let loop : Int -> Int ! Div = \n -> loop n in loop 0
 : Int
-(still running after 1000000 steps; stopped)
+(still running after 20 seconds; stopped)
 ```
 
 Mutually recursive bindings work too, as long as each one has a
@@ -1060,7 +1551,7 @@ fromMaybe [d] m = case m of
   Nothing -> d
   Just x -> x
 
-fromMaybe : {a : Type} -> a [0..1] -> Maybe a -> a
+fromMaybe : {a : Type} -> (_ : [1] a [0..1]) -> Maybe a -> a
 > fromMaybe [1] (Just 100)
 100 : Int
 ```
@@ -1133,13 +1624,13 @@ sum xs = case xs of
   Nil -> 0
   y :: ys -> y + sum ys
 
-sum : List Int -> Int
+sum : (_ : [1] List Int) -> Int
 > sum (1 :: 2 :: 3 :: Nil)
 6 : Int
 ```
 
 `sum` uses its list exactly once, and that means something at run time:
-each cell is freed as it is matched (see [Memory](#memory)).
+nothing else holds a cell, so a runtime can free each as it is matched.
 
 A list can also be written out: `#[1, 2, 3]` is `1 :: 2 :: 3 :: Nil`. (The
 `#` is there because bare brackets are the grades'.)
@@ -1171,7 +1662,7 @@ Point.Point : (_ : [1] Int) -> (_ : [1] Int) -> Point
 > flip : Point -> Point
 flip (Point x y) = Point y x
 
-flip : Point -> Point
+flip : (_ : [1] Point) -> Point
 > flip (Point 1 2)
 Point 2 1 : Point
 ```
@@ -1191,7 +1682,7 @@ a pair works on all of them:
 > swap : (Int, Bool) -> (Bool, Int)
 swap (n, b) = (b, n)
 
-swap : (Int, Bool) -> (Bool, Int)
+swap : (_ : [1] (Int, Bool)) -> (Bool, Int)
 > swap (1, True)
 (True, 1) : (Bool, Int)
 > (1, "two", 3)
@@ -1295,7 +1786,7 @@ one, and `#[;]` the empty array.
 #[10; 99; 30] : Array Int
 > arrayGet #[10; 20; 30] 5
 : Int
-(stopped: index 5 is out of bounds for an array of length 3)
+(stopped: arrayGet: index 5 out of bounds (len 3))
 ```
 
 An index outside the array stops the program, as dividing by zero does.
@@ -1374,14 +1865,14 @@ Nat.S : (_ : [1] Nat) -> Nat
 half (S (S n)) = S (half n)
 half _ = Z
 
-half : Nat -> Nat
+half : (_ : [1] Nat) -> Nat
 > half (S (S (S (S (S Z)))))
 S (S Z) : Nat
 > second : List Int -> Int
 second (_ :: y :: _) = y
 second _ = 0
 
-second : List Int -> Int
+second : (_ : [0..1] List Int) -> Int
 > second (1 :: 2 :: 3 :: Nil)
 2 : Int
 ```
@@ -1542,7 +2033,7 @@ Cons 1 (Cons 2 (Cons 3 Nil)) : Vec (S (S (S Z))) Int
 total #[] = 0
 total (Cons x xs) = x + total xs
 
-total : {n : Nat} -> Vec n Int -> Int
+total : {n : Nat} -> (_ : [1] Vec n Int) -> Int
 > total #[4, 5, 6]
 15 : Int
 ```
@@ -1613,12 +2104,12 @@ Vec.Cons : {a : Type} -> {n : Nat} -> (_ : [1] a) -> (_ : [1] Vec n a) -> Vec (S
 plus Z m = m
 plus (S n) m = S (plus n m)
 
-plus : Nat -> Nat -> Nat
+plus : (_ : [1] Nat) -> (_ : [1] Nat) -> Nat
 > append : Vec n a -> Vec m a -> Vec (plus n m) a
 append Nil ys = ys
 append (Cons x xs) ys = Cons x (append xs ys)
 
-append : {n : Nat} -> {a : Type} -> {m : Nat} -> Vec n a -> Vec m a -> Vec (plus n m) a
+append : {n : Nat} -> {a : Type} -> {m : Nat} -> (_ : [1] Vec n a) -> (_ : [1] Vec m a) -> Vec (plus n m) a
 > append (Cons 1 Nil) (Cons 2 (Cons 3 Nil))
 Cons 1 (Cons 2 (Cons 3 Nil)) : Vec (S (S (S Z))) Int
 ```
@@ -1649,7 +2140,7 @@ Nat.S : (_ : [1] Nat) -> Nat
 plus Z m = m
 plus (S n) m = S (plus n m)
 
-plus : Nat -> Nat -> Nat
+plus : (_ : [1] Nat) -> (_ : [1] Nat) -> Nat
 > data Eq : Nat -> Nat -> Type where
   Refl : Eq x x
 use Eq.*
@@ -1659,12 +2150,12 @@ Eq.Refl : {x : Nat} -> Eq x x
 > cong : Eq x y -> Eq (S x) (S y)
 cong Refl = Refl
 
-cong : {x : Nat} -> {y : Nat} -> Eq x y -> Eq (S x) (S y)
+cong : {x : Nat} -> {y : Nat} -> (_ : [1] Eq x y) -> Eq (S x) (S y)
 > plusZero : (n : Nat) -> Eq (plus n Z) n
 plusZero Z = Refl
 plusZero (S k) = cong (plusZero k)
 
-plusZero : (n : Nat) -> Eq (plus n Z) n
+plusZero : (n : [1] Nat) -> Eq (plus n Z) n
 ```
 
 `plusZero` needs both halves of this section: `plus (S k) Z` computes to
@@ -1693,7 +2184,7 @@ Fin.FS : {n : Nat} -> (_ : [1] Fin n) -> Fin (S n)
 > noFin : Fin Z -> Int
 noFin i impossible
 
-noFin : Fin Z -> Int
+noFin : (_ : [1] Fin Z) -> Int
 > nope : Nat -> Int
 nope n impossible
 
@@ -1834,7 +2325,7 @@ Vec.Cons : {a : Type} -> {n : Nat} -> (_ : [1] a) -> (_ : [1] Vec n a) -> Vec (S
 > cast : (p : [0] Eq n m) -> Vec n a -> Vec m a
 cast Refl v = v
 
-cast : {n : Nat} -> {m : Nat} -> {a : Type} -> (p : [0] Eq n m) -> Vec n a -> Vec m a
+cast : {n : Nat} -> {m : Nat} -> {a : Type} -> (p : [0] Eq n m) -> (_ : [1] Vec n a) -> Vec m a
 > cast Refl (Cons 1 Nil)
 Cons 1 Nil : Vec (S Z) Int
 ```
@@ -1907,7 +2398,7 @@ fail : () -> Int ! Fail
 > safeDiv : Int -> Int -> Int ! Fail
 safeDiv a b = if b == 0 then fail () else a / b
 
-safeDiv : Int -> Int -> Int ! Fail
+safeDiv : (_ : [0..1] Int) -> Int -> Int ! Fail
 > handle safeDiv 7 0 with
   return x -> x
   fail _ k -> 0
@@ -2052,7 +2543,7 @@ log : Int -> () ! Log
 > addAsk : Int -> Int ! Ask
 addAsk n = n + ask ()
 
-addAsk : Int -> Int ! Ask
+addAsk : (_ : [1] Int) -> Int ! Ask
 > logged : Int -> Int ! Log
 logged n = let u = log n in n
 
@@ -2060,7 +2551,7 @@ logged : Int -> Int ! Log
 > compose : (f : b -> c ! e) -> (g : a -> b ! e) -> (x : a) -> c ! e
 compose f g x = f (g x)
 
-compose : {b : Type} -> {c : Type} -> {e : Effect} -> {a : Type} -> (f : b -> c ! e) -> (g : a -> b ! e) -> (x : a) -> c ! e
+compose : {b : Type} -> {c : Type} -> {e : Effect} -> {a : Type} -> (f : [1] b -> c ! e) -> (g : a -> b ! e) -> (x : a) -> c ! e
 > both n = compose logged addAsk n
 
 both : (n : Int) -> Int ! {Ask, Log}
@@ -2103,7 +2594,7 @@ The effects a program's top level may still have are the ones the
 runtime handles itself: everything in `Eff`, which the prelude declares as
 
 ```
-effect Eff = {Console, Fs, Process, Random, Time, Test, Abort, Div}
+effect Eff = {Console, Fs, Process, Random, Time, Test, Abort, Mut, Div}
 ```
 
 with these operations (and `Maybe` and `Result` declared alongside,
@@ -2114,10 +2605,11 @@ with these operations (and `Maybe` and `Result` declared alongside,
 | `Console` | `putStr : String -> ()`, `putErr : String -> ()` (to standard error), `readLine : () -> Maybe String` |
 | `Fs` | `readToString : String -> Result String String`; `writeString`, `appendString : String -> String -> Result String ()` (a path, then the text); `removeFile`, `createDir`, `createDirAll`, `removeDir`, `removeDirAll : String -> Result String ()`; `rename : String -> String -> Result String ()`; `copy : String -> String -> Result String Int` (how many bytes it copied); `listDir : String -> Result String (Array String)`; `exists`, `isFile`, `isDir : String -> Bool` |
 | `Process` | `exit : Int -> ()`, `currentPid : () -> Int`, `argv : () -> Array String`, `getEnv : String -> Maybe String`, `setEnv : String -> String -> ()`, `removeEnv : String -> ()`, `isTerminal : Int -> Bool` |
-| `Random` | `nextInt : () -> Int`, `intBetween : Int -> Int -> Int` (from the first, up to but not including the second), `nextSeed : () -> Int` |
-| `Time` | `now : () -> Int` (milliseconds since 1970), `monotonic : () -> Int` (nanoseconds, for measuring), `sleep : Int -> ()` (milliseconds) |
-| `Test` | `fail : String -> ()`, which stops the program |
+| `Random` | `nextInt : () -> Int`, `intBetween : Int -> Int -> Int` (from the first, up to but not including the second), `nextSeed : () -> Int` (`Std.Random` has the rest: a seeded generator, `nextFloat`, shuffling) |
+| `Time` | `now : () -> Int` (milliseconds since 1970), `monotonic : () -> Int` (nanoseconds, for measuring), `sleep : Int -> ()` (milliseconds; `Std.Time` has clocks of your own, timing and dates) |
+| `Test` | `fail : String -> ()`, which stops the program (`Std.Test` has the assertions) |
 | `Abort` | `abort : {a : Type} -> String -> a`, which gives up: unhandled, it writes its message to standard error and exits with status 1 |
+| `Mut` | no operations a handler could take: `newRef : {a : Type} -> a -> Ref a ! Mut`, `getRef : {a : Type} -> Ref a -> a ! Mut` and `setRef : {a : Type} -> Ref a -> a -> () ! Mut` are the runtime's own, on cells (`Ref a`) that may be shared, held in many places and changed through any of them (`Std.Ref` has the rest: `modify`, `swap`, `bump`, ...) |
 
 The runtime prints only strings. `putStrLn` and `printInt` are ordinary
 prelude functions over `putStr`, not operations, so a handler of
@@ -2205,10 +2697,10 @@ ask : () -> Int ! Ask
 main () = printInt (ask ())
 
 Error: effects not allowed
-   │ ╰── this has the effects {Console, Ask}, but its type allows {Div, Console, Fs, Process, Random, Time, Test, Abort}
+   │ ╰── this has the effects {Console, Ask}, but its type allows {Div, Console, Fs, Process, Random, Time, Test, Abort, Mut}
 ```
 
-A file with a `main` is run with `idyllic hello.idl`; what comes after
+A file with a `main` is run with `idyllic hello.idl` (in `compiler/`); what comes after
 `--` on that command line is what `args ()` gives it (and `argv ()`, as an array), and `exit n`
 becomes its exit code. It compiles the same way as any other program
 (see [Compiling to native code](#compiling-to-native-code)), and the
@@ -2260,9 +2752,17 @@ does a single file, which is a package of one module (see
 
 ### Modules are namespaces
 
-A package is checked as a whole, so its modules may mention each other,
-even one that mentions them back. But each module is a namespace of its
-own: a sibling's names arrive through a `use`, never for free.
+A package's modules may mention each other, even one that mentions them
+back. But each module is a namespace of its own: a sibling's names arrive
+through a `use`, never for free.
+
+Modules that import each other, in a circle or not, are checked together,
+as one *part* of the package (a strongly connected component of its
+imports); the parts are checked one after another, each against the ones
+it imports, so a build that finds a part's modules and what it imports
+unchanged reads it back rather than checking it again. An instance of a
+trait is found wherever its module is imported, directly or through
+others.
 
 ```
 -- src/Syntax.idl
@@ -2293,6 +2793,31 @@ without it, `Syntax`: the root's children are in scope by name. The
 package's name on its own is the root module, for a child that wants
 something the root declares.
 
+A module can also be written inside another's file, indented under
+`module M where`, which saves a file for something small. It is the module
+`M` under the file's, exactly as if it were `src/M.idl` beside it (or
+`src/Outer/M.idl`, inside `src/Outer.idl`), so it is a namespace of its own
+too, and may have modules inside it in turn:
+
+```
+module Shapes where
+  use Shape.*
+
+  data Shape = Circle Int | Square Int
+
+  area : Shape -> Int
+  area (Circle r) = 3 * r * r
+  area (Square w) = w * w
+
+use Shapes (Shape, area)
+use Shapes.Shape.*
+
+area (Circle 2)
+```
+
+Only the root module's last line may be an expression, so one inside a
+file has none, and its name may not be one the package has already.
+
 ### `use`
 
 | Form | What it brings |
@@ -2313,6 +2838,48 @@ the next module says what it wants for itself.
 A constructor lives under its type in every module, including the one
 that declares it (see [Data types](#data-types)), which is why a
 single-file program says `use T.*` after declaring `T`.
+
+### One name, several meanings
+
+A module's own names and the names its `use`s bring are one layer. Two
+things of one name there are not a clash: the name is *overloaded*, and
+which one it means is chosen by type, wherever it is used.
+
+```
+use Maybe.*
+use Box.*
+use Std.Collections.List (length)
+use Std.Collections.Array (length)
+
+data Box = Just Int | Empty
+
+unbox : Box -> Int
+unbox (Just n) = n
+unbox Empty = 0
+
+main : () -> () ! Eff
+main () =
+  let u = printInt (unbox (Just 3)) in              -- Box.Just
+  let v = printInt (length (1 :: 2 :: Nil)) in      -- a list's length
+  printInt (length #[4; 5; 6])                      -- an array's
+```
+
+A name is chosen by the type wanted where it is used, a constructor in a
+pattern by the type of what it is matched against, and names whose choices
+hang on each other, as in `length (Just 5)`, are chosen together. When the
+use alone cannot say, the rest of the definition can: in `let b = Just 7 in
+unbox b`, it is `unbox` that says which `Just` `b` is. A top-level
+definition settles its own names, though: `v = Just 7` is ambiguous,
+whatever uses `v` later, until its signature says which.
+
+If no meaning fits, or more than one still does once the definition is
+checked, the error lists them all, with their types and where each is
+from. Say which with a type annotation, or write the name in full, as
+`Box.Just` or `Std.Collections.Array.length`.
+
+A local name shadows rather than overloads, and so does a name of your own
+the prelude also has: defining your own `map` doesn't make every `map` a
+question. Defining one name twice in one module is still an error.
 
 ### Visibility
 
@@ -2368,7 +2935,7 @@ idyll run -- a b          # with arguments, for args ()
 
 ```
    Compiling Hello v0.1.0 (/home/me/hello)
-    Finished `debug` profile [machine] in 0.02s
+    Finished `debug` profile [glade] in 0.02s
      Running `Hello`
 Hello, world!
 ```
@@ -2381,25 +2948,22 @@ long as nothing it was compiled from has changed (its sources, the
 packages it depends on, the compiler). Editing a dependency recompiles it
 and what depends on it, and nothing else. `idyll clean` removes `target/`.
 
-### Profiles: the machine and native code
+### Profiles: Glade and Silo
 
-A build has a *profile*: `--debug` (the default) or `--release`. Debug runs
-the program on the AxCut abstract machine, in the `idyll` process, which
-starts at once. Release compiles it with LLVM into an executable under
-`target/release/native/` (this needs clang and lld), and runs that. A
-program native code cannot compile (or a lone file, which has no
-`target/` to put an executable in) runs on the machine instead, with a
-warning. A package's `Idyll.toml` can change
-what a profile means, and a flag (`--backend machine`, `--native`) wins
-over both:
+A build has a *profile*: `--debug` (the default) or `--release`. Either
+way the program is lowered to Cut and handed to Meadow's runtimes. Debug
+runs it on Glade, Meadow's bytecode, which starts at once. Release builds
+it with Silo into an executable under `target/release/native/`, and runs
+that. A lone file, which has no `target/` to put an executable in, runs on
+Glade instead, with a warning. A package's `Idyll.toml` can change what a
+profile means, and a flag (`--backend glade`, `--silo`) wins over both:
 
 ```toml
 [profile.release]
-backend = "machine"      # or "native"
+backend = "glade"        # or "silo"
 ```
 
-`idyll build --emit axcut,llvm` writes the program as AxCut, or as LLVM IR,
-under `target/`.
+`idyll build --emit cut` writes the program as Cut under `target/`.
 
 ### Dependencies
 
@@ -2471,6 +3035,40 @@ A member takes what the workspace says with `version.workspace = true` and
 all, `--exclude` leaves some out. A package compiled for one member is
 reused by the next.
 
+### Tests: `idyll test`
+
+`@test` on a definition's signature makes it a test: a `() -> ()` with at
+most the effects the runtime handles, as `main` is. A test fails by
+performing `Test`'s `fail`, which `Std.Test`'s assertions do, so a failure
+five calls down still stops it and still says what it was:
+
+```
+use Std.Test (assertEq)
+
+@test
+addsUp : () -> () ! Test
+addsUp u = assertEq (1 + 2) 3 "sums"
+```
+
+`idyll test` builds the package and runs every test in it, in every
+module, in the order they were written, one failing not stopping the
+others; and fails if any did:
+
+```
+$ idyll test
+running 3 tests
+test addsUp ... ok
+test breaks ... FAILED
+    doubling: expected 5, got 4
+test Maths.doubles ... ok
+
+test result: FAILED. 2 passed; 1 failed
+```
+
+A test is named `Module.test` (a bare `test` in the root module), and
+`idyll test doubl` runs those whose name contains `doubl`; `--exact` only
+the one named so. `idyll build` and `idyll run` leave the tests alone.
+
 ## The standard library
 
 Every package has Idyll's standard library, `Std`, with no
@@ -2489,6 +3087,8 @@ is nothing to install.
 | `Std.Cmp` | comparing by a function passed along: `minBy`, `maxBy`, `clampBy`, `comparing`, `reversed`, `thenBy`, `lexicographic` |
 | `Std.Num.Int` | `abs`, `max`, `min`, `compare`, `pow`, `gcd`, `isEven`, `show`, ... |
 | `Std.Num.Nat` | `Nat` (`Z`, `S`), arithmetic, `fromInt`, `toInt`, and proofs: `plusZero`, `plusSucc`, `plusComm`, `plusAssoc`, `decEq` |
+| `Std.Num.Bits` | `Bits a`, the bit operations at each integer width, as Meadow's: `bitAnd`, `bitOr`, `bitXor`, `bitNot`, `shl`, `shr` (arithmetic), `ushr` (logical), `popCount`; and on `Int`, `bit`, `lowMask`, `testBit`, `setBit`, `clearBit`, `flipBit` |
+| `Std.Hash` | `Hash a`, `hash : a -> Int` as Meadow's runtimes hash (numbers, `String`, `Char`, `Bool`, lists, `Maybe`, pairs), and `combine` |
 | `Std.Num.Fin` | `Fin n`, the naturals below `n` (`FZ`, `FS`), `toNat`, `weaken`, `last`, `fromNat`, `enumerate` |
 | `Std.Eq` | `Eq x y` with its one proof `Refl`; `sym`, `trans`, `cong`, `cong2`, `subst` |
 | `Std.Void` | `Void`, `absurd`, and `neg p`, which is `p -> Void` |
@@ -2502,13 +3102,27 @@ is nothing to install.
 | `Std.Collections.Array` | the rest of [arrays](#arrays): `get`, `set`, `map`, `foldl`, `filter`, `range`, `zip`, ..., and `checkIndex`, `at`, `indices`, for indices of type `Fin (size xs)` |
 | `Std.Collections.MArray` | `MArray a`, an array used linearly: `new`, `read`, `write`, `modify`, `swap`, `generate`, `freeze`, `thaw` |
 | `Std.Collections.Vector` | `Vector a`, Meadow's persistent RRB vector: `get`, `set`, `pushBack`, `pushFront`, `popBack`, `popFront`, `append`, `splitAt`, `map`, `filter`, folds, ... |
+| `Std.Collections.Map` | `Map k v`, keys in order by an `Ord k` its type keeps (`MapBy k o v`): `insert`, `lookup`, `member`, `getOr`, `delete`, `adjust`, `insertWith`, `map`, `foldr`, `keys`, `values`, `minEntry`, `toList`, `fromList`, ... |
+| `Std.Collections.HashMap` | `HashMap k v`, Meadow's hash array mapped trie, keyed by a `Hash k` its type keeps (`HashMapBy k h v`): `insert`, `lookup`, `member`, `getOr`, `delete`, `adjust`, `insertWith`, `alter`, `foldl`, `map`, `filter`, `union`, `keys`, `values`, `toList`, `fromList`, ... |
+| `Std.Collections.Set` | `Set a`, the same for sets (`SetBy a o`): `insert`, `member`, `delete`, `union`, `diff`, `intersect`, `subset`, `minElem`, `toList`, `fromList`, ... |
 | `Std.Sort` | a stable merge sort: `sortBy`, `sort`, `sortOn`, `sortArrayBy`, `sortVectorBy`, `isSortedBy` |
-| `Std.String` | `concat`, `join`, `unlines`, `unwords`, `replicate`, `fromList` |
-| `Std.Console` | `printLines`, `printList`, `printBool`, `readLines` |
+| `Std.String` | as Meadow's, by bytes: `byteLength`, `slice`, `take`, `drop`, `byteAt`, `indexOf`, `contains`, `startsWith`, `split`, `lines`, `words`, `trim`, `toUpper`, `toInt`, `equal`, `compare`; by characters: `chars`, `fromChars`, `charAt`, `charLength`; and `join`, `concatAll`, `unlines`, `unwords`, `repeat`, `fromList` |
+| `Std.Bytes` | byte arrays, `Array UInt8`, as Meadow's: `stringToBytes`, `bytesToString`, `bytesToHex`, `bytesFromHex`, `bytesGet`, `bytesSet`, `bytesPush`, `bytesSlice`, `bytesConcat`, and the wider unsigned integers by their bytes, `bytesGetU16LE` ... `bytesSetU64BE` |
+| `Std.Json` | JSON, as Meadow's: `Json` (`Null`, `Json.Bool`, `Json.Int`, `Json.Float`, `Json.String`, `Array`, `Object`), `parse` (`Err` the offset and what went wrong), `parseSpanned`, `render`, `renderIndented`, `quote`; `get`, `index`, `path`, `asInt`, `asString`, ... |
+| `Std.String.Parse` | parser combinators, as Meadow's after megaparsec: `Parser s a` over a `Stream` (a `String`, a `Vector`), `runParser`, `parse` (an error's span and text), `pure`, `map`, `bind`, `alt`, `try`, `label`, `many`, `some`, `sepBy`, `between`, `chainl1`, `satisfy`, `single`, `chunk`, `takeWhileP`, `eof`, ...; and errors that say what was found and wanted |
+| `Std.String.Parse.Char`, `Std.String.Parse.Lexer` | characters, strings and white space (`char`, `string`, `space`, `digitChar`, `eol`, ...); lexemes (`space` with comments, `lexeme`, `symbol`, `decimal`, `hexadecimal`, `float`, `signed`, `charLiteral`) and indentation (`indentGuard`, `indentBlock`, `lineFold`) |
+| `Std.Char` | `code`, `fromCode`, `fromCodeSafe`, `isDigit`, `isAlpha`, `isSpace`, `isUpper`, `toUpper`, `toLower`, `digitToInt`, `hexDigitToInt`, `equal`, `compare` (the classes ASCII only, as Meadow's are) |
+| `Std.Console` | as Meadow's: `print`, `println`, `eprintln` (as `display` writes a value), `prompt`, `readLineOr`, `readWord`, `promptUntil`, `readAll`, `readLines`, `printLines`; and `withInput` (the lines read given) and `withOutput` (what is written kept), each passing the rest of the console on, so a program that talks to a person runs with no one there |
 | `Std.Fs`, `Std.Process` | `readToStringOr`, `tryReadDir`, `writeLines`, `existsAll`; `argCount`, `arg`, `envOr`, `exitFailure`, ... |
 | `Std.Exn` | an effect: `throw`, and `toResult`, `catch`, `withDefault`, `toMaybe`, `ofResult`, `ensure` |
+| `Std.Ref` | shared mutable cells, as Meadow's: `modify`, `swap`, `getAndModify`, `modifyAndGet`, `bump`, `repeatN`, over the prelude's `Ref`, `newRef`, `getRef`, `setRef` (the effect `Mut`) |
+| `Std.St` | state changed in place, as Meadow's but linear rather than an effect: a cell, `StRef a` (`newRef`, `getRef`, `setRef`, `modifyRef`, `value`), and an array, `StArray a` (`newArray`, `get`, `set`, `length`, `modify`, `swap`, `freeze`, `thaw`, `fromVec`, `toVec`), each operation giving it back; `forRange` and `while` thread it through a loop |
 | `Std.State` | an effect: `get`, `put`, `modify`, and `runState` from a first state |
 | `Std.Yield` | an effect: `yield`, `each`, and `collect` into a list |
+| `Std.Stream` | consumers and transformers of what is yielded: `toVec`, `toList`, `forEach`, `fold`, `sum`, `count`, `take`, `takeWhile`, `first`, `any`, `all`, `find`, `map`, `filter`; and producers, `range`, `repeat`, `iterate`, `ofList`, `ofVec` |
+| `Std.Random` | as Meadow's, SplitMix64: `withSeed` (the same numbers from the same seed), `withSeedFrom`, `between`, `nextFloat`, `bool`, `choose`, `shuffle`, and the pure `step`, `seed`, `stepBetween`, `stepFloat` |
+| `Std.Time` | as Meadow's: `withClock`, `withTickingClock`, `timed`, `elapsed`, `time`, `timeRuns`; units (`seconds`, `millisPerDay`, ...); `formatNanos`, `formatMillis`, `formatDuration`; dates in UTC, `utc` (a `DateTime`), `formatTimestamp`, `formatDate`, `formatReadable`, `formatAgo`, `monthName`, `weekdayName` |
+| `Std.Test` | assertions, the `Test` effect: `assert`, `assertEq`, `assertNeq`, `assertTrue`, `assertFalse`, `refuteThat`, `failWith`, and `didFail`, `failure`, `assertFails` to check that something fails |
 
 A module and its type share a name, so its constructors are
 `Std.Num.Nat.Nat.Z`, or bare after `use Std.Num.Nat.Nat.*`.
@@ -2521,18 +3135,16 @@ A module and its type share a name, so its constructors are
 3 : Int
 ```
 
-Grades run through it all. The library is a [linear
-module](#linear-modules), so it can hold resources: a function takes what
-it uses once at `1`, what it may drop or only looks at with `[0..1]`, and
-what it uses many times with `[]`. `length` drops the elements, so takes
-the list with `[0..1]`. A function you hand it fits whatever grades its
-own arguments have: `map` calls its function for each element, so takes
-it with `[]`, and gives it each element at a grade of its own, `r`, which
-is the grade `map` takes the list with. Mapping a function that uses its
-argument once takes the list once, and its cells are freed as `map` goes;
-mapping one that says nothing of its argument (`[]`) takes the list with
-`[]`. A fold hands what its function made back to that function, so takes
-it, the start and the list with `[]`; [Working out
+Grades run through it all, [worked out](#worked-out-grades) from each
+definition: a function takes what it uses once at `1`, what it may drop or
+only looks at with `[0..1]`, and what it uses many times with `[]`.
+`length` drops the elements, so takes the list with `[0..1]`; `sum` adds
+each, so takes it with `1`; `append` takes both its lists with `1`. A
+function you hand it fits wherever its grades are within those asked for:
+`map` calls its function for each element, so takes it with `[]`, and the
+function it is given may use its argument any number of times, so the list
+is taken with `[]` too. A fold hands what its function made back to that
+function, so takes it, the start and the list with `[]`; [Working out
 grades](#working-out-grades) shows why.
 
 Where a type can say more, it does. A vector's length is in its type, so
@@ -2547,7 +3159,7 @@ use Std.Num.Fin.Fin.*
 20 : Int
 > zip (Cons 1 Nil) (Cons 2 (Cons 3 Nil))
 Error: type mismatch
-   │ ╰── expected Vec (S Z) ?8, but this has type Vec (S (S Z)) Int
+   │ ╰── expected Vec (S Z) ?0, but this has type Vec (S (S Z)) Int
 Error: unsolved metavariable
 ```
 
@@ -2579,7 +3191,7 @@ use Std.Num.Nat.Nat.*
 use Std.Eq (Eq)
 use Std.Dec (isYes)
 > plusComm
-: (n : Nat) -> (m : Nat) -> Eq Nat (plus n m) (plus m n)
+: (n : [1] Nat) -> (m : Nat) -> Eq Nat (plus n m) (plus m n)
 > three : Eq (plus (S Z) (S (S Z))) (plus (S (S Z)) (S Z))
 three = plusComm (S Z) (S (S Z))
 
@@ -2614,7 +3226,7 @@ Exceptions, state and generators are effects with handlers, as in
 > safeDiv : Int -> Int -> Int ! Exn String
 safeDiv a b = if b == 0 then throw "divide by zero" else a / b
 
-safeDiv : Int -> Int -> Int ! Exn String
+safeDiv : (_ : [0..1] Int) -> Int -> Int ! Exn String
 > toResult (\(u : ()) -> safeDiv 7 0)
 Err "divide by zero" : Result String Int
 ```
@@ -2668,11 +3280,11 @@ duplicates it, can be written honestly by asking for a box:
 > drop : {a : Type} -> a [0] -> ()
 drop [x] = ()
 
-drop : {a : Type} -> a [0] -> ()
+drop : {a : Type} -> (_ : [1] a [0]) -> ()
 > copy : Int [2] -> Int
 copy [x] = x + x
 
-copy : Int [2] -> Int
+copy : (_ : [1] Int [2]) -> Int
 > (\[d] x -> x) : {t : Type} -> t [0..1] -> t -> t
 : {t : Type} -> t [0..1] -> t -> t
 ```
@@ -2695,7 +3307,7 @@ once and `y` twice — so it needs `x` 3 times and `y` 6 times:
 > foo : Int [3] -> Int [6] -> Int [3]
 foo [x] [y] = [x + y + y]
 
-foo : Int [3] -> Int [6] -> Int [3]
+foo : (_ : [1] Int [3]) -> Int [6] -> Int [3]
 ```
 
 Give it an `Int [5]` for `y` instead and the arithmetic no longer works
@@ -2838,7 +3450,7 @@ used `s * r` times.
 > compose : {a b c : Type} -> {r s : Grade} -> (f : (y : [s] b) -> c) -> (g : [s] ((x : [r] a) -> b)) -> (x : [s * r] a) -> c
 compose f g x = f (g x)
 
-compose : {a : Type} -> {b : Type} -> {c : Type} -> {r : Grade} -> {s : Grade} -> (f : (y : [s] b) -> c) -> (g : [s] (x : [r] a) -> b) -> (x : [r * s] a) -> c
+compose : {a : Type} -> {b : Type} -> {c : Type} -> {r : Grade} -> {s : Grade} -> (f : [1] (y : [s] b) -> c) -> (g : [s] (x : [r] a) -> b) -> (x : [r * s] a) -> c
 ```
 
 `twice f x = f (f x)` hands `f x` to `f`: so `f` is used once outside and
@@ -3032,7 +3644,7 @@ Error: unsolved metavariable
    │    ╰───── could not infer the type of the binder x
    │ Help: add a type annotation to pin it down
 
-: (x : ?6) -> ?6
+: (x : ?0) -> ?0
 ```
 
 There is no automatic generalisation: `\x -> x` doesn't become the
@@ -3077,59 +3689,65 @@ Error: unsolved hole
 
 Holes work in types too: `let x : _ = 5 in x` finds `_ = Int`.
 
+### Goals
+
+A hole the checker fills in is one thing; a part of the program you have
+not written yet is another. Write `?name` for that: a *goal*, as Idris and
+Agda have them. The checker tells you the type wanted there and what is
+in scope, each variable with its type and grade, as a warning, and the
+rest of the program still checks, so you can work around it:
+
+```
+> pick : (b : Bool) -> (x : Int) -> Int
+pick b x = if b then x else ?other
+
+Warning: goal ?other
+   │ ╰── ?other : Int
+pick : (b : Bool) -> (x : Int) -> Int
+> pick True 3
+3 : Int
+```
+
+What a goal will use is not known yet, so no variable is held to its grade
+over one. A program that reaches a goal stops there, saying `reached the goal
+?other` on standard error, with exit status 1.
+
 ## How programs run
 
-A program that checks is lowered to **AxCut**, a small intermediate
-language based on the sequent calculus (Schuster, Müller, Ostermann &
-Brachthäuser, *Compiling Classical Sequent Calculus to Stock Hardware*,
-2025), and run on an abstract machine. Evaluation is call-by-value: a
-function's argument is computed before the call, and a `let`'s value
-before its body.
+A program that checks is lowered to **Cut**, the intermediate language
+Idyll shares with [Meadow](https://github.com/meadow-lang/meadow), and
+handed to Meadow's runtimes to run (`meadow cut`): **Glade**, its
+bytecode, which starts at once and runs the REPL and debug builds, and
+**Silo**, which compiles to native code, for release builds. Idyll has no
+runtime of its own; what a program does with memory and with the world is
+Meadow's. So running a program needs `meadow` installed (`meadowup`
+installs it; `IDYLL_MEADOW` names another).
 
-Pass `--axcut` to see what your program became. This is
-`(\(x : Int) -> ([x] : Int [1])) 5`:
-
-```
-define main : () =
-  new f_0 = (){
-    apply(x_1, k_2) ⇒
-      substitute [k_2 ↦ k_2, x_1 ↦ x_1];
-      let box_3 = box(x_1);
-      substitute [box_3 ↦ box_3, k_2 ↦ k_2];
-      invoke k_2 ret };
-  extern lit 5 { (n_4) ⇒
-  new k_5 = (){
-    ret(r_6) ⇒
-      extern halt(r_6) {} };
-  substitute [n_4 ↦ n_4, k_5 ↦ k_5, f_0 ↦ f_0];
-  invoke f_0 apply }
-
-[5] : Int [1]
-```
-
-There are no expressions in AxCut, only statements, and no call stack. A
-function is an object with one method, `apply(x, k)`, where `k` is where
-to send the result; a continuation is an object with one method,
-`ret(r)`. Calling and returning are the same statement, `invoke`. `let`
-builds a record and `switch` opens one, which is all a box is at run time
-— its grade has done its work by then.
-
-The variables in scope form an ordered list, and `substitute` is the only
-statement that may reorder, copy or drop them; everything else uses up
-what it names, from the end. (On real hardware the list is the registers,
-and a `substitute` is a move.) You can see Idyll's linearity in it: above,
-no variable is ever copied. Where a program uses a variable twice, the
-copy is explicit:
+Cut is based on the sequent calculus, as AxCut is (Schuster, Müller,
+Ostermann & Brachthäuser, *Compiling Classical Sequent Calculus to Stock
+Hardware*, 2025). Evaluation is call-by-value: a function's argument is
+computed before the call, and a `let`'s value before its body. Pass
+`--cut` to see what your program became, or use `:ir cut` in the REPL.
+This is `double n = n * 2`:
 
 ```
-substitute [b_4 ↦ b_4, k_5 ↦ k_5, f_1 ↦ f_1, b_4' ↦ b_4];
-let box_6 = box(b_4');
+def idyll:Main/double (n_1: i64; k_2: ptr) =
+  prim mul(n_1, 2; k_2)
 ```
 
-A recursive definition becomes a labelled block of its own, and a call to
-it a `jump`. A call in tail position passes its continuation along
-instead of making a new one, so a loop runs in constant space — for as
-long as it is allowed to (see [Recursion](#recursion)).
+There are no expressions in Cut, only statements. A function takes its
+arguments and a continuation, `k`, where to send its result, and a
+statement cuts a value against a continuation (`<v | k>`), calls a
+definition, or does a primitive. `μ̃ x. s` is a continuation that names the
+value it is given `x` and goes on with `s`. Every value says how it is
+represented — an `i64`, a `str`, a `ptr` to something on the heap — and a
+box, whose grade has done its work by then, is only a heap object.
+
+A top-level definition with no parameters is a `val`, computed once,
+before the program starts; one with parameters is a `def`. A program's
+effects are Cut effects: an operation no handler of the program's own
+takes is done by the runtime, as the Meadow operation it is declared to
+be (`Console.writeOutput`, `Process.argv`, ...).
 
 ### Erasure
 
@@ -3138,96 +3756,32 @@ Whatever has grade `0` is not just unused at run time, it is not
 argument, for one — is never evaluated, and a grade-`0` box is never
 filled. That is why such an argument has to be pure (see
 [Types are total](#types-are-total)): its effects would never happen.
+Nothing erased reaches Cut at all.
 
 ```
 > (\(n : [0] Int) -> 5) (6 * 7)
 5 : Int
 ```
 
-### Memory
-
-There is no garbage collector. `let` and `new` take a block of memory,
-and `switch` and `invoke` give it back, so in linear code every block has
-one owner and is recycled the moment it is opened: a continuation is
-allocated by a call and freed by the return, which is a stack's behaviour
-without a stack.
-
-Sharing is where **reference counts** come in, and only there. A
-`substitute` that copies a variable adds to its block's count, one that
-drops a variable takes away from it, and *nothing else ever touches a
-count* — so a program that uses everything linearly never writes one.
-Opening a block then checks whether anyone else holds it: if not its
-contents simply move out; if so they are copied, and shared in turn.
-Dropping is lazy: a dead block's contents are dealt with only when the
-block is reused, so discarding a large structure costs the same as
-discarding a small one. Counting is enough — there is nothing for it to
-miss — because values are never modified, so they can't form cycles.
-
-`--axcut` also reports what a run did. A linear program, then one that
-passes a box twice:
-
-```
-memory: 3 blocks acquired (2 fresh, 1 reused), at most 2 at once; 0 shares, 0 erases, 3 of 3 releases unique
-memory: 4 blocks acquired (3 fresh, 1 reused), at most 3 at once; 1 shares, 0 erases, 4 of 5 releases unique
-```
-
-Your grades and this bookkeeping are checked against each other: a
-variable is never copied more often than its grade allows, so a linear
-variable is never copied at all. What a grade can't promise is that the
-*value* a linear variable holds is unshared — a caller may hand the same
-box to two linear parameters — which is why opening a block looks at its
-count instead of trusting the type.
-
 ### Compiling to native code
 
-With [clang](https://clang.llvm.org) installed, the compiler's `-o` compiles
-a program to an executable, by way of LLVM (in `compiler/`):
+A release build is native code: `idyll run --release` in a package builds
+it with Silo and runs the executable, and `idyll build --release` leaves it
+under `target/release/native/`. For a lone file, the compiler's `-o` does
+the same (in `compiler/`), and its `--release` builds it and runs it at
+once:
 
 ```sh
 cargo run --release -- program.idl -o program.exe
 ./program.exe
 ```
 
-`--emit-llvm out.ll` writes the LLVM IR instead (or as well), and `--axcut`
-shows the AxCut it is made from. Memory is managed exactly as
-[above](#memory), by a few dozen lines of C that are linked in and inlined.
-Two things are done differently from the interpreter, both for speed:
+A program run for its `main` prints what `main` prints and no answer at
+all.
 
-* **Inlining.** A function that is known where it is called — written
-  there, bound by a `let`, or a definition that isn't recursive — is
-  replaced by its body if it is used once or is small, and a constructor
-  that is matched on straight away is never built. `id (id 7)` compiles to
-  the number 7. What is left goes to LLVM, which inlines as it sees fit.
-* **Continuations live on the machine stack.** In AxCut, where a call
-  returns to is an object like any other, and the interpreter keeps it on
-  the heap. But it is linear, and is only ever passed down to a call or
-  returned to — a stack frame's life. So compiled code calls with `call`
-  and returns with `ret`, and what the continuation closed over stays in
-  the caller's frame. A call in tail position is a *guaranteed* tail call,
-  so a loop runs in constant space however long it goes on; other recursion
-  takes a frame per call, from a stack of 1 GB (on Windows and macOS, where
-  the linker decides; elsewhere it is `ulimit -s`'s).
-
-  Except in a program with a handler. A handler's clause is given the
-  rest of the computation as a resumption, `k`, which it may call later,
-  more than once, or never — after the stack it would come back to has
-  gone. So a program with a handler is compiled as the interpreter runs
-  it: every continuation is on the heap, every call is a tail call, and the
-  handlers in force are a stack the runtime keeps. An operation finds the
-  nearest handler with a clause for it, and takes that handler and the
-  ones above it out of force into the resumption, which puts them back
-  when it is called. That costs an allocation per call that isn't a tail
-  call, which is why only programs with handlers pay it.
-
-One thing differs from the REPL: only an `Int`, `Bool`, `String` or `()`
-answer is printed; anything else prints `<value>`. A program run for its
-`main` prints what `main` prints and no answer at all. The world's
-operations, which the runtime handles, compile to calls into it, unless a
-handler of the program's own takes them first.
-
-`bench/run.sh` compares compiled Idyll with other languages on three small
-programs; `bench/README.md` has the numbers, and what they do and don't
-mean.
+`bench/run.sh` compares Idyll with other languages on three small
+programs; `bench/README.md` has the numbers, measured when Idyll still had
+a native back end of its own, and what they do and don't mean.
 
 ## Reading error messages
 

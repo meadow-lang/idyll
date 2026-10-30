@@ -1,0 +1,12 @@
+-- | -- handlers that take part of the console and pass the rest on: what is read given by withInput, what is written kept by withOutput
+-- | use Std.Console (println, prompt, withInput, withOutput)
+-- | use Std.Collections.Vector as V
+-- | 
+-- | greet : () -> Int ! Console
+-- | greet u = case prompt "name: " of
+-- |   Just name -> let w = println ("hello, " ++ name) in 1
+-- |   Nothing -> 0
+-- | 
+-- | (withOutput (\(u : ()) -> withInput (V.fromList ("ada" :: Nil)) greet), withOutput (\(u : ()) -> withInput V.empty greet))
+answer: ((1, "name: hello, ada\n"), 0, "name: ")
+exit: 0

@@ -1,0 +1,116 @@
+-- What compiling a package (or one part of a package) makes, for those
+-- that depend on it: `CompiledPackage` in
+-- `compiler/idyllic-typecheck/src/packages.rs`. A package is checked
+-- against its dependencies' compiled packages, never their sources, and a
+-- program is linked from every package it uses.
+--
+-- Everything here is `Reflect`, so that a build can keep it between runs:
+-- the types are Meadow data, with no tuples (Meadow's `Reflect` has none),
+-- and Core is plain data already.
+
+use Idyll.Core (Core)
+use Idyll.Rename (PackageNames)
+use Idyll.Tc (CtorInfo, EffectInfo, OpInfo)
+use Std.Macro (Reflect)
+
+-- How many arguments a recursive definition takes before it can compute,
+-- and its case tree under them, closed: what unfolds in types.
+@derive(Reflect)
+@pub data Unfold = Unfold Int Core | OnCase Int Core
+
+-- A constant another package may mention: its unique, its name, its type,
+-- its value if the types may see it, and how it unfolds if it is a
+-- recursive definition that does.
+@derive(Reflect)
+@pub data Constant = Constant Int String Core (Maybe Core) (Maybe Unfold)
+
+-- A top-level definition with a slot: its unique, its name, its value.
+@derive(Reflect)
+@pub data TopLet = TopLet Int String Core
+
+-- A recursive definition, for running the program: its unique, its name,
+-- how many slots the context it was defined in had, its body, and whether
+-- it was defined inside another definition.
+@derive(Reflect)
+@pub data RecDef = RecDef Int String Int Core Bool
+
+-- A name's symbol: its unique, its package, and its path there.
+@derive(Reflect)
+@pub data Symbol = Symbol Int String String
+
+@derive(Reflect)
+@pub data CtorEntry = CtorEntry Int CtorInfo
+
+@derive(Reflect)
+@pub data EffectEntry = EffectEntry Int EffectInfo
+
+@derive(Reflect)
+@pub data OpEntry = OpEntry Int OpInfo
+
+-- A data type or native type and its constructors; which of its
+-- parameters it uses strictly positively; a `@seq` type's `nil` and `cons`.
+@derive(Reflect)
+@pub data DataEntry = DataEntry Int [Int]
+
+@derive(Reflect)
+@pub data Positive = Positive Int [Bool]
+
+@derive(Reflect)
+@pub data SeqEntry = SeqEntry Int Int Int
+
+-- A native: its unique, which it is, how many erased arguments come first,
+-- and whether it is a type.
+@derive(Reflect)
+@pub data NativeEntry = NativeEntry Int String Int Bool
+
+-- An instance with no parameters, and those of its fields that are a
+-- constant or a primitive.
+@derive(Reflect)
+@pub data Fields = Fields Int [Maybe Core]
+
+-- The answer of a package with a body: the body, and its type.
+@derive(Reflect)
+@pub data Body = Body Core Core
+
+-- A package compiled: see `CompiledPackage`. Its name; the uniques it named
+-- its own things with; what its modules give; its constants; its data
+-- types, constructors, effects, operations and natives; where its own
+-- definitions start in its context, those definitions in order, its
+-- recursive ones, and its body; whether that body is `main ()`; its
+-- symbols; what its metavariables were solved with; its hints, traits and
+-- instances' fields.
+@derive(Reflect)
+@pub record Compiled = {
+  name : String,
+  low : Int,
+  high : Int,
+  names : PackageNames,
+  constants : [Constant],
+  ctors : [CtorEntry],
+  datas : [DataEntry],
+  positive : [Positive],
+  seqs : [SeqEntry],
+  effects : [EffectEntry],
+  ops : [OpEntry],
+  natives : [NativeEntry],
+  base : Int,
+  lets : [TopLet],
+  recDefs : [RecDef],
+  body : Maybe Body,
+  main : Bool,
+  symbols : [Symbol],
+  metaSolutions : [Maybe Core],
+  hints : [Int],
+  traits : [Int],
+  instanceFields : [Fields],
+  -- which fields of each constructor a type may read off a known
+  -- instance (`Checker::opened`)
+  opens : [OpensEntry]
+}
+
+-- A constructor's fields a type may read off a known instance.
+@derive(Reflect)
+@pub data OpensEntry = OpensEntry Int [Bool]
+
+-- Whether `u` is one of `c`'s own.
+@pub fun owns (c : Compiled) (u : Int) : Bool = u >= c.low and u < c.high

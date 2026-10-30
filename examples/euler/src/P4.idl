@@ -1,0 +1,23 @@
+-- Problem 4: the largest palindrome made from the product of two 3-digit
+-- numbers.
+
+-- The digits of `n` the other way round, after those of `acc`.
+reversed : (n : Int) -> (acc : Int) -> Int ! Div
+reversed n acc = if n == 0 then acc else reversed (n / 10) (acc * 10 + n % 10)
+
+isPalindrome : (n : Int) -> Bool ! Div
+isPalindrome n = reversed n 0 == n
+
+-- The largest palindrome `a * b` with `b` no more than `a`, counting both
+-- down: once a product is no more than the best so far, no smaller `b`
+-- can beat it.
+search : (a : Int) -> (b : Int) -> (best : Int) -> Int ! Div
+search a b best
+  | a < 100 = best
+  | b < 100 = search (a - 1) (a - 1) best
+  | a * b < best + 1 = search (a - 1) (a - 1) best
+  | isPalindrome (a * b) = search (a - 1) (a - 1) (a * b)
+  | otherwise = search a (b - 1) best
+
+answer : Int ! Div
+answer = search 999 999 0

@@ -1,0 +1,544 @@
+-- JSON, as Meadow's `Std.Json`: parsed and written out.
+--
+--   use Std.Json as J
+--
+--   case J.parse "{\"a\": [1, 2, 3]}" of
+--     Ok v -> J.render v
+--     Err e -> e
+--
+-- The grammar is written with `Std.String.Parse`, following RFC 8259 but for
+-- one gap noted at `stringLit`; it says what is wrong with text that is not
+-- JSON. Text is read first by a scanner over its bytes, written as loops,
+-- which answers only what the grammar would and gives up wherever it is not
+-- sure, to the grammar. Writing a value out is the inverse of reading it.
+
+use Std.String as S
+use Std.String.Parse as P
+use Std.String.Parse (Parser)
+use Std.String.Parse.Char as C
+use Std.String.Parse.Lexer as L
+use Std.Collections.Vector (Vector)
+use Std.Collections.Vector as V
+use Std.Tuple (fst, snd)
+
+-- --- the tree ----------------------------------------------------------------
+
+-- Numbers are `Int` and `Float` apart, rather than JSON's one number type:
+-- widening every integer to a float would lose what no one asked to lose.
+@pub
+@derive(Debug, PartialEq)
+data Json = Null | Bool Bool | Int Int | Float Float | String String | Array (Vector Json) | Object (Vector (String, Json))
+
+-- (its other constructors are named as types are, so are written `Json.Int`)
+use Json (Null, Array, Object)
+
+-- --- making ------------------------------------------------------------------
+
+@pub
+jNull : (u : ()) -> Json
+jNull u = Null
+
+@pub
+jBool : (b : Bool) -> Json
+jBool b = Json.Bool b
+
+@pub
+jInt : (n : Int) -> Json
+jInt n = Json.Int n
+
+@pub
+jString : (s : String) -> Json
+jString s = Json.String s
+
+@pub
+jArray : (xs : Vector Json) -> Json
+jArray xs = Array xs
+
+@pub
+jObject : (fields : Vector (String, Json)) -> Json
+jObject fields = Object fields
+
+-- --- looking -----------------------------------------------------------------
+
+@pub
+isNull : (v : Json) -> Bool
+isNull Null = True
+isNull other = False
+
+@pub
+asBool : (v : Json) -> Maybe Bool
+asBool (Json.Bool b) = Just b
+asBool other = Nothing
+
+@pub
+asInt : (v : Json) -> Maybe Int
+asInt (Json.Int n) = Just n
+asInt other = Nothing
+
+-- A number, an integer as a float too.
+@pub
+asFloat : (v : Json) -> Maybe Float
+asFloat (Json.Float x) = Just x
+asFloat (Json.Int n) = Just (toFloat n)
+asFloat other = Nothing
+
+@pub
+asString : (v : Json) -> Maybe String
+asString (Json.String s) = Just s
+asString other = Nothing
+
+@pub
+asArray : (v : Json) -> Maybe (Vector Json)
+asArray (Array xs) = Just xs
+asArray other = Nothing
+
+@pub
+asObject : (v : Json) -> Maybe (Vector (String, Json))
+asObject (Object fs) = Just fs
+asObject other = Nothing
+
+-- What `key` holds, if this is an object with it.
+@pub
+get : (key : String) -> (v : Json) -> Maybe Json
+get key (Object fields) = case V.find (\(f : (String, Json)) -> fst f == key) fields of
+  Just f -> Just (snd f)
+  Nothing -> Nothing
+get key other = Nothing
+
+-- The element at `i`, if this is an array with one.
+@pub
+index : (i : Int) -> (v : Json) -> Maybe Json
+index i (Array xs) = V.get xs i
+index i other = Nothing
+
+-- A chain of keys followed: `path #["a", "b"] v` is `v.a.b`.
+@pub
+path : (keys : Vector String) -> (v : Json) -> Maybe Json
+path keys v = V.foldl (\(acc : Maybe Json) (k : String) -> case acc of
+  Just x -> get k x
+  Nothing -> Nothing) (Just v) keys
+
+-- --- parsing -----------------------------------------------------------------
+
+-- `Ok` the value, or `Err` a line saying at which byte and what went wrong.
+-- `parseSpanned` gives the span of the text instead.
+@pub
+parse : (text : String) -> Result String Json
+parse text = case quick text of
+  Just v -> Ok v
+  Nothing -> case P.runParser (document ()) text of
+    Ok v -> Ok v
+    Err e -> Err (P.showError e)
+
+-- `Ok` the value, or `Err` the span of the text the error is about and what
+-- went wrong there, for whoever shows it to point at.
+@pub
+parseSpanned : (text : String) -> Result ((Int, Int), String) Json
+parseSpanned text = case quick text of
+  Just v -> Ok v
+  Nothing -> P.parse (document ()) text
+
+-- --- parsing, quickly --------------------------------------------------------
+
+-- A value and where it ended, or nothing the scanner will vouch for.
+data Scan = Got Json Int | Lost
+
+use Scan.*
+
+-- A string's text and where it ended.
+data Text = Read String Int | Unread
+
+use Text.*
+
+-- Past spaces, tabs and line ends; anything else the grammar calls a space
+-- is left for the grammar.
+@terminating
+skipSpace : (s : String) -> (n : Int) -> (i : Int) -> Int
+skipSpace s n i =
+  if i < n then (let c = stringByteAt s i in if isSpaceByte c then skipSpace s n (i + 1) else i)
+  else i
+
+isSpaceByte : (c : Int) -> Bool
+isSpaceByte c = if c == 32 then True else if c == 10 then True else if c == 13 then True else c == 9
+
+quick : (s : String) -> Maybe Json
+quick s =
+  let n = stringByteLength s in
+  case scanValue s n (skipSpace s n 0) of
+    Got v i -> if skipSpace s n i == n then Just v else Nothing
+    Lost -> Nothing
+
+@terminating
+scanValue : (s : String) -> (n : Int) -> (i : Int) -> Scan
+scanValue s n i =
+  if i >= n then Lost
+  else
+    let c = stringByteAt s i in
+    if c == 34 then textScanned (scanText s n (i + 1) (i + 1) Nil)
+    else if c == 123 then scanObject s n (skipSpace s n (i + 1))
+    else if c == 91 then scanArray s n (skipSpace s n (i + 1))
+    else if c == 45 then scanNumber s n i
+    else if c >= 48 then (if c <= 57 then scanNumber s n i else scanWords s n i c)
+    else Lost
+
+scanWords : (s : String) -> (n : Int) -> (i : Int) -> (c : Int) -> Scan
+scanWords s n i c =
+  if c == 116 then scanWord s n i "true" (Json.Bool True)
+  else if c == 102 then scanWord s n i "false" (Json.Bool False)
+  else if c == 110 then scanWord s n i "null" Null
+  else Lost
+
+textScanned : (t : Text) -> Scan
+textScanned (Read text j) = Got (Json.String text) j
+textScanned Unread = Lost
+
+scanWord : (s : String) -> (n : Int) -> (i : Int) -> (word : String) -> (v : Json) -> Scan
+scanWord s n i word v =
+  let j = i + stringByteLength word in
+  if j <= n then (if stringSlice s i j == word then Got v j else Lost) else Lost
+
+-- The text of a string, from just past its opening quote: `from` is where
+-- the piece being read began, `pieces` what came before it, last first.
+@terminating
+scanText : (s : String) -> (n : Int) -> (from : Int) -> (i : Int) -> (pieces : List String) -> Text
+scanText s n from i pieces =
+  if i >= n then Unread
+  else
+    let c = stringByteAt s i in
+    if c == 34 then Read (joined (stringSlice s from i :: pieces)) (i + 1)
+    else if c == 92 then scanEscape s n from i pieces
+    else scanText s n from (i + 1) pieces
+
+joined : (pieces : List String) -> String
+joined (p :: Nil) = p
+joined pieces = S.concatAll (reversed pieces Nil)
+
+@terminating
+reversed : {a : Type} -> (xs : List a) -> (acc : List a) -> List a
+reversed Nil acc = acc
+reversed (x :: rest) acc = reversed rest (x :: acc)
+
+-- An escape at `i`, a backslash: `\uXXXX` (or two of them, a pair of
+-- surrogates, for a character past `￿`; half a pair is not read), or
+-- one of `unescaped`'s.
+@terminating
+scanEscape : (s : String) -> (n : Int) -> (from : Int) -> (i : Int) -> (pieces : List String) -> Text
+scanEscape s n from i pieces =
+  if i + 1 >= n then Unread
+  else if stringByteAt s (i + 1) == 117 then
+    let hi = hex4 s n (i + 2) in
+    if hi < 0 then Unread
+    else if hi >= 55296 then (if hi <= 56319 then scanPair s n from i pieces hi else (if hi <= 57343 then Unread else scanText s n (i + 6) (i + 6) (codeString hi :: stringSlice s from i :: pieces)))
+    else scanText s n (i + 6) (i + 6) (codeString hi :: stringSlice s from i :: pieces)
+  else case unescaped (stringByteAt s (i + 1)) of
+    Just e -> scanText s n (i + 2) (i + 2) (e :: stringSlice s from i :: pieces)
+    Nothing -> Unread
+
+@terminating
+scanPair : (s : String) -> (n : Int) -> (from : Int) -> (i : Int) -> (pieces : List String) -> (hi : Int) -> Text
+scanPair s n from i pieces hi =
+  let lo = if i + 7 < n then (if stringByteAt s (i + 6) == 92 then (if stringByteAt s (i + 7) == 117 then hex4 s n (i + 8) else 0 - 1) else 0 - 1) else 0 - 1 in
+  if lo < 56320 then Unread
+  else if lo > 57343 then Unread
+  else scanText s n (i + 12) (i + 12) (codeString (65536 + (hi - 55296) * 1024 + (lo - 56320)) :: stringSlice s from i :: pieces)
+
+codeString : (k : Int) -> String
+codeString k = charsToString (arrayFromList (charFromCode k :: Nil))
+
+-- The number the four hex digits of `s` at `i` write, or -1.
+hex4 : (s : String) -> (n : Int) -> (i : Int) -> Int
+hex4 s n i =
+  if i + 4 > n then 0 - 1
+  else V.foldl (\(acc : Int) (k : Int) -> let d = hexValue (stringByteAt s (i + k)) in if acc < 0 then 0 - 1 else if d < 0 then 0 - 1 else acc * 16 + d) 0 (V.range 0 4)
+
+hexValue : (c : Int) -> Int
+hexValue c =
+  if c >= 48 then (if c <= 57 then c - 48 else hexLetter c)
+  else 0 - 1
+
+hexLetter : (c : Int) -> Int
+hexLetter c =
+  if c >= 97 then (if c <= 102 then c - 87 else 0 - 1)
+  else if c >= 65 then (if c <= 70 then c - 55 else 0 - 1)
+  else 0 - 1
+
+-- What the character after a backslash stands for: `escapes`'.
+unescaped : (c : Int) -> Maybe String
+unescaped c =
+  if c == 34 then Just (codeString 34)
+  else if c == 92 then Just (codeString 92)
+  else if c == 47 then Just "/"
+  else if c == 110 then Just (codeString 10)
+  else if c == 114 then Just (codeString 13)
+  else if c == 116 then Just (codeString 9)
+  else if c == 98 then Just (codeString 8)
+  else if c == 102 then Just (codeString 12)
+  else Nothing
+
+isDigitByte : (c : Int) -> Bool
+isDigitByte c = if c >= 48 then c <= 57 else False
+
+@terminating
+digitsEnd : (s : String) -> (n : Int) -> (i : Int) -> Int
+digitsEnd s n i = if i < n then (if isDigitByte (stringByteAt s i) then digitsEnd s n (i + 1) else i) else i
+
+@terminating
+digitsValue : (s : String) -> (i : Int) -> (stop : Int) -> (acc : Int) -> Int
+digitsValue s i stop acc = if i == stop then acc else digitsValue s (i + 1) stop (acc * 10 + (stringByteAt s i - 48))
+
+-- Whether `c` could go on a number: a fraction, an exponent, a sign.
+numberMore : (c : Int) -> Bool
+numberMore c = if c == 46 then True else if c == 101 then True else if c == 69 then True else if c == 43 then True else c == 45
+
+@terminating
+numberEnd : (s : String) -> (n : Int) -> (i : Int) -> Int
+numberEnd s n i =
+  if i < n then (let c = stringByteAt s i in if numberMore c then numberEnd s n (i + 1) else if isDigitByte c then numberEnd s n (i + 1) else i)
+  else i
+
+-- An integer of at most eighteen digits is added up here; anything else that
+-- starts as a number goes to the grammar's `number`, by itself.
+scanNumber : (s : String) -> (n : Int) -> (i : Int) -> Scan
+scanNumber s n i =
+  let negative = stringByteAt s i == 45 in
+  let start = if negative then i + 1 else i in
+  let stop = digitsEnd s n start in
+  if stop == start then Lost
+  else if (if stop < n then numberMore (stringByteAt s stop) else False) then byGrammar s n i
+  else if stop - start > 18 then byGrammar s n i
+  else let v = digitsValue s start stop 0 in Got (Json.Int (if negative then 0 - v else v)) stop
+
+byGrammar : (s : String) -> (n : Int) -> (i : Int) -> Scan
+byGrammar s n i =
+  let j = numberEnd s n i in
+  case P.runParser (P.thenSkip (number ()) P.eof) (stringSlice s i j) of
+    Ok v -> Got v j
+    Err e -> Lost
+
+-- From just past `[` and any space after it.
+@terminating
+scanArray : (s : String) -> (n : Int) -> (i : Int) -> Scan
+scanArray s n i = if i < n then (if stringByteAt s i == 93 then Got (Array V.empty) (i + 1) else scanItems s n i V.empty) else Lost
+
+@terminating
+scanItems : (s : String) -> (n : Int) -> (i : Int) -> (acc : Vector Json) -> Scan
+scanItems s n i acc = case scanValue s n i of
+  Lost -> Lost
+  Got v j ->
+    let k = skipSpace s n j in
+    if k >= n then Lost
+    else
+      let c = stringByteAt s k in
+      if c == 44 then scanItems s n (skipSpace s n (k + 1)) (V.pushBack acc v)
+      else if c == 93 then Got (Array (V.pushBack acc v)) (k + 1)
+      else Lost
+
+-- From just past `{` and any space after it.
+@terminating
+scanObject : (s : String) -> (n : Int) -> (i : Int) -> Scan
+scanObject s n i = if i < n then (if stringByteAt s i == 125 then Got (Object V.empty) (i + 1) else scanMembers s n i V.empty) else Lost
+
+@terminating
+scanMembers : (s : String) -> (n : Int) -> (i : Int) -> (acc : Vector (String, Json)) -> Scan
+scanMembers s n i acc =
+  if i >= n then Lost
+  else if stringByteAt s i != 34 then Lost
+  else case scanText s n (i + 1) (i + 1) Nil of
+    Unread -> Lost
+    Read key j ->
+      let k = skipSpace s n j in
+      if k >= n then Lost
+      else if stringByteAt s k != 58 then Lost
+      else afterMember s n key (scanValue s n (skipSpace s n (k + 1))) acc
+
+@terminating
+afterMember : (s : String) -> (n : Int) -> (key : String) -> (scanned : Scan) -> (acc : Vector (String, Json)) -> Scan
+afterMember s n key Lost acc = Lost
+afterMember s n key (Got v m) acc =
+  let q = skipSpace s n m in
+  if q >= n then Lost
+  else
+    let c = stringByteAt s q in
+    if c == 44 then scanMembers s n (skipSpace s n (q + 1)) (V.pushBack acc (key, v))
+    else if c == 125 then Got (Object (V.pushBack acc (key, v))) (q + 1)
+    else Lost
+
+-- --- the grammar -------------------------------------------------------------
+
+-- What sits between tokens: white space, and nothing else (JSON has no
+-- comments).
+sc : Parser String ()
+sc = L.space C.space1 (P.empty : Parser String ()) (P.empty : Parser String ())
+
+lexeme : {a : Type} -> (p : Parser String a) -> Parser String a
+lexeme p = L.lexeme sc p
+
+symbol : (text : String) -> Parser String String
+symbol text = L.symbol sc text
+
+-- These refer to each other in a circle, so each is a function, the parser
+-- made when it is run (`P.defer`).
+document : (u : ()) -> Parser String Json
+document u = P.defer (\(w : ()) -> P.thenSkip (P.skipThen sc (value ())) P.eof)
+
+@terminating
+value : (u : ()) -> Parser String Json
+value u = P.defer (\(w : ()) -> lexeme (P.choice (V.fromList (
+  P.mapTo Null (C.string "null") ::
+  P.mapTo (Json.Bool True) (C.string "true") ::
+  P.mapTo (Json.Bool False) (C.string "false") ::
+  P.map (\(t : String) -> Json.String t) (stringLit ()) ::
+  array () ::
+  object () ::
+  number () :: Nil))))
+
+@terminating
+array : (u : ()) -> Parser String Json
+array u = P.defer (\(w : ()) -> P.label "an array" (P.map (\(xs : Vector Json) -> Array xs) (P.between (symbol "[") (C.char ']') (P.sepBy (value ()) (symbol ",")))))
+
+@terminating
+object : (u : ()) -> Parser String Json
+object u = P.defer (\(w : ()) -> P.label "an object" (P.map (\(fs : Vector (String, Json)) -> Object fs) (P.between (symbol "{") (C.char '}') (P.sepBy (member ()) (symbol ",")))))
+
+@terminating
+member : (u : ()) -> Parser String (String, Json)
+member u = P.defer (\(w : ()) -> P.keep (value ()) (P.skip (symbol ":") (P.keep (lexeme (stringLit ())) (P.pure (\(k : String) (v : Json) -> (k, v))))))
+
+-- --- lexical -------------------------------------------------------------------
+
+-- A number: a minus maybe, digits, and a fraction and an exponent maybe. One
+-- with neither is an `Int`, one with either a `Float`.
+number : (u : ()) -> Parser String Json
+number u =
+  let minus = P.option False (P.mapTo True (C.char '-')) in
+  P.label "a number" (P.bind minus (\(negative : Bool) -> P.alt (floatOf negative) (integerOf negative)))
+
+floatOf : (negative : Bool) -> Parser String Json
+floatOf negative = P.map (\(x : Float) -> Json.Float (if negative then 0.0 - x else x)) L.float
+
+integerOf : (negative : Bool) -> Parser String Json
+integerOf negative = P.map (\(k : Int) -> Json.Int (if negative then 0 - k else k)) L.decimal
+
+-- A string. `\uXXXX` is read by the scanner (`scanText`); this, which a
+-- string reaches only when the scanner could not read it, has no rule for
+-- one.
+stringLit : (u : ()) -> Parser String String
+stringLit u =
+  let chars = P.skipThen (C.char '"') (P.manyTill (P.alt escape plainChar) (C.char '"')) in
+  P.label "a string" (P.map (\(cs : Vector Char) -> charsToString (V.toArray cs)) chars)
+
+plainChar : Parser String Char
+plainChar = P.satisfy (\(c : Char) -> if charCode c == 34 then False else charCode c != 92)
+
+escapeAs : (c : Char) -> (k : Int) -> Parser String Char
+escapeAs c k = P.mapTo (charFromCode k) (C.char c)
+
+escape : Parser String Char
+escape = P.skipThen (C.char (charFromCode 92)) (P.label "an escape" (P.choice (V.fromList (
+  escapeAs '"' 34 :: escapeAs (charFromCode 92) 92 :: escapeAs '/' 47 :: escapeAs 'b' 8 :: escapeAs 'f' 12 :: escapeAs 'n' 10 :: escapeAs 'r' 13 :: escapeAs 't' 9 :: Nil))))
+
+-- --- writing -----------------------------------------------------------------
+
+-- With no space or newline. A value's text is gathered a piece at a time,
+-- last first, and joined once.
+@pub
+render : (v : Json) -> String
+render v = S.concatAll (reversed (emit v Nil) Nil)
+
+@terminating
+emit : (v : Json) -> (out : List String) -> List String
+emit Null out = "null" :: out
+emit (Json.Bool b) out = (if b then "true" else "false") :: out
+emit (Json.Int n) out = S.fromInt n :: out
+emit (Json.Float x) out = showFloat x :: out
+emit (Json.String s) out = emitString s out
+emit (Array xs) out = "]" :: emitItems (V.toList xs) True ("[" :: out)
+emit (Object fs) out = "}" :: emitMembers (V.toList fs) True ("{" :: out)
+
+@terminating
+emitItems : (xs : List Json) -> (first : Bool) -> (out : List String) -> List String
+emitItems Nil first out = out
+emitItems (x :: rest) first out = emitItems rest False (emit x (if first then out else "," :: out))
+
+@terminating
+emitMembers : (fs : List (String, Json)) -> (first : Bool) -> (out : List String) -> List String
+emitMembers Nil first out = out
+emitMembers ((name, v) :: rest) first out = emitMembers rest False (emit v (":" :: emitString name (if first then out else "," :: out)))
+
+-- Two spaces a level, an element a line.
+@pub
+renderIndented : (v : Json) -> String
+renderIndented v = renderAt 0 v
+
+@terminating
+renderAt : (depth : Int) -> (v : Json) -> String
+renderAt depth (Array xs) =
+  if V.isEmpty xs then "[]"
+  else "[\n" ++ S.join ",\n" (V.toList (V.map (\(x : Json) -> pad (depth + 1) ++ renderAt (depth + 1) x) xs)) ++ "\n" ++ pad depth ++ "]"
+renderAt depth (Object fs) =
+  if V.isEmpty fs then "{}"
+  else "{\n" ++ S.join ",\n" (V.toList (V.map (\(f : (String, Json)) -> pad (depth + 1) ++ quote (fst f) ++ ": " ++ renderAt (depth + 1) (snd f)) fs)) ++ "\n" ++ pad depth ++ "}"
+renderAt depth v = render v
+
+pad : (depth : Int) -> String
+pad depth = S.repeat "  " depth
+
+-- --- escaping ----------------------------------------------------------------
+
+-- `s` in its quotes, as JSON writes it.
+@pub
+quote : (s : String) -> String
+quote s = S.concatAll (reversed (emitString s Nil) Nil)
+
+-- `s` in its quotes: itself between them where nothing in it is to be
+-- escaped, which is nearly always, and otherwise what lies between the bytes
+-- that are, each of those as its escape.
+emitString : (text : String) -> (out : List String) -> List String
+emitString text out = codeString 34 :: emitFrom text (stringByteLength text) 0 (codeString 34 :: out)
+
+@terminating
+emitFrom : (text : String) -> (n : Int) -> (from : Int) -> (out : List String) -> List String
+emitFrom text n from out =
+  let j = unsafeFrom text from n in
+  let out2 = if from == 0 then (if j >= n then text :: out else stringSlice text from j :: out) else (if j > from then stringSlice text from j :: out else out) in
+  if j >= n then out2
+  else emitFrom text n (j + 1) (escapeOf (stringByteAt text j) :: out2)
+
+-- Where the first byte of `s` at or after `i` that is to be escaped is: a
+-- quote, a backslash, or a control character, which no JSON string holds as
+-- it is.
+@terminating
+unsafeFrom : (s : String) -> (i : Int) -> (n : Int) -> Int
+unsafeFrom s i n =
+  if i >= n then n
+  else
+    let b = stringByteAt s i in
+    if b == 34 then i else if b == 92 then i else if b < 32 then i else unsafeFrom s (i + 1) n
+
+escapeOf : (c : Int) -> String
+escapeOf c =
+  let bs = codeString 92 in
+  if c == 34 then bs ++ codeString 34
+  else if c == 92 then bs ++ bs
+  else if c == 10 then bs ++ "n"
+  else if c == 13 then bs ++ "r"
+  else if c == 9 then bs ++ "t"
+  else if c == 8 then bs ++ "b"
+  else if c == 12 then bs ++ "f"
+  else bs ++ "u00" ++ hexDigit (c / 16) ++ hexDigit (c % 16)
+
+hexDigit : (d : Int) -> String
+hexDigit d = stringSlice "0123456789abcdef" d (d + 1)
+
+-- As Meadow's: the whole part and six digits of fraction, enough for what
+-- this module's own parser reads back.
+showFloat : (x : Float) -> String
+showFloat x =
+  let whole = floor x in
+  let frac = x - toFloat whole in
+  let scaled = floor ((if frac < 0.0 then 0.0 - frac else frac) * 1000000.0) in
+  S.fromInt whole ++ "." ++ padLeft 6 (S.fromInt scaled)
+
+@terminating
+padLeft : (width : Int) -> (s : String) -> String
+padLeft width s = if S.byteLength s >= width then s else padLeft width ("0" ++ s)

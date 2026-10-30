@@ -2,8 +2,9 @@
 //! so far in scope — is the compiler's business ([`Session`]); this module is
 //! the line editing, history, commands and the tour around it.  Much of it
 //! follows Meadow's REPL: Tab completion, the `Ctrl-F` finder, an entry that
-//! submits itself once it is whole, `:t`, `:module`, `:time` and a choice of
-//! machine.  Idyll adds proof search (`:prove`, and `?` in the finder) and
+//! submits itself once it is whole, `:t`, `:module` and `:time`.  An entry
+//! runs on Glade, Meadow's bytecode, as every Idyll program does: it is
+//! lowered to Cut and handed to `meadow cut`.  Idyll adds proof search (`:prove`, and `?` in the finder) and
 //! `:ir`, a pop-up of what a block of code is at each stage of the compiler.
 
 use idyll::complete;
@@ -12,7 +13,7 @@ use idyll::finder::{self, Catalog};
 use crate::tour::{self, Section, STEPS};
 use idyll::viewer::{self, Tab, Viewer};
 use idyllic::inspect;
-use idyllic::pipeline::{self, Evaluation, Mode, Options, Session};
+use idyllic::pipeline::{self, Mode, Options, Session};
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
@@ -42,10 +43,10 @@ const LOGO: &str = r"    ____    __      ____
 const COMMANDS: &[(&str, &str)] = &[
     (":t <expr>", "type-check without running (:type)"),
     (":module", "list what is defined so far (:browse)"),
+    (":goals", "the goals (?name) left in what is defined so far, each with its type and what is in scope"),
     (":find <query>", "search by name, or by a type like  Int -> String"),
     (":prove <type>", "look for a term of a type: proof search"),
     (":ir [stages] <code>", "what a block is at each stage of the compiler; :ir alone, the last entry"),
-    (":machine / :eval / :native", "run on the AxCut machine (the default), the reference interpreter, or LLVM"),
     (":time [<expr>]", "time every entry from now on, or stop; or time just this one"),
     (":reset", "forget every definition made so far"),
     (":tour", "a guided tour of the language, one step at a time"),
@@ -57,7 +58,7 @@ const COMMANDS: &[(&str, &str)] = &[
 
 /// Every command's name, for completion.
 const COMMAND_NAMES: &[&str] = &[
-    ":t", ":type", ":module", ":browse", ":find", ":prove", ":ir", ":machine", ":eval", ":native", ":time", ":reset",
+    ":t", ":type", ":module", ":browse", ":goals", ":find", ":prove", ":ir", ":time", ":reset",
     ":tour", ":next", ":back", ":try", ":help", ":quit",
 ];
 
@@ -305,27 +306,6 @@ pub enum Flow {
     Quit,
 }
 
-/// Which machine runs an entry.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Engine {
-    /// the AxCut machine, which checks memory as it goes
-    Machine,
-    /// the reference interpreter, `idyll-eval`: the specification
-    Eval,
-    /// compiled by LLVM and run as an executable (needs clang)
-    Native,
-}
-
-impl std::fmt::Display for Engine {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Engine::Machine => "AxCut machine",
-            Engine::Eval => "reference interpreter",
-            Engine::Native => "native compiler",
-        })
-    }
-}
-
 /// Styling for what the REPL itself prints, following the same colour
 /// decision as the diagnostics.
 struct Paint {
@@ -352,11 +332,11 @@ impl Paint {
 
 pub struct Repl {
     opts: Options,
-    axcut: bool,
+    /// print each entry's Cut before its result
+    cut: bool,
     paint: Paint,
     /// declarations stay in scope for later entries
     session: Session,
-    engine: Engine,
     /// report how long every entry took: `:time` turns it on and off
     timing: bool,
     /// the last entry that was code, for `:ir` with nothing after it
@@ -379,13 +359,12 @@ pub struct Repl {
 }
 
 impl Repl {
-    pub fn new(opts: &Options, axcut: bool) -> Repl {
+    pub fn new(opts: &Options, cut: bool) -> Repl {
         let mut repl = Repl {
             opts: *opts,
-            axcut,
+            cut,
             paint: Paint { on: opts.style.color },
             session: Session::default(),
-            engine: Engine::Machine,
             timing: false,
             last: None,
             catalog: Arc::new(RwLock::new(Catalog::default())),
@@ -441,14 +420,7 @@ impl Repl {
             (":t" | ":type", []) => println!("{}", self.paint.dim("(:t takes an expression to check)")),
             (":t" | ":type", _) => self.enter(rest, true, false),
             (":module" | ":browse", _) => self.module(),
-            (":machine" | ":eval" | ":native", _) => {
-                self.engine = match name {
-                    ":eval" => Engine::Eval,
-                    ":native" => Engine::Native,
-                    _ => Engine::Machine,
-                };
-                println!("{}", self.paint.dim(&format!("(running on the {})", self.engine)));
-            }
+            (":goals", _) => self.goals(),
             (":time", []) => {
                 self.timing = !self.timing;
                 let now = if self.timing { "on" } else { "off" };
@@ -516,31 +488,16 @@ impl Repl {
         Flow::Continue
     }
 
-    /// Check an entry, and run it unless `type_only`, on the machine chosen.
+    /// Check an entry, and run it on Glade unless `type_only`.
     fn enter(&mut self, entry: &str, type_only: bool, timed: bool) {
         let started = Instant::now();
         let mut entered = if type_only {
             self.session.enter_in(entry, &self.opts, Mode::Check)
         } else {
-            match self.engine {
-                Engine::Machine => self.session.enter(entry, &self.opts),
-                Engine::Eval => {
-                    let mut entered = self.session.enter_in(entry, &self.opts, Mode::Lower);
-                    self.evaluate(&mut entered.output);
-                    entered
-                }
-                Engine::Native => {
-                    let mut entered = self.session.enter_in(entry, &self.opts, Mode::Lower);
-                    if let Err(why) = self.native(&mut entered.output) {
-                        println!("{}", self.paint.dim(&format!("(not run natively: {why}; it runs on the machine)")));
-                        entered = self.session.enter(entry, &self.opts);
-                    }
-                    entered
-                }
-            }
+            self.session.enter(entry, &self.opts)
         };
         let took = started.elapsed();
-        if let Some(report) = entered.output.axcut_report().filter(|_| self.axcut && !type_only) {
+        if let Some(report) = entered.output.cut_report().filter(|_| self.cut && !type_only) {
             print!("{report}");
         }
         if type_only {
@@ -548,65 +505,8 @@ impl Repl {
         }
         println!("{}", entered.output.display("<interactive>", &entered.source, self.opts.style));
         if timed {
-            println!("{}", self.paint.dim(&format!("({:.1} ms on the {})", took.as_secs_f64() * 1000.0, self.engine)));
+            println!("{}", self.paint.dim(&format!("({:.1} ms, checked, lowered and run on Glade)", took.as_secs_f64() * 1000.0)));
         }
-    }
-
-    /// Run a lowered entry on the reference interpreter.
-    fn evaluate(&self, output: &mut pipeline::Output) {
-        let Some(checked) = output.checked.as_ref().filter(|c| c.program.is_some()) else { return };
-        if output.has_errors() {
-            return;
-        }
-        let mut world = pipeline::world(&self.opts, Vec::new());
-        let result = idyll_eval::evaluate_in(checked, pipeline::FUEL, &mut world);
-        output.evaluation = result.map(|r| match r {
-            Ok(outcome) => outcome.answer.map_or(Evaluation::Opaque, Evaluation::Value),
-            Err(idyll_eval::EvalError::OutOfFuel) => Evaluation::OutOfFuel,
-            Err(idyll_eval::EvalError::Exited(code)) => Evaluation::Exited(code),
-            Err(idyll_eval::EvalError::TestFailed(why)) => Evaluation::Stopped(format!("test failed: {why}")),
-            Err(idyll_eval::EvalError::Stopped(why)) => Evaluation::Stopped(why),
-            Err(idyll_eval::EvalError::Stuck(why)) => Evaluation::Failed(format!("the reference interpreter is stuck: {why}")),
-        });
-        if !self.opts.live {
-            let (printed, errors) = world.into_streams();
-            output.printed = printed;
-            output.errors = errors;
-        }
-    }
-
-    /// Compile a lowered entry with LLVM and run it.  `Err` if it cannot be
-    /// compiled, and the machine should run it instead.
-    fn native(&self, output: &mut pipeline::Output) -> Result<(), String> {
-        if output.has_errors() || output.body_type.is_none() {
-            return Ok(());
-        }
-        let program = output.native.as_ref().ok_or("there is nothing to compile")?;
-        let ir = idyllic_llvm::emit(program, output.result_kind)?;
-        let dir = std::env::temp_dir().join(format!("idyll-repl-{}", std::process::id()));
-        let exe = dir.join(if cfg!(windows) { "entry.exe" } else { "entry" });
-        idyll::native::compile(&ir, &exe, None).map_err(|e| e.to_string())?;
-        let ran = std::process::Command::new(&exe)
-            .stdin(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .output()
-            .map_err(|e| format!("could not run it: {e}"))?;
-        let stdout = String::from_utf8_lossy(&ran.stdout).replace("\r\n", "\n");
-        let code = ran.status.code().unwrap_or(1);
-        if output.ran_main || code != 0 {
-            output.printed = stdout;
-            output.evaluation = Some(if code == 0 { Evaluation::Opaque } else { Evaluation::Exited(code) });
-            return Ok(());
-        }
-        // the program prints what it prints, and then its answer
-        let mut lines: Vec<&str> = stdout.trim_end_matches('\n').split('\n').collect();
-        let answer = lines.pop().unwrap_or("").to_string();
-        output.printed = lines.iter().map(|l| format!("{l}\n")).collect();
-        output.evaluation = Some(match output.result_kind {
-            idyllic_llvm::ResultKind::Other => Evaluation::Opaque,
-            _ => Evaluation::Value(answer),
-        });
-        Ok(())
     }
 
     fn help(&self) {
@@ -643,6 +543,23 @@ impl Repl {
         }
         for (name, ty) in &checked.decls {
             println!("{name} : {ty}");
+        }
+    }
+
+    /// `:goals`: the goals, `?name`, left in what is defined so far, each
+    /// with its type and the variables in scope where it is.
+    fn goals(&self) {
+        let checked = pipeline::check(self.session.source(), &Options { live: false, ..self.opts });
+        let goals: Vec<_> = checked.diagnostics.iter().filter(|d| d.message.starts_with("goal ?")).collect();
+        if goals.is_empty() {
+            println!("{}", self.paint.dim("(no goals)"));
+            return;
+        }
+        for d in goals {
+            println!("{}", d.labels.first().map_or(d.message.clone(), |l| l.message.clone()));
+            for line in d.help.iter().flat_map(|h| h.lines()) {
+                println!("{}", self.paint.dim(line));
+            }
         }
     }
 
@@ -828,7 +745,7 @@ fn print_banner(p: &Paint) {
     println!();
 }
 
-pub fn run(opts: &Options, axcut: bool) -> ExitCode {
+pub fn run(opts: &Options, cut: bool) -> ExitCode {
     let editor = Config::builder()
         .max_history_size(1000)
         .map(|b| b.completion_type(rustyline::CompletionType::List).build())
@@ -840,7 +757,7 @@ pub fn run(opts: &Options, axcut: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut repl = Repl::new(opts, axcut);
+    let mut repl = Repl::new(opts, cut);
     rl.set_helper(Some(ReplHelper { names: repl.names.clone(), colour: opts.style.color }));
     for key in escape_keys() {
         rl.bind_sequence(key, EventHandler::Conditional(Box::new(Escape)));

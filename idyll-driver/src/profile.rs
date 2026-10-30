@@ -11,8 +11,8 @@
 //!
 //! [`Resolved`] is what that produces. The built-in layer is what makes a
 //! manifest optional, and the manifest layer is what lets a package say
-//! `backend = "machine"` in release builds without every `idyll run --release`
-//! needing a flag.
+//! `backend = "silo"` in debug builds without every `idyll run` needing a
+//! flag.
 //!
 //! Checking a package does not depend on the profile: the same compiled
 //! package serves both, and only how the program runs differs.
@@ -20,30 +20,38 @@
 use crate::package::{Manifest, ProfileConfig};
 use std::path::Path;
 
-/// How a built program is run.
+/// Which of Meadow's runtimes runs a built program: Idyll lowers it to Cut
+/// and hands it to `meadow cut`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Backend {
-    /// The AxCut abstract machine, in this process: starts at once, and
-    /// runs everything the language has.
+    /// Glade, Meadow's bytecode: starts at once.
     #[default]
-    Machine,
-    /// Compiled by LLVM into an executable, ahead of time (needs clang).
-    Native,
+    Glade,
+    /// Silo, native code, built into an executable first.
+    Silo,
 }
 
 impl Backend {
     pub fn parse(s: &str) -> Option<Backend> {
         match s {
-            "machine" => Some(Backend::Machine),
-            "native" => Some(Backend::Native),
+            "glade" => Some(Backend::Glade),
+            "silo" => Some(Backend::Silo),
             _ => None,
         }
     }
 
     pub const fn name(self) -> &'static str {
         match self {
-            Backend::Machine => "machine",
-            Backend::Native => "native",
+            Backend::Glade => "glade",
+            Backend::Silo => "silo",
+        }
+    }
+
+    /// The runtime, as the compiler names it.
+    pub const fn runtime(self) -> idyllic::meadow::Runtime {
+        match self {
+            Backend::Glade => idyllic::meadow::Runtime::Glade,
+            Backend::Silo => idyllic::meadow::Runtime::Silo,
         }
     }
 }
@@ -66,12 +74,12 @@ impl Profile {
     }
 
     /// How this profile runs a program before a manifest or a flag says
-    /// otherwise: debug on the machine, which starts at once; release as an
-    /// executable.
+    /// otherwise: debug on Glade, which starts at once; release as an
+    /// executable Silo builds.
     pub const fn backend(self) -> Backend {
         match self {
-            Profile::Debug => Backend::Machine,
-            Profile::Release => Backend::Native,
+            Profile::Debug => Backend::Glade,
+            Profile::Release => Backend::Silo,
         }
     }
 }
@@ -114,13 +122,11 @@ impl Resolved {
         Resolved { profile, backend: named.unwrap_or(profile.backend()), backend_named: named.is_some() }
     }
 
-    /// What runs the program when `backend` cannot -- native code for a
-    /// program LLVM cannot compile yet, or without clang to compile it: the
-    /// machine, if the backend was only the profile's default, and nothing,
-    /// if someone asked for it.
+    /// What runs the program when `backend` cannot -- Silo, where it cannot
+    /// build an executable: Glade, if the backend was only the profile's
+    /// default, and nothing, if someone asked for it.
     pub fn fallback(self) -> Option<Resolved> {
-        (self.backend == Backend::Native && !self.backend_named)
-            .then_some(Resolved { backend: Backend::Machine, ..self })
+        (self.backend == Backend::Silo && !self.backend_named).then_some(Resolved { backend: Backend::Glade, ..self })
     }
 
     /// What runs the program, as a build reports it.
@@ -137,19 +143,19 @@ mod tests {
     fn a_flag_beats_the_manifest_beats_the_profile() {
         let dir = std::env::temp_dir().join(format!("idyll-profile-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("Idyll.toml"), "[package]\nname = \"P\"\n\n[profile.release]\nbackend = \"machine\"\n").unwrap();
-        assert_eq!(Resolved::resolve(Profile::Debug, &dir, ProfileConfig::default()).backend, Backend::Machine);
+        std::fs::write(dir.join("Idyll.toml"), "[package]\nname = \"P\"\n\n[profile.release]\nbackend = \"glade\"\n").unwrap();
+        assert_eq!(Resolved::resolve(Profile::Debug, &dir, ProfileConfig::default()).backend, Backend::Glade);
         let release = Resolved::resolve(Profile::Release, &dir, ProfileConfig::default());
-        assert_eq!(release.backend, Backend::Machine);
+        assert_eq!(release.backend, Backend::Glade);
         assert!(release.backend_named);
-        let flag = ProfileConfig { backend: Some(Backend::Native) };
-        assert_eq!(Resolved::resolve(Profile::Release, &dir, flag).backend, Backend::Native);
+        let flag = ProfileConfig { backend: Some(Backend::Silo) };
+        assert_eq!(Resolved::resolve(Profile::Release, &dir, flag).backend, Backend::Silo);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn only_a_default_gives_way() {
-        assert_eq!(Resolved::new(Profile::Release).fallback().map(|r| r.backend), Some(Backend::Machine));
+        assert_eq!(Resolved::new(Profile::Release).fallback().map(|r| r.backend), Some(Backend::Glade));
         let named = Resolved { backend_named: true, ..Resolved::new(Profile::Release) };
         assert_eq!(named.fallback(), None);
         assert_eq!(Resolved::new(Profile::Debug).fallback(), None);

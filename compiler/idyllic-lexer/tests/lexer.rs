@@ -111,3 +111,29 @@ fn crlf_is_a_single_newline() {
 fn comments_and_whitespace_are_skipped() {
     assert_eq!(kinds("x -- comment ( { let\ny"), [lower("x"), Newline, lower("y")]);
 }
+
+#[test]
+fn a_string_with_holes_is_its_pieces_and_the_holes_tokens() {
+    // as Meadow's lexer reads one: the text before each hole, between them
+    // and after the last, each unescaped, and each hole lexed as code
+    assert_eq!(kinds(r#""a ${x + 1} b ${f "c"} d""#), [
+        InterpStart("a ".into()),
+        lower("x"),
+        OpIdent("+".into()),
+        Int(1.into()),
+        InterpMid(" b ".into()),
+        lower("f"),
+        Str("c".into()),
+        InterpEnd(" d".into()),
+    ]);
+    // `:?` after a hole is a token of its own, which the parser reads
+    assert_eq!(kinds(r#""${x:?}""#), [InterpStart(String::new()), lower("x"), ConOpIdent(":?".into()), InterpEnd(String::new())]);
+    // the pieces' spans cover their quote, `${` and `}`
+    let spans: Vec<Span> = tokenize(r#""a ${x} b""#).tokens.into_iter().map(|t| t.span).collect();
+    assert_eq!(spans, [Span::new(0, 5), Span::new(5, 6), Span::new(6, 10)]);
+    // `\$` is a dollar; a string with no hole is a plain one
+    assert_eq!(kinds(r#""\${x}""#), [Str("${x}".into())]);
+    // a hole with nothing in it, or never closed, says so
+    assert!(!tokenize(r#""${}""#).diagnostics.is_empty());
+    assert!(!tokenize(r#""a ${x"#).diagnostics.is_empty());
+}

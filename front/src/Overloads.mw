@@ -1,0 +1,184 @@
+-- Names with more than one meaning, chosen by type:
+-- `compiler/idyllic-typecheck/src/overloads.rs`, as Meadow chooses them
+-- (after Idris).
+--
+-- A module's own top-level names and what its `use`s bring are one layer,
+-- where a clash is an overload: the renamer keeps every meaning a name may
+-- have where it is written (an `Ident` with several uniques), and the
+-- checker takes the one whose type fits.
+--
+-- A term headed by such a name -- the name alone, or applied, `Just 3` -- is
+-- elaborated once for each meaning, as a trial on the checker that is then
+-- undone (`T.save`, `T.restore`), against the type wanted if one is: the
+-- meanings whose trial made no error are the ones that fit. One that fits
+-- is elaborated for real. Several that fit put the term off: a placeholder
+-- stands for it, of a type the rest of the definition goes on to constrain,
+-- and the term is tried again against that type once the definition has
+-- been checked (`settle`). Then the placeholder is written over with what
+-- the term was elaborated to (`Auto.resolve`). None fitting, or several
+-- still fitting at the end, is an error.
+--
+-- A constructor in a pattern is chosen by the type of what it is matched
+-- against (`patternCtor`).
+
+use Std.St (StRef, newRef, getRef, setRef)
+use Idyll.Core (Core)
+use Idyll.Value (Value)
+use Idyll.Tc (Tc, Meta, MetaInfo, Origin, CtorInfo)
+use Idyll.Tc as T
+use Idyll.Eval (force, eval)
+use Idyll.Usage (Usage)
+use Idyll.Usage as U
+use Idyll.Ctx (Ctx)
+use Idyll.Rename
+use Idyll.Elab (infer, check, freshMeta)
+use Idyll.Auto as A
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as Hm
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+-- The node of the overloaded name heading `t` (`f` in `f a b`), if it heads
+-- one whose meaning has not been chosen.
+@pub fun overloadedHead (tc : Tc s) (t : HirExpr) : Maybe Int ! { St s | e } = headNode (getRef tc.hir) (getRef tc.forced) t
+
+fun headNode (h : HirArena) forced (t : HirExpr) : Maybe Int =
+  match (h, t) with
+  | HirExprApp f _ -> headNode h forced f
+  | HirExprImplicitApp f _ -> headNode h forced f
+  | HirExprAutoApp f _ -> headNode h forced f
+  | HirExprVar x -> if V.len (hirIdentUniques h x) > 1 and not (Hm.member t forced) then Just t else None
+  | _ -> None
+
+fun errorCount (tc : Tc s) : Int ! { St s | e } = V.len (getRef tc.errors)
+
+-- Elaborate `t`, against `wanted` if it is to have a type, as headed by the
+-- meaning `u` of its overloaded name: whether that made no error. Tried, and
+-- undone.
+fun fits (tc : Tc s) (ctx : Ctx) (t : HirExpr) (head : Int) (u : Int) (wanted : Maybe Value) : Bool ! { St s | e } =
+  let saved = T.save tc in
+  let before = errorCount tc in
+  let w = elaborateAs tc ctx t head u wanted in
+  let ok = errorCount tc == before in
+  let w2 = T.restore tc saved in
+  ok
+
+-- The meanings of the name heading `t` that fit.
+fun fitting (tc : Tc s) (ctx : Ctx) (t : HirExpr) (head : Int) (wanted : Maybe Value) : [Int] ! { St s | e } =
+  let h = getRef tc.hir in
+  V.filter (\u -> fits tc ctx t head u wanted) (hirIdentUniques h (hirExprVarIdent h head))
+
+-- Elaborate `t` for real, its overloaded name meaning `u`.
+fun elaborateAs (tc : Tc s) (ctx : Ctx) (t : HirExpr) (head : Int) (u : Int) (wanted : Maybe Value) : (Core, Value, Usage) ! { St s | e } =
+  let w = setRef tc.forced (Hm.insert head u (getRef tc.forced)) in
+  match wanted with
+  | Just ty ->
+      let (core, usage) = check tc ctx t ty in
+      (core, ty, usage)
+  | None -> infer tc ctx t
+
+-- Infer or check a term headed by an overloaded name, at `head`.
+@pub fun overloaded (tc : Tc s) (ctx : Ctx) (t : HirExpr) (head : Int) (wanted : Maybe Value) : (Core, Value, Usage) ! { St s | e } =
+  let fs = fitting tc ctx t head wanted in
+  if V.len fs == 1 then elaborateAs tc ctx t head (V.getOr 0 fs 0) wanted
+  else if V.isEmpty fs then
+    let w = T.error tc "NoMeaning" in
+    (Core.Error, Value.Error, U.unknown ())
+  else
+    -- more than one: wait for the rest of the definition to say
+    let ty =
+      match wanted with
+      | Just g -> g
+      | None -> eval tc ctx.env (freshMeta tc ctx "the type of an overloaded name's use")
+    in
+    let m = T.newMeta tc (MetaInfo.MetaInfo 0 (Origin.Inferred "an overloaded name's meaning") None) in
+    let w1 = setRef tc.placeholders (V.pushBack (getRef tc.placeholders) m) in
+    let w2 = setRef tc.deferred (V.pushBack (getRef tc.deferred) (m, head, t, ctx, ty)) in
+    (Core.Meta m, ty, U.none ())
+
+-- What is put off, chosen once the definition it is in has been checked:
+-- each term against what its type has come to be, and each search for an
+-- auto argument (which may wait on an overloaded name, and the other way
+-- round). Choosing one can settle another, so round until nothing changes;
+-- what still has several meanings then is ambiguous.
+@pub fun settle (tc : Tc s) : () ! { St s | e } =
+  let autos = A.settleAutos tc False in
+  let waiting = getRef tc.deferred in
+  let w = setRef tc.deferred [] in
+  let progress =
+    V.foldl
+      (\pr d ->
+        match d with
+        | (m, head, t, ctx, ty) ->
+            let fs = fitting tc ctx t head (Just ty) in
+            if V.len fs == 1 then
+              let (core, _, _) = elaborateAs tc ctx t head (V.getOr 0 fs 0) (Just ty) in
+              let w2 = A.choose tc m ctx core in
+              True
+            else if V.isEmpty fs then
+              let w2 = T.error tc "NoMeaning" in
+              let w3 = giveUp tc m ctx ty in
+              True
+            else
+              let w2 = setRef tc.deferred (V.pushBack (getRef tc.deferred) d) in
+              pr)
+      autos
+      waiting
+  in
+  if progress and not (V.isEmpty (getRef tc.deferred) and V.isEmpty (getRef tc.deferredAutos) and V.isEmpty (getRef tc.deferredLiterals)) then settle tc
+  else
+    let w4 = A.settleAutos tc True in
+    let rest = getRef tc.deferred in
+    let w5 = setRef tc.deferred [] in
+    V.foldl
+      (\acc d ->
+        match d with
+        | (m, _, _, ctx, ty) ->
+            let w6 = T.error tc "AmbiguousName" in
+            giveUp tc m ctx ty)
+      ()
+      rest
+
+-- What was reported about a term put off is all there is to say: it stands
+-- for an error, of a type that is one, so that nothing about it is reported
+-- again.
+fun giveUp (tc : Tc s) (m : Int) (ctx : Ctx) (ty : Value) : () ! { St s | e } =
+  let w =
+    match force tc ty with
+    | Value.Flex f _ -> (match T.meta tc f with | Just (Meta.Unsolved _) -> T.solve tc f Value.Error | _ -> ())
+    | _ -> ()
+  in
+  A.choose tc m ctx Core.Error
+
+-- The constructor a pattern means, for what it is matched against: of a
+-- name with several meanings, the one of the type `ty` has.
+@pub fun patternCtor (tc : Tc s) (pat : HirPattern) (c : HirIdent) (ty : Value) : Maybe Int ! { St s | e } =
+  match Hm.lookup pat (getRef tc.patternChoice) with
+  | Just u -> Just u
+  | None ->
+      let us = hirIdentUniques (getRef tc.hir) c in
+      if V.len us <= 1 then V.head us
+      else
+        let candidates =
+          match force tc ty with
+          | Value.Opaque d _ _ ->
+              Just (V.filter (\u -> match T.ctorInfo tc u with | Just (CtorInfo.CtorInfo _ dt _ _ _) -> dt == d | None -> False) us)
+          | Value.Error -> None
+          | _ -> Just us
+        in
+        match candidates with
+        | None -> None
+        | Just fs ->
+            if V.len fs == 1 then
+              let u = V.getOr 0 fs 0 in
+              let w = setRef tc.patternChoice (Hm.insert pat u (getRef tc.patternChoice)) in
+              Just u
+            else
+              let w = T.error tc (if V.isEmpty fs then "NoMeaning" else "AmbiguousName") in
+              None
+
+-- The constructor a pattern was found to mean, or the one it names.
+@pub fun patternUnique (tc : Tc s) (pat : HirPattern) (c : HirIdent) : Int ! { St s | e } =
+  match Hm.lookup pat (getRef tc.patternChoice) with
+  | Just u -> u
+  | None -> V.getOr (0 - 1) (hirIdentUniques (getRef tc.hir) c) 0

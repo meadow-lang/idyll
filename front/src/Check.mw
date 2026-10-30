@@ -1,0 +1,467 @@
+-- Checking a whole module: `check_module` in
+-- `compiler/idyllic-typecheck/src/lib.rs`, and what the differential test
+-- compares of it.
+--
+-- The declarations first (native types, effects, data types, operations,
+-- native operations), then the definitions in dependency order, then the
+-- program's expression. What is left of its effects at the top is run by
+-- the runtime, which handles the prelude's `Eff` and nothing else. Then the
+-- holes are reported, the postponed questions asked a last time, and the
+-- metavariables nothing solved reported too.
+
+use Std.St (StRef, newRef, getRef, setRef)
+use Idyll.Core (Core, Builtin)
+use Idyll.Core as C
+use Idyll.Value (Value, Row)
+use Idyll.Value as Va
+use Idyll.Hir (Icit, Literal)
+use Idyll.Tc (Tc)
+use Idyll.Scc (interleave)
+use Idyll.Tc as T
+use Idyll.Eval (force, apply, eval, quote, row, rowParts, splitComp)
+use Idyll.Unify (unify, effectsFit)
+use Idyll.Usage (Usage)
+use Idyll.Usage as U
+use Idyll.Ctx (Ctx, Entry, Binder, Info)
+use Idyll.Ctx as X
+use Idyll.Elab (Pending, effectsOf, enterGroups, infer, retryPostponed, closeOpened, closeRows, reportHoles, reportGoals, reportUnsolved, keyOf, wrapLets, install, checkLinearWants, linearTopLevel)
+use Idyll.Elaborated (ElaboratedProgram, newElaboratedBuilder, freezeElaborated, moduleRow)
+use Idyll.Tc (Meta)
+use Idyll.Auto as A
+use Idyll.Overloads as O
+use Std.St (runSt)
+use Idyll.Decl (initial, declareNatives, declareEffects, declareDatas, declareOps)
+use Idyll.Hir (Ident)
+use Idyll.Interface
+use Idyll.Elab (declareConstant, groupBinds)
+use Idyll.Value as Va2
+use Idyll.Rename
+use Std.Collections.HashMap as Hm
+use Std.Collections.HashMap (HashMap)
+use Idyll.Hir as H
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+fun bindsOf (h : HirArena) (g : HirGroup) : [HirBind] =
+  match (h, g) with
+  | HirGroupNonRec b -> [b]
+  | HirGroupRec bs -> bs
+
+fun uniqueOf (h : HirArena) (x : HirIdent) : Int = V.getOr (0 - 1) (hirIdentUniques h x) 0
+
+fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
+
+-- A module checked: the checker's state, with every table of what was
+-- declared; the type of the module's expression; and the elaborated
+-- program, the expression under the top-level definitions as `let`s, in
+-- the context of the builtins and the primitives.
+@pub record Checked s = {
+  tc : Tc s,
+  bodyType : Maybe Core,
+  program : Maybe Core,
+  -- the same, written out, with its recursive definitions and what each
+  -- metavariable was solved with: what the CEK machine runs
+  elaborated : ElaboratedProgram,
+  -- the unique of each top-level `let` of the program, outermost first
+  toplevel : [Int],
+  -- every name the module and the prelude declare, by unique: the package
+  -- it is in, and its path there (`Nat.Z`, `Console.putStr`)
+  symbols : HashMap Int (String, String),
+  linear : Bool,
+  -- what compiling the module into a package needs (`Compiled`): the
+  -- top-level context once every definition is checked, each group's
+  -- `let`, the body with its type (`main ()` too), and whether that is it
+  top : Ctx,
+  lets : [Maybe (String, Core)],
+  answer : Maybe (Core, Core),
+  ranMain : Bool,
+  -- the prelude's own top-level `let`s and their uniques, which every
+  -- package has the same: what a linked program starts with (`Link`)
+  preludeLets : [(String, Core)],
+  preludeTop : [Int],
+  -- the top-level definitions whose values compute with no effects, which
+  -- may be left out when nothing uses them (`Prune`)
+  pure : [Int]
+}
+
+-- The module checked, and written as the differential test compares it:
+-- `(unsupported: ..)` if it uses what this checker cannot check yet; or
+-- else, a line each, sorted, the program's declarations with their types
+-- (`name : type`), the type of its expression (`body : type`), and the
+-- kinds of the errors found (`error: Mismatch`).
+@pub fun checkModule (m : Renamed) : String =
+  runSt (\() ->
+    let c = checked m in
+    dump c.tc m c.bodyType)
+
+-- The same, against the compiled packages it depends on.
+@pub fun checkModuleWith (m : Renamed) (deps : [Compiled]) : String =
+  runSt (\() ->
+    let c = checkedAgainst m False deps in
+    dump c.tc m c.bodyType)
+
+-- `checked`, against the compiled packages it depends on.
+@pub fun checkedAgainst (m : Renamed) (entry : Bool) (deps : [Compiled]) : Checked s ! { St s | e } = checkedWith m entry deps
+
+-- A module checked: the checker's state and the pass's tables
+-- (`Elaborated`) are one `St`'s, so what reads them runs in the same
+-- `runSt` as this.
+@pub fun checked (m : Renamed) : Checked s ! { St s | e } = checkedIn m
+
+@pub fun checkedIn (m : Renamed) = checkedAt m False
+
+-- The same; with `entry`, a module with a `main` and no expression of its
+-- own runs `main ()`, as a package built to run does (`check_module`'s
+-- `entry`), and its answer, `()`, is not shown.
+@pub fun checkedAt (m : Renamed) (entry : Bool) = checkedWith m entry []
+
+-- The same, against the compiled packages it depends on (`deps`, each
+-- after those it depends on): `check_module` with its `deps`.
+@pub fun checkedWith (m : Renamed) (entry : Bool) (deps : [Compiled]) : Checked s ! { St s | e } = checkedWanting m entry deps (0 - 1)
+
+-- The same, keeping the type of the innermost node that holds the place
+-- `want` (`Tc.found`), for hover.
+@pub fun checkedWanting (m : Renamed) (entry : Bool) (deps : [Compiled]) (want : Int) : Checked s ! { St s | e } =
+  let h = hirArena m.hir in
+  let root = hirRoot m.hir in
+  let datas = hirModuleDatas h root in
+  let effects = hirModuleEffects h root in
+  let natives = hirModuleNatives h root in
+  -- (each data type after the definitions it mentions, and what mentions
+  -- it after it: `Scc.interleave`)
+  let (datasInOrder, dataAfter, groups) = interleave h datas (hirModuleGroups h root) in
+  let tc = T.new () in
+  let wwant = setRef tc.want want in
+  let wh = setRef tc.hir h in
+  let out = newElaboratedBuilder () in
+  let we = install tc out in
+  let w0 = setRef tc.terminating m.terminating in
+  -- what a search for an auto argument may find, and the traits
+  let wa = setRef tc.hints m.hints in
+  let wa2 =
+    setRef
+      tc.hintNames
+      (V.foldl
+         (\acc b ->
+           let x = hirBindName h b in
+           let u = uniqueOf h x in
+           if V.elem u m.hints then Hm.insert u (qualified m u (hirIdentText h x)) acc else acc)
+         (getRef tc.hintNames)
+         (V.concatMap (\g -> groupBinds h g) groups))
+  in
+  let wb = setRef tc.supers m.supers in
+  let wc = setRef tc.methods m.methods in
+  let wd = setRef tc.traits (V.concatMap (\d -> if hirDataIsTrait h d then [uniqueOf h (hirDataName h d)] else []) datas) in
+  let listOf = V.find (\d -> hirIdentText h (hirDataName h d) == "List" and uniqueOf h (hirDataName h d) < m.first) datas in
+  let w0b = match listOf with | Just d -> setRef tc.list (uniqueOf h (hirDataName h d)) | None -> () in
+  -- (the prelude's `fromInt` and `fromFloat`, which a literal at a type
+  -- variable is read through: the prelude's uniques come first, before a
+  -- dependency's own `fromInt`, `Std.String`'s say)
+  let w0c =
+    V.foldl
+      (\acc b ->
+        let x = hirBindName h b in
+        let text = hirIdentText h x in
+        let u = uniqueOf h x in
+        let lower = match Hm.lookup text (getRef tc.numberLits) with | Just known -> u < known | None -> True in
+        if (text == "fromInt" or text == "fromFloat") and u < m.first and lower then setRef tc.numberLits (Hm.insert text u (getRef tc.numberLits))
+        else acc)
+      ()
+      (V.concatMap (bindsOf h) groups)
+  in
+  -- what the packages it depends on give
+  let ctx0 = importAll tc (initial tc) deps in
+  -- native types first, which the data types and effects may mention; and
+  -- native operations last, as their types may mention those
+  let ctx1 = declareNatives tc ctx0 natives True in
+  let ctx2 = declareEffects tc ctx1 effects in
+  -- the data types that mention no definition; the rest once what they
+  -- mention is
+  let firstDatas = V.len (V.takeWhile (\a -> a == 0) dataAfter) in
+  let ctx3 = declareDatas tc ctx2 (V.take datasInOrder firstDatas) in
+  let ctx4 = declareOps tc ctx3 effects in
+  let ctx5 = declareNatives tc ctx4 natives False in
+  let inPrelude = \g -> V.all (\b -> bindUnique h b < m.first) (bindsOf h g) in
+  let preludeGroups = V.filter inPrelude groups in
+  let (ctx, owed, lets) = enterInterleaved tc ctx5 datasInOrder dataAfter groups 0 firstDatas [] [] in
+  let world = worldOf tc ctx preludeGroups in
+  let w1 =
+    V.foldl
+      (\acc p ->
+        match p with
+        | Pending.NonRec _ rhs -> unhandled tc ctx rhs world
+        | _ -> ())
+      ()
+      owed
+  in
+  let main = V.find (\b -> Just (bindUnique h b) == m.main) (V.concatMap (bindsOf h) groups) in
+  let mainFits = M.map (\b -> checkMain tc ctx (identOf h (hirBindName h b)) world) main in
+  -- what the program uses of its top-level definitions: its expression's
+  -- uses, or `main`, used once
+  let bodyUses = newRef (M.map (\b -> U.var (bindUnique h b)) main) in
+  let body =
+    match hirModuleBody h root with
+    | Just e ->
+        let w = setRef tc.linear m.linearBody in
+        let mark = V.len (getRef tc.recDefs) in
+        let (core0, ty, usage) = infer tc ctx e in
+        let wUses = setRef bodyUses (Just usage) in
+        -- what it put off, found and written over
+        let s1 = O.settle tc in
+        let core1 = A.resolve tc core0 ctx.lvl in
+        let s2 = A.resolveRecDefs tc mark in
+        let core = A.specialize tc ctx core1 ctx.lvl in
+        let s3 = A.specializeRecDefs tc ctx mark in
+        let w2 = if mainFits == Just False then () else unhandled tc ctx usage world in
+        Just (core, quote tc ctx.lvl ty)
+    -- `main ()`
+    | None ->
+        if entry and mainFits == Just True then
+          M.andThen (\b -> M.map (\found -> match found with | (f, _, _) -> (Core.App f (Core.Lit Literal.Unit), Core.LitTy Builtin.Unit)) (X.lookup ctx (identOf h (hirBindName h b)))) main
+        else None
+  in
+  let ranMain = M.isNone (hirModuleBody h root) and M.isSome body in
+  -- instances of traits: where they live, and that no two overlap
+  let wi = A.checkInstances tc ctx m.first in
+  let w2 = reportHoles tc in
+  let w2g = reportGoals tc in
+  let w3 = retryPostponed tc True in
+  let w4 = closeOpened tc in
+  let w5 = closeRows tc in
+  let wl1 = checkLinearWants tc in
+  let named = V.map (\gp -> match gp with | (g, p) -> (M.map (\b -> identOf h (hirBindName h b)) (V.head (bindsOf h g)), p)) (V.zip groups owed) in
+  let wl2 = linearTopLevel tc ctx named (getRef bodyUses) in
+  let w6 = reportUnsolved tc in
+  -- the unique of each top-level `let`: each group that made one
+  let toplevel =
+    V.concatMap
+      (\gw -> match gw with | (g, Just _) -> (match (h, g) with | HirGroupNonRec b -> [bindUnique h b] | _ -> []) | _ -> [])
+      (V.zip groups lets)
+  in
+  let program = M.map (\b -> wrapLets (fst b) lets) body in
+  let names = getRef tc.recNames in
+  let locals = getRef tc.localRecs in
+  let defs = V.map (\d -> match d with | (u, l, c) -> (u, Hm.getOr "" u names, l, c, V.elem u locals)) (getRef tc.recDefs) in
+  -- metavariables are closed, so their solutions mean the same anywhere
+  let metas =
+    V.concatMap
+      (\i -> match V.get (getRef tc.metas) i with | Just (Meta.Solved v _) -> [(i, quote tc 0 v)] | _ -> [])
+      (V.range 0 (V.len (getRef tc.metas)))
+  in
+  let root = moduleRow out program defs metas in
+  Checked {
+    tc,
+    bodyType = if ranMain then None else M.map snd body,
+    program,
+    elaborated = ElaboratedProgram (freezeElaborated out) root,
+    toplevel,
+    symbols = symbolsOf m,
+    linear = m.linearBody,
+    top = ctx,
+    lets,
+    answer = body,
+    ranMain,
+    preludeLets = V.concatMap (\gw -> match gw with | (g, Just w) -> if inPrelude g then [w] else [] | _ -> []) (V.zip groups lets),
+    preludeTop = V.filter (\u -> u < m.first) toplevel,
+    pure =
+      V.filter
+        (\u ->
+          match Hm.lookup u ctx.names with
+          | Just (Entry.Local level) -> (match V.get ctx.binders level with | Just (Binder.Binder Info.Defined _ _ _ _) -> True | _ -> False)
+          | _ -> False)
+        toplevel
+  }
+
+-- Declare what the packages depended on give: each constant with its
+-- type, a transparent one with its value, a recursive one with its case
+-- tree, and everything known about their data types, effects and natives,
+-- hints, traits and instances (`Checker::import`).
+fun importAll (tc : Tc s) (ctx : Ctx) (deps : [Compiled]) : Ctx ! { St s | e } =
+  -- (the definitions already in the context, the builtins' and the
+  -- primitives', by their names: what an exported right-hand side names
+  -- them by)
+  let wg =
+    V.foldl
+      (\acc level ->
+        match V.get ctx.binders level with
+        | Just (Binder.Binder Info.Defined _ _ (Just key) _) ->
+            if Hm.member key (getRef tc.globals) then () else setRef tc.globals (Hm.insert key (X.value ctx level) (getRef tc.globals))
+        | _ -> ())
+      ()
+      (V.range 0 (V.len ctx.binders))
+  in
+  V.foldl
+    (\c (p : Compiled) ->
+      let c2 =
+        V.foldl
+          (\cc k ->
+            match k with
+            | Constant.Constant u name ty value unfold ->
+                let t = eval tc (Va.emptyEnv ()) ty in
+                let cc2 = declareConstant tc cc (Ident.Ident [u] name) t in
+                -- (the prelude's `fromInt` and `fromFloat`, compiled with
+                -- a part this one depends on: the prelude's uniques come
+                -- first)
+                let wLits =
+                  if name == "fromInt" or name == "fromFloat" then
+                    (match Hm.lookup name (getRef tc.numberLits) with
+                     | Just known -> if u < known then setRef tc.numberLits (Hm.insert name u (getRef tc.numberLits)) else ()
+                     | None -> setRef tc.numberLits (Hm.insert name u (getRef tc.numberLits)))
+                  else ()
+                in
+                let w1 = match value with | Just v -> setRef tc.globals (Hm.insert u (eval tc (Va.emptyEnv ()) v) (getRef tc.globals)) | None -> () in
+                let w2 =
+                  match unfold with
+                  | Just (Unfold.Unfold arity body) -> setRef tc.transparent (Hm.insert u (Va.emptyEnv (), arity, body) (getRef tc.transparent))
+                  | Just (Unfold.OnCase arity body) ->
+                      let w3 = setRef tc.transparent (Hm.insert u (Va.emptyEnv (), arity, body) (getRef tc.transparent)) in
+                      setRef tc.onCase (V.pushBack (getRef tc.onCase) u)
+                  | None -> ()
+                in
+                cc2)
+          c
+          p.constants
+      in
+      let into = \table pairs -> setRef table (V.foldl (\m kv -> Hm.insert (fst kv) (snd kv) m) (getRef table) pairs) in
+      let w3 = into tc.ctors (V.map (\e -> match e with | CtorEntry.CtorEntry u i -> (u, i)) p.ctors) in
+      let w3b = into tc.opens (V.map (\e -> match e with | OpensEntry.OpensEntry u os -> (u, os)) p.opens) in
+      let w4 = into tc.datas (V.map (\e -> match e with | DataEntry.DataEntry u cs -> (u, cs)) p.datas) in
+      let w5 = into tc.positive (V.map (\e -> match e with | Positive.Positive u ps -> (u, ps)) p.positive) in
+      let w6 = into tc.seqs (V.map (\e -> match e with | SeqEntry.SeqEntry u n cs -> (u, (n, cs))) p.seqs) in
+      let w7 = into tc.effects (V.map (\e -> match e with | EffectEntry.EffectEntry u i -> (u, i)) p.effects) in
+      let w8 = into tc.ops (V.map (\e -> match e with | OpEntry.OpEntry u i -> (u, i)) p.ops) in
+      let w9 = into tc.nativeInfo (V.map (\e -> match e with | NativeEntry.NativeEntry u n params _ -> (u, (n, params))) p.natives) in
+      let w10 = into tc.natives (V.map (\e -> match e with | NativeEntry.NativeEntry u _ _ t -> (u, t)) p.natives) in
+      let w11 = setRef tc.nativeNames (V.foldl (\m e -> match e with | NativeEntry.NativeEntry u n _ _ -> Hm.insert n u m) (getRef tc.nativeNames) p.natives) in
+      let w12 = setRef tc.hints (V.append (getRef tc.hints) p.hints) in
+      let w12b = into tc.hintNames (V.concatMap (\s -> match s with | Symbol.Symbol u _ path -> if V.elem u p.hints then [(u, path)] else []) p.symbols) in
+      let w13 = setRef tc.traits (V.append (getRef tc.traits) p.traits) in
+      let w14 = into tc.instanceFields (V.map (\f -> match f with | Fields.Fields u fs -> (u, fs)) p.instanceFields) in
+      c2)
+    ctx
+    deps
+
+-- Every name declared, by unique: its package (the prelude's, or `Main`,
+-- which a lone module is) and its path there.
+fun symbolsOf (m : Renamed) : HashMap Int (String, String) =
+  let h = hirArena m.hir in
+  let root = hirRoot m.hir in
+  let text = \x -> hirIdentText h x in
+  -- `x`, written as `path` from inside the module of `owner`'s
+  let under = \acc x owner path -> Hm.insert (uniqueOf h x) (packageOf m (uniqueOf h x), qualified m (uniqueOf h owner) path) acc in
+  let add = \acc x path -> under acc x x path in
+  let ctorName = \c -> match (h, c) with | HirCtorFields n _ -> n | HirCtorSig n _ -> n in
+  -- (a constructor, or an operation, is in the module its type is in)
+  let withDatas =
+    V.foldl
+      (\acc d ->
+        let dn = hirDataName h d in
+        V.foldl (\a c -> under a (ctorName c) dn (text dn ++ "." ++ text (ctorName c))) (add acc dn (text dn)) (hirDataCtors h d))
+      Hm.empty
+      (hirModuleDatas h root)
+  in
+  let withEffects =
+    V.foldl
+      (\acc e ->
+        let en = hirEffectName h e in
+        V.foldl (\a o -> under a (hirOpName h o) en (text en ++ "." ++ text (hirOpName h o))) (add acc en (text en)) (hirEffectOps h e))
+      withDatas
+      (hirModuleEffects h root)
+  in
+  V.foldl (\acc b -> add acc (hirBindName h b) (text (hirBindName h b))) withEffects (V.concatMap (bindsOf h) (hirModuleGroups h root))
+
+-- The effects the runtime handles: the prelude's `Eff`, or failing that,
+-- `Div`.
+fun worldOf (tc : Tc s) (ctx : Ctx) (prelude : [HirGroup]) : Value ! { St s | e } =
+  let h = getRef tc.hir in
+  let eff = V.find (\b -> hirIdentText h (hirBindName h b) == "Eff") (V.concatMap (bindsOf h) prelude) in
+  match M.andThen (\b -> X.lookup ctx (identOf h (hirBindName h b))) eff with
+  | Just (core, _, _) -> eval tc ctx.env core
+  | None -> row tc [Value.LitTy Builtin.Div]
+
+-- The effects in `usage` that nothing will handle: all but the world's. A
+-- row variable nothing has said anything about is no more effects, at the
+-- top, where nothing more will.
+fun unhandled (tc : Tc s) (ctx : Ctx) (usage : Usage) (world : Value) =
+  match effectsOf tc usage with
+  | None -> ()
+  | Just effects ->
+      let w =
+        match rowParts tc effects with
+        | Row.Row _ ts ->
+            V.foldl
+              (\acc kv -> match force tc (snd kv) with | Value.Flex _ _ -> (let b = unify tc ctx.lvl (snd kv) (Va.emptyRow ()) in ()) | _ -> ())
+              ()
+              ts
+      in
+      (match (rowParts tc effects, rowParts tc world) with
+       | (Row.Row ls ts, Row.Row hs _) ->
+           let left = V.append (V.map snd (V.filter (\kv -> not (V.any (\h -> fst h == fst kv) hs)) ls)) (V.map snd ts) in
+           if V.any (\v -> match force tc v with | Value.Error -> True | _ -> False) left then ()
+           else if V.isEmpty left then ()
+           else T.error tc "UnhandledEffects")
+
+-- `main : () -> () ! e`, every effect in `e` the runtime's.
+fun checkMain (tc : Tc s) (ctx : Ctx) (main : Ident) (world : Value) : Bool ! { St s | e } =
+  match X.lookup ctx main with
+  | None -> False
+  | Just (_, ty, _) ->
+      let unit = Value.LitTy Builtin.Unit in
+      let fits =
+        match force tc ty with
+        | Value.Pi name Icit.Explicit _ _ dom cod ->
+            let (result, effects) = splitComp tc (apply tc cod (Va.vvar ctx.lvl name)) in
+            unify tc ctx.lvl dom unit and unify tc (ctx.lvl + 1) result unit and effectsFit tc (ctx.lvl + 1) effects world
+        | Value.Error -> True
+        | _ -> False
+      in
+      let w = if fits then () else T.error tc "MainType" in
+      fits
+
+-- --- the dump --------------------------------------------------------------------------
+
+fun sorted (xs : [String]) : [String] =
+  V.foldl (\acc x -> V.concat [V.filter (\y -> not (S.lessThan x y)) acc, [x], V.filter (\y -> S.lessThan x y) acc]) [] xs
+
+fun distinct (xs : [String]) : [String] = V.foldl (\acc x -> if V.elem x acc then acc else V.pushBack acc x) [] xs
+
+fun dump (tc : Tc s) (m : Renamed) (body : Maybe Core) : String ! { St s | e } =
+  let cannot = getRef tc.unsupported in
+  if not (V.isEmpty cannot) then "(unsupported: " ++ S.join ", " (sorted (distinct cannot)) ++ ")"
+  else
+    let shown = \c -> C.shown m.linearBody c in
+    let own = V.filter (\d -> match d with | (u, _, _) -> u >= m.first) (getRef tc.declared) in
+    let decls = V.map (\d -> match d with | (u, name, ty) -> qualified m u name ++ " : " ++ shown ty) own in
+    let bodyLine = match body with | Just ty -> ["body : " ++ shown ty] | None -> [] in
+    let errors = V.map (\k -> "error: " ++ k) (getRef tc.errors) in
+    S.join "\n" (sorted (V.concat [decls, bodyLine, errors]))
+
+-- The package a unique is one of: by the ranges each named its own things
+-- with, and failing those, the prelude.
+fun packageOf (m : Renamed) (u : Int) : String =
+  match V.find (\r -> match r with | (lo, hi, _) -> u >= lo and u < hi) m.ranges with
+  | Just (_, _, name) -> name
+  | None -> "Prelude"
+
+-- A name as it is written from outside its module: under the module, if it
+-- is not a package's root.
+fun qualified (m : Renamed) (u : Int) (name : String) : String =
+  match Hm.lookup u m.qualifiers with
+  | Just q -> q ++ "." ++ name
+  | None -> name
+
+-- The groups entered and the data types declared, each data type once the
+-- groups before it are (`dataAfter`, from `Scc.interleave`), from group `g`
+-- and data type `d` on.
+fun enterInterleaved (tc : Tc s) (ctx : Ctx) (datas : [HirData]) (dataAfter : [Int]) (groups : [HirGroup]) (g : Int) (d : Int) owed lets =
+  if g >= V.len groups and d >= V.len datas then (ctx, owed, lets)
+  else
+    let upto0 = if d < V.len datas then (let a = V.getOr 0 dataAfter d in if a < V.len groups then a else V.len groups) else V.len groups in
+    let upto = if upto0 < g then g else upto0 in
+    let (ctx1, o, l) = enterGroups tc ctx (V.slice groups g upto) in
+    let stop = V.len (V.takeWhile (\a -> a <= upto) (V.drop dataAfter d)) in
+    if stop > 0 then enterInterleaved tc (declareDatas tc ctx1 (V.slice datas d (d + stop))) datas dataAfter groups upto (d + stop) (V.append owed o) (V.append lets l)
+    else if upto >= V.len groups then enterInterleaved tc (declareDatas tc ctx1 (V.drop datas d)) datas dataAfter groups upto (V.len datas) (V.append owed o) (V.append lets l)
+    else enterInterleaved tc ctx1 datas dataAfter groups upto d (V.append owed o) (V.append lets l)

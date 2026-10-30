@@ -393,3 +393,740 @@ effect Calc where
 
 handle store 40 2 + add2 1 1 with
   add2 a b k -> k (a + b)
+%%%
+f : (m : Maybe Int) -> Int
+f m =
+  let x = (case m of
+    Just n -> n
+    Nothing -> 0) in
+  x + 1
+
+f (Just 4)
+%%%
+f : (g : () -> Int) -> Int
+f g = g ()
+
+f (\() -> 1)
+%%%
+pairOf : Type -> Type
+pairOf a = (a, a)
+
+x : pairOf Int
+x = (1, 2)
+
+x
+%%%
+use Std.Num.Nat (Nat)
+use Std.Num.Nat.Nat.*
+use Std.Collections.Vec (Vec)
+
+@pub
+Matrix : Nat -> Nat -> Type
+Matrix r c = Vec r (Vec c Int)
+
+m : Matrix (S Z) (S (S Z))
+m = #[#[1, 2]]
+
+m
+%%%
+data Op = Add | Div
+use Op.*
+
+count : (n : Int) -> Int ! {Div, Console}
+count n = if n == 0 then 0 else count (n - 1)
+
+(count 3, Div)
+%%%
+effect Search where
+  @many choose : Int -> Int -> Int
+
+each : (lo : [] Int) -> (hi : [] Int) -> (k : [] (Int -> List a ! {Div | r})) -> List a ! {Div | r}
+each lo hi k = if hi < lo then Nil else Std.Collections.List.append (k lo) (each (lo + 1) hi k)
+
+all : (body : () -> a ! {Search, Div | r}) -> List a ! {Div | r}
+all body = handle body () with
+  return x -> x :: Nil
+  choose lo hi k -> each lo hi k
+
+all (\(u : ()) -> let a = choose 1 3 in let b = choose a 3 in (a, b))
+%%%
+use Std.Collections.List (map)
+
+table : (xs : List Int) -> (ys : List Int) -> List (List Int)
+table xs ys = map (\(x : Int) -> map (\(y : Int) -> x * y) ys) xs
+
+table #[1, 2] #[3, 4]
+%%%
+kind : (c : Char) -> String
+kind 'a' = "a"
+kind '\n' = "newline"
+kind '\'' = "quote"
+kind c = "other"
+
+main : () -> () ! Eff
+main () =
+  let u1 = putStrLn (kind 'a' ++ " " ++ kind '\n' ++ " " ++ kind '\'' ++ " " ++ kind 'z') in
+  let u2 = printInt (charCode 'é') in
+  let u3 = putStrLn (charsToString (stringToChars "héllo, wörld")) in
+  let u4 = printInt (arrayLen (stringToChars "héllo")) in
+  let u5 = printInt (stringByteLength "héllo") in
+  let u6 = printInt (stringByteAt "abc" 2) in
+  let u7 = putStrLn (stringSlice "hello" 1 4) in
+  let u8 = putStrLn (stringSlice "héllo" 0 2) in
+  let u9 = printInt (stringCompare "apple" "apricot") in
+  let u10 = printInt (stringIndexOf "a,b,c" "," 2) in
+  putStrLn (charsToString #[charFromCode 955; 'x'])
+%%%
+use Std.String (split, words, lines, trim, toInt, toUpper, startsWith, endsWith, contains, indexOf, chars, fromChars, charLength, charAt, equal, compare, join, repeat, byteAt)
+use Std.Char (isDigit, isSpace, digitToInt, code, fromCode)
+
+(split "," "a,b,,c", words "  hello   world\tagain ", lines "one\ntwo\n", trim "  x  ", toInt "-42", toInt "4x", toUpper "Hello, é!", startsWith "he" "hello", endsWith "lo" "hello", contains "ll" "hello", indexOf "l" "hello", charLength "héllo", charAt "héllo" 1, equal "a" "a", join "-" (split " " "a b c"), repeat "ab" 3, byteAt "é" 1, isDigit '7', digitToInt '9', fromChars (chars "round trip é"))
+%%%
+kind : (c : Char) -> String
+kind 'a' = "a"
+kind '\n' = "newline"
+kind '\'' = "quote"
+kind c = "other"
+
+(kind 'a' ++ " " ++ kind '\n' ++ " " ++ kind '\'' ++ " " ++ kind 'z', charCode 'é', charsToString (stringToChars "héllo, wörld"), arrayLen (stringToChars "héllo"), stringByteLength "héllo", stringByteAt "abc" 2, stringSlice "hello" 1 4, stringSlice "héllo" 0 2, stringCompare "apple" "apricot", stringIndexOf "a,b,c" "," 2, charsToString #[charFromCode 955; 'x'], 'q', '\'', '"', '\n')
+
+%%%
+-- one name, two meanings: the prelude's `Just`, brought in, and the module's own, chosen by type
+use Maybe.*
+use Box.*
+
+data Box = Just Int | Empty
+
+unbox : Box -> Int
+unbox (Just n) = n
+unbox Empty = 0
+
+orZero : Maybe Int -> Int
+orZero (Just n) = n
+orZero Nothing = 0
+
+(unbox (Just 3), orZero (Just 4), let b = Just 7 in unbox b)
+%%%
+-- a module written inside a file, with one inside it: the modules Shapes and Shapes.Units
+module Shapes where
+  use Shape.*
+
+  data Shape = Circle Int | Square Int
+
+  area : Shape -> Int
+  area (Circle r) = 3 * r * r
+  area (Square w) = w * w
+
+  module Units where
+    unit : Int
+    unit = 1
+
+use Shapes (Shape, area)
+use Shapes.Shape.*
+use Shapes.Units (unit)
+
+(area (Circle 2), area (Square 3), unit, Shapes.Units.unit)
+%%%
+-- implicit arguments given by hand: the next implicit binder's, in braces
+pair : {a b : Type} -> a -> b -> (a, b)
+pair x y = (x, y)
+
+phantom : {a : Type} -> Int -> Int
+phantom n = n
+
+(pair {Int} 1 True, pair {Bool} {String} False "s", phantom {Bool} 3)
+%%%
+-- auto arguments: a record searched for among the hints and the auto binders in scope
+record Describe (a : Type) = { describe : a -> String }
+
+@hint
+describeInt : Describe Int
+describeInt = Describe { describe = \(n : Int) -> showInt n }
+
+@hint
+describeList : {a : Type} -> Describe a => Describe (List a)
+describeList = Describe { describe = \(xs : List a) -> "[" ++ items xs ++ "]" }
+
+say : {a : Type} -> {auto d : Describe a} -> a -> String
+say x = d.describe x
+
+items : {a : Type} -> Describe a => List a -> String
+items Nil = ""
+items (x :: xs) = say x ++ ";" ++ items xs
+
+(say 1, say (2 :: 3 :: Nil), let xs = Nil in say (4 :: xs))
+%%%
+-- a trait with a default, two instances, one for lists wanting its elements', and a constraint
+trait Describe (a : Type) where
+  describe : a -> String
+  twice : a -> String
+  twice x = describe x ++ describe x
+
+instance Describe Int where
+  describe n = showInt n
+
+instance Describe Bool where
+  describe True = "yes"
+  describe False = "no"
+  twice b = "twice " ++ describe b
+
+instance Describe a => Describe (List a) where
+  describe Nil = "."
+  describe (x :: xs) = describe x ++ "," ++ describe xs
+
+both : {a : Type} -> Describe a => a -> a -> String
+both x y = describe x ++ "&" ++ describe y
+
+(describe 3, twice False, describe (1 :: 2 :: Nil), both True False)
+%%%
+-- a superclass, and a named instance given by hand
+trait Describe (a : Type) where
+  describe : a -> String
+
+instance Describe Int where
+  describe n = showInt n
+
+instance loud : Describe Int where
+  describe n = showInt n ++ "!"
+
+trait Describe a => Loud (a : Type) where
+  shout : a -> String
+  shout x = describe x ++ "!"
+
+instance Loud Int where
+
+louder : {a : Type} -> Loud a => a -> String
+louder x = shout x ++ " (" ++ describe x ++ ")"
+
+(louder 4, describe @{loud} 3)
+%%%
+-- a method of a known instance, made its field: the primitive
+trait Plus (a : Type) where
+  plus2 : a -> a -> a
+
+instance Plus Int where
+  plus2 = intAdd
+
+twice : Int -> Int
+twice n = plus2 n n
+
+twice 21
+%%%
+-- a string with holes: each hole displayed, or with `:?` debugged, and a string of its own in a hole
+name : String
+name = "world"
+
+("hello ${name}!", "${1 + 2} and ${(3, True):?}", "nested ${"x" ++ "${4}"}", "\${not a hole}", "${'c':?}")
+%%%
+-- comparisons: the prelude's PartialEq and PartialOrd, at its types and at one of our own
+data Size = Small | Large
+
+use Size.*
+
+rank : Size -> Int
+rank Small = 0
+rank Large = 1
+
+instance PartialEq Size where
+  x == y = rank x == rank y
+
+instance PartialOrd Size where
+  x < y = rank x < rank y
+
+(1 < 2, 3 >= 4, "a" <= "b", (1, 'c') == (1, 'c'), (1 :: Nil) != Nil, Small < Large, Large <= Small)
+%%%
+-- derived instances: rendered, compared and ordered by constructor, then fields
+@derive(Display, Debug, PartialEq, PartialOrd)
+data Shape a = Dot | Circle Int | Box a a
+
+@derive(Display, PartialEq)
+data Tree = Leaf | Node Tree Int Tree
+
+use Shape.*
+use Tree.*
+
+dot : Shape Int
+dot = Dot
+
+circle : Int -> Shape Int
+circle r = Circle r
+
+(display (Box "a" "b"), debug (Box "a" "b"), display (circle 3), dot == dot, circle 1 == circle 2, dot < circle 0, Box 2 1 < Box 1 2, display (Node Leaf 1 (Node Leaf 2 Leaf)), Node Leaf 1 Leaf != Leaf, "${Just 4} ${Ok 5 == Ok 5}")
+%%%
+-- Std's Ord: compare from <, min and max, and Nat's own instances
+use Std.Cmp (Ord, compare, min, max)
+use Std.Num.Nat (Nat, fromInt, toInt)
+
+(compare 1 2, compare "b" "a", min 3 9, max "a" "b", toInt (max (fromInt 2) (fromInt 5)), fromInt 1 < fromInt 2)
+%%%
+-- sized integers: a literal read at the type wanted, wrapping at the width, and division toward zero
+x : Int8
+x = 100
+
+big : UInt64
+big = toUInt64 (0 - 1)
+
+(x + 27 + 1, 1 + x, (0 : UInt8) - 1, (200 : UInt8) * 2, (0 - 7 : Int16) / 2, (0 - 7 : Int16) % 2, (70000 : Int32) * 70000, big, big / 2, big > 1)
+%%%
+-- floats: a point makes a Float, unless a Float32 is wanted; floor, and their text always with a fraction
+half : Float32
+half = 0.5
+
+area : Float -> Float
+area r = 3.25 * r * r
+
+(1.5 + 2.25, half * 3.0, area 2.0, 1.0 / 4.0, 2.5 < 2.0, floor (0.0 - 2.5), "${0.1 + 0.2} ${half:?}", 2.0 == 2.0)
+%%%
+-- conversions between number types, each keeping the low bits of what it narrows
+(toInt8 300, toUInt8 (0 - 1), toInt (toInt8 200), toFloat 3, toFloat32 (toFloat 7), toFloat64 (1.5 : Float32), toInt64 (5 : Int16), toUInt16 (toInt8 (0 - 1)), toFloat (toUInt64 (0 - 1)))
+%%%
+-- a literal pattern at a sized integer and at a float, and a sum that wraps
+name : UInt8 -> String
+name 0 = "zero"
+name 255 = "max"
+name n = "${n}"
+
+sign : Float -> Int
+sign 0.0 = 0
+sign x = if x < 0.0 then 0 - 1 else 1
+
+total : List Int8 -> Int8
+total Nil = 0
+total (x :: xs) = x + total xs
+
+(name 0, name 255, name 7, sign 0.0, sign (0.0 - 3.5), total (100 :: 27 :: 1 :: Nil))
+%%%
+-- implicit patterns: `{n}` names, or matches, the next implicit argument
+data Nat = Z | S Nat
+
+use Nat.*
+
+data Vec : Nat -> Type -> Type where
+  VNil : Vec Z a
+  VCons : a -> Vec n a -> Vec (S n) a
+
+use Vec.*
+
+len : {n : [] Nat} -> {a : Type} -> Vec n a -> Nat
+len {n} _ = n
+
+isZero : {n : [] Nat} -> Bool
+isZero {Z} = True
+isZero {S _} = False
+
+lenL : {n : [] Nat} -> Vec n Int -> Nat
+lenL = \{m} v -> m
+
+toList : {n : [] Nat} -> {a : Type} -> Vec n a -> List a
+toList {Z} _ = (Nil : List a)
+toList {S _} (VCons x xs) = x :: toList xs
+
+(len (VCons 1 (VCons 2 VNil)), isZero {Z}, isZero {S Z}, lenL (VCons 3 VNil), toList (VCons 1 (VCons 2 VNil)))
+%%%
+-- an auto pattern, `@{e}`, names the auto argument
+record Describe (a : Type) = { describe : a -> String }
+
+@hint
+describeInt : Describe Int
+describeInt = Describe { describe = \(n : Int) -> showInt n }
+
+shout : {a : Type} -> {auto d : Describe a} -> a -> String
+shout @{e} x = e.describe x ++ "!"
+
+shout 3
+%%%
+-- a type that keeps the instance it was made with
+use Std.Cmp (Ord)
+
+data Sorted (a : Type) (o : Ord a) = Sorted (List a)
+
+SortedBy : (a : Type) -> {auto o : Ord a} -> Type
+SortedBy a @{o} = Sorted a o
+
+s : SortedBy Int
+s = Sorted.Sorted (1 :: 2 :: Nil)
+
+s
+%%%
+-- a Std value that only a solved implicit argument carries: Std is linked
+use Std.Num.Nat (Nat)
+use Std.Num.Nat.Nat.*
+
+data Is : Nat -> Type where
+  It : Is (S Z)
+
+pick : {n : [] Nat} -> Is n -> Nat
+pick {n} _ = n
+
+pick Is.It
+%%%
+-- a function only a solved implicit argument calls is kept, not pruned
+data Nat = Z | S Nat
+
+use Nat.*
+
+data Proxy : Nat -> Type where
+  P : (n : [0] Nat) -> Proxy n
+
+twice : Nat -> Nat
+twice Z = Z
+twice (S n) = S (S (twice n))
+
+pick : {n : [] Nat} -> Proxy n -> Nat
+pick {n} _ = n
+
+f : Nat -> Nat
+f m = pick (Proxy.P (twice m))
+
+f (S Z)
+%%%
+-- maps and sets keyed in order, one of them by an order of its own
+use Std.Collections.Map (Map, MapBy)
+use Std.Collections.Map as Map
+use Std.Collections.Set (Set)
+use Std.Collections.Set as Set
+use Std.Cmp (Ord, compare)
+
+instance down : Ord Int where
+  compare x y = compare y x
+
+ages : Map String Int
+ages = Map.fromList (("grace", 45) :: ("ada", 36) :: ("alan", 41) :: Nil)
+
+d : MapBy Int down String
+d = Map.insert @{down} 1 "one" (Map.insert @{down} 3 "three" (Map.insert @{down} 2 "two" (Map.empty @{down})))
+
+seen : Set Int
+seen = Set.fromList (5 :: 1 :: 5 :: 3 :: Nil)
+
+(Map.toList ages, Map.lookup "alan" ages, Map.toList (Map.delete "ada" ages), Map.toList d, Map.lookup 3 d, Set.toList seen, Set.member 4 seen)
+%%%
+-- an associated type: a trait's field that is a type, which each instance gives
+trait Container (c : Type) where
+  Elem : Type
+  empty : c
+  insert : Elem -> c -> c
+  toList : c -> List Elem
+
+instance Container (List Int) where
+  Elem = Int
+  empty = Nil
+  insert x xs = x :: xs
+  toList xs = xs
+
+record Bag = { items : List String }
+
+instance Container Bag where
+  Elem = String
+  empty = Bag { items = Nil }
+  insert x b = Bag { items = x :: b.items }
+  toList b = b.items
+
+firstOr : {c : Type} -> {auto d : Container c} -> Elem c -> c -> Elem c
+firstOr d xs = case toList xs of
+  Nil -> d
+  (x :: rest) -> x
+
+e : Elem Bag
+e = "an element"
+
+(toList (insert 1 (insert 2 (empty : List Int))), toList (insert "a" (empty : Bag)), firstOr 0 (empty : List Int), e)
+%%%
+-- hashes as Meadow's `hash` gives them, and bits at each width
+use Std.Hash (Hash, hash)
+use Std.Num.Bits (Bits, bitAnd, bitOr, bitXor, bitNot, shl, shr, ushr, popCount)
+
+(hash 5, hash "ab", hash 'x', hash True, hash 2.5, hash (toUInt8 5), hash (toUInt64 (0 - 1)), hash (1 :: 2 :: Nil), shl 1 3, popCount 255, ushr (0 - 1) 60, bitAnd (toUInt8 300) (toUInt8 15), shr (toInt8 (0 - 128)) 7, ushr (toInt8 (0 - 128)) 7, bitNot (toUInt16 0), shl (toUInt8 129) 1, shl 1 65)
+%%%
+-- a hash map: a trie of the keys' hashes, and keys whose hashes collide told apart with `==`
+use Std.Collections.HashMap (HashMap, HashMapBy)
+use Std.Collections.HashMap as HashMap
+use Std.Collections.Vector as V
+use Std.Hash (Hash, hash)
+
+instance same : Hash Int where
+  hash x = 7
+
+ages : HashMap String Int
+ages = HashMap.fromList (("ada", 36) :: ("grace", 45) :: ("alan", 41) :: Nil)
+
+squares : HashMap Int Int
+squares = V.foldl (\m i -> HashMap.insert i (i * i) m) HashMap.empty (V.range 0 100)
+
+clash : HashMapBy Int same String
+clash = HashMap.insert @{same} 2 "two" (HashMap.insert @{same} 1 "one" (HashMap.empty @{same}))
+
+(HashMap.lookup "ada" ages, HashMap.lookup "bob" ages, HashMap.size (HashMap.delete "alan" ages), HashMap.lookup 9 squares, HashMap.size squares, HashMap.foldl (\acc k v -> acc + v) 0 squares, HashMap.lookup 2 clash, HashMap.toList (HashMap.delete @{same} 2 clash))
+%%%
+@linear
+
+-- an associated type declared in a linear module: its accessor's parameters only say which instance
+trait Container (c : Type) where
+  Elem : Type
+  empty : c
+  insert : Elem -> c -> c
+  toList : c -> List Elem
+
+instance Container (List Int) where
+  Elem = Int
+  empty = Nil
+  insert x xs = x :: xs
+  toList xs = xs
+
+e : Elem (List Int)
+e = 3
+
+toList (insert e (empty : List Int))
+%%%
+-- Std's effect modules: a seeded generator, a clock of one's own, assertions and streams
+use Std.Random (withSeed, between, shuffle)
+use Std.Time (withTickingClock, formatTimestamp, formatNanos)
+use Std.Test (assertEq, failure)
+use Std.Stream as St
+use Std.Collections.Vector as V
+
+(withSeed 42 (\u -> between 1 7), V.toList (withSeed 11 (\u -> shuffle (V.range 1 6))), withTickingClock 1789405445123 1000 (\u -> let a = now () in formatTimestamp (now ())), formatNanos 999600, failure (\u -> assertEq (1 :: Nil) (2 :: Nil) "lists"), St.sum (\u -> St.map (\x -> x * x) (\v -> St.range 1 4)))
+%%%
+-- byte arrays: to and from strings and hex, and wider integers read and written by their bytes
+use Std.Bytes
+
+b : Array UInt8
+b = #[0x34; 0x12; 0xff]
+
+(bytesToHex (stringToBytes "hé!"), bytesToString (stringToBytes "hé"), bytesFromHex "0aFf", bytesFromHex "abc", bytesGetU16LE b 0, bytesGetU16BE b 0, bytesToHex (bytesSetU32BE (stringToBytes "abcd") 0 305419896), bytesGetU64LE (bytesSetU64LE (stringToBytes "12345678") 0 (toUInt64 (0 - 1))) 0)
+%%%
+-- parser combinators: what they found and wanted, and a small expression language with its lexemes
+use Std.String.Parse as P
+use Std.String.Parse (Parser, ParseError)
+use Std.String.Parse.Char as C
+use Std.String.Parse.Lexer as L
+use Std.Char (isDigit)
+use Std.String as S
+
+errorOf : {a : Type} -> (r : Result (ParseError String) a) -> String
+errorOf (Ok x) = "no error"
+errorOf (Err e) = S.trimEnd (P.parseErrorTextPretty e)
+
+sc : Parser String ()
+sc = L.space C.space1 (L.skipLineComment "--") (P.empty : Parser String ())
+
+number : Parser String Int
+number = L.lexeme sc L.decimal
+
+minus : Parser String (Int -> Int -> Int)
+minus = P.mapTo (\(a : Int) (b : Int) -> a - b) (L.symbol sc "-")
+
+times : Parser String (Int -> Int -> Int)
+times = P.mapTo (\(a : Int) (b : Int) -> a * b) (L.symbol sc "*")
+
+expr : Parser String Int
+expr = P.chainl1 (P.chainl1 number times) minus
+
+(P.runParser (P.thenSkip (P.skipThen sc expr) P.eof) " 10 - 2 * 3 -- a comment\n - 1", errorOf (P.runParser (P.alt (P.single 'a') (P.single 'b')) "c"), errorOf (P.runParser (P.thenSkip (P.many (P.label "a digit" (P.satisfy isDigit))) P.eof) "12x"), P.parse (P.skipThen (P.chunk "let x = ") (P.chunk "1")) "let x = y", P.runParser L.hexadecimal "fF", P.runParser L.float "2.5e-1")
+%%%
+-- JSON: read (by the scanner, or by the grammar where the scanner gives up), looked into, and written out
+use Std.Json as J
+use Std.Json (Json)
+use Std.Collections.Vector as V
+
+parsed : (text : String) -> Json
+parsed text = case J.parse text of
+  Ok v -> v
+  Err e -> Json.String e
+
+doc : Json
+doc = parsed " {\"name\": \"Idyll\", \"tags\": [\"graded\", \"dependent\"], \"version\": 0.1, \"big\": 1234567890123456789012, \"esc\": \"tab\\there \\u00e9\\ud83d\\ude00\"} "
+
+(J.render doc, J.path (V.fromList ("tags" :: Nil)) doc == Just (parsed "[\"graded\",\"dependent\"]"), J.asString (parsed "\"a\\\"b\""), J.parse "[1, 2,]", J.parseSpanned "{\"k\" 1}", J.renderIndented (parsed "{\"a\":[1,{}],\"b\":null}"))
+%%%
+-- a derived instance for a field whose type names nothing: the error, once, and no search for what it wants
+@derive(Debug, PartialEq)
+data J = N | O (Maybe Foo) | P (List (Foo, Int))
+
+1
+%%%
+-- shared cells: a union-find of type variables, a knot tied through a cell, and Std.Ref's helpers
+use Std.Ref (modify, swap, bump, repeatN)
+
+data Ty = TInt | TArrow Ty Ty | TVar (Ref Tv)
+
+data Tv = Unbound Int | Link Ty
+
+use Ty.*
+use Tv.*
+
+@terminating
+shown : (t : Ty) -> String ! Mut
+shown TInt = "Int"
+shown (TArrow a b) = "(" ++ shown a ++ " -> " ++ shown b ++ ")"
+shown (TVar r) = case getRef r of
+  Unbound n -> "t" ++ showInt n
+  Link t -> shown t
+
+tied : (n : Int) -> Int ! Mut
+tied n =
+  let cell = newRef {Int -> Int ! Mut} (\(k : Int) -> 0) in
+  let f = \(k : Int) -> if k <= 0 then 0 else k + (getRef cell) (k - 1) in
+  let u = setRef cell f in
+  f n
+
+check : () -> (String, String, Int, Int, Int, Int) ! Mut
+check u =
+  let a = newRef (Unbound 0) in
+  let b = newRef (Unbound 1) in
+  let t = TArrow (TVar a) (TArrow (TVar b) (TVar a)) in
+  let before = shown t in
+  let x = setRef a (Link TInt) in
+  let y = setRef b (Link (TVar a)) in
+  let c = newRef 1 in
+  let ignored = repeatN 5 (\(v : ()) -> modify c (\(k : Int) -> k * 2)) in
+  let old = swap c 100 in
+  (before, shown t, tied 10, old, bump c 1, getRef c)
+
+check ()
+%%%
+-- Std.St, linear: cells and arrays written in place, each step giving them back, as Meadow's tests of it
+use Std.St as St
+use Std.St (StRef, StArray)
+use Std.Collections.Vector as V
+use Std.Collections.Vector (Vector)
+
+sumTo : (n : Int) -> Int
+sumTo n = St.value (St.forRange 1 (n + 1) (\(i : [] Int) (r : StRef Int) -> St.modifyRef r (\(t : [] Int) -> t + i)) (St.newRef 0))
+
+reversed : (v : Vector Int) -> Vector Int
+reversed v = case St.length (St.fromVec v) of
+  (bn, a) -> let [n] = bn in let [v] = St.toVec (St.forRange 0 (n / 2) (\(i : [] Int) (m : StArray Int) -> St.swap m i (n - 1 - i)) a) in v
+
+fibStep : (i : [] Int) -> (m : StArray Int) -> StArray Int
+fibStep i m = case St.get m (i - 1) of
+  (b1, m2) -> case St.get m2 (i - 2) of
+    (b2, m3) -> let [x] = b1 in let [y] = b2 in St.set m3 i (x + y)
+
+fibs : (n : Int) -> Vector Int
+fibs n =
+  let start = St.newArray n 0 in
+  let seeded = if n > 1 then St.set start 1 1 else start in
+  let [v] = St.toVec (St.forRange 2 n fibStep seeded) in v
+
+below : (k : [] Int) -> (r : StRef Int) -> (Bool [], StRef Int)
+below k r = case St.getRef r of
+  (b, r2) -> let [x] = b in ([x < k], r2)
+
+counted : () -> Int ! Div
+counted u = St.value (St.while (below 5) (\(r : StRef Int) -> St.modifyRef r (\(x : [] Int) -> x + 1)) (St.newRef 0))
+
+shared : Array Int
+shared = #[1; 2; 3]
+
+(sumTo 100, V.toList (reversed (V.fromList (1 :: 2 :: 3 :: 4 :: 5 :: Nil))), V.toList (reversed V.empty), V.toList (fibs 10), St.freeze (St.set (St.thaw shared) 0 99), shared, counted ())
+%%%
+-- linear types: a value of one used twice, given to what may share it, put in a shared cell; a data type holding one
+use Std.Collections.MArray (MArray, new, write, freeze, read)
+
+dup : {a : Type} -> (x : [] a) -> (a, a)
+dup x = (x, x)
+
+-- a data type of the program's own, holding an array: linear itself
+data Grid = Grid (MArray Int) Int
+
+use Grid.*
+
+poke : (g : Grid) -> Grid
+poke (Grid m n) = Grid (write m 0 n) (n + 1)
+
+done : (g : Grid) -> Array Int
+done (Grid m n) = freeze m
+
+shared : () -> Array Int
+shared u = let g = poke (Grid (new 2 0) 7) in let h = g in done h
+
+bad1 : () -> (MArray Int, MArray Int)
+bad1 u = dup (new 2 0)
+
+bad2 : () -> Ref (MArray Int) ! Mut
+bad2 u = newRef (new 2 0)
+
+bad3 : () -> (Grid, Grid)
+bad3 u = let g = Grid (new 1 0) 0 in (g, g)
+
+ok1 : () -> Maybe (MArray Int)
+ok1 u = Just (new 1 0)
+
+ok2 : () -> List (MArray Int)
+ok2 u = new 1 0 :: new 2 0 :: Nil
+
+done (poke (poke (Grid (new 2 0) 7)))
+%%%
+-- a linear value used twice through a let, which would see a write in place
+use Std.Collections.MArray (MArray, new, write, freeze)
+
+f : () -> (Array Int, Array Int)
+f u = let m = new 2 0 in (freeze (write m 0 1), freeze m)
+
+f ()
+%%%
+-- literals in generic code: read through the type's Integer (Floating) instance, fromInt (fromFloat)
+@terminating
+factorial : {n : Type} -> Integer n => PartialEq n => Sub n => Mul n => (k : [] n) -> n
+factorial k = if k == 0 then 1 else k * factorial (k - 1)
+
+half : {f : Type} -> Floating f => Divide f => (x : [] f) -> f
+half x = x / 2.0
+
+(factorial 20, factorial (toUInt8 5), factorial (toInt16 7), half 3.0, half (toFloat32 1.0))
+%%%
+-- a literal at a type variable is read through the prelude's fromInt, whatever other fromInt Std has (Std.String's, Std.Num.Nat's)
+use Std.String as S
+
+triple : {n : Type} -> Integer n => Mul n => (k : [] n) -> n
+triple k = 3 * k
+
+(triple 14, triple (toUInt8 100), S.fromInt 7)
+%%%
+-- handlers that take part of the console and pass the rest on: what is read given by withInput, what is written kept by withOutput
+use Std.Console (println, prompt, withInput, withOutput)
+use Std.Collections.Vector as V
+
+greet : () -> Int ! Console
+greet u = case prompt "name: " of
+  Just name -> let w = println ("hello, " ++ name) in 1
+  Nothing -> 0
+
+(withOutput (\(u : ()) -> withInput (V.fromList ("ada" :: Nil)) greet), withOutput (\(u : ()) -> withInput V.empty greet))
+%%%
+-- @test on a definition: a test idyll test runs, and an ordinary definition to everything else
+use Std.Test (assertEq)
+
+double : (n : Int) -> Int
+double n = n * 2
+
+@test
+doubles : () -> () ! Test
+doubles u = assertEq (double 21) 42 "forty-two"
+
+double 4
+%%%
+-- a named hole: a goal left for later, a warning with its type, and a program that never reaches it runs
+double : Int -> Int
+double n = ?twice
+
+1 + 2
+%%%
+-- a goal reached stops the program, saying so on standard error, with exit status 1
+pick : (b : Bool) -> (x : Int) -> Int
+pick b x = if b then x else ?other
+
+pick False 3
+%%%
+-- a goal takes the type wanted where it is, inferred where nothing is wanted
+both : (a : Int) -> (b : Bool) -> String
+both a b = let c = a + 1 in ?here
+
+(both 1 True, ?anything)
+%%%
+-- a goal is not a pattern
+f : Int -> Int
+f ?x = 1
+
+f 2

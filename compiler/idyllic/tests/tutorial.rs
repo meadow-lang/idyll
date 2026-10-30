@@ -33,6 +33,8 @@ use tutorial_examples::examples;
 
 #[test]
 fn every_tutorial_example_behaves_as_shown() {
+    // what does not end is stopped sooner than the REPL stops it
+    std::env::set_var("IDYLL_TIMEOUT", "5");
     let markdown = include_str!("../../../TUTORIAL.md").replace("\r\n", "\n");
     let examples = examples(&markdown);
     assert!(examples.len() > 85, "only found {} examples; has the format changed?", examples.len());

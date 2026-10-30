@@ -278,3 +278,39 @@ fn the_cache_can_be_turned_off() {
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 3);
     assert!(run("1").contains(RAN), "and read back");
 }
+
+/// Every file under `dir` whose name has `part` in it.
+fn files_with(dir: &Path, part: &str) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            out.extend(files_with(&p, part));
+        } else if p.file_name().is_some_and(|n| n.to_string_lossy().contains(part)) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+#[test]
+fn a_package_of_several_parts_keeps_each_and_rebuilds_from_them() {
+    let root = scratch("parts").join("Mods");
+    write(&root.join("Idyll.toml"), "[package]\nname = \"Mods\"\n");
+    write(&root.join("src/Main.idl"), "use Even (even)\nuse Words (word)\n\nmain : () -> () ! {Eff, Div}\nmain () = putStrLn \"${even 4} ${word}\"\n");
+    write(&root.join("src/Even.idl"), "use Odd (odd)\n\n@pub\neven : Int -> Bool ! Div\neven 0 = True\neven n = odd (n - 1)\n");
+    write(&root.join("src/Odd.idl"), "use Even (even)\n\n@pub\nodd : Int -> Bool ! Div\nodd 0 = False\nodd n = even (n - 1)\n");
+    write(&root.join("src/Words.idl"), "@pub\nword : String\nword = \"one\"\n");
+    let run = || {
+        let out = pipeline::build_each(&[root.as_path()], Profile::Debug, &common::OPTS);
+        let said: Vec<String> = out.problem.iter().map(|p| p.msg.clone()).chain(out.reported.iter().flat_map(common::messages)).collect();
+        assert!(said.is_empty(), "{said:?}");
+        common::printed(&out.each[0])
+    };
+    assert_eq!(run(), "True one\n");
+    // the parts that are not the root's: `Even` and `Odd` together, `Words`
+    assert_eq!(files_with(&root.join("target"), ".part-").len(), 2);
+    write(&root.join("src/Words.idl"), "@pub\nword : String\nword = \"two\"\n");
+    assert_eq!(run(), "True two\n");
+    assert_eq!(files_with(&root.join("target"), ".part-").len(), 2);
+}

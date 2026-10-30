@@ -1,0 +1,21 @@
+-- | @linear
+-- | 
+-- | -- an associated type declared in a linear module: its accessor's parameters only say which instance
+-- | trait Container (c : Type) where
+-- |   Elem : Type
+-- |   empty : c
+-- |   insert : Elem -> c -> c
+-- |   toList : c -> List Elem
+-- | 
+-- | instance Container (List Int) where
+-- |   Elem = Int
+-- |   empty = Nil
+-- |   insert x xs = x :: xs
+-- |   toList xs = xs
+-- | 
+-- | e : Elem (List Int)
+-- | e = 3
+-- | 
+-- | toList (insert e (empty : List Int))
+answer: 3 :: Nil
+exit: 0

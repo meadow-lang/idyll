@@ -100,6 +100,8 @@ struct Matcher {
     arg_types: Vec<VTy>,
     /// the slots matching bound that no pattern named
     unnamed: std::collections::HashSet<Lvl>,
+    /// the signature's names for the implicit binders no pattern takes
+    quantified: Vec<hir::Ident>,
     /// Something was wrong, and has been reported.  Coverage and usage then
     /// say nothing: the missing cases would be the ones the error hid.
     failed: bool,
@@ -142,13 +144,16 @@ type Telescope = Vec<(Lvl, usize, String, Rc<Value>)>;
 impl Checker {
     /// A function defined by equations, against its type.
     pub(super) fn elab_match(&mut self, ctx: &Ctx, nid: NodeId, clauses: &[hir::Clause], goal: VTy) -> (Rc<Core>, Usage) {
-        let arity = clauses.first().map_or(0, |c| c.pats.len());
+        // (an implicit pattern, `{p}`, is for an argument written nowhere,
+        // so does not count)
+        let arity = clauses.first().map_or(0, |c| explicit_patterns(&c.pats));
         let mut problems = Vec::new();
         for (index, clause) in clauses.iter().enumerate() {
-            if clause.pats.len() == arity {
+            let given = explicit_patterns(&clause.pats);
+            if given == arity {
                 problems.push(Problem::new(clause, index, &clause.pats, Vec::new()));
             } else {
-                self.error(clause.id, TypeErrorKind::ClauseArity { expected: arity, given: clause.pats.len() });
+                self.error(clause.id, TypeErrorKind::ClauseArity { expected: arity, given });
             }
         }
         // without the equation that was dropped, coverage would be wrong
@@ -160,7 +165,7 @@ impl Checker {
     /// worked out from them, starting from nothing but how many arguments
     /// it takes.
     pub(super) fn infer_match(&mut self, ctx: &Ctx, nid: NodeId, clauses: &[hir::Clause]) -> (Rc<Core>, VTy, Usage) {
-        let arity = clauses.first().map_or(0, |c| c.pats.len());
+        let arity = clauses.first().map_or(0, |c| explicit_patterns(&c.pats));
         let mut under = ctx.clone();
         let mut doms = Vec::new();
         for _ in 0..arity {
@@ -279,6 +284,7 @@ impl Checker {
             args,
             arg_types,
             unnamed: Default::default(),
+            quantified: std::mem::take(&mut self.quantified),
             failed,
         };
         let (core, usage) = self.tree(&mut m, ctx, problems, goal.clone());
@@ -328,27 +334,53 @@ impl Checker {
         let goal = self.force(goal);
         match &*goal {
             Value::Pi { name, icit, grade, dom, cod, .. } => {
-                let key = self.fresh_key();
                 let lvl = ctx.lvl;
+                // an implicit binder no pattern takes, which the signature
+                // names: bound as that name
+                let taken = problems.iter().any(|p| p.pending.first().and_then(|q| takes(q, *icit)).is_some());
+                let quantified = match m.quantified.iter().position(|x| x.text == *name) {
+                    Some(i) if *icit != Icit::Explicit && !taken => Some(m.quantified.remove(i)),
+                    _ => None,
+                };
+                let key = quantified.as_ref().and_then(|x| x.unique).unwrap_or_else(|| self.fresh_key());
                 // named after the first equation to name it (an implicit
-                // argument has no pattern)
-                let named = problems.iter().find_map(|p| match &p.pending[0].kind {
-                    PatKind::Var(x) | PatKind::As(x, _) if *icit == Icit::Explicit => Some(x.text.clone()),
+                // argument may have no pattern)
+                let named = problems.iter().find_map(|p| match p.pending.first().and_then(|q| takes(q, *icit)).map(|q| &q.kind) {
+                    Some(PatKind::Var(x) | PatKind::As(x, _)) => Some(x.text.clone()),
                     _ => None,
                 });
                 if named.is_none() && name == "_" {
                     m.unnamed.insert(ctx.lvl);
                 }
                 let hint = named.unwrap_or_else(|| if name != "_" { name.clone() } else { "x".to_string() });
-                let ctx2 = ctx.bind_keyed(key, &hint, dom.clone(), Some(grade.clone()));
-                if *icit == Icit::Explicit {
-                    let ty = self.quote(ctx.lvl, dom.clone());
-                    for p in &mut problems {
-                        let (pat, rest) = p.pending.split_first().expect("every clause has as many patterns");
-                        p.pending = rest;
-                        self.record(pat.id, ty.clone());
-                        p.constraints.push((pat, Target::Slot(lvl)));
-                    }
+                let ctx2 = match &quantified {
+                    Some(x) => ctx.bind(Some(x), &hint, dom.clone()).graded(grade),
+                    None => ctx.bind_keyed(key, &hint, dom.clone(), Some(grade.clone())),
+                };
+                // an auto argument is one a search inside may find
+                let ctx2 = if *icit == Icit::Auto { ctx2.auto_bound() } else { ctx2 };
+                let ty = self.quote(ctx.lvl, dom.clone());
+                // a clause's next pattern, if it is for this binder: an
+                // explicit one for an explicit argument, `{p}` for an
+                // implicit one and `@{p}` for an auto one (and one in braces
+                // where an explicit argument is, misplaced)
+                for p in &mut problems {
+                    let Some((pat, rest)) = p.pending.split_first() else { continue };
+                    let q = match takes(pat, *icit) {
+                        Some(q) => q,
+                        None if *icit == Icit::Explicit => {
+                            self.error(pat.id, TypeErrorKind::MisplacedImplicitPattern);
+                            m.failed = true;
+                            let PatKind::Implicit(_, q) = &pat.kind else { unreachable!("only an implicit pattern is not taken") };
+                            q
+                        }
+                        None => continue,
+                    };
+                    p.pending = rest;
+                    self.record(pat.id, ty.clone());
+                    p.constraints.push((q, Target::Slot(lvl)));
+                }
+                if *icit == Icit::Explicit || taken {
                     m.args.push(lvl);
                     m.arg_types.push(dom.clone());
                 }
@@ -394,7 +426,12 @@ impl Checker {
 
     fn too_many_patterns(&mut self, m: &mut Matcher, ctx: &Ctx, problems: &[Problem<'_>], goal: VTy) -> (Rc<Core>, Usage) {
         let ty = self.quote(ctx.lvl, goal);
-        self.error(problems[0].pending[0].id, TypeErrorKind::TooManyPatterns(ty));
+        let pat = &problems[0].pending[0];
+        let kind = match pat.kind {
+            PatKind::Implicit(..) => TypeErrorKind::MisplacedImplicitPattern,
+            _ => TypeErrorKind::TooManyPatterns(ty),
+        };
+        self.error(pat.id, kind);
         m.failed = true;
         (Rc::new(Core::Error), Usage::unknown())
     }
@@ -419,6 +456,12 @@ impl Checker {
                     p.bindings.push((pat.id, x, target.clone()));
                     p.constraints[i] = (q, target);
                 }
+                // (an implicit pattern meets an implicit binder in `intro`:
+                // one here is where no implicit argument is)
+                PatKind::Implicit(..) => {
+                    self.error(pat.id, TypeErrorKind::MisplacedImplicitPattern);
+                    return Step::Failed;
+                }
                 PatKind::Dot(e) => {
                     p.dots.push((e, target));
                     p.constraints.remove(i);
@@ -428,8 +471,15 @@ impl Checker {
                     return Step::Failed;
                 }
                 PatKind::Lit(lit) => {
-                    let want = Rc::new(Value::LitTy(super::core::lit_builtin(lit)));
                     let ty = self.target_type(ctx, &target);
+                    // a number is read at the type of what it is matched
+                    // against, as it is anywhere else (see `literals`)
+                    let read = match &*self.force(ty.clone()) {
+                        Value::LitTy(b) if super::literals::reads_as(lit, *b) => self.read_number(pat.id, lit, *b),
+                        _ => lit.clone(),
+                    };
+                    let lit = &read;
+                    let want = Rc::new(Value::LitTy(super::core::lit_builtin(lit)));
                     if !self.unify(ctx.lvl, ty.clone(), want.clone()) {
                         let (expected, actual) = (self.quote(ctx.lvl, ty), self.quote(ctx.lvl, want));
                         self.error(pat.id, TypeErrorKind::Mismatch { expected, actual });
@@ -458,10 +508,15 @@ impl Checker {
                 PatKind::Con(..) | PatKind::SeqNil | PatKind::SeqCons(_) => {
                     let (cu, args): (usize, &'a [hir::Pattern]) = match &pat.kind {
                         // the renamer reported an unknown name already
-                        PatKind::Con(c, args) => match c.unique {
-                            Some(cu) => (cu, args),
-                            None => return Step::Failed,
-                        },
+                        PatKind::Con(c, args) => {
+                            // a name with several meanings: the one of the
+                            // type matched against
+                            let ty = self.target_type(ctx, &target);
+                            match self.pattern_ctor(ctx, pat, c, &ty) {
+                                Some(cu) => (cu, args),
+                                None => return Step::Failed,
+                            }
+                        }
                         // `#[p, q]`: taken apart with the constructors of
                         // what it is matched against
                         _ => {
@@ -523,8 +578,9 @@ impl Checker {
     /// not merely an unreachable clause.
     fn plausible(&mut self, ctx: &Ctx, m: &Matcher, clause: &hir::Clause) -> bool {
         for (pat, ty) in clause.pats.iter().zip(&m.arg_types) {
-            let PatKind::Con(c, _) = &peel(pat).kind else { continue };
-            let Some(u) = c.unique else { return false };
+            let pat = peel(pat);
+            let PatKind::Con(c, _) = &pat.kind else { continue };
+            let Some(u) = self.pattern_ctor(ctx, pat, c, ty) else { return false };
             let Some(info) = self.ctors.get(&u) else {
                 self.error(pat.id, TypeErrorKind::NotAConstructor(c.text.clone()));
                 return false;
@@ -668,7 +724,8 @@ impl Checker {
             CaseAlt { head: Head::Bool(true), name: "True".into(), vars: Vec::new(), body: e_c },
             CaseAlt { head: Head::Bool(false), name: "False".into(), vars: Vec::new(), body: f_c },
         ];
-        (Rc::new(Core::Case(g_c, Rc::new(alts))), g_usage + e_usage.join(f_usage))
+        let either = self.join_usage(m.node, e_usage, f_usage);
+        (Rc::new(Core::Case(g_c, Rc::new(alts))), g_usage + either)
     }
 
     /// Branch on the variable in slot `k`.
@@ -685,18 +742,33 @@ impl Checker {
         let used = self.split_use(ctx, k);
         let mut forced = false;
         let mut alts = Vec::new();
-        let mut usage: Option<Usage> = None;
-        let mut join = |u: Usage| {
-            usage = Some(match usage.take() {
-                None => u,
-                Some(v) => v.join(u),
-            })
-        };
+        // the alternatives' usages, joined once they are all known
+        let mut parts: Vec<Usage> = Vec::new();
+        let mut join = |u: Usage| parts.push(u);
         match how {
             Split::Lit(lit) => {
+                // a character is compared by its code point
+                let (scrutinee, against) = match &lit {
+                    Lit::Char(c) => match self.native_unique(idyllic_builtins::Native::CharCode) {
+                        Some(u) => (
+                            Rc::new(Core::App(Rc::new(Core::Opaque(u, "charCode".into())), scrutinee)),
+                            Lit::Int(i64::from(u32::from(*c))),
+                        ),
+                        None => (scrutinee, lit.clone()),
+                    },
+                    _ => (scrutinee, lit.clone()),
+                };
+                // a sized integer or a float by its type's own equality
+                let eq = match super::core::lit_builtin(&lit).number() {
+                    Some(n @ (idyllic_builtins::NumTy::Word(_) | idyllic_builtins::NumTy::Float | idyllic_builtins::NumTy::Float32)) => {
+                        let native = idyllic_builtins::Native::Num(idyllic_builtins::NumOp::Eq, n);
+                        self.native_unique(native).map(|u| Rc::new(Core::Opaque(u, native.name().into())))
+                    }
+                    _ => None,
+                };
                 let test = Rc::new(Core::App(
-                    Rc::new(Core::App(Rc::new(Core::Prim(Prim::IntEq)), scrutinee)),
-                    Rc::new(Core::Lit(lit.clone())),
+                    Rc::new(Core::App(eq.unwrap_or_else(|| Rc::new(Core::Prim(Prim::IntEq))), scrutinee)),
+                    Rc::new(Core::Lit(against)),
                 ));
                 let is = Rc::new(Value::Lit(lit.clone()));
                 let (yes, yes_usage) = match self.unify_indices(ctx, vec![(ctx.value(k), is)]) {
@@ -714,7 +786,8 @@ impl Checker {
                     CaseAlt { head: Head::Bool(true), name: "True".into(), vars: Vec::new(), body: yes },
                     CaseAlt { head: Head::Bool(false), name: "False".into(), vars: Vec::new(), body: no },
                 ];
-                return (Rc::new(Core::Case(test, Rc::new(alts))), used + yes_usage.join(no_usage));
+                let both = self.join_usage(m.node, yes_usage, no_usage);
+                return (Rc::new(Core::Case(test, Rc::new(alts))), used + both);
             }
             Split::Con => {
                 let ty = self.force(ctx.binders[k].ty.clone());
@@ -768,7 +841,14 @@ impl Checker {
                                         u = Usage::unknown();
                                     }
                                     let whole = (!m.unnamed.contains(&k)).then(|| ctx.binders[k].name.clone());
-                                    for (_, key, hint, grade) in delta.iter().rev() {
+                                    for (lvl, key, hint, grade) in delta.iter().rev() {
+                                        // a field that is a type (an associated type) is
+                                        // read off as often as wanted: a type has nothing at
+                                        // run time but its descriptor, kept all the same
+                                        if matches!(*self.force(ctx2.binders[*lvl].ty.clone()), Value::Type(_)) {
+                                            u.take(Some(*key));
+                                            continue;
+                                        }
                                         self.leave_field(&ctx2, m.node, (*key, hint), grade.clone(), &mut u, whole.clone());
                                     }
                                     join(u);
@@ -792,6 +872,7 @@ impl Checker {
                 }
             }
         }
+        let usage = parts.into_iter().reduce(|a, b| self.join_usage(m.node, a, b));
         let case = Rc::new(Core::Case(scrutinee, Rc::new(alts)));
         match forced {
             true => (Rc::new(Core::Runtime(Note::Forced, case)), usage.unwrap_or_else(Usage::none)),
@@ -811,7 +892,7 @@ impl Checker {
         whole: Option<String>,
     ) {
         let used = usage.take(Some(key));
-        if usage.is_unknown() || self.grade_fits(ctx, &used, allowed.clone()) {
+        if usage.is_unknown() || self.fits_or_waits(ctx, node, name, &used, allowed.clone(), Some(whole.clone())) {
             return;
         }
         let used = self.quote(ctx.lvl, used.into_value());
@@ -821,9 +902,15 @@ impl Checker {
     }
 
     /// How often a slot may be used, if known; otherwise as an unannotated
-    /// binder may be (as often as wanted, or once in a linear module).
-    fn slot_grade(&self, ctx: &Ctx, k: Lvl) -> Rc<Value> {
-        ctx.binders[k].grade.clone().unwrap_or_else(|| Poly::constant(self.default_grade()).into_value())
+    /// binder may be (as often as wanted, or once in a linear module), but
+    /// once for a value of a linear type (see [`super::linear`]).
+    fn slot_grade(&mut self, ctx: &Ctx, k: Lvl) -> Rc<Value> {
+        if let Some(g) = &ctx.binders[k].grade {
+            return g.clone();
+        }
+        let ty = ctx.binders[k].ty.clone();
+        let g = if self.is_linear(&ty) { Grade::ONE } else { self.default_grade() };
+        Poly::constant(g).into_value()
     }
 
     /// Whether no value of a type has fields: a literal's type, or a data
@@ -837,16 +924,18 @@ impl Checker {
     }
 
     /// Whether a slot is erased: its grade is known to be `0`.
-    fn erased_slot(&self, ctx: &Ctx, k: Lvl) -> bool {
-        self.to_poly(self.slot_grade(ctx, k)).as_constant().is_some_and(|g| g.is_zero())
+    fn erased_slot(&mut self, ctx: &Ctx, k: Lvl) -> bool {
+        let g = self.slot_grade(ctx, k);
+        self.to_poly(g).as_constant().is_some_and(|g| g.is_zero())
     }
 
     /// What splitting slot `k` uses of it: all of it, since its fields come
     /// out with its grade.  Except that a value that is not there at run
     /// time (grade `0`) cannot be looked at, and looking is a use.
-    fn split_use(&self, ctx: &Ctx, k: Lvl) -> Usage {
+    fn split_use(&mut self, ctx: &Ctx, k: Lvl) -> Usage {
         let Some(key) = ctx.binders[k].key else { return Usage::none() };
-        let grade = self.to_poly(self.slot_grade(ctx, k));
+        let grade = self.slot_grade(ctx, k);
+        let grade = self.to_poly(grade);
         match grade.as_constant() {
             Some(g) if g.is_zero() => Usage::var(key),
             _ => Usage::var(key).scale(&grade),
@@ -862,8 +951,12 @@ impl Checker {
     /// the variable in slot `k` with `c` applied to them, indices and all.
     fn instantiate(&mut self, ctx: &Ctx, k: Lvl, c: usize, hints: &[Option<String>]) -> (Ctx, Telescope, Unified) {
         let mut cty = self.constants[&c].clone();
-        // the fields of a value have its grade
+        // the fields of a value have its grade; but a value of a linear type
+        // is used once only for its fields of linear types, the rest being
+        // copied out of it as often as wanted (see [`super::linear`])
         let whole = self.slot_grade(ctx, k);
+        let slot_ty = ctx.binders[k].ty.clone();
+        let linear_slot = self.is_linear(&slot_ty) && self.constant(&whole).is_some_and(|g| !g.is_zero());
         let mut inner = ctx.clone();
         let mut delta = Vec::new();
         for hint in hints {
@@ -872,7 +965,9 @@ impl Checker {
             let hint = hint.clone().unwrap_or_else(|| if name == "_" { "x".to_string() } else { name.clone() });
             let key = self.fresh_key();
             let lvl = inner.lvl;
-            let grade = (&self.to_poly(grade.clone()) * &self.to_poly(whole.clone())).into_value();
+            let (grade, dom) = (grade.clone(), dom.clone());
+            let whole = if linear_slot && !self.is_linear(&dom) { Poly::constant(self.default_grade()).into_value() } else { whole.clone() };
+            let grade = (&self.to_poly(grade) * &self.to_poly(whole)).into_value();
             inner = inner.bind_keyed(key, &hint, dom.clone(), Some(grade.clone()));
             delta.push((lvl, key, hint.clone(), grade));
             cty = self.apply(cod, vvar(lvl, hint));
@@ -905,8 +1000,9 @@ impl Checker {
             if !self.targets_slot(ctx, target, k) {
                 return None;
             }
-            let PatKind::Con(c2, args) = &peel(pat).kind else { return None };
-            if c2.unique != Some(c) || i < params {
+            let pat = peel(pat);
+            let PatKind::Con(c2, args) = &pat.kind else { return None };
+            if self.pattern_unique(pat, c2) != Some(c) || i < params {
                 return None;
             }
             match &peel(args.get(i - params)?).kind {
@@ -924,7 +1020,7 @@ impl Checker {
     fn wants_literal(&self, ctx: &Ctx, p: &Problem<'_>, k: Lvl, lit: &Lit) -> bool {
         p.constraints
             .iter()
-            .any(|(pat, target)| matches!(&peel(pat).kind, PatKind::Lit(l) if l == lit) && self.targets_slot(ctx, target, k))
+            .any(|(pat, target)| matches!(&peel(pat).kind, PatKind::Lit(l) if super::literals::same_number(l, lit)) && self.targets_slot(ctx, target, k))
     }
 
     /// For `impossible`: a variable of a type none of whose constructors
@@ -1130,7 +1226,7 @@ impl Checker {
 
     /// A result type left unsolved by a match that failed: an error, so
     /// that it is not reported again as unsolved.
-    fn abandon(&mut self, ty: &VTy) {
+    pub(super) fn abandon(&mut self, ty: &VTy) {
         if let Value::Flex(m, _) = &*self.force(ty.clone()) {
             if let super::MetaEntry::Unsolved(info) = &self.metas[*m] {
                 self.metas[*m] = super::MetaEntry::Solved(Rc::new(Value::Error), info.clone());
@@ -1222,5 +1318,24 @@ pub(super) fn mentions(c: &Core, i: usize) -> bool {
         Core::Type(_) | Core::LitTy(_) | Core::Lit(_) | Core::Prim(_) | Core::Opaque(..) | Core::Meta(_) | Core::GradeLit(_) | Core::Error => {
             false
         }
+    }
+}
+
+/// How many of an equation's patterns are for arguments that are written:
+/// all but its implicit ones, `{p}` and `@{p}`.
+pub(super) fn explicit_patterns(pats: &[hir::Pattern]) -> usize {
+    pats.iter().filter(|p| !matches!(p.kind, PatKind::Implicit(..))).count()
+}
+
+/// What of a clause's next pattern `p` matches a binder that is `icit`: the
+/// pattern itself for an explicit one, the pattern inside `{p}` for an
+/// implicit one and inside `@{p}` for an auto one; or nothing, where `p` is
+/// for a later binder.
+fn takes(p: &hir::Pattern, icit: Icit) -> Option<&hir::Pattern> {
+    match (&p.kind, icit) {
+        (PatKind::Implicit(i, q), _) if *i == icit => Some(q),
+        (PatKind::Implicit(..), _) => None,
+        (_, Icit::Explicit) => Some(p),
+        _ => None,
     }
 }

@@ -1,0 +1,18 @@
+-- | -- comparisons: the prelude's PartialEq and PartialOrd, at its types and at one of our own
+-- | data Size = Small | Large
+-- | 
+-- | use Size.*
+-- | 
+-- | rank : Size -> Int
+-- | rank Small = 0
+-- | rank Large = 1
+-- | 
+-- | instance PartialEq Size where
+-- |   x == y = rank x == rank y
+-- | 
+-- | instance PartialOrd Size where
+-- |   x < y = rank x < rank y
+-- | 
+-- | (1 < 2, 3 >= 4, "a" <= "b", (1, 'c') == (1, 'c'), (1 :: Nil) != Nil, Small < Large, Large <= Small)
+answer: (True, False, True, True, True, True, False)
+exit: 0

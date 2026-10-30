@@ -1,0 +1,14 @@
+-- Problem 9: the product abc of the Pythagorean triplet a < b < c with
+-- a + b + c = 1000.
+
+-- The product for the first `a` and `b` from these on that make one, `c`
+-- being what is left of the thousand.
+search : (a : Int) -> (b : Int) -> Int ! Div
+search a b =
+  let c = 1000 - a - b in
+  if c < b + 1 then search (a + 1) (a + 2)
+  else if a * a + b * b == c * c then a * b * c
+  else search a (b + 1)
+
+answer : Int ! Div
+answer = search 1 2

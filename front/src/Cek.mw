@@ -1,0 +1,698 @@
+-- The reference interpreter: a CEK machine for elaborated Core, as
+-- `idyll-eval` has it. This says what an Idyll program computes; the Cut
+-- that front/ emits is held to it. It runs the checked program as it is
+-- written out, `Elaborated`'s tables: a term is a row, read with the
+-- language's patterns (`ElaboratedTermApp f a`).
+--
+-- A state is a Control (a term to evaluate in an environment, or a value
+-- being returned), an Environment, and a Kontinuation: a stack of frames
+-- saying what to do with a value once there is one. One step takes a term
+-- apart, pushing a frame for what is left, or hands a value to the frame
+-- on top, so the machine never recurses but in its loop.
+--
+--     eval  f a        E  K            ->  eval f  E        arg(a, E) : K
+--     ret   v          arg(a, E) : K   ->  eval a  E        call(v) : K
+--     ret   w          call(\x -> b, E') : K  ->  eval b  E', x = w   K
+--     eval  case e of alts   E  K      ->  eval e  E        case(alts, E) : K
+--
+-- What running Core means, rule by rule: call by value, left to right;
+-- types and grades are erased, and so is what the elaborator marked never
+-- used; a recursive definition is a constant whose body is evaluated again
+-- where it was defined; a solved metavariable is its solution; integers are
+-- 64 bits and wrap. An operation looks for the nearest handler of it on the
+-- stack: the frames down to there become its resumption. With none, the
+-- world does it.
+
+use Idyll.Hir (Literal)
+use Idyll.Core (Prim, Head)
+use Idyll.Core as C
+use Idyll.Num (Number)
+use Idyll.Num as N
+use Idyll.Tc (Tc, CtorInfo, OpInfo)
+use Idyll.Tc as T
+use Idyll.Check (Checked)
+use Std.St as St
+use Idyll.Elaborated
+use Idyll.World (World, Arg, Answer, Stop)
+use Idyll.World as W
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as Hm
+use Std.Collections.HashMap (HashMap)
+use Std.String as S
+use Std.Char as Ch
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+use Std.Result.Result.*
+
+-- What a term evaluates to.
+@pub data Value
+  = Int Int
+  -- a sized integer or a float (an `Int` is `Int`)
+  | Num Number
+  | Str String
+  | Char Char
+  | Bool Bool
+  | Unit
+  -- a constructor applied to all its fields
+  | Con String Int [Value]
+  | Box Value
+  | Closure Env ElaboratedTerm
+  -- a primitive waiting for the rest of its arguments
+  | Prim Prim [Value]
+  -- a constructor, an operation, a native still waiting for arguments: how
+  -- many have come, and those it keeps
+  | Ctor CtorInfo Int [Value]
+  | Op Int OpInfo Int [Value]
+  | Native String Int Int [Value]
+  | Array [Value]
+  -- the rest of a handled computation, up to and including its handler
+  | Resumption (List Frame)
+  -- a mutable cell (`newRef`), which may be shared: every value that is it
+  -- sees what is put in it
+  | Cell (Ref Value)
+  -- a type, a grade, or something never used
+  | Erased
+
+-- An environment, innermost first, and how long it is.
+@pub data Env = Env (List Value) Int
+
+@pub data Frame
+  = Handle ElaboratedTerm [ElaboratedOpClause] Env
+  | Arg ElaboratedTerm Env
+  | Call Value
+  | Case [ElaboratedAlt] Env
+  | Let ElaboratedTerm Env
+  | BoxIntro
+  | Unbox
+
+-- (`Mutate`: a cell's operation, which the machine's loop does, as it
+-- does the world's)
+data Control = Eval ElaboratedTerm Env | Return Value | Perform Int [Value] | Resume (List Frame) Value | Mutate String [Value] | Goal String
+
+-- Why the machine stopped without an answer.
+@pub data Halt = OutOfFuel | Stuck String | Stopped String | Exited Int | TestFailed String
+
+-- What the machine needs besides the term.
+@pub record Program = {
+  a : ElaboratedArena,
+  -- the program's expression, if it has one
+  body : Maybe ElaboratedTerm,
+  recDefs : HashMap Int (Int, ElaboratedTerm),
+  ctors : HashMap Int CtorInfo,
+  ops : HashMap Int OpInfo,
+  natives : HashMap Int (String, Int),
+  types : HashMap Int Bool,
+  metas : HashMap Int ElaboratedTerm
+}
+
+-- The program a module checked is: its tables, and what the checker's
+-- state says of its constructors, operations, natives and types.
+@pub fun programOf (c : Checked s) : Program ! { St s | e } =
+  let tc = c.tc in
+  let a = elaboratedArena c.elaborated in
+  let root = elaboratedRoot c.elaborated in
+  let natives = St.getRef tc.nativeInfo in
+  let typeNatives = V.filter (\kv -> match snd kv with | (name, _) -> name == "Array" or name == "MArray" or name == "Ref") (Hm.toVec natives) in
+  let types = V.foldl (\m u -> Hm.insert u True m) Hm.empty (V.append (Hm.keys (St.getRef tc.datas)) (V.map fst typeNatives)) in
+  Program {
+    a,
+    body = elaboratedModuleBody a root,
+    recDefs = V.foldl (\m d -> Hm.insert (elaboratedDefUnique a d) (elaboratedDefLevel a d, elaboratedDefBody a d) m) Hm.empty (elaboratedModuleDefs a root),
+    ctors = St.getRef tc.ctors,
+    ops = St.getRef tc.ops,
+    natives,
+    types,
+    metas = V.foldl (\m x -> Hm.insert (elaboratedSolutionNumber a x) (elaboratedSolutionTerm a x) m) Hm.empty (elaboratedModuleMetas a root)
+  }
+
+-- --- environments ---------------------------------------------------------------------
+
+@pub fun emptyEnv () : Env = Env.Env [;] 0
+
+fun push (e : Env) (v : Value) : Env = match e with | Env.Env l n -> Env.Env (v :: l) (n + 1)
+
+fun get (e : Env) (i : Int) : Maybe Value = match e with | Env.Env l _ -> listGet l i
+
+fun listGet (l : List a) (i : Int) : Maybe a =
+  match l with
+  | [;] -> None
+  | x :: rest -> if i == 0 then Just x else listGet rest (i - 1)
+
+-- The environment as it was when it was `lvl` long.
+fun atLevel (e : Env) (lvl : Int) : Maybe Env =
+  match e with
+  | Env.Env l n ->
+      if n == lvl then Just e
+      else if n < lvl then None
+      else
+        (match l with
+         | _ :: rest -> atLevel (Env.Env rest (n - 1)) lvl
+         | [;] -> None)
+
+-- The builtin types, then the primitive operations, as the checker's first
+-- context has them.
+@pub fun initialEnv () : Env =
+  let prims = [Prim.IntAdd, Prim.IntMul, Prim.IntSub, Prim.IntLt, Prim.IntEq, Prim.IntDiv, Prim.IntMod, Prim.StrAppend] in
+  V.foldl (\e p -> push e (Value.Prim p [])) (V.foldl (\e i -> push e Value.Erased) (emptyEnv ()) (V.range 0 (V.len C.builtins))) prims
+
+fun listAppend (a : List a) (b : List a) : List a =
+  match a with
+  | [;] -> b
+  | x :: rest -> x :: listAppend rest b
+
+-- --- the machine ------------------------------------------------------------------------
+
+-- Run a term for at most `fuel` steps: its value and how many steps it took.
+@pub fun run (p : Program) (w : World) (term : ElaboratedTerm) (fuel : Int) : Result Halt (Value, Int) ! { Mut | e } =
+  loop p w (Control.Eval term (initialEnv ())) [;] 0 fuel
+
+fun loop (p : Program) (w : World) (control : Control) (kont : List Frame) (steps : Int) (fuel : Int) : Result Halt (Value, Int) ! { Mut | e } =
+  if steps == fuel then Err Halt.OutOfFuel
+  else
+    let next =
+      match control with
+      | Control.Eval term env -> eval p term env kont
+      | Control.Return v ->
+          (match kont with
+           | [;] -> Ok (Control.Return v, [;])
+           | frame :: rest -> ret p v frame rest)
+      | Control.Perform op args -> perform p w op args kont
+      | Control.Resume frames v -> Ok (Control.Return v, listAppend frames kont)
+      | Control.Mutate n args ->
+          (match mutate n args with
+           | Ok v -> Ok (Control.Return v, kont)
+           | Err h -> Err h)
+      -- as a program that gives up does: said on standard error, then
+      -- exit status 1
+      | Control.Goal n ->
+          let u = W.perform w "putErr" [Arg.AStr "reached the goal ?${n}\n"] in
+          Err (Halt.Exited 1)
+    in
+    match (control, kont) with
+    | (Control.Return v, [;]) -> Ok (v, steps + 1)
+    | _ ->
+        (match next with
+         -- (a cell's operation is done in the step that applied it, as a
+         -- native's is)
+         | Ok (Control.Mutate n args, k) ->
+             (match mutate n args with
+              | Ok v -> loop p w (Control.Return v) k (steps + 1) fuel
+              | Err h -> Err h)
+         | Ok (c, k) -> loop p w c k (steps + 1) fuel
+         | Err h -> Err h)
+
+fun value (v : Value) (kont : List Frame) : Result Halt (Control, List Frame) = Ok (Control.Return v, kont)
+
+fun stuck (why : String) : Result Halt (Control, List Frame) = Err (Halt.Stuck why)
+
+-- Take a term apart: return what it is already, or start on its first part
+-- and push a frame for the rest.
+fun eval (p : Program) (term : ElaboratedTerm) (env : Env) (kont : List Frame) : Result Halt (Control, List Frame) =
+  let a = p.a in
+  match (a, term) with
+  -- types and grades are not there at run time
+  | ElaboratedTermType _ -> value Value.Erased kont
+  | ElaboratedTermLitTy _ -> value Value.Erased kont
+  | ElaboratedTermPi _ _ _ _ _ _ -> value Value.Erased kont
+  | ElaboratedTermBoxTy _ _ -> value Value.Erased kont
+  | ElaboratedTermGradeLit _ -> value Value.Erased kont
+  | ElaboratedTermGradeAdd _ _ -> value Value.Erased kont
+  | ElaboratedTermGradeMul _ _ -> value Value.Erased kont
+  | ElaboratedTermGradeRange _ _ -> value Value.Erased kont
+  | ElaboratedTermComp _ _ -> value Value.Erased kont
+  | ElaboratedTermRow _ _ -> value Value.Erased kont
+  | ElaboratedTermHandle body r ops -> Ok (Control.Eval body env, Frame.Handle r ops env :: kont)
+  | ElaboratedTermLit l ->
+      value
+        (match l with
+         | Literal.Int n -> Value.Int n
+         | Literal.Str s -> Value.Str s
+         | Literal.Bool b -> Value.Bool b
+         | Literal.Char c -> Value.Char c
+         | Literal.Float x -> Value.Num (Number.Float x)
+         | Literal.Float32 x -> Value.Num (Number.Float32 x)
+         | Literal.Word w n -> Value.Num (Number.Word w n)
+         | Literal.Unit -> Value.Unit)
+        kont
+  | ElaboratedTermPrim prim -> value (Value.Prim prim []) kont
+  | ElaboratedTermVar i name ->
+      (match get env i with
+       | Just v -> value v kont
+       | None -> stuck (name ++ " is not in the environment"))
+  | ElaboratedTermOpaque u name ->
+      if Hm.member u p.types then value Value.Erased kont
+      else
+        (match Hm.lookup u p.ctors with
+         | Just info -> value (saturate info 0 []) kont
+         | None ->
+             (match Hm.lookup u p.ops with
+              | Just info -> value (Value.Op u info 0 []) kont
+              | None ->
+                  (match Hm.lookup u p.natives with
+                   | Just (n, params) -> value (Value.Native n params 0 []) kont
+                   | None ->
+                       -- a recursive definition: its body, where it was defined
+                       (match Hm.lookup u p.recDefs with
+                        | Just (lvl, core) ->
+                            (match atLevel env lvl with
+                             | Just outer -> Ok (Control.Eval core outer, kont)
+                             | None -> stuck (name ++ " is used outside the context it was defined in"))
+                        | None -> stuck ("no definition of " ++ name)))))
+  | ElaboratedTermMeta m ->
+      (match Hm.lookup m p.metas with
+       | Just solution -> Ok (Control.Eval solution env, kont)
+       | None -> stuck "a metavariable was never solved")
+  | ElaboratedTermRuntime note inner ->
+      (match kindElaboratedNote a note with
+       -- never looked at, so never computed
+       | ElaboratedNoteKind.Erased -> value Value.Erased kont
+       | ElaboratedNoteKind.Goal -> Ok (Control.Goal (elaboratedNoteGoalName a note), kont)
+       -- a match its type decides: the one alternative, all erased
+       | ElaboratedNoteKind.Forced ->
+           (match (a, inner) with
+            | ElaboratedTermCase _ alts ->
+                (match V.head alts with
+                 | Just alt ->
+                     Ok (Control.Eval (elaboratedAltBody a alt) (V.foldl (\e x -> push e Value.Erased) env (elaboratedAltVars a alt)), kont)
+                 | None -> stuck "a case that cannot happen happened")
+            | _ -> Ok (Control.Eval inner env, kont))
+       | _ -> Ok (Control.Eval inner env, kont))
+  | ElaboratedTermLam _ body -> value (Value.Closure env body) kont
+  | ElaboratedTermApp f x -> Ok (Control.Eval f env, Frame.Arg x env :: kont)
+  | ElaboratedTermCase sc alts -> Ok (Control.Eval sc env, Frame.Case alts env :: kont)
+  | ElaboratedTermLet _ e body -> Ok (Control.Eval e env, Frame.Let body env :: kont)
+  | ElaboratedTermBoxIntro e -> Ok (Control.Eval e env, Frame.BoxIntro :: kont)
+  | ElaboratedTermUnbox e -> Ok (Control.Eval e env, Frame.Unbox :: kont)
+  | ElaboratedTermError -> stuck "the program contains an error"
+
+-- Whether a frame is a handler of `op`.
+fun handles (a : ElaboratedArena) (op : Int) (f : Frame) : Bool =
+  match f with
+  | Frame.Handle _ ops _ -> V.any (\c -> elaboratedOpClauseOp a c == op) ops
+  | _ -> False
+
+-- The frames down to the nearest handler of `op`, that handler last, and
+-- the frames under it.
+fun splitAtHandler (a : ElaboratedArena) (op : Int) (kont : List Frame) (above : List Frame) : Maybe (List Frame, Frame, List Frame) =
+  match kont with
+  | [;] -> None
+  | f :: rest -> if handles a op f then Just (above, f, rest) else splitAtHandler a op rest (listAppend above (f :: [;]))
+
+-- An operation performed: the frames down to its handler become the
+-- resumption, and the handler's clause runs where the handler's value goes.
+-- With no handler in the program, it is one of the world's.
+fun perform (p : Program) (w : World) (op : Int) (args : [Value]) (kont : List Frame) : Result Halt (Control, List Frame) ! { Mut | e } =
+  let a = p.a in
+  match splitAtHandler a op kont [;] with
+  | None ->
+      let name = match Hm.lookup op p.ops with | Just (OpInfo.OpInfo n _ _ _ _ _) -> n | None -> "" in
+      let worldArgs =
+        V.map (\a -> match a with | Value.Int n -> Arg.AInt n | Value.Str s -> Arg.AStr s | _ -> Arg.AInt 0) args
+      in
+      (match W.perform w name worldArgs with
+       | None -> stuck "an operation with no handler for it"
+       | Just (Err (Stop.Exit code)) -> Err (Halt.Exited code)
+       | Just (Err (Stop.Failed why)) -> Err (Halt.TestFailed why)
+       | Just (Ok answer) -> value (answerValue answer) kont)
+  | Just (above, handler, rest) ->
+      (match handler with
+       | Frame.Handle _ ops env ->
+           (match V.find (\c -> elaboratedOpClauseOp a c == op) ops with
+            | Just clause ->
+                let erased = elaboratedOpClauseErased a clause in
+                let body0 = elaboratedOpClauseBody a clause in
+                let frames = listAppend above (handler :: [;]) in
+                let withErased = V.foldl (\acc i -> M.andThen (\be -> M.map (\b -> (b, push (snd be) Value.Erased)) (underLambda a (fst be))) acc) (Just (body0, env)) (V.range 0 erased) in
+                let withArgs = V.foldl (\acc x -> M.andThen (\be -> M.map (\b -> (b, push (snd be) x)) (underLambda a (fst be))) acc) withErased args in
+                (match M.andThen (\be -> M.map (\b -> (b, push (snd be) (Value.Resumption frames))) (underLambda a (fst be))) withArgs with
+                 | Just (body, env2) -> Ok (Control.Eval body env2, rest)
+                 | None -> stuck "a handler clause that is not a function")
+            | None -> stuck "no clause for the operation")
+       | _ -> stuck "not a handler")
+
+-- Hand a value to the frame that was waiting for it.
+fun ret (p : Program) (v : Value) (frame : Frame) (kont : List Frame) : Result Halt (Control, List Frame) =
+  match frame with
+  -- the handled computation's value, to the `return` clause
+  | Frame.Handle r _ env ->
+      (match underLambda p.a r with
+       | Just body -> Ok (Control.Eval body (push env v), kont)
+       | None -> stuck "a handler clause that is not a function")
+  | Frame.Arg arg env -> if evaluatesArgument v then Ok (Control.Eval arg env, Frame.Call v :: kont) else apply v Value.Erased kont
+  | Frame.Call fn -> apply fn v kont
+  | Frame.Case alts env -> chooseAlt p v alts env kont
+  | Frame.Let body env -> Ok (Control.Eval body (push env v), kont)
+  | Frame.BoxIntro -> value (Value.Box v) kont
+  | Frame.Unbox ->
+      (match v with
+       | Value.Box inner -> value inner kont
+       | _ -> stuck "unboxing something that is not a box")
+
+fun chooseAlt (p : Program) (v : Value) (alts : [ElaboratedAlt]) (env : Env) (kont : List Frame) : Result Halt (Control, List Frame) =
+  let a = p.a in
+  let fieldsFor =
+    \alt ->
+      match (elaboratedAltHead a alt, v) with
+      | (Head.BoolLit b, Value.Bool c) -> if b == c then Just [] else None
+      | (Head.Con u, Value.Con _ tag fields) ->
+          (match Hm.lookup u p.ctors with
+           | Just (CtorInfo.CtorInfo _ _ t _ _) -> if t == tag then Just fields else None
+           | None -> None)
+      | _ -> None
+  in
+  match V.find (\alt -> M.isSome (fieldsFor alt)) alts with
+  | Just alt ->
+      let vars = elaboratedAltVars a alt in
+      let body = elaboratedAltBody a alt in
+      let fields = M.unwrapOr [] (fieldsFor alt) in
+      -- the constructor's erased arguments first, then its fields, the last
+      -- the innermost
+      let erased = V.len vars - V.len fields in
+      let env2 = V.foldl push (V.foldl (\e i -> push e Value.Erased) env (V.range 0 (if erased > 0 then erased else 0))) fields in
+      Ok (Control.Eval body env2, kont)
+  | None -> stuck "no alternative matches"
+
+-- Whether applying `fun` looks at its argument: a type applied to anything
+-- is a type, and a constructor's type parameters are erased.
+fun evaluatesArgument (fn : Value) : Bool =
+  match fn with
+  | Value.Erased -> False
+  | Value.Ctor (CtorInfo.CtorInfo _ _ _ params _) seen _ -> seen >= params
+  | Value.Native _ params seen _ -> seen >= params
+  | _ -> True
+
+fun answerValue (a : Answer) : Value =
+  match a with
+  | Answer.Unit -> Value.Unit
+  | Answer.Int n -> Value.Int n
+  | Answer.Bool b -> Value.Bool b
+  | Answer.Str s -> Value.Str s
+  | Answer.Con name tag fields -> Value.Con name tag (V.map answerValue fields)
+  | Answer.Array items -> Value.Array (V.map answerValue items)
+
+-- A constructor given `seen` arguments, of which these are its fields: the
+-- value itself once it has them all.
+fun saturate (info : CtorInfo) (seen : Int) (fields : [Value]) : Value =
+  match info with
+  | CtorInfo.CtorInfo name _ tag params n -> if seen == params + n then Value.Con name tag fields else Value.Ctor info seen fields
+
+fun apply (fn : Value) (arg : Value) (kont : List Frame) : Result Halt (Control, List Frame) =
+  match fn with
+  | Value.Closure env body -> Ok (Control.Eval body (push env arg), kont)
+  | Value.Prim prim args0 ->
+      let args = V.pushBack args0 arg in
+      if V.len args < 2 then value (Value.Prim prim args) kont
+      else
+        (match (prim, V.getOr Value.Erased args 0, V.getOr Value.Erased args 1) with
+         | (Prim.StrAppend, Value.Str a, Value.Str b) -> value (Value.Str (a ++ b)) kont
+         | (_, Value.Int a, Value.Int b) ->
+             (match onInts prim a b with
+              | Just r -> value r kont
+              | None -> Err (Halt.Stopped "division by zero"))
+         | _ -> stuck (C.primName prim ++ " is applied to something that is not an integer"))
+  | Value.Ctor (CtorInfo.CtorInfo name dt tag params n) seen fields ->
+      let fs = if seen >= params then V.pushBack fields arg else fields in
+      value (saturate (CtorInfo.CtorInfo name dt tag params n) (seen + 1) fs) kont
+  | Value.Op op (OpInfo.OpInfo name e i erased arity many) seen args0 ->
+      let info = OpInfo.OpInfo name e i erased arity many in
+      if seen < erased then value (Value.Op op info (seen + 1) args0) kont
+      else
+        let args = V.pushBack args0 arg in
+        if V.len args < arity then value (Value.Op op info (seen + 1) args) kont else Ok (Control.Perform op args, kont)
+  | Value.Native name params seen args0 ->
+      if seen < params then value (Value.Native name params (seen + 1) args0) kont
+      else
+        let args = V.pushBack args0 arg in
+        if V.len args < nativeArity name then value (Value.Native name params (seen + 1) args) kont
+        else if V.elem name ["newRef", "getRef", "setRef"] then Ok (Control.Mutate name args, kont)
+        else
+          (match native name args with
+           | Ok v -> value v kont
+           | Err h -> Err h)
+  | Value.Resumption frames -> Ok (Control.Resume frames arg, kont)
+  | Value.Erased -> value Value.Erased kont
+  | _ -> stuck "applying something that is not a function"
+
+-- A primitive on two integers: 64 bits, wrapping; nothing for a division
+-- by zero.
+fun onInts (p : Prim) (a : Int) (b : Int) : Maybe Value =
+  match p with
+  | Prim.IntAdd -> Just (Value.Int (a + b))
+  | Prim.IntMul -> Just (Value.Int (a * b))
+  | Prim.IntSub -> Just (Value.Int (a - b))
+  | Prim.IntDiv -> if b == 0 then None else Just (Value.Int (a / b))
+  | Prim.IntMod -> if b == 0 then None else Just (Value.Int (a % b))
+  | Prim.IntLt -> Just (Value.Bool (a < b))
+  | Prim.IntEq -> Just (Value.Bool (a == b))
+  | Prim.StrAppend -> None
+
+-- What is under a lambda, through the note on it.
+fun underLambda (a : ElaboratedArena) (c : ElaboratedTerm) : Maybe ElaboratedTerm =
+  match (a, c) with
+  | ElaboratedTermLam _ body -> Just body
+  | ElaboratedTermRuntime _ inner -> underLambda a inner
+  | _ -> None
+
+-- --- natives -----------------------------------------------------------------------------
+
+fun nativeArity (name : String) : Int =
+  if M.isSome (N.ofName name) then M.unwrapOr 0 (M.map (\p -> N.arity (fst p)) (N.ofName name))
+  else if name == "Array" or name == "MArray" or name == "Ref" then 0
+  else if V.elem name ["arrayLen", "arrayPop", "arrayFromList", "arrayToList", "marrayLen", "marrayFreeze", "marrayThaw", "newRef", "getRef"] then 1
+  else if V.elem name ["stringByteLength", "stringToChars", "charsToString", "charCode", "charFromCode", "stringHash", "charHash", "boolHash", "stringToBytes", "bytesToString", "bytesToHex", "bytesFromHex"] then 1
+  else if V.elem name ["arrayGet", "arrayPush", "arrayConcat", "marrayNew", "marrayGet", "setRef", "stringByteAt", "stringCompare"] then 2
+  else 3
+
+-- An operation on numbers of one type (see `Num`).
+fun numberNative (n : String) (args : [Value]) : Result Halt Value =
+  let numbers =
+    V.foldl
+      (\acc a ->
+        match (acc, a) with
+        | (Ok ns, Value.Int k) -> Ok (V.pushBack ns (Number.Int k))
+        | (Ok ns, Value.Num k) -> Ok (V.pushBack ns k)
+        | (Ok _, _) -> Err (Halt.Stuck (n ++ " is given something that is not a number"))
+        | (Err h, _) -> Err h)
+      (Ok [])
+      args
+  in
+  match (numbers, N.ofName n) with
+  | (Err h, _) -> Err h
+  | (Ok ns, Just (op, t)) ->
+      (match N.apply op t ns with
+       | Ok (N.Answer.Num (Number.Int k)) -> Ok (Value.Int k)
+       | Ok (N.Answer.Num k) -> Ok (Value.Num k)
+       | Ok (N.Answer.Bool b) -> Ok (Value.Bool b)
+       | Ok (N.Answer.Text s) -> Ok (Value.Str s)
+       | Err why -> Err (Halt.Stopped why))
+  | _ -> Err (Halt.Stuck (n ++ " is no native"))
+
+-- A native, given what it takes. An array is a value holding its
+-- elements; setting one makes a new array, the old one untouched.
+fun mutate (n : String) (args : [Value]) : Result Halt Value ! { Mut | e } =
+  match (n, V.getOr Value.Erased args 0) with
+  | ("newRef", x) -> Ok (Value.Cell (newRef x))
+  | ("getRef", Value.Cell r) -> Ok (getRef r)
+  | ("setRef", Value.Cell r) ->
+      let w = setRef r (V.getOr Value.Erased args 1) in
+      Ok Value.Unit
+  | _ -> Err (Halt.Stuck (n ++ " is given something that is not a cell"))
+
+fun native (n : String) (args : [Value]) : Result Halt Value =
+  let arg = \i -> V.getOr Value.Erased args i in
+  let int =
+    \i ->
+      match arg i with
+      | Value.Int k -> Ok k
+      | _ -> Err (Halt.Stuck (n ++ " is given something that is not an integer"))
+  in
+  let array =
+    \i ->
+      match arg i with
+      | Value.Array items -> Ok items
+      | _ -> Err (Halt.Stuck (n ++ " is given something that is not an array"))
+  in
+  let at =
+    \items i ->
+      if i >= 0 and i < V.len items then Ok i
+      else Err (Halt.Stopped ("index " ++ show i ++ " is out of bounds for an array of length " ++ show (V.len items)))
+  in
+  let text =
+    \i ->
+      match arg i with
+      | Value.Str s -> Ok s
+      | _ -> Err (Halt.Stuck (n ++ " is given something that is not a string"))
+  in
+  -- `Pair [a] b`: how a native gives back two things, the first boxed
+  let pair = \a b -> Value.Con "Pair" 0 [Value.Box a, b] in
+  let both = \r1 r2 f -> match (r1, r2) with | (Ok x, Ok y) -> f x y | (Err h, _) -> Err h | (_, Err h) -> Err h in
+  if M.isSome (N.ofName n) then numberNative n args
+  else if n == "Array" or n == "MArray" or n == "Ref" then Ok Value.Erased
+  else if n == "arrayLen" then (match array 0 with | Ok items -> Ok (Value.Int (V.len items)) | Err h -> Err h)
+  else if n == "arrayGet" then both (array 0) (int 1) (\items i -> match at items i with | Ok k -> Ok (V.getOr Value.Erased items k) | Err h -> Err h)
+  else if n == "arrayGetOr" then both (array 1) (int 2) (\items i -> match at items i with | Ok k -> Ok (V.getOr Value.Erased items k) | Err _ -> Ok (arg 0))
+  else if n == "arraySet" or n == "marraySet" then both (array 0) (int 1) (\items i -> match at items i with | Ok k -> Ok (Value.Array (V.set items k (arg 2))) | Err h -> Err h)
+  else if n == "arrayPush" then (match array 0 with | Ok items -> Ok (Value.Array (V.pushBack items (arg 1))) | Err h -> Err h)
+  else if n == "arrayPop" then
+    (match array 0 with
+     | Ok items -> if V.isEmpty items then Err (Halt.Stopped "popping an empty array") else Ok (Value.Array (V.take items (V.len items - 1)))
+     | Err h -> Err h)
+  else if n == "arraySlice" then
+    (match (array 0, int 1, int 2) with
+     | (Ok items, Ok a, Ok b) ->
+         let len = V.len items in
+         let clamp = \x -> if x < 0 then 0 else if x > len then len else x in
+         let from = clamp a in
+         let to = if clamp b < from then from else clamp b in
+         Ok (Value.Array (V.slice items from to))
+     | (Err h, _, _) -> Err h
+     | (_, Err h, _) -> Err h
+     | (_, _, Err h) -> Err h)
+  else if n == "arrayConcat" then both (array 0) (array 1) (\a b -> Ok (Value.Array (V.append a b)))
+  else if n == "arrayFromList" then fromList (arg 0) []
+  else if n == "arrayToList" then
+    (match array 0 with
+     | Ok items -> Ok (V.foldl (\tail h -> Value.Con "::" 1 [h, tail]) (Value.Con "Nil" 0 []) (V.reverse items))
+     | Err h -> Err h)
+  else if n == "marrayNew" then (match int 0 with | Ok k -> Ok (Value.Array (V.replicate (if k > 0 then k else 0) (arg 1))) | Err h -> Err h)
+  else if n == "marrayLen" then (match array 0 with | Ok items -> Ok (pair (Value.Int (V.len items)) (arg 0)) | Err h -> Err h)
+  else if n == "marrayGet" then both (array 0) (int 1) (\items i -> match at items i with | Ok k -> Ok (pair (V.getOr Value.Erased items k) (arg 0)) | Err h -> Err h)
+  else if n == "stringByteLength" then (match text 0 with | Ok s -> Ok (Value.Int (stringByteLength s)) | Err h -> Err h)
+  else if n == "stringByteAt" then
+    both (text 0) (int 1) (\s i ->
+      if i >= 0 and i < stringByteLength s then Ok (Value.Int (toInt (stringByteAt s i)))
+      else Err (Halt.Stopped ("index " ++ show i ++ " is out of bounds for a string of " ++ show (stringByteLength s) ++ " bytes")))
+  else if n == "stringSlice" then
+    (match (text 0, int 1, int 2) with
+     | (Ok s, Ok a, Ok b) -> Ok (Value.Str (stringSlice s a b))
+     | (Err h, _, _) -> Err h
+     | (_, Err h, _) -> Err h
+     | (_, _, Err h) -> Err h)
+  else if n == "stringCompare" then both (text 0) (text 1) (\a b -> Ok (Value.Int (stringCompare a b)))
+  else if n == "stringIndexOf" then
+    (match (text 0, text 1, int 2) with
+     | (Ok s, Ok needle, Ok from) -> Ok (Value.Int (stringIndexOf s needle from))
+     | (Err h, _, _) -> Err h
+     | (_, Err h, _) -> Err h
+     | (_, _, Err h) -> Err h)
+  else if n == "stringToChars" then (match text 0 with | Ok s -> Ok (Value.Array (V.map (\c -> Value.Char c) (S.chars s))) | Err h -> Err h)
+  else if n == "charsToString" then
+    (match array 0 with
+     | Ok items ->
+         let cs = V.concatMap (\v -> match v with | Value.Char c -> [c] | _ -> []) items in
+         if V.len cs == V.len items then Ok (Value.Str (S.fromChars cs))
+         else Err (Halt.Stuck "charsToString is given something that is not a character")
+     | Err h -> Err h)
+  else if n == "charCode" then
+    (match arg 0 with
+     | Value.Char c -> Ok (Value.Int (charCode c))
+     | _ -> Err (Halt.Stuck "charCode is given something that is not a character"))
+  else if n == "charFromCode" then
+    (match int 0 with
+     | Ok k ->
+         (match Ch.fromCodeSafe k with
+          | Just c -> Ok (Value.Char c)
+          | None -> Err (Halt.Stopped (show k ++ " is not a Unicode scalar value")))
+     | Err h -> Err h)
+  -- (Meadow's `hash` is the runtimes')
+  else if n == "stringHash" then (match text 0 with | Ok s -> Ok (Value.Int (hash s)) | Err h -> Err h)
+  else if n == "charHash" then
+    (match arg 0 with
+     | Value.Char c -> Ok (Value.Int (hash c))
+     | _ -> Err (Halt.Stuck "charHash is given something that is not a character"))
+  else if n == "boolHash" then
+    (match arg 0 with
+     | Value.Bool b -> Ok (Value.Int (hash b))
+     | _ -> Err (Halt.Stuck "boolHash is given something that is not a truth value"))
+  -- (a byte array is an array of `UInt8`s; Meadow's own primitives are the
+  -- runtimes')
+  else if n == "stringToBytes" then (match text 0 with | Ok s -> Ok (byteArray (stringToBytes s)) | Err h -> Err h)
+  else if n == "bytesToString" then (match bytesOf (arg 0) with | Ok b -> Ok (Value.Str (bytesToString b)) | Err h -> Err h)
+  else if n == "bytesToHex" then (match bytesOf (arg 0) with | Ok b -> Ok (Value.Str (bytesToHex b)) | Err h -> Err h)
+  else if n == "bytesFromHex" then
+    (match text 0 with
+     | Ok s ->
+         (match bytesFromHex s with
+          | Just b -> Ok (Value.Con "Just" 1 [byteArray b])
+          | None -> Ok (Value.Con "Nothing" 0 []))
+     | Err h -> Err h)
+  else Ok (arg 0)
+
+fun byteArray (b : #[UInt8]) : Value = Value.Array (V.map (\x -> Value.Num (Number.Word "UInt8" (toInt x))) (V.fromArray b))
+
+fun bytesOf (v : Value) : Result Halt #[UInt8] =
+  match v with
+  | Value.Array items ->
+      let bs = V.concatMap (\x -> match x with | Value.Num (Number.Word _ k) -> [toUInt8 k] | _ -> []) items in
+      if V.len bs == V.len items then Ok (V.toArray bs) else Err (Halt.Stuck "a byte array holds something that is not a byte")
+  | _ -> Err (Halt.Stuck "a byte array is given something that is not an array")
+
+fun fromList (list : Value) (acc : [Value]) : Result Halt Value =
+  match list with
+  | Value.Con _ 0 _ -> Ok (Value.Array acc)
+  | Value.Con _ 1 fields ->
+      if V.len fields == 2 then fromList (V.getOr Value.Erased fields 1) (V.pushBack acc (V.getOr Value.Erased fields 0))
+      else Err (Halt.Stuck "arrayFromList is given something that is not a list")
+  | _ -> Err (Halt.Stuck "arrayFromList is given something that is not a list")
+
+-- --- showing the answer -----------------------------------------------------------------
+
+-- A field that is itself an application, parenthesised.
+fun atom (s : String) : String =
+  if S.contains " " s and not (S.startsWith "[" s or S.startsWith "\"" s or S.startsWith "#" s or S.startsWith "(" s) then "(" ++ s ++ ")" else s
+
+-- A value as the REPL shows it, if it is plain data.
+@pub fun shown (v : Value) : Maybe String =
+  match v with
+  | Value.Int n -> Just (show n)
+  | Value.Num n -> Just (N.shown n)
+  | Value.Str s -> Just (C.literalShown (Literal.Str s))
+  | Value.Char c -> Just (C.literalShown (Literal.Char c))
+  | Value.Bool True -> Just "True"
+  | Value.Bool False -> Just "False"
+  | Value.Unit -> Just "()"
+  | Value.Box inner -> M.map (\s -> "[" ++ s ++ "]") (shown inner)
+  | Value.Con "Pair" _ fields -> if V.len fields == 2 then tuple v [] else conShown "Pair" fields
+  | Value.Con "::" _ fields ->
+      if V.len fields == 2 then
+        (match (shown (V.getOr Value.Erased fields 0), shown (V.getOr Value.Erased fields 1)) with
+         | (Just a, Just b) -> Just (atom a ++ " :: " ++ b)
+         | _ -> None)
+      else conShown "::" fields
+  | Value.Con name _ fields -> conShown name fields
+  | Value.Array items ->
+      let parts = V.map shown items in
+      if V.any M.isNone parts then None
+      else
+        let ss = V.concatMap (\x -> match x with | Just s -> [s] | None -> []) parts in
+        if V.isEmpty ss then Just "#[;]"
+        else if V.len ss == 1 then Just ("#[" ++ V.getOr "" ss 0 ++ ";]")
+        else Just ("#[" ++ S.join "; " ss ++ "]")
+  | _ -> None
+
+fun conShown (name : String) (fields : [Value]) : Maybe String =
+  V.foldl
+    (\acc f -> match (acc, shown f) with | (Just s, Just x) -> Just (s ++ " " ++ atom x) | _ -> None)
+    (Just name)
+    fields
+
+-- `(1, True)`, and one nested to the right a longer tuple, `(1, 2, 3)`.
+fun tuple (v : Value) (items : [String]) : Maybe String =
+  match v with
+  | Value.Con "Pair" _ fields ->
+      if V.len fields == 2 then
+        (match shown (V.getOr Value.Erased fields 0) with
+         | Just s -> tuple (V.getOr Value.Erased fields 1) (V.pushBack items s)
+         | None -> None)
+      else M.map (\s -> "(" ++ S.join ", " (V.pushBack items s) ++ ")") (shown v)
+  | _ -> M.map (\s -> "(" ++ S.join ", " (V.pushBack items s) ++ ")") (shown v)
+
+-- How a halt is told: as `idyll-eval` writes an `EvalError`, but what made
+-- the machine stuck, which is a compiler bug either way.
+@pub fun haltShown (h : Halt) : String =
+  match h with
+  | Halt.OutOfFuel -> "out of fuel"
+  | Halt.Stuck _ -> "stuck"
+  | Halt.Stopped why -> why
+  | Halt.Exited code -> "exited with " ++ show code
+  | Halt.TestFailed why -> "test failed: " ++ why

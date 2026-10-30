@@ -16,7 +16,7 @@
 //! [`Rep::Any`]: boxed, and self-describing at run time.
 
 use super::core::{lit_builtin, CaseAlt, Core, Head, Lvl, Note};
-use super::value::{vvar, Closure, Poly, Value};
+use super::value::{vvar, Closure, Elim, Poly, Value};
 use super::{BinderInfo, Checker, Ctx, MetaEntry};
 use crate::grade::Grade;
 use idyllic_builtins::{Builtin, Native};
@@ -29,15 +29,31 @@ use std::rc::Rc;
 pub enum Rep {
     /// a 64-bit integer, untagged: `Int`
     I64,
+    /// a sized integer, at its width
+    Word(idyllic_builtins::Width),
+    /// a `Float`, and a `Float32`
+    F64,
+    F32,
     Bool,
     Unit,
     /// an immutable string
     Str,
+    /// a character, a Unicode scalar value: on Idyll's own back ends its code
+    /// point, as an `I64` is
+    Char,
     /// anything else on the heap: data, a function, a box
     Ptr,
     /// whatever the type variable bound at this level of the context is,
     /// which a descriptor says at run time
     Var(Lvl),
+    /// whatever the type is that a field of the record bound at this level
+    /// holds (the field by its place among a `case` alternative's
+    /// variables): an associated type, `Elem c` at a dictionary `d`, which
+    /// a descriptor passed with `d` says
+    Field(Lvl, usize),
+    /// a type held at run time, as a record's field that is a type holds
+    /// one: its descriptor
+    Desc,
     /// not known when compiled: boxed, and self-describing
     Any,
     /// a type, a grade or an effect: nothing at run time
@@ -52,6 +68,10 @@ pub enum Shown {
     Bool,
     Unit,
     Str,
+    /// `'a'`, from its code point
+    Char,
+    /// a sized integer or a float, as Meadow's `display` writes it
+    Number,
     /// a box, `[v]`, of what is inside
     Box(Rc<Value>),
     /// an array, `#[a; b]`, of these
@@ -114,6 +134,11 @@ impl Typer {
         let _ = self.chk.import(&ctx, deps);
     }
 
+    /// Whether the constant `u` has a type here.
+    pub fn knows(&self, u: usize) -> bool {
+        self.chk.constants.contains_key(&u)
+    }
+
     /// Where an elaborated program starts: the builtins, then the
     /// primitives.
     pub fn scope(&self) -> Scope {
@@ -165,6 +190,10 @@ impl Typer {
             Value::LitTy(Builtin::Bool) => Rep::Bool,
             Value::LitTy(Builtin::Unit) => Rep::Unit,
             Value::LitTy(Builtin::Str) => Rep::Str,
+            Value::LitTy(Builtin::Char) => Rep::Char,
+            Value::LitTy(Builtin::Float) => Rep::F64,
+            Value::LitTy(Builtin::Float32) => Rep::F32,
+            Value::LitTy(b) if b.width().is_some() => Rep::Word(b.width().expect("guarded")),
             Value::LitTy(_) | Value::Type(_) | Value::Row(_) => Rep::Erased,
             Value::Pi { .. } | Value::BoxTy(..) => Rep::Ptr,
             Value::Comp(a, _) => self.rep(s, a),
@@ -178,8 +207,78 @@ impl Typer {
                 Some(t) if matches!(*t, Value::Type(_)) => Rep::Var(*l),
                 _ => Rep::Any,
             },
-            _ => Rep::Any,
+            v => self.field_of(v, 4).map_or(Rep::Any, |(l, i)| Rep::Field(l, i)),
         }
+    }
+
+    /// The record variable and the field of it that a type is, if it is
+    /// one: a `case` on the variable choosing a field that is a type, or a
+    /// definition that unfolds to one (`Elem c @{d}`, through
+    /// `Container.Elem d`), at most `depth` deep.
+    fn field_of(&self, v: &Value, depth: usize) -> Option<(Lvl, usize)> {
+        match v {
+            Value::Rigid(l, _, sp) => {
+                let [Elim::Case(_, alts)] = sp.as_slice() else { return None };
+                let [alt] = alts.as_slice() else { return None };
+                let Head::Con(ctor) = alt.head else { return None };
+                let mut body = &alt.body;
+                while let Core::Runtime(_, inner) = &**body {
+                    body = inner;
+                }
+                let Core::Var(k, _) = &**body else { return None };
+                let field = alt.vars.len().checked_sub(k + 1)?;
+                self.type_fields(ctor).iter().any(|(i, _)| *i == field).then_some((*l, field))
+            }
+            Value::Opaque(u, _, sp) if depth > 0 => {
+                let v = self.chk.unfold_stuck(*u, sp)?;
+                self.field_of(&v, depth - 1)
+            }
+            _ => None,
+        }
+    }
+
+    /// A constructor's fields that are types, each by its place among a
+    /// `case` alternative's variables (after the constructor's parameters),
+    /// with its name: what a record holds as descriptors at run time.
+    pub fn type_fields(&self, ctor: usize) -> Vec<(usize, String)> {
+        let Some(mut ty) = self.chk.constants.get(&ctor).cloned() else { return Vec::new() };
+        let params = self.ctor_params(ctor);
+        let mut lvl = self.scope().ctx.lvl;
+        let mut out = Vec::new();
+        let mut i = 0;
+        while let Value::Pi { name, dom, cod, .. } = &*self.chk.force(ty.clone()) {
+            if i >= params && matches!(*self.chk.force(dom.clone()), Value::Type(_)) {
+                out.push((i, name.clone()));
+            }
+            ty = self.chk.apply(cod, vvar(lvl, name.clone()));
+            lvl += 1;
+            i += 1;
+        }
+        out
+    }
+
+    /// The fields that are types of the record a value of type `ty` is, if
+    /// it is a record (a data type with one constructor) with any: its
+    /// constructor, and those fields (see [`Self::type_fields`]).  A
+    /// parameter of such a type comes with a descriptor for each.
+    pub fn record_type_fields(&self, ty: &Rc<Value>) -> Option<(usize, Vec<(usize, String)>)> {
+        let Value::Opaque(u, _, _) = &*self.chk.force(ty.clone()) else { return None };
+        let [ctor] = self.chk.datas.get(u)?.as_slice() else { return None };
+        let fields = self.type_fields(*ctor);
+        (!fields.is_empty()).then_some((*ctor, fields))
+    }
+
+    /// How a value of the type that field `field` of `record` (a term in
+    /// `s`, of a record whose constructor is `ctor`) holds is represented:
+    /// what a descriptor passed with the record says.
+    pub fn field_rep(&mut self, s: &Scope, record: &Rc<Core>, ctor: usize, field: usize) -> Rep {
+        let Some(info) = self.chk.ctors.get(&ctor).cloned() else { return Rep::Any };
+        let vars: Vec<String> = (0..info.params + info.fields).map(|i| format!("#f{i}")).collect();
+        let k = vars.len() - 1 - field;
+        let alt = CaseAlt { head: Head::Con(ctor), name: info.name.clone(), vars, body: Rc::new(Core::Var(k, format!("#f{field}"))) };
+        let c = Rc::new(Core::Case(record.clone(), Rc::new(vec![alt])));
+        let v = self.chk.eval(&s.ctx.env, &c);
+        self.rep(s, &v)
     }
 
     /// How a value of the type `ty` (a term in `s`) is represented: what a
@@ -218,8 +317,10 @@ impl Typer {
     /// The parameters a term (in `s`) of function type still takes, as its
     /// type says: each one's representation (in `s`, so a type variable of
     /// the function's own is [`Rep::Any`]), whether it is a type parameter,
-    /// and whether it is erased.  What a partial application waits for.
-    pub fn function_params(&mut self, s: &Scope, c: &Rc<Core>) -> Vec<(Rep, bool, bool)> {
+    /// whether it is erased, and whether it is a record with fields that are
+    /// types (which a descriptor for each comes with).  What a partial
+    /// application waits for.
+    pub fn function_params(&mut self, s: &Scope, c: &Rc<Core>) -> Vec<(Rep, bool, bool, bool)> {
         let Some(mut t) = self.ty(&s.ctx, c) else { return Vec::new() };
         let mut inner = s.clone();
         let mut out = Vec::new();
@@ -227,15 +328,51 @@ impl Typer {
             let is_type = matches!(*self.chk.force(dom.clone()), Value::Type(_));
             let erased = self.chk.to_poly(self.chk.force(grade.clone())).as_constant().is_some_and(|g| g.is_zero());
             let rep = match self.rep(&inner, dom) {
-                Rep::Var(l) if l >= s.ctx.lvl => Rep::Any,
+                Rep::Var(l) | Rep::Field(l, _) if l >= s.ctx.lvl => Rep::Any,
                 r => r,
             };
-            out.push((rep, is_type, erased));
+            out.push((rep, is_type, erased, !erased && self.record_type_fields(dom).is_some()));
             let lvl = inner.ctx.lvl;
             inner = Scope { ctx: inner.ctx.bind(None, name, dom.clone()) };
             t = self.chk.apply(cod, vvar(lvl, name.clone()));
         }
         out
+    }
+
+    /// `head`'s arguments `args` (in `s`), each lambda among them whose
+    /// binders the program does not say the types of (one read back from a
+    /// value, as a solved metavariable's is) given the types of the
+    /// parameter it is passed for: what lowering it as a function of those
+    /// representations needs.
+    pub fn annotate_args(&mut self, s: &Scope, head: &Rc<Core>, args: &[Rc<Core>]) -> Vec<Rc<Core>> {
+        if !args.iter().any(|a| matches!(**a, Core::Lam(..))) {
+            return args.to_vec();
+        }
+        let Some(mut t) = self.ty(&s.ctx, head) else { return args.to_vec() };
+        let mut out = Vec::new();
+        for a in args {
+            let (f, _) = self.chk.split_comp(t.clone());
+            let Value::Pi { dom, cod, .. } = &*self.chk.force(f) else { break };
+            out.push(if matches!(**a, Core::Lam(..)) { self.annotated(s, a, dom) } else { a.clone() });
+            let v = self.chk.eval(&s.ctx.env, a);
+            t = self.chk.apply(cod, v);
+        }
+        out.extend(args[out.len()..].iter().cloned());
+        out
+    }
+
+    /// A lambda, its binders noted with the types `ty` (a function type, in
+    /// `s`) gives them.
+    fn annotated(&mut self, s: &Scope, c: &Rc<Core>, ty: &Rc<Value>) -> Rc<Core> {
+        let Core::Lam(x, body) = &**c else { return c.clone() };
+        let (f, _) = self.chk.split_comp(ty.clone());
+        let Value::Pi { grade, dom, cod, .. } = &*self.chk.force(f) else { return c.clone() };
+        let noted = self.chk.quote(s.ctx.lvl, dom.clone());
+        let grade = self.chk.to_poly(self.chk.force(grade.clone())).as_constant();
+        let inner = Scope { ctx: s.ctx.bind(None, x, dom.clone()) };
+        let under = self.chk.apply(cod, vvar(s.ctx.lvl, x.clone()));
+        let body = self.annotated(&inner, body, &under);
+        Rc::new(Core::Runtime(Note::Binds { grade, ty: Some(noted) }, Rc::new(Core::Lam(x.clone(), body))))
     }
 
     /// Whether a term (in `s`) is nothing at run time: a type, an effect
@@ -271,10 +408,13 @@ impl Typer {
             let lvl = s.ctx.lvl;
             if i < params {
                 kinds.push(matches!(*self.chk.force(dom.clone()), Value::Type(_)));
+            } else if matches!(*self.chk.force(dom.clone()), Value::Type(_)) {
+                // a type, held as its descriptor
+                fields.push(Rep::Desc);
             } else {
                 let rep = match self.rep(&s, dom) {
                     Rep::Var(l) if l >= base => Rep::Var(l - base),
-                    Rep::Var(_) => Rep::Any,
+                    Rep::Var(_) | Rep::Field(..) => Rep::Any,
                     other => other,
                 };
                 fields.push(rep);
@@ -304,7 +444,7 @@ impl Typer {
             let lvl = s.ctx.lvl;
             if i >= info.erased {
                 params.push(match self.rep(&s, dom) {
-                    Rep::Var(_) => Rep::Any,
+                    Rep::Var(_) | Rep::Field(..) => Rep::Any,
                     other => other,
                 });
             }
@@ -314,7 +454,7 @@ impl Typer {
         }
         let (result, _) = self.chk.split_comp(ty);
         let result = match self.rep(&s, &result) {
-            Rep::Var(_) => Rep::Any,
+            Rep::Var(_) | Rep::Field(..) => Rep::Any,
             other => other,
         };
         Some((params, result))
@@ -347,6 +487,8 @@ impl Typer {
             Value::LitTy(Builtin::Bool) => Shown::Bool,
             Value::LitTy(Builtin::Unit) => Shown::Unit,
             Value::LitTy(Builtin::Str) => Shown::Str,
+            Value::LitTy(Builtin::Char) => Shown::Char,
+            Value::LitTy(b) if b.number().is_some() => Shown::Number,
             Value::BoxTy(_, a) => Shown::Box(a.clone()),
             Value::Opaque(u, _, sp) if self.chk.natives.get(u).is_some_and(|n| n.native == Native::Array) => {
                 match sp.as_slice() {

@@ -1,0 +1,42 @@
+-- An interpreter for a little functional language: read from its text
+-- (`Parse`), into syntax with de Bruijn indices (`Syntax`), and run, with
+-- closures, recursion and errors (`Eval`). Each program is printed back as
+-- its syntax writes it, then run: its value and how many steps it took, or
+-- what went wrong, reading it or running it.
+
+use Std.Console (printLines)
+use Std.Exn (Exn, toResult)
+use Std.State (runState)
+use Syntax (Expr, show)
+use Eval (Value, eval, showValue)
+use Parse (parse)
+
+programs : List String
+programs = #[
+  "1 + 2 * 3",
+  "(rec fact n -> ifz n then 1 else n * fact (n - 1)) 10",
+  "(rec fib n -> ifz n then 0 else ifz n - 1 then 1 else fib (n - 1) + fib (n - 2)) 10",
+  "let twice = \\f -> \\x -> f (f x) in twice (\\n -> n + 10) 1",
+  "1 / (2 - 2)",
+  "3 4",
+  "1 +",
+  "y + 1"
+]
+
+-- What running a program came to.
+outcome : (r : Result String (Value, Int)) -> String
+outcome (Ok (v, steps)) = showValue v ++ ", in " ++ showInt steps ++ " steps"
+outcome (Err message) = "error: " ++ message
+
+-- A program run with its steps counted from 0.
+counted : (e : [] Expr) -> (u : ()) -> (Value, Int) ! {Exn String, Div}
+counted e u = runState 0 (\() -> eval Nil e)
+
+-- A program's text, and what reading and running it came to.
+run : (text : [] String) -> String ! Div
+run text = text ++ "\n  " ++ (case toResult (\() -> parse text) of
+  Ok e -> show 0 e ++ "\n  = " ++ outcome (toResult (counted e))
+  Err message -> "does not read: " ++ message)
+
+main : () -> () ! Eff
+main () = printLines (Std.Collections.List.map run programs)

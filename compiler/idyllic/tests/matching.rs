@@ -76,8 +76,10 @@ fn head_needs_no_case_for_the_empty_vector() {
 
 #[test]
 fn eulers_fifth_problem_runs() {
-    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/euler/p5.idl")).unwrap();
-    assert_eq!(result(&src), "232792560 : Int");
+    // the module of the Euler example's package, as a lone program: its
+    // `answer` the program's value
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/euler/src/P5.idl")).unwrap();
+    assert_eq!(result(&format!("{src}\nanswer\n")), "232792560 : Int");
 }
 
 // ---------------------------------------------------------------------------
@@ -355,4 +357,54 @@ fn a_case_on_a_stuck_comparison_is_stuck_not_anything() {
     let src = "data IEq : Int -> Int -> Type where\n  IRefl : IEq x x\n\nuse IEq.*\n\n\
                \\(n : [0] Int) -> (IRefl : IEq (if n < 2 then 0 else 1) 5)\n";
     assert!(diags(&run(src)).iter().any(|d| d.starts_with("type mismatch")), "{:?}", diags(&run(src)));
+}
+
+/// `Vec` with constructors named apart from the prelude's lists.
+const VECTOR: &str = "data Vec : Nat -> Type -> Type where\n  VNil : Vec Z a\n  VCons : a -> Vec n a -> Vec (S n) a\n\nuse Vec.*\n\n";
+
+#[test]
+fn an_implicit_pattern_names_an_implicit_argument() {
+    // `{n}` binds it; given a grade, it is there to be returned
+    let len = "len : {n : [] Nat} -> {a : Type} -> Vec n a -> Nat\nlen {n} _ = n\n\n";
+    assert_eq!(result(&format!("{NAT}{VECTOR}{len}len (VCons 1 (VCons 2 VNil))\n")), "S (S Z) : Nat");
+    // and a lambda's `\{m}` as an equation's
+    let lam = "lenL : {n : [] Nat} -> Vec n Int -> Nat\nlenL = \\{m} v -> m\n\n";
+    assert_eq!(result(&format!("{NAT}{VECTOR}{lam}lenL (VCons 3 VNil)\n")), "S Z : Nat");
+}
+
+#[test]
+fn an_implicit_argument_is_matched_as_any_is() {
+    let src = "isZero : {n : [] Nat} -> Bool\nisZero {Z} = True\nisZero {S _} = False\n\n\
+               firstOr : {n : [] Nat} -> {a : Type} -> a -> Vec n a -> a\n\
+               firstOr {Z} d _ = d\nfirstOr {S _} _ (VCons x _) = x\n\n";
+    let shown = result(&format!("{NAT}{VECTOR}{src}(isZero {{Z}}, isZero {{S Z}}, firstOr 0 (VCons 5 VNil), firstOr 0 VNil)\n"));
+    assert_eq!(shown, "(True, False, 5, 0) : (Bool, Bool, Int, Int)");
+}
+
+#[test]
+fn an_erased_implicit_is_not_returned_or_matched() {
+    // (implicit binders are erased, grade 0, unless they say otherwise)
+    rejects(
+        &format!("{NAT}{VECTOR}len : {{n : Nat}} -> Vec n Int -> Nat\nlen {{n}} _ = n\n"),
+        &["usage mismatch: n has grade 0, but is used once"],
+    );
+    rejects(
+        &format!("{NAT}isZero : {{n : Nat}} -> Bool\nisZero {{Z}} = True\nisZero {{S _}} = False\n"),
+        &["usage mismatch: n has grade 0, but is used once"],
+    );
+}
+
+#[test]
+fn the_implicit_arguments_no_pattern_takes_keep_the_signatures_names() {
+    // `a` comes after the matched `{n}`, and is still the signature's `a`
+    let to_list = "toList : {n : [] Nat} -> {a : Type} -> Vec n a -> List a\n\
+                   toList {Z} _ = (Nil : List a)\ntoList {S _} (VCons x xs) = x :: toList xs\n\n";
+    assert_eq!(result(&format!("{NAT}{VECTOR}{to_list}toList (VCons 1 (VCons 2 VNil))\n")), "1 :: 2 :: Nil : List Int");
+}
+
+#[test]
+fn an_implicit_pattern_where_none_is_to_match_is_an_error() {
+    let misplaced = "no implicit argument is here to match: `{p}` matches an implicit argument, and `@{p}` an auto one, where the type has one next";
+    rejects("f : Int -> Int\nf {x} = x\n", &[misplaced]);
+    rejects("f : Int -> Int -> Int\nf x {y} = x\n", &[misplaced]);
 }

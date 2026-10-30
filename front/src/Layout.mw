@@ -18,13 +18,19 @@
 -- - A line starting at the innermost block's column is a new item of it
 --   (`;`); further right, it goes on with the line before; further left, the
 --   block has ended (`}`), and perhaps more than one.
--- - A block written with explicit braces is left alone, and so is a sequence
---   literal, `#[ … ]`, whose `]` closes any block opened inside it.
+-- - A block written with explicit braces is left alone, and so is what is
+--   inside a sequence literal, `#[ … ]`, brackets or parentheses: it may run
+--   over lines at any indentation. A block opened inside them is laid out as
+--   any is, and their `]` or `)` closes it, as does a `,` between their
+--   items: `(case m of` with its alternatives on the lines after, then `)`,
+--   is one expression.
 -- - A block must open further right than the one it is in, except one that
 --   `where`, `of` or `with` opens with nothing further right: that is empty.
 
 use Idyll.Lex (Raw, lexed)
 use Scythe (token, start, stop)
+use Std.Collections.HashMap as Hm
+use Std.String as S
 use Std.Collections.Vector as V
 use Std.Maybe.Maybe.*
 use Std.Result.Result.*
@@ -32,6 +38,7 @@ use Std.Result.Result.*
 -- The grammar's tokens: the lexer's, with what the layout step inserts.
 @pub data Token
   = Mod
+  | Module
   | Use
   | Data
   | Type
@@ -74,19 +81,29 @@ use Std.Result.Result.*
   | Octal String
   | Hexadecimal String
   | Decimal String
+  | Float String
   | Str String
   | Char String
   | QualUpper String
   | QualLower String
   | UpperIdent String
   | LowerIdent String
+  | Goal String
   | ConOpIdent String
   | OpIdent String
+  -- the pieces of a string with holes, as written (see `Lex`)
+  | InterpStart String
+  | InterpMid String
+  | InterpEnd String
   | VLBrace
   | VSemi
   | VRBrace
   -- what the lexer could not read, as written
   | Error String
+  -- spaces and line ends, and a comment: trivia, which the parser looks past
+  -- and the tree keeps (see `foldToken`)
+  | Whitespace
+  | Comment
 
 -- The grammar's token for a lexer's one; nothing for a space, a newline or
 -- a comment.
@@ -96,6 +113,7 @@ use Std.Result.Result.*
   | Raw.Newline -> None
   | Raw.Comment -> None
   | Raw.Mod -> Just Token.Mod
+  | Raw.Module -> Just Token.Module
   | Raw.Use -> Just Token.Use
   | Raw.Data -> Just Token.Data
   | Raw.Type -> Just Token.Type
@@ -138,20 +156,26 @@ use Std.Result.Result.*
   | Raw.Octal s -> Just (Token.Octal s)
   | Raw.Hexadecimal s -> Just (Token.Hexadecimal s)
   | Raw.Decimal s -> Just (Token.Decimal s)
+  | Raw.Float s -> Just (Token.Float s)
   | Raw.Str s -> Just (Token.Str s)
   | Raw.Char s -> Just (Token.Char s)
   | Raw.QualUpper s -> Just (Token.QualUpper s)
   | Raw.QualLower s -> Just (Token.QualLower s)
   | Raw.UpperIdent s -> Just (Token.UpperIdent s)
   | Raw.LowerIdent s -> Just (Token.LowerIdent s)
+  | Raw.Goal s -> Just (Token.Goal s)
   | Raw.ConOpIdent s -> Just (Token.ConOpIdent s)
   | Raw.OpIdent s -> Just (Token.OpIdent s)
+  | Raw.InterpStart s -> Just (Token.InterpStart s)
+  | Raw.InterpMid s -> Just (Token.InterpMid s)
+  | Raw.InterpEnd s -> Just (Token.InterpEnd s)
 
 -- A token as the Rust compiler's `:ir tokens` writes it: its text, and the
 -- virtual ones as «{» «;» «}».
 @pub fun shown (t : Token) : String =
   match t with
   | Token.Mod -> "mod"
+  | Token.Module -> "module"
   | Token.Use -> "use"
   | Token.Data -> "data"
   | Token.Type -> "type"
@@ -194,17 +218,24 @@ use Std.Result.Result.*
   | Token.Octal s -> s
   | Token.Hexadecimal s -> s
   | Token.Decimal s -> s
+  | Token.Float s -> s
   | Token.Str s -> s
   | Token.Char s -> s
   | Token.QualUpper s -> s
   | Token.QualLower s -> s
   | Token.UpperIdent s -> s
   | Token.LowerIdent s -> s
+  | Token.Goal s -> s
   | Token.ConOpIdent s -> s
   | Token.OpIdent s -> s
+  | Token.InterpStart s -> s
+  | Token.InterpMid s -> s
+  | Token.InterpEnd s -> s
   | Token.VLBrace -> "«{»"
   | Token.VSemi -> "«;»"
   | Token.VRBrace -> "«}»"
+  | Token.Whitespace -> "«space»"
+  | Token.Comment -> "«comment»"
   | Token.Error text -> text
 
 -- A laid-out token, and the bytes it covers.
@@ -330,15 +361,18 @@ fun indents (ms : [Mark]) (i : Int) (out : [Mark]) : [Mark] =
 
 -- --- laying out -----------------------------------------------------------------
 
--- An open block: the column its lines start at, or 0 for one written with
--- braces (or a sequence literal's), which dedenting does not close.
+-- What opened a block: a herald (or the file itself), whose lines line up
+-- and which dedenting closes; or `{`, `#[`, `[` or `(`, inside which layout
+-- is suspended until what closes them, though a block opened inside them is
+-- laid out as any is.
+data Kind = Layout | Brace | Seq | Bracket | Paren
+
+-- An open block: the column its lines start at, or 0 for one dedenting does
+-- not close.
 record Ctx = {
   column : Int,
   closer : Closer,
-  -- opened by `#[`, and closed by its `]`
-  seq : Bool,
-  -- the plain `[`s opened in it and not yet closed
-  brackets : Int
+  kind : Kind
 }
 
 record State = {
@@ -349,7 +383,7 @@ record State = {
   finish : Int
 }
 
-fun explicit (c : Ctx) : Bool = c.column == 0
+fun explicit (c : Ctx) : Bool = match c.kind with | Kind.Layout -> False | _ -> True
 
 fun emit (st : State) (t : Token) (at : Int) : State =
   { st | out = V.pushBack st.out (Laid { token = t, from = at, to = at }) }
@@ -363,7 +397,11 @@ fun problem (st : State) (at : Int) (message : String) : State =
   { st | problems = V.pushBack st.problems (at, message) }
 
 fun pushed (st : State) (column : Int) (closer : Closer) : State =
-  { st | stack = Ctx { column, closer, seq = False, brackets = 0 } :: st.stack }
+  { st | stack = Ctx { column, closer, kind = Kind.Layout } :: st.stack }
+
+-- A block dedenting does not close: `{`, `#[`, `[` or `(`.
+fun grouped (st : State) (kind : Kind) (closer : Closer) : State =
+  { st | stack = Ctx { column = 0, closer, kind } :: st.stack }
 
 fun popped (st : State) : State =
   match st.stack with
@@ -418,19 +456,24 @@ fun nextTok (ms : [Mark]) (i : Int) : Maybe At =
 fun tok (st : State) (t : At) (ms : [Mark]) (i : Int) : (Int, State) =
   match t.raw with
   | Ok Raw.RBrace -> closeExplicit st t ms i
-  | Ok Raw.LBrace -> (i + 1, pushed (emitTok st t) 0 Closer.Never)
+  | Ok Raw.LBrace -> (i + 1, grouped (emitTok st t) Kind.Brace Closer.Never)
   | Ok Raw.Hash ->
       (match nextTok ms (i + 1) with
-       | Just lb if isLBracket lb ->
-           (i + 2, { (emitTok (emitTok st t) lb) | stack = Ctx { column = 0, closer = Closer.Never, seq = True, brackets = 0 } :: st.stack })
+       | Just lb if isLBracket lb -> (i + 2, grouped (emitTok (emitTok st t) lb) Kind.Seq Closer.Never)
        | _ -> (i + 1, emitTok st t))
-  | Ok Raw.LBracket -> (i + 1, emitTok (bracketOpened st) t)
-  | Ok Raw.RBracket -> (i + 1, emitTok (closeBracket st t.from) t)
+  -- `[` and `(` suspend layout too, until what closes them
+  | Ok Raw.LBracket -> (i + 1, grouped (emitTok st t) Kind.Bracket Closer.Never)
+  | Ok Raw.LParen -> (i + 1, grouped (emitTok st t) Kind.Paren Closer.Never)
+  | Ok Raw.RBracket -> (i + 1, emitTok (closeGroup st closesBracket t.from) t)
+  | Ok Raw.RParen -> (i + 1, emitTok (closeGroup st closesParen t.from) t)
+  -- a `,` separates the items of the group it is in, never of a layout
+  -- block: the blocks opened since the group's item began are over
+  | Ok Raw.Comma -> (i + 1, emitTok (closeLayouts st t.from) t)
   | r ->
       (match (herald r, nextTok ms (i + 1)) with
        -- `let {` / `do {`: written out by hand, but its keyword still closes it
        | (Just closer, Just lb) if byKeyword closer and isLBrace lb ->
-           (i + 2, pushed (emitTok (emitTok st t) lb) 0 closer)
+           (i + 2, grouped (emitTok (emitTok st t) lb) Kind.Brace closer)
        | _ ->
            (match st.stack with
             | ctx :: rest if not (explicit ctx) and closes r ctx.closer ->
@@ -439,39 +482,42 @@ fun tok (st : State) (t : At) (ms : [Mark]) (i : Int) : (Int, State) =
 
 fun isLBracket (a : At) : Bool = match a.raw with | Ok Raw.LBracket -> True | _ -> False
 
-fun bracketOpened (st : State) : State =
-  match st.stack with
-  | top :: rest -> { st | stack = { top | brackets = top.brackets + 1 } :: rest }
-  | [;] -> st
+fun closesBracket (k : Kind) : Bool = match k with | Kind.Seq -> True | Kind.Bracket -> True | _ -> False
 
--- A `]` closes the innermost `[` still open; a sequence literal's closes the
--- blocks opened inside it too.
-fun closeBracket (st : State) (at : Int) : State =
-  match st.stack with
-  | top :: rest if top.brackets > 0 -> { st | stack = { top | brackets = top.brackets - 1 } :: rest }
-  | _ -> closeLiteral st at
+fun closesParen (k : Kind) : Bool = match k with | Kind.Paren -> True | _ -> False
 
--- The layout blocks above the innermost explicit one closed, and it too, if
--- it is a sequence literal with no `[` of its own still open.
-fun closeLiteral (st : State) (at : Int) : State =
-  match literalBelow st.stack with
-  | True -> unwindLiteral st at
-  | False -> st
+-- A `]` or a `)` closes the `#[`, `[` or `(` it matches, and the layout
+-- blocks opened inside it, as Haskell's parse-error rule would: so a `case`
+-- in parentheses may have its alternatives on lines of their own. (One that
+-- matches nothing, or with an explicit `{` in between, is the parser's to
+-- report.)
+fun closeGroup (st : State) (matches : Kind -> Bool) (at : Int) : State =
+  match groupBelow st.stack with
+  | Just c if matches c.kind -> popped (closeLayouts st at)
+  | _ -> st
 
-fun literalBelow (stack : List Ctx) : Bool =
+-- The innermost block that is not a layout block.
+fun groupBelow (stack : List Ctx) : Maybe Ctx =
   match stack with
-  | [;] -> False
-  | c :: rest -> if explicit c then c.seq and c.brackets == 0 else literalBelow rest
+  | [;] -> None
+  | c :: rest -> if explicit c then Just c else groupBelow rest
 
-fun unwindLiteral (st : State) (at : Int) : State =
-  match st.stack with
-  | c :: rest -> if explicit c then { st | stack = rest } else unwindLiteral { (emit st Token.VRBrace at) | stack = rest } at
-  | [;] -> st
+-- The layout blocks above the innermost group closed (or every one, if there
+-- is no group -- but then the file's own block is the last, and stays).
+fun closeLayouts (st : State) (at : Int) : State =
+  match groupBelow st.stack with
+  | None -> st
+  | Just _ ->
+      (match st.stack with
+       | c :: rest if not (explicit c) -> closeLayouts { (emit st Token.VRBrace at) | stack = rest } at
+       | _ -> st)
 
 -- `}` closes a block written with braces; a `let {`'s closing keyword may
 -- come right after it.
 fun closeExplicit (st : State) (t : At) (ms : [Mark]) (i : Int) : (Int, State) =
   match st.stack with
+  -- inside a `#[`, `[` or `(`: the parser reports the `}`
+  | ctx :: _ if explicit ctx and not (isBrace ctx.kind) -> (i + 1, emitTok st t)
   | ctx :: rest if explicit ctx and not (byKeyword ctx.closer) -> (i + 1, { (emitTok st t) | stack = rest })
   | ctx :: rest if explicit ctx ->
       (match nextTok ms (i + 1) with
@@ -479,14 +525,20 @@ fun closeExplicit (st : State) (t : At) (ms : [Mark]) (i : Int) : (Int, State) =
        | _ -> (i + 1, problem st t.from "unexpected closing brace"))
   | _ -> (i + 1, problem st t.from "unexpected closing brace")
 
+fun isBrace (k : Kind) : Bool = match k with | Kind.Brace -> True | _ -> False
+
 -- At the end of the input, every layout block closes; one written with
--- braces that never saw its `}` is a mistake, and stops it.
+-- braces (or a sequence literal) that never saw its end is a mistake, and
+-- stops it. A `[` or `(` never closed is the parser's to report.
 fun closeAll (st : State) : State =
   match st.stack with
   | [;] -> st
   | ctx :: rest ->
-      if explicit ctx then problem st st.finish "not inside a layout context at end of input"
-      else closeAll { (emit st Token.VRBrace st.finish) | stack = rest }
+      (match ctx.kind with
+       | Kind.Layout -> closeAll { (emit st Token.VRBrace st.finish) | stack = rest }
+       | Kind.Bracket -> closeAll { st | stack = rest }
+       | Kind.Paren -> closeAll { st | stack = rest }
+       | _ -> problem st st.finish "not inside a layout context at end of input")
 
 -- --- the step -------------------------------------------------------------------
 
@@ -495,14 +547,101 @@ fun closeAll (st : State) : State =
       let ats = located (lexed input) in
       let ms = indents (blocks ats 0 []) 0 [] in
       let finish = match V.last ats with | Just a -> a.to | None -> 0 in
-      let first = Ctx { column = 1, closer = Closer.Never, seq = False, brackets = 0 } in
+      let first = Ctx { column = 1, closer = Closer.Never, kind = Kind.Layout } in
       let st = run ms 0 (State { stack = first :: [;], out = [Laid { token = Token.VLBrace, from = 0, to = 0 }], problems = [], finish }) in
       Layout { tokens = st.out, problems = st.problems }
 
 -- The tokens of `input`, to `f` in turn with the bytes each covers: the
--- lexer `syntax!` reads Idyll with.
+-- lexer `syntax!` reads Idyll with. The laid-out ones, and between them its
+-- spaces, line ends and comments, as trivia: so the tree has every byte of
+-- the source, comments too, which the formatter (`Format`) keeps. A virtual
+-- token covers none, and comes before trivia that starts where it stands.
+-- A block's close stands where its last token ends (`closedEarly`), and a
+-- run of spaces and line ends is one piece of trivia, as the formatter
+-- reads a blank line in it.
 @pub fun foldToken f acc (input : String) =
-  Ok (V.foldl (\a (t : Laid) -> f a t.token t.from t.to) acc (layout input).tokens)
+  let trivia =
+    V.foldl
+      (\(ts : [Laid]) l ->
+        match token l with
+        | Ok Raw.Space -> spaced ts (start l) (stop l)
+        | Ok Raw.Newline -> spaced ts (start l) (stop l)
+        | Ok Raw.Comment -> V.pushBack ts (Laid { token = Token.Comment, from = start l, to = stop l })
+        | _ -> ts)
+      []
+      (lexed input)
+  in
+  Ok (V.foldl (\a (t : Laid) -> f a t.token t.from t.to) acc (merged (closedEarly (lineEnd input trivia) (layout input).tokens) trivia 0 0 []))
+
+-- The laid-out tokens, each block's virtual close and `;` moved to where
+-- the last token before them ends (or a comment after it on its line,
+-- `ending`), from where the next one starts: the blank lines and comments
+-- after a block are around it, not in it, and those between two items are
+-- before the second. An empty block's open moves with its close; one
+-- after an open that is not stays, so that they stay in order.
+fun closedEarly (ending : Int -> Int) (ts : [Laid]) : [Laid] =
+  let step =
+    \(acc : ([Laid], Int, Bool)) (i : Int) ->
+      match (acc, V.get ts i) with
+      | ((out, last, movable), Just t) ->
+          (match t.token with
+           | Token.VRBrace -> early out t last movable
+           | Token.VSemi -> early out t last movable
+           | Token.VLBrace ->
+               if emptyAt ts (i + 1) then early out t last movable
+               else (V.pushBack out t, last, False)
+           | _ -> (V.pushBack out t, ending t.to, True))
+      | (_, None) -> acc
+  in
+  match V.foldl step ([], 0, False) (V.range 0 (V.len ts)) with
+  | (out, _, _) -> out
+
+-- Whether the token at `i` closes a block: so that one opened just before
+-- it is empty.
+fun emptyAt (ts : [Laid]) (i : Int) : Bool =
+  match V.get ts i with
+  | Just t -> (match t.token with | Token.VRBrace -> True | _ -> False)
+  | None -> False
+
+-- Where the line a token ends at `at` ends, for what follows it: past a
+-- comment after it on that line, if there is one.
+fun lineEnd (input : String) (trivia : [Laid]) : Int -> Int =
+  let starting = V.foldl (\m (t : Laid) -> Hm.insert t.from t m) Hm.empty trivia in
+  \at ->
+    let past =
+      match Hm.lookup at starting with
+      | Just (t : Laid) ->
+          (match t.token with
+           | Token.Whitespace -> if S.contains "\n" (stringSlice input t.from t.to) then at else t.to
+           | _ -> at)
+      | None -> at
+    in
+    match Hm.lookup past starting with
+    | Just (t : Laid) -> (match t.token with | Token.Comment -> t.to | _ -> at)
+    | None -> at
+
+fun early (out : [Laid]) (t : Laid) (last : Int) (movable : Bool) : ([Laid], Int, Bool) =
+  if movable then (V.pushBack out (Laid { token = t.token, from = last, to = last }), last, True)
+  else (V.pushBack out t, last, False)
+
+-- Space from `from` to `to` after the trivia `ts`: the last piece made
+-- longer, if it is space that ends there.
+fun spaced (ts : [Laid]) (from : Int) (to : Int) : [Laid] =
+  match V.last ts with
+  | Just t ->
+      (match t.token with
+       | Token.Whitespace if t.to == from -> V.set ts (V.len ts - 1) (Laid { token = Token.Whitespace, from = t.from, to })
+       | _ -> V.pushBack ts (Laid { token = Token.Whitespace, from, to }))
+  | None -> V.pushBack ts (Laid { token = Token.Whitespace, from, to })
+
+-- Two runs of tokens, each in order of where they start, as one; on a tie,
+-- the first's first.
+fun merged (a : [Laid]) (b : [Laid]) (i : Int) (j : Int) (acc : [Laid]) : [Laid] =
+  match (V.get a i, V.get b j) with
+  | (Just x, Just y) -> if y.from < x.from then merged a b i (j + 1) (V.pushBack acc y) else merged a b (i + 1) j (V.pushBack acc x)
+  | (Just x, None) -> merged a b (i + 1) j (V.pushBack acc x)
+  | (None, Just y) -> merged a b i (j + 1) (V.pushBack acc y)
+  | (None, None) -> acc
 
 -- `input`'s tokens, laid out, as `:ir tokens` shows them, on one line.
 @pub fun dumped (input : String) : String =

@@ -28,7 +28,7 @@
 //! one.  The prelude is named the same in every package, so its types are
 //! the same types everywhere.
 
-use super::core::{Core, Lvl};
+use super::core::{Core, Lvl, Note};
 use super::handlers::{EffectInfo, OpInfo};
 use super::termination::Unfold;
 use super::value::Env;
@@ -49,6 +49,9 @@ pub struct ImportedConstant {
     /// how many arguments it takes before it can compute, and its case tree
     /// under them
     pub unfold: Option<(usize, Rc<Core>)>,
+    /// whether it unfolds only where a `case` waits on it (an instance)
+    #[serde(default)]
+    pub unfold_on_case: bool,
 }
 
 /// What compiling a package makes: see the module docs.
@@ -84,6 +87,16 @@ pub struct CompiledPackage {
     pub symbols: Vec<(usize, String, String)>,
     /// what its metavariables were solved with, which its code may mention
     pub meta_solutions: Vec<Option<Rc<Core>>>,
+    /// its definitions offered to the search for an auto argument
+    #[serde(default)]
+    pub hints: Vec<usize>,
+    /// its traits' records
+    #[serde(default)]
+    pub traits: Vec<usize>,
+    /// its instances with no parameters, and those of their fields that are
+    /// a constant or a primitive (see [`Checker::specialize`])
+    #[serde(default)]
+    pub instance_fields: Vec<(usize, Vec<Option<Rc<Core>>>)>,
 }
 
 impl Checker {
@@ -93,6 +106,14 @@ impl Checker {
     pub(super) fn import(&mut self, ctx: &Ctx, deps: &[&CompiledPackage]) -> Ctx {
         let mut ctx = ctx.clone();
         let empty = Env::empty();
+        // the definitions already in the context (the builtins' and the
+        // primitives'), by their names: what an exported right-hand side
+        // names them by (the prelude's are as they are entered)
+        for (level, b) in ctx.binders.iter().enumerate() {
+            if let (Some(key), BinderInfo::Defined) = (b.key, b.info) {
+                self.globals.entry(key).or_insert_with(|| ctx.value(level));
+            }
+        }
         for p in deps {
             for c in &p.constants {
                 let ty = self.eval(&empty, &c.ty);
@@ -103,7 +124,7 @@ impl Checker {
                     self.globals.insert(c.unique, v);
                 }
                 if let Some((arity, body)) = &c.unfold {
-                    self.transparent.insert(c.unique, Unfold::closed(*arity, body.clone()));
+                    self.transparent.insert(c.unique, Unfold::closed(*arity, body.clone(), c.unfold_on_case));
                 }
             }
             self.ctors.extend(p.ctors.iter().cloned());
@@ -167,7 +188,8 @@ impl Checker {
             let unique = x.unique?;
             let ty = this.constant_type(ctx, unique)?;
             let unfold = this.transparent.get(&unique).map(|u| u.export(this, ctx));
-            Some(ImportedConstant { unique, name: x.text.clone(), ty, value: None, unfold })
+            let unfold_on_case = this.transparent.get(&unique).is_some_and(|u| u.on_case);
+            Some(ImportedConstant { unique, name: x.text.clone(), ty, value: None, unfold, unfold_on_case })
         };
         for d in m.datas.iter().filter(|d| own(&d.name.unique)) {
             constants.extend(constant(self, &d.name));
@@ -176,6 +198,9 @@ impl Checker {
         for e in m.effects.iter().filter(|e| own(&e.name.unique)) {
             constants.extend(constant(self, &e.name));
             constants.extend(e.ops.iter().filter_map(|op| constant(self, &op.name)));
+        }
+        for n in m.natives.iter().filter(|n| own(&n.name.unique)) {
+            constants.extend(constant(self, &n.name));
         }
         // the definitions: a non-recursive one has a slot, and a value the
         // types may see unless computing it has effects; a recursive one is a
@@ -194,9 +219,19 @@ impl Checker {
                         let binder = &ctx.binders[*level];
                         base.get_or_insert(*level);
                         let ty = self.close(ctx, &self.quote(ctx.lvl, binder.ty.clone()));
+                        // its right-hand side, as it was written (closed over
+                        // the definitions before it, by their names): not what
+                        // it computes to, which takes in all it uses, and can
+                        // be many times the size (a parser of combinators)
+                        let written = match (group, wrap) {
+                            (hir::BindGroup::NonRec(_), Some((_, rhs))) => {
+                                Some(self.close_at(ctx, *level, *level, &rhs.zonked(&meta_solutions)))
+                            }
+                            _ => None,
+                        };
                         let value = (binder.info == BinderInfo::Defined)
-                            .then(|| self.close(ctx, &self.quote(ctx.lvl, ctx.value(*level))));
-                        constants.push(ImportedConstant { unique, name: b.name.text.clone(), ty, value, unfold: None });
+                            .then(|| written.unwrap_or_else(|| self.close(ctx, &self.quote(ctx.lvl, ctx.value(*level)))));
+                        constants.push(ImportedConstant { unique, name: b.name.text.clone(), ty, value, unfold: None, unfold_on_case: false });
                     }
                     _ => constants.extend(constant(self, &b.name)),
                 }
@@ -228,22 +263,33 @@ impl Checker {
             main: false,
             symbols: Vec::new(),
             meta_solutions,
+            hints: {
+                let mut hints: Vec<usize> = self.hints.iter().copied().filter(|u| own_set.contains(u)).collect();
+                hints.sort_unstable();
+                hints
+            },
+            traits: m.datas.iter().filter(|d| d.is_trait).filter_map(|d| d.name.unique).filter(|u| own_set.contains(u)).collect(),
+            instance_fields: {
+                let mut fields: Vec<(usize, Vec<Option<Rc<Core>>>)> =
+                    self.instance_fields.iter().filter(|(u, _)| own_set.contains(u)).map(|(u, f)| (*u, f.clone())).collect();
+                fields.sort_by_key(|(u, _)| *u);
+                fields
+            },
         }
     }
 }
 
-/// A program put together from a root package (checked, with its own code
-/// and the prelude's) and the compiled packages it depends on, directly or
-/// not, in an order where each comes after those it depends on.  Replaces
-/// the root's program, recursive definitions and tables with the whole
-/// program's; its metavariables are solved away.
 /// Whether the program refers to anything `dep` declares: a definition, a
-/// constructor (built, or matched on), an operation.
+/// constructor (built, or matched on), an operation. What it computes, that
+/// is: through what its metavariables were solved with (an implicit
+/// argument used at run time may be one), and not into what is erased.
 pub fn uses(root: &TypeCheckResult, dep: &CompiledPackage) -> bool {
-    fn mentions(c: &Core, range: &std::ops::Range<usize>) -> bool {
-        let go = |c: &Core| mentions(c, range);
+    fn mentions(c: &Core, range: &std::ops::Range<usize>, solutions: &[Option<Rc<Core>>]) -> bool {
+        let go = |c: &Core| mentions(c, range, solutions);
         match c {
             Core::Opaque(u, _) => range.contains(u),
+            Core::Meta(m) => solutions.get(*m).cloned().flatten().is_some_and(|s| go(&s)),
+            Core::Runtime(Note::Erased, _) => false,
             Core::Pi { grade, in_type, dom, cod, .. } => go(grade) || go(in_type) || go(dom) || go(cod),
             Core::Lam(_, b) | Core::BoxIntro(b) | Core::Unbox(b) | Core::Runtime(_, b) => go(b),
             Core::Let(_, a, b)
@@ -261,10 +307,16 @@ pub fn uses(root: &TypeCheckResult, dep: &CompiledPackage) -> bool {
             _ => false,
         }
     }
-    let range = &dep.uniques;
-    root.program.as_ref().is_some_and(|p| mentions(p, range)) || root.rec_defs.iter().any(|d| mentions(&d.core, range))
+    let (range, solutions) = (&dep.uniques, &root.meta_solutions);
+    root.program.as_ref().is_some_and(|p| mentions(p, range, solutions))
+        || root.rec_defs.iter().any(|d| mentions(&d.core, range, solutions))
 }
 
+/// A program put together from a root package (checked, with its own code
+/// and the prelude's) and the compiled packages it depends on, directly or
+/// not, in an order where each comes after those it depends on.  Replaces
+/// the root's program, recursive definitions and tables with the whole
+/// program's; its metavariables are solved away.
 pub fn link(root: &mut TypeCheckResult, deps: &[&CompiledPackage]) {
     let Some(own) = root.compiled.clone() else { return };
     let base = own.base;
@@ -328,10 +380,20 @@ pub fn link(root: &mut TypeCheckResult, deps: &[&CompiledPackage]) {
     }
     root.program = Some(program);
     root.rec_defs = rec_defs;
-    root.typer.import(deps);
+    // and the root's own constants, which its checker has not seen when it
+    // is linked from its compiled package alone: without them, what its
+    // recursive definitions answer has no type to lower by
+    let mut known: Vec<&CompiledPackage> = deps.to_vec();
+    if own.constants.iter().any(|c| c.value.is_none() && !root.typer.knows(c.unique)) {
+        known.push(&own);
+    }
+    root.typer.import(&known);
     // the top-level `let`s: the prelude's, then each package's in order
     let prelude = root.prelude_lets.len();
     root.toplevel = root.toplevel.iter().take(prelude).copied().chain(packages.iter().flat_map(|p| p.lets.iter().map(|(u, ..)| *u))).collect();
+    // (a package's definition has a value exactly when computing it has no
+    // effects)
+    root.pure.extend(packages.iter().flat_map(|p| p.constants.iter().filter(|c| c.value.is_some()).map(|c| c.unique)));
     for p in deps.iter().copied().chain(std::iter::once(&own)) {
         root.symbols.extend(p.symbols.iter().map(|(u, pkg, path)| (*u, (pkg.clone(), path.clone()))));
     }
@@ -340,10 +402,77 @@ pub fn link(root: &mut TypeCheckResult, deps: &[&CompiledPackage]) {
     root.ran_main = own.main;
 }
 
-/// A term with every metavariable in it replaced by its solution.
+/// A package compiled a part at a time (see `idyllic::parts`), as one
+/// package: what its dependents import and what a program is linked from.
+/// Each part's code is moved to the slots after those of the parts before
+/// it, and its metavariables, numbered by its own checker, are solved
+/// away. The root's part, whose body is the package's, is the last.
+pub fn merge(parts: Vec<CompiledPackage>) -> CompiledPackage {
+    let mut parts = parts.into_iter();
+    let Some(first) = parts.next() else { panic!("a package has a part") };
+    let mut out = solved(first);
+    for p in parts {
+        let offset = out.base + out.lets.len();
+        let moved = |l: Lvl| if l < p.base { l } else { l - p.base + offset };
+        let relocate = |at: Lvl, core: &Rc<Core>| -> Rc<Core> {
+            let placed = moved(at);
+            zonk(&p, core).rewrite(0, &|c, d| match c {
+                Core::Var(i, n) if *i >= d => {
+                    let level = at - 1 - (i - d);
+                    Some(Rc::new(Core::Var(placed + d - 1 - moved(level), n.clone())))
+                }
+                _ => None,
+            })
+        };
+        let lets: Vec<_> = p.lets.iter().enumerate().map(|(k, (u, name, rhs))| (*u, name.clone(), relocate(p.base + k, rhs))).collect();
+        let rec_defs: Vec<_> = p.rec_defs.iter().map(|d| RecDef { lvl: moved(d.lvl), core: relocate(d.lvl, &d.core), ..d.clone() }).collect();
+        let body = p.body.as_ref().map(|(b, ty)| (relocate(p.base + p.lets.len(), b), zonk(&p, ty)));
+        let instance_fields: Vec<_> =
+            p.instance_fields.iter().map(|(u, fs)| (*u, fs.iter().map(|f| f.as_ref().map(|c| zonk(&p, c))).collect())).collect();
+        let names = &p.names;
+        out.names.modules.extend(names.modules.iter().cloned());
+        out.names.exports.extend(names.exports.iter().cloned());
+        out.names.types.extend(names.types.iter().cloned());
+        out.names.effect_ops.extend(names.effect_ops.iter().cloned());
+        out.names.fields.extend(names.fields.iter().cloned());
+        out.names.defaults.extend(names.defaults.iter().cloned());
+        out.names.supers.extend(names.supers.iter().cloned());
+        out.names.methods.extend(names.methods.iter().cloned());
+        out.uniques = out.uniques.start.min(p.uniques.start)..out.uniques.end.max(p.uniques.end);
+        out.constants.extend(p.constants.iter().cloned());
+        out.ctors.extend(p.ctors.iter().cloned());
+        out.datas.extend(p.datas.iter().cloned());
+        out.positive_params.extend(p.positive_params.iter().cloned());
+        out.seqs.extend(p.seqs.iter().cloned());
+        out.effects.extend(p.effects.iter().cloned());
+        out.ops.extend(p.ops.iter().cloned());
+        out.natives.extend(p.natives.iter().cloned());
+        out.lets.extend(lets);
+        out.rec_defs.extend(rec_defs);
+        out.body = body;
+        out.main = p.main;
+        out.symbols.extend(p.symbols.iter().cloned());
+        out.hints.extend(p.hints.iter().copied());
+        out.traits.extend(p.traits.iter().copied());
+        out.instance_fields.extend(instance_fields);
+    }
+    out.symbols.sort();
+    out
+}
+
+/// A package with its metavariables solved away, in its code and in its
+/// instances' fields.
+fn solved(mut p: CompiledPackage) -> CompiledPackage {
+    p.lets = p.lets.iter().map(|(u, n, rhs)| (*u, n.clone(), zonk(&p, rhs))).collect();
+    p.rec_defs = p.rec_defs.iter().map(|d| RecDef { core: zonk(&p, &d.core), ..d.clone() }).collect();
+    p.body = p.body.as_ref().map(|(b, ty)| (zonk(&p, b), zonk(&p, ty)));
+    p.instance_fields = p.instance_fields.iter().map(|(u, fs)| (*u, fs.iter().map(|f| f.as_ref().map(|c| zonk(&p, c))).collect())).collect();
+    p.meta_solutions = Vec::new();
+    p
+}
+
+/// A term with every metavariable in it replaced by its solution (see
+/// [`Core::zonked`]).
 fn zonk(p: &CompiledPackage, core: &Rc<Core>) -> Rc<Core> {
-    core.rewrite(0, &|c, _| match c {
-        Core::Meta(m) => p.meta_solutions.get(*m).cloned().flatten().map(|s| zonk(p, &s)),
-        _ => None,
-    })
+    core.zonked(&p.meta_solutions)
 }

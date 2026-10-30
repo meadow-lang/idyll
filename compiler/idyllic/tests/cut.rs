@@ -281,6 +281,18 @@ fn a_package_with_a_version_is_named_with_it() {
 }
 
 #[test]
+fn the_same_program_is_always_the_same_cut() {
+    // recursive definitions came out in a hash map's order, which changes
+    // from one run to the next; a build is known by what it is made of
+    let src = "use Std.Collections.List (append, reverse, length, sum, map)\n\n\
+               sum (map (\\(x : Int) -> x + 1) (reverse (append (1 :: 2 :: Nil) (3 :: Nil)))) + length (4 :: Nil)\n";
+    let first = cut(src).expect("lowered");
+    for _ in 0..8 {
+        assert_eq!(cut(src).expect("lowered"), first);
+    }
+}
+
+#[test]
 fn a_native_with_no_primitive_is_a_def_of_the_programs_own() {
     // generic in the element, as a Cut function is: a descriptor for it
     let text = lowered("arrayToList #[1; 2]\n");
@@ -290,9 +302,112 @@ fn a_native_with_no_primitive_is_a_def_of_the_programs_own() {
     // a list that is not written out is pushed, element by element
     let text = lowered("f : List Int -> Array Int\nf xs = arrayFromList xs\n\nf (1 :: Nil)\n");
     has(&text, "def idyll:Main/\"#arrayFromList\".go <'a_N = d_N> (d_N: desc, l_N: ptr, acc_N: ptr; k_N: ptr) =");
-    // a mutable array is the runtime's, and a read gives it back with what
-    // it read boxed
+    // a mutable array is the runtime's mutable one, written in place -- not
+    // a persistent array, which a write copies -- and given back by a write
     let text = lowered("Std.Collections.MArray.freeze (Std.Collections.MArray.write (Std.Collections.MArray.new 2 0) 1 5)\n");
-    has(&text, "def idyll:Main/\"#marrayNew\"");
-    has(&text, "prim arraySet(");
+    has(&text, "prim stNewArray(n_N, x_N; k_N)");
+    has(&text, "prim stSetArray(m_N, i_N, x_N; μ̃ u_N: unit.\n    <m_N | k_N>)");
+    has(&text, "prim stFreeze(m_N; k_N)");
+    assert!(!text.contains("prim arraySet("), "{text}");
+}
+
+#[test]
+fn a_method_of_a_known_instance_is_what_the_instance_gives() {
+    // `plus2 n n` at `Int` is the instance's field, the primitive: no
+    // record is looked into, and no method called
+    let text = lowered(
+        "trait Plus (a : Type) where\n  plus2 : a -> a -> a\n\ninstance Plus Int where\n  plus2 = intAdd\n\n\
+         twice : Int -> Int\ntwice n = plus2 n n\n\ntwice 21\n",
+    );
+    has(&text, "def idyll:Main/twice (n_N: i64; k_N: ptr) =\n  prim add(n_N, n_N; k_N)");
+    // where the instance is not known, the method is called with the record
+    let text = lowered(
+        "trait Plus (a : Type) where\n  plus2 : a -> a -> a\n\ninstance Plus Int where\n  plus2 = intAdd\n\n\
+         twice : {a : Type} -> Plus a => a -> a\ntwice n = plus2 n n\n\ntwice 21\n",
+    );
+    has(&text, "idyll:Main/plus2(");
+}
+
+/// `Vec` with its index, and a function whose implicit argument is solved.
+const INDEXED: &str = "data Nat = Z | S Nat\n\nuse Nat.*\n\n\
+                       data Vec : Nat -> Type -> Type where\n  VNil : Vec Z a\n  VCons : a -> Vec n a -> Vec (S n) a\n\nuse Vec.*\n\n";
+
+#[test]
+fn a_solved_implicit_argument_is_what_it_was_solved_with_not_a_closure() {
+    // the recursive call's `n` is a metavariable's solution, a function of
+    // the context, applied to it: given the variable it comes to
+    let src = format!(
+        "{INDEXED}toList : {{n : [] Nat}} -> {{a : Type}} -> Vec n a -> List a\n\
+         toList {{Z}} _ = (Nil : List a)\ntoList {{S _}} (VCons x xs) = x :: toList xs\n\n\
+         toList (VCons 1 (VCons 2 VNil))\n"
+    );
+    let text = lowered(&src);
+    has(&text, "idyll:Main/toList(x_N, d_a_N, xs_N;");
+    assert!(!text.contains("cocase"), "{text}");
+}
+
+#[test]
+fn what_only_a_solution_calls_is_kept() {
+    // `twice m` is in an erased argument, and in what `n` was solved with
+    let src = format!(
+        "{INDEXED}data Proxy : Nat -> Type where\n  P : (n : [0] Nat) -> Proxy n\n\n\
+         twice : Nat -> Nat\ntwice Z = Z\ntwice (S n) = S (S (twice n))\n\n\
+         pick : {{n : [] Nat}} -> Proxy n -> Nat\npick {{n}} _ = n\n\n\
+         f : Nat -> Nat\nf m = pick (Proxy.P (twice m))\n\nf (S Z)\n"
+    );
+    has(&lowered(&src), "def idyll:Main/twice");
+}
+
+#[test]
+fn an_instance_a_type_names_is_passed_by_its_name() {
+    // `size`'s `Hash Int` is what `s`'s type says it is, `instance Hash
+    // Int`: the instance itself is passed, not a copy of what it unfolds to
+    let src = "use Std.Collections.HashMap (HashMap)\nuse Std.Collections.HashMap as HashMap\n\n\
+               s : HashMap Int Int\ns = HashMap.insert 1 2 HashMap.empty\n\nHashMap.size s\n";
+    let text = lowered(src);
+    let entry = &text[text.find("def idyll:Main/\"#entry\"").expect("the entry")..];
+    assert!(!entry.contains("Hash.Hash.Hash("), "the instance rebuilt in the entry:\n{entry}");
+}
+
+#[test]
+fn a_lambda_read_back_from_a_value_takes_what_its_parameter_does() {
+    // the program's own instance, unfolded where `m`'s type names it: its
+    // method `\x -> 7`, which says no type of its own, takes an `i64` as
+    // `hash` does, not `any`
+    let src = "use Std.Collections.HashMap (HashMapBy)\nuse Std.Collections.HashMap as HashMap\nuse Std.Hash (Hash)\n\n\
+               instance same : Hash Int where\n  hash x = 7\n\n\
+               m : HashMapBy Int same Int\nm = HashMap.insert @{same} 1 2 (HashMap.empty @{same})\n\nHashMap.lookup 1 m\n";
+    let text = lowered(src);
+    assert!(!text.contains(": any"), "a parameter of no known representation:\n{text}");
+}
+
+#[test]
+fn a_cell_is_the_runtimes_own() {
+    // `newRef`, `getRef` and `setRef` are the runtime's primitives, no
+    // operations performed; what a cell holds is bound at its
+    // representation, which the primitive does not say
+    let text = lowered("bump : (r : Ref Int) -> Int ! Mut\nbump r = let u = setRef r (getRef r + 1) in getRef r\n\nbump (newRef 41)\n");
+    assert!(text.contains("prim newRef(41;"), "{text}");
+    assert!(text.contains("prim setRef(r_"), "{text}");
+    assert!(text.contains("prim getRef(r_"), "{text}");
+    assert!(text.contains(": i64."), "{text}");
+    assert!(!text.contains("perform"), "{text}");
+}
+
+#[test]
+fn a_value_at_an_operations_any_is_boxed() {
+    // an operation generic in its effect's parameter takes and gives `any`,
+    // which holds a box: what is performed with goes in one, what a clause
+    // is given comes out of one, and so do what it resumes with and what
+    // the perform is given back (`docs/CUT.md`, open question 2)
+    let src = "effect Cell (s : Type) where\n  get : () -> s\n  put : (x : [] s) -> ()\n\n\
+               bump : () -> Int ! Cell Int\nbump u = let v = put (get () + 1) in get ()\n\n\
+               run : (s : [] Int) -> Int\nrun = handle bump () with\n  return x -> \\(s : [] Int) -> x\n  get _ k -> \\(s : [] Int) -> k s s\n  put s2 k -> \\(s : [] Int) -> k () s2\n\n\
+               run 41\n";
+    let text = lowered(src);
+    has(&text, "data idyll:Prelude/\"#Box\" <'a0> { Box('a0) }");
+    has(&text, "effect idyll:Main/Cell { get(unit) -> any; put(any) -> unit }");
+    has(&text, "perform idyll:Main/Cell.put(idyll:Prelude/\"#Box\".Box(");
+    has(&text, "idyll:Prelude/\"#Box\".Box(s2_N: i64) =>");
+    has(&text, "apply(idyll:Prelude/\"#Box\".Box(s_N)");
 }

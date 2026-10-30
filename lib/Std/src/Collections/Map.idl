@@ -1,0 +1,171 @@
+-- Maps from keys in order to values, backed by a binary search tree, as
+-- Meadow's `Std.Collections.Map` is; but keyed by any type with an `Ord`,
+-- not only `Int`. Reach these as `Map.insert` etc.
+--
+-- A map is only in order by the `Ord` it was built with, so that `Ord` is
+-- part of its type: `MapBy k o v` is a map keyed by `k`, ordered by `o`.
+-- `Map k v` is `MapBy k o v` for the `Ord k` a search finds where it is
+-- written, so a map built with the usual order is a `Map Int String`, and
+-- one built with another, `insert @{down} ..`, is a `MapBy Int down
+-- String`, which a function wanting a `Map Int String` does not take.
+
+use Std.Ordering (Ordering)
+use Std.Ordering.Ordering.*
+use Std.Cmp (Ord, compare)
+use Std.Collections.Vector (Vector)
+use Std.Collections.Vector as V
+use Std.Tuple (fst, snd)
+
+@pub
+data MapBy (k : Type) (o : Ord k) (v : Type) = Tip | Node (MapBy k o v) k v (MapBy k o v)
+
+use MapBy.*
+
+-- A map ordered by the `Ord k` found where it is written.
+@pub
+Map : (k : Type) -> {auto o : Ord k} -> (v : Type) -> Type
+Map k @{o} v = MapBy k o v
+
+@pub
+empty : {k v : Type} -> {auto o : Ord k} -> Map k v
+empty = Tip
+
+@pub
+null : {k v : Type} -> {auto o : Ord k} -> (m : Map k v) -> Bool
+null Tip = True
+null (Node l key val r) = False
+
+@pub
+size : {k v : Type} -> {auto o : Ord k} -> (m : Map k v) -> Int
+size Tip = 0
+size (Node l key val r) = 1 + size l + size r
+
+-- `m` with `key` holding `val`, in place of what it held.
+@pub
+insert : {k v : Type} -> {auto o : Ord k} -> (key : k) -> (val : v) -> (m : Map k v) -> Map k v
+insert key val Tip = Node Tip key val Tip
+insert key val (Node l at x r) = case compare key at of
+  Less -> Node (insert key val l) at x r
+  Greater -> Node l at x (insert key val r)
+  Equal -> Node l key val r
+
+@pub
+lookup : {k v : Type} -> {auto o : Ord k} -> (key : k) -> (m : Map k v) -> Maybe v
+lookup key Tip = Nothing
+lookup key (Node l at x r) = case compare key at of
+  Less -> lookup key l
+  Greater -> lookup key r
+  Equal -> Just x
+
+@pub
+member : {k v : Type} -> {auto o : Ord k} -> (key : k) -> (m : Map k v) -> Bool
+member key m = case lookup key m of
+  Nothing -> False
+  Just x -> True
+
+@pub
+getOr : {k v : Type} -> {auto o : Ord k} -> (default : v) -> (key : k) -> (m : Map k v) -> v
+getOr default key m = case lookup key m of
+  Nothing -> default
+  Just x -> x
+
+-- Every `(key, value)` pair, in key order.
+@pub
+toVec : {k v : Type} -> {auto o : Ord k} -> (m : Map k v) -> Vector (k, v)
+toVec m = pushInOrder V.empty m
+
+pushInOrder : {k v : Type} -> {auto o : Ord k} -> (acc : Vector (k, v)) -> (m : Map k v) -> Vector (k, v)
+pushInOrder acc Tip = acc
+pushInOrder acc (Node l key val r) = pushInOrder (V.pushBack (pushInOrder acc l) (key, val)) r
+
+@pub
+keys : {k v : Type} -> {auto o : Ord k} -> (m : Map k v) -> Vector k
+keys m = V.map (\(p : (k, v)) -> fst p) (toVec m)
+
+@pub
+values : {k v : Type} -> {auto o : Ord k} -> (m : Map k v) -> Vector v
+values m = V.map (\(p : (k, v)) -> snd p) (toVec m)
+
+@pub
+fromVec : {k v : Type} -> {auto o : Ord k} -> (ps : Vector (k, v)) -> Map k v
+fromVec ps = V.foldl (\(acc : Map k v) (p : (k, v)) -> insert (fst p) (snd p) acc) empty ps
+
+-- Every `(key, value)` pair, in key order, as a `List`.
+@pub
+toList : {k v : Type} -> {auto o : Ord k} -> (m : Map k v) -> List (k, v)
+toList m = consInOrder Nil m
+
+consInOrder : {k v : Type} -> {auto o : Ord k} -> (acc : List (k, v)) -> (m : Map k v) -> List (k, v)
+consInOrder acc Tip = acc
+consInOrder acc (Node l key val r) = consInOrder ((key, val) :: consInOrder acc r) l
+
+@pub
+fromList : {k v : Type} -> {auto o : Ord k} -> (ps : List (k, v)) -> Map k v
+fromList Nil = empty
+fromList ((key, val) :: rest) = insert key val (fromList rest)
+
+-- `f` given each value, the keys and the order as they were.
+@pub
+map : {k a b : Type} -> {auto o : Ord k} -> (f : ((x : a) -> b ! e)) -> (m : Map k a) -> Map k b ! e
+map f Tip = Tip
+map f (Node l key val r) = Node (map f l) key (f val) (map f r)
+
+-- The entry with the smallest key, if there is one.
+@pub
+minEntry : {k v : Type} -> {auto o : Ord k} -> (m : Map k v) -> Maybe (k, v)
+minEntry Tip = Nothing
+minEntry (Node Tip key val r) = Just (key, val)
+minEntry (Node l@(Node ll lk lv lr) key val r) = minEntry l
+
+-- The entry with the largest key, if there is one.
+@pub
+maxEntry : {k v : Type} -> {auto o : Ord k} -> (m : Map k v) -> Maybe (k, v)
+maxEntry Tip = Nothing
+maxEntry (Node l key val Tip) = Just (key, val)
+maxEntry (Node l key val r@(Node rl rk rv rr)) = maxEntry r
+
+deleteMin : {k v : Type} -> {auto o : Ord k} -> (m : Map k v) -> Map k v
+deleteMin Tip = Tip
+deleteMin (Node Tip key val r) = r
+deleteMin (Node l@(Node ll lk lv lr) key val r) = Node (deleteMin l) key val r
+
+-- Two subtrees, every key of the first below every key of the second, as one.
+joined : {k v : Type} -> {auto o : Ord k} -> (l : Map k v) -> (r : Map k v) -> Map k v
+joined Tip r = r
+joined l Tip = l
+joined l r = case minEntry r of
+  Nothing -> l
+  Just (mk, mv) -> Node l mk mv (deleteMin r)
+
+-- `m` without `key`.
+@pub
+delete : {k v : Type} -> {auto o : Ord k} -> (key : k) -> (m : Map k v) -> Map k v
+delete key Tip = Tip
+delete key (Node l at x r) = case compare key at of
+  Less -> Node (delete key l) at x r
+  Greater -> Node l at x (delete key r)
+  Equal -> joined l r
+
+-- What `key` holds, given to `f`, if it holds anything.
+@pub
+adjust : {k v : Type} -> {auto o : Ord k} -> (key : k) -> (f : ((x : v) -> v ! e)) -> (m : Map k v) -> Map k v ! e
+adjust key f Tip = Tip
+adjust key f (Node l at x r) = case compare key at of
+  Less -> Node (adjust key f l) at x r
+  Greater -> Node l at x (adjust key f r)
+  Equal -> Node l at (f x) r
+
+-- `insert`, combining with what `key` held as `f new old`.
+@pub
+insertWith : {k v : Type} -> {auto o : Ord k} -> (f : ((new : v) -> (old : v) -> v ! e)) -> (key : k) -> (val : v) -> (m : Map k v) -> Map k v ! e
+insertWith f key val Tip = Node Tip key val Tip
+insertWith f key val (Node l at x r) = case compare key at of
+  Less -> Node (insertWith f key val l) at x r
+  Greater -> Node l at x (insertWith f key val r)
+  Equal -> Node l at (f val x) r
+
+-- The values, last key first, folded into `z`.
+@pub
+foldr : {k v b : Type} -> {auto o : Ord k} -> (f : ((key : k) -> (val : v) -> (acc : b) -> b ! e)) -> (z : b) -> (m : Map k v) -> b ! e
+foldr f z Tip = z
+foldr f z (Node l key val r) = foldr f (f key val (foldr f z r)) l

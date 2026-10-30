@@ -1,0 +1,122 @@
+-- Number literals take the type wanted:
+-- `compiler/idyllic-typecheck/src/literals.rs`. `5` is an `Int8` where an
+-- `Int8` is wanted, and `1.5` a `Float32` where a `Float32` is; with
+-- nothing to say, an integer is an `Int` and a number with a point a
+-- `Float`.
+--
+-- What is wanted may not be known yet where the literal is: in `1 + x`, the
+-- `1` is checked before `x` says what `+` is at. So a literal checked
+-- against a type still to be worked out waits behind a placeholder, as an
+-- auto argument does (`Auto`), and is read once its type is known, after
+-- the application it is in or at the end of its definition, where an
+-- unknown type is taken to be the default.
+
+use Std.St (StRef, newRef, getRef, setRef)
+use Idyll.Hir (Literal)
+use Idyll.Core (Core, Builtin)
+use Idyll.Core as C
+use Idyll.Value (Value)
+use Idyll.Tc (Tc, Meta, MetaInfo, Origin)
+use Idyll.Tc as T
+use Idyll.Eval (force, eval, blocked)
+use Idyll.Unify (unify)
+use Idyll.Ctx (Ctx)
+use Idyll.Num as N
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as Hm
+use Std.Maybe.Maybe.*
+
+-- Whether `lit`, as the parser read it, can be read at `b`: an integer at
+-- any integer type, a number with a point at a float type.
+@pub fun readsAs (lit : Literal) (b : Builtin) : Bool =
+  match (lit, b) with
+  | (Literal.Int _, Builtin.Int) -> True
+  | (Literal.Int _, Builtin.Number n) -> not (C.isFloatType n)
+  | (Literal.Float _, Builtin.Number n) -> C.isFloatType n
+  | _ -> False
+
+-- Whether a literal as written, `5`, is the number `read` is, `5` at
+-- `Int8`.
+@pub fun sameNumber (written : Literal) (read : Literal) : Bool =
+  match (written, read) with
+  | (Literal.Int n, Literal.Word _ k) -> n == k
+  | (Literal.Float x, Literal.Float32 y) -> toFloat32 x == y
+  | _ -> written == read
+
+-- What `lit` is with nothing to say otherwise.
+fun defaultOf (lit : Literal) : Builtin =
+  match lit with
+  | Literal.Float _ -> Builtin.Number "Float"
+  | _ -> Builtin.Int
+
+-- `lit` read at `b`, which `readsAs` says it can be; an integer too big
+-- for its type is an error, and wrapped.
+@pub fun readNumber (tc : Tc s) (lit : Literal) (b : Builtin) : Literal ! { St s | e } =
+  match (lit, b) with
+  | (Literal.Int n, Builtin.Number w) if not (C.isFloatType w) ->
+      let k = N.wrap w n in
+      let u = if k != n then T.error tc "NumberTooLarge" else () in
+      Literal.Word w k
+  | (Literal.Float x, Builtin.Number "Float32") -> Literal.Float32 (toFloat32 x)
+  | _ -> lit
+
+-- A number literal checked against `ty`, a type still to be worked out: a
+-- placeholder, read once it is known.
+@pub fun deferLiteral (tc : Tc s) (ctx : Ctx) (lit : Literal) (ty : Value) : Core ! { St s | e } =
+  let m = T.newMeta tc (MetaInfo.MetaInfo 0 (Origin.Inferred "a number") None) in
+  let w = setRef tc.placeholders (V.pushBack (getRef tc.placeholders) m) in
+  let w2 = setRef tc.deferredLiterals (V.pushBack (getRef tc.deferredLiterals) (m, ctx, ty, lit)) in
+  Core.Meta m
+
+-- The literals whose type is still nothing but a metavariable, which
+-- nothing will say more of, read at their defaults: `5` in `showFirst (5 ::
+-- Nil) 0`, whose list's type is what the search for `showFirst`'s instance,
+-- and so `0`'s type, waits on (`Checker::settle_free_literals`). Whether
+-- any was read.
+@pub fun settleFreeLiterals (tc : Tc s) : Bool ! { St s | e } =
+  let waiting = getRef tc.deferredLiterals in
+  let free = V.filter (\d -> match d with | (m, ctx, ty, lit) -> isBareMeta tc ty) waiting in
+  let rest = V.filter (\d -> match d with | (m, ctx, ty, lit) -> not (isBareMeta tc ty)) waiting in
+  let w = setRef tc.deferredLiterals free in
+  let progress = if V.isEmpty free then False else settleLiterals tc True in
+  let w2 = setRef tc.deferredLiterals (V.append (getRef tc.deferredLiterals) rest) in
+  progress
+
+fun isBareMeta (tc : Tc s) (ty : Value) : Bool ! { St s | e } =
+  match force tc ty with
+  | Value.Flex _ sp -> V.isEmpty sp
+  | _ -> False
+
+-- The literals that waited for their types, read where their types are
+-- known now; with `last`, every one, an unknown type taken to be the
+-- default. Whether any was read.
+@pub fun settleLiterals (tc : Tc s) (last : Bool) : Bool ! { St s | e } =
+  let waiting = getRef tc.deferredLiterals in
+  let w = setRef tc.deferredLiterals [] in
+  V.foldl
+    (\progress d ->
+      match d with
+      | (m, ctx, ty, lit) ->
+          let t = force tc ty in
+          let flex = blocked tc t in
+          if flex and not last then
+            let w2 = setRef tc.deferredLiterals (V.pushBack (getRef tc.deferredLiterals) d) in
+            progress
+          else
+            let core =
+              match t with
+              | Value.LitTy b if readsAs lit b -> Core.Lit (readNumber tc lit b)
+              -- at a type variable, through its instance
+              | Value.Rigid _ _ sp if V.isEmpty sp -> (getRef tc.through) ctx lit t
+              | _ ->
+                  if unify tc ctx.lvl t (Value.LitTy (defaultOf lit)) then Core.Lit lit
+                  else
+                    let w3 = T.error tc "Mismatch" in
+                    Core.Error
+            in
+            let value = eval tc ctx.env core in
+            let w4 = match T.meta tc m with | Just (Meta.Unsolved _) -> T.solve tc m value | _ -> () in
+            let w5 = setRef tc.chosen (Hm.insert m (core, ctx.lvl) (getRef tc.chosen)) in
+            True)
+    False
+    waiting

@@ -1,0 +1,1973 @@
+-- The bidirectional elaborator: `compiler/idyllic-typecheck/src/elab.rs`, as
+-- a pass (`elab : Hir -> Elaborated`).
+--
+-- Each of `Hir`'s expressions is a case of the pass, which the context
+-- (`Cx`) tells whether to infer the term's type or check it against one,
+-- its goal. Every case first does what checking always does -- a goal that
+-- failed already is not looked at again, and an implicit function wanted
+-- has its argument bound here (`within`) -- then infers, or checks: a
+-- lambda, a grade literal, a `case` handle being told the type themselves;
+-- anything else is inferred and then asked for a subtype (`fallback`). A
+-- case answers the term in Core, its type and its `Usage`, by Granule's
+-- rules read bottom-up:
+--
+-- * a variable uses itself once, and subterms' uses add;
+-- * `f e`, with `f : (x : [r] a) -> b`, uses what `e` uses `r` times over,
+--   and `[e] : a [r]` likewise (promotion);
+-- * leaving a binder, its variable's count must fit its grade.
+--
+-- A term is never charged for its types: signatures, annotations and
+-- grades are elaborated for their meaning, and their usage dropped.
+--
+-- Its children are elaborated where the case says, in the context it gives
+-- them: most cases take them `raw`, since what a child is (`()`, an
+-- omitted type, grade arithmetic) decides how. The checker computes with
+-- Core as data -- normalisation by evaluation reads it -- and the cases
+-- answer that; the program it makes is written out as `Elaborated`.
+
+use Std.St (StRef, newRef, getRef, setRef)
+use Idyll.Hir (Icit, Literal)
+use Idyll.Core (Core, Builtin, Prim, Note, OpClause, CaseAlt)
+use Idyll.Core as C
+use Idyll.Value (Value, Elim, Env, Closure, Row, Poly)
+use Idyll.Value as Va
+use Idyll.Grade (Grade)
+use Idyll.Grade as G
+use Idyll.Tc (Tc, Meta, MetaInfo, MetaTy, Origin, HoleAt, GoalAt, Postponed, Waiting)
+use Idyll.Tc as T
+use Idyll.Eval (force, apply, eval, quote, row, rowParts, toPoly, splitComp, comp, renormalise, blocked)
+use Idyll.Unify (subtype, unify, sibling, effectsFit, shownRow, rowHasError, rowKind, sortOf)
+use Idyll.Usage (Usage)
+use Idyll.Usage as U
+use Idyll.Ctx (Ctx, Info, Entry, Binder)
+use Idyll.Ctx as X
+use Idyll.Hir (Ident)
+use Idyll.Hir as H
+use Idyll.Rename
+use Idyll.Rename (Hir!)
+use Idyll.Elaborated
+use Idyll.Elaborated (Elaborated!)
+use Lingua (pass!)
+use Idyll.Matching (caseOf, inferMatch, elabMatch, explicitPatterns)
+use Idyll.Handlers (handled)
+use Idyll.Auto as A
+use Idyll.Literals as L
+use Idyll.Overloads as O
+use Idyll.Sequences (checkSeq, inferSeq, arrayLiteral, arrayElement)
+use Idyll.Termination (checkTermination, unfoldInstances, arity)
+use Std.Collections.Vector as V
+use Std.Sort as Srt
+use Std.Collections.HashMap as Hm
+use Std.Collections.HashMap (HashMap)
+use Std.String as S
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+-- What a binding group still owes once its scope has been checked: the
+-- usage of each right-hand side, charged as often as the binding was used.
+@pub data Pending = NonRec (Maybe Int) Usage | Rec [Maybe Int] Usage
+
+-- --- small things ----------------------------------------------------------------
+
+fun vecOf (m : Maybe a) : [a] =
+  match m with
+  | Just x -> [x]
+  | None -> []
+
+fun maxOf (a : Int) (b : Int) : Int = if a > b then a else b
+
+fun gradeTy () : Value = Value.LitTy Builtin.Grade
+
+fun gradeValue (g : Grade) : Value = Va.polyValue (Va.polyConstant g)
+
+fun constantGrade (g : Grade) : (Core, Value) = (C.grade g, gradeValue g)
+
+@pub fun keyOf (x : Ident) : Maybe Int =
+  let u = H.uniqueOf x in
+  if u < 0 then None else Just u
+
+fun failed () : (Core, Value, Usage) = (Core.Error, Value.Error, U.unknown ())
+
+fun isError (v : Value) : Bool = match v with | Value.Error -> True | _ -> False
+
+fun isFlex (v : Value) : Bool = match v with | Value.Flex _ _ -> True | _ -> False
+
+-- The primitive a resolved name is, by the uniques the renamer reserves:
+-- those after the builtins', in this order.
+@pub fun primOf (u : Int) : Maybe Prim =
+  V.get [Prim.IntAdd, Prim.IntMul, Prim.IntSub, Prim.IntLt, Prim.IntEq, Prim.IntDiv, Prim.IntMod, Prim.StrAppend] (u - V.len C.builtins)
+
+-- The renamed program's tables, which the checker reads.
+@pub fun hirOf (tc : Tc s) : HirArena ! { St s | e } = getRef tc.hir
+
+-- `a + b` or `a * b`, the operator the primitive: where a grade is wanted,
+-- that is grade arithmetic.
+-- (or to the prelude's trait's method that is the operator: `methods` are
+-- the traits' methods)
+fun arithmetic (h : HirArena) (methods : HashMap Int (Int, Int, Int)) (t : HirExpr) : Maybe (Prim, HirExpr, HirExpr) =
+  match (h, t) with
+  | HirExprApp f b ->
+      (match (h, f) with
+       | HirExprApp op a ->
+           (match (h, op) with
+            | HirExprVar x ->
+                let u = V.getOr (0 - 1) (hirIdentUniques h x) 0 in
+                let method = Hm.member u methods in
+                (match primOf u with
+                 | Just Prim.IntAdd -> Just (Prim.IntAdd, a, b)
+                 | Just Prim.IntMul -> Just (Prim.IntMul, a, b)
+                 | Just _ -> None
+                 | None ->
+                     if method and hirIdentText h x == "+" then Just (Prim.IntAdd, a, b)
+                     else if method and hirIdentText h x == "*" then Just (Prim.IntMul, a, b)
+                     else None)
+            | _ -> None)
+       | _ -> None)
+  | _ -> None
+
+fun isUnitLit (h : HirArena) (t : HirExpr) : Bool =
+  match (h, t) with
+  | HirExprLit l -> l == Literal.Unit
+  | _ -> False
+
+-- Whether a Core term mentions the variable of index `i`.
+-- Whether a type mentions slot `i` where unification could find it: as an
+-- argument of a data type (`MapBy k o v`), not inside a function's
+-- application (`T.Elem self`, which does not say what `self` is).
+fun determines (tc : Tc s) (c : Core) (i : Int) : Bool ! { St s | e } =
+  match c with
+  | Core.Pi _ _ _ _ dom cod -> determines tc dom i or determines tc cod (i + 1)
+  | Core.Comp t _ -> determines tc t i
+  | Core.Runtime _ t -> determines tc t i
+  | Core.App _ _ ->
+      let (head, args) = spineOfCore c [] in
+      (match head with
+       | Core.Opaque u _ ->
+           Hm.member u (getRef tc.datas)
+             and V.foldl (\acc a -> if acc then True else (match a with | Core.Var j _ -> j == i | _ -> determines tc a i)) False args
+       | _ -> False)
+  | _ -> False
+
+fun spineOfCore (c : Core) (args : [Core]) : (Core, [Core]) =
+  match c with
+  | Core.App f a -> spineOfCore f (V.append [a] args)
+  | _ -> (c, args)
+
+@pub fun mentions (c : Core) (i : Int) : Bool =
+  match c with
+  | Core.Var j _ -> j == i
+  | Core.Pi _ _ g r dom cod -> mentions g i or mentions r i or mentions dom i or mentions cod (i + 1)
+  | Core.Lam _ b -> mentions b (i + 1)
+  | Core.Let _ e b -> mentions e i or mentions b (i + 1)
+  | Core.App a b -> mentions a i or mentions b i
+  | Core.BoxTy a b -> mentions a i or mentions b i
+  | Core.GradeAdd a b -> mentions a i or mentions b i
+  | Core.GradeMul a b -> mentions a i or mentions b i
+  | Core.GradeRange a b -> mentions a i or mentions b i
+  | Core.BoxIntro a -> mentions a i
+  | Core.Unbox a -> mentions a i
+  | Core.Runtime _ a -> mentions a i
+  | Core.Comp a e -> mentions a i or mentions e i
+  | Core.Handle b r ops -> mentions b i or mentions r i or V.any (\o -> match o with | OpClause.OpClause _ _ _ body -> mentions body i) ops
+  | Core.Row ls ts -> V.any (\x -> mentions x i) (V.append ls ts)
+  | Core.Case s alts -> mentions s i or V.any (\a -> match a with | CaseAlt.CaseAlt _ _ vars body -> mentions body (i + V.len vars)) alts
+  | _ -> False
+
+-- --- metavariables ---------------------------------------------------------------
+
+-- A new metavariable, applied to the context's bound variables, and its
+-- type where that is known.
+@pub fun freshMetaWith (tc : Tc s) (ctx : Ctx) (origin : Origin) (ty : Maybe Value) : Core ! { St s | e } =
+  let mt = M.map (\t -> MetaTy.MetaTy (X.types ctx) (X.boundLevels ctx) t) ty in
+  let m = T.newMeta tc (MetaInfo.MetaInfo 0 origin mt) in
+  V.foldl (\acc v -> Core.App acc v) (Core.Meta m) (X.boundVarCores ctx)
+
+@pub fun freshMeta (tc : Tc s) (ctx : Ctx) (desc : String) : Core ! { St s | e } = freshMetaWith tc ctx (Origin.Inferred desc) None
+
+fun freshValue (tc : Tc s) (ctx : Ctx) (desc : String) : Value ! { St s | e } = eval tc ctx.env (freshMeta tc ctx desc)
+
+-- A constant: a data type, a constructor, an operation, a native.
+@pub fun declareConstant (tc : Tc s) (ctx : Ctx) (x : Ident) (ty : Value) : Ctx ! { St s | e } =
+  let w =
+    match keyOf x with
+    | Just u -> setRef tc.constants (Hm.insert u ty (getRef tc.constants))
+    | None -> ()
+  in
+  X.declareConstant ctx x ty
+
+-- `_`: a metavariable for its value, remembered to be reported at the end.
+-- A goal, `?name`, wanted to be a `ty`: kept, to be reported; in its place
+-- a term that is no value, which stops the program if it is reached.
+fun elabGoal (tc : Tc s) (ctx : Ctx) (name : String) (ty : Value) : Core ! { St s | e } =
+  let w = setRef tc.goals (V.pushBack (getRef tc.goals) (GoalAt.GoalAt (getRef tc.at) name ctx.lvl ty)) in
+  Core.Runtime (Note.Goal name) Core.Error
+
+fun elabHole (tc : Tc s) (ctx : Ctx) (ty : Value) : Core ! { St s | e } =
+  let c = freshMetaWith tc ctx Origin.Hole (Just ty) in
+  let v = eval tc ctx.env c in
+  let w = setRef tc.holes (V.pushBack (getRef tc.holes) (HoleAt.HoleAt ctx.lvl v ty)) in
+  c
+
+-- --- types -----------------------------------------------------------------------
+
+-- A term as the type of something: its usage dropped, and computing it
+-- may have no effects.
+@pub fun checkType (tc : Tc s) (ctx : Ctx) (t : HirExpr) : (Core, Value) ! { St s | e } =
+  let (core, value, level, usage) = inferType tc ctx t in
+  if pure tc usage then (core, value) else (Core.Error, Value.Error)
+
+-- The effects a usage records, as one row; none if there are none.
+@pub fun effectsOf (tc : Tc s) (usage : Usage) : Maybe Value ! { St s | e } =
+  if U.isUnknown usage then None
+  else
+    match row tc (U.effectsOf usage) with
+    | Value.Row r -> if Va.rowIsEmpty r then None else Just (Value.Row r)
+    | r -> Just r
+
+-- A type, or anything else never run, whose computation has effects.
+fun pure (tc : Tc s) (usage : Usage) : Bool ! { St s | e } =
+  match effectsOf tc usage with
+  | None -> True
+  | Just _ ->
+      let w = T.error tc "ImpureType" in
+      False
+
+-- Where a lambda ends: its body's effects are what calling it does, and
+-- must be among those its type allows. Making a function has none.
+@pub(pkg) fun closeEffects (tc : Tc s) (ctx : Ctx) (usage : Usage) (allowed : Value) : Usage ! { St s | e } =
+  let effects = row tc (U.effectsOf usage) in
+  let rest = U.withoutEffects usage in
+  let w =
+    if U.isUnknown rest then ()
+    else if effectsFit tc ctx.lvl effects allowed then ()
+    else T.error tc "EffectNotAllowed"
+  in
+  rest
+
+fun checkRow (tc : Tc s) (ctx : Ctx) (t : HirExpr) : Core ! { St s | e } = fst (rowPart tc ctx t)
+
+-- An effect, a row variable or a row, in a row; and whether it may hold
+-- operations resumed more than once. One whose kind is not known yet is
+-- an `Effect`.
+fun rowPart (tc : Tc s) (ctx : Ctx) (t : HirExpr) : (Core, Bool) ! { St s | e } =
+  let (c, ty, u) = infer tc ctx t in
+  match force tc ty with
+  | Value.Flex _ _ ->
+      let b = unify tc ctx.lvl ty (Value.LitTy Builtin.Effect) in
+      (c, False)
+  | fty ->
+      (match rowKind tc ty with
+       | Just many -> (c, many)
+       | None ->
+           (match fty with
+            | Value.Error -> (c, False)
+            | _ ->
+                let w = T.error tc "Mismatch" in
+                (Core.Error, False)))
+
+-- Whether a function type's codomain mentions its argument.
+@pub(pkg) fun depends (tc : Tc s) (l : Int) (cod : Closure) : Bool ! { St s | e } =
+  mentions (quote tc (l + 1) (apply tc cod (Va.vvar l "_"))) 0
+
+-- A term that has to be a type, and its universe. One whose universe is
+-- not known yet is in `Type`. Its usage is kept, for where a type is the
+-- subject: the parts of a function type being formed.
+@pub fun inferType (tc : Tc s) (ctx : Ctx) (t : HirExpr) : (Core, Value, Int, Usage) ! { St s | e } =
+  -- `()` is the unit value, and where a type is wanted, its type
+  if isUnitLit (hirOf tc) t then (Core.LitTy Builtin.Unit, Value.LitTy Builtin.Unit, 0, U.none ())
+  else
+      let (core0, ty0, usage) = infer tc ctx t in
+      let (core, ty1) = insert tc ctx core0 ty0 in
+      let ty = force tc ty1 in
+      let level =
+        match ty with
+        | Value.Type n -> Just n
+        | Value.Error -> Just 0
+        | Value.Flex _ _ -> if unify tc ctx.lvl ty (Value.Type 0) then Just 0 else None
+        | _ -> None
+      in
+      (match level with
+       | Just lv -> (core, eval tc ctx.env core, lv, usage)
+       | None ->
+           let w = T.error tc "Mismatch" in
+           (Core.Error, Value.Error, 0, U.unknown ()))
+
+fun checkGrade (tc : Tc s) (ctx : Ctx) (t : HirExpr) : (Core, Value) ! { St s | e } =
+  let (core, u) = check tc ctx t (gradeTy ()) in
+  (core, eval tc ctx.env core)
+
+-- The two grades of a binder, with the defaults for what is not written.
+fun binderGrades (tc : Tc s) (ctx : Ctx) (ann : Maybe HirGrade) (default : Grade) : ((Core, Value), (Core, Value)) ! { St s | e } =
+  let h = hirOf tc in
+  let subject =
+    match ann with
+    | Just g -> checkGrade tc ctx (hirGradeUses h g)
+    | None -> constantGrade default
+  in
+  let inType =
+    match M.andThen (\g -> hirGradeInType h g) ann with
+    | Just r -> checkGrade tc ctx r
+    | None -> constantGrade G.defaultInType
+  in
+  (subject, inType)
+
+-- The grade, if it is known outright.
+fun constant (tc : Tc s) (g : Value) : Maybe Grade ! { St s | e } = Va.asConstant (toPoly tc g)
+
+-- A lambda, noting for the back end how often its variable may be used and
+-- its type.
+@pub(pkg) fun lam (tc : Tc s) (ctx : Ctx) (name : String) (grade : Value) (dom : Value) (body : Core) : Core ! { St s | e } =
+  Core.Runtime (Note.Binds (constant tc grade) (Just (quote tc ctx.lvl dom))) (Core.Lam name body)
+
+-- Something supplied `grade` times: none, and it is never computed.
+@pub(pkg) fun argument (tc : Tc s) (grade : Value) (arg : Core) : Core ! { St s | e } =
+  match constant tc grade with
+  | Just g -> if G.isZero g then Core.Runtime Note.Erased arg else arg
+  | None -> arg
+
+-- Whether a type is small enough to solve metavariable `m` with.
+fun fitsMeta (tc : Tc s) (ctx : Ctx) (m : Int) (ty : Value) : Bool ! { St s | e } =
+  match T.meta tc m with
+  | Just (Meta.Unsolved (MetaInfo.MetaInfo _ _ (Just (MetaTy.MetaTy _ _ mty)))) ->
+      (match force tc mty with
+       | Value.Type allowed ->
+           (match sortOf tc (X.types ctx) ty with
+            | Just actual -> actual <= allowed
+            | None -> True)
+       | _ -> True)
+  | _ -> True
+
+-- A term applied to new metavariables for as long as its type asks for
+-- implicit arguments.
+-- (an auto argument is found by search; an implicit one, worked out)
+@pub fun insert (tc : Tc s) (ctx : Ctx) (core : Core) (ty : Value) : (Core, Value) ! { St s | e } =
+  match force tc ty with
+  | Value.Pi name Icit.Implicit grade _ dom cod ->
+      let arg = freshMetaWith tc ctx (Origin.Inferred ("the implicit argument " ++ name)) (Just dom) in
+      let argV = eval tc ctx.env arg in
+      let w = noteLinearWant tc ctx name dom cod argV in
+      insert tc ctx (Core.App core (argument tc grade arg)) (fst (splitComp tc (apply tc cod argV)))
+  | Value.Pi name Icit.Auto grade _ dom cod ->
+      let later = determines tc (quote tc (ctx.lvl + 1) (apply tc cod (Va.vvar ctx.lvl name))) 0 in
+      let arg = A.autoArgumentIn tc ctx dom later in
+      let argV = eval tc ctx.env arg in
+      insert tc ctx (Core.App core (argument tc grade arg)) (fst (splitComp tc (apply tc cod argV)))
+  | fty -> (core, fty)
+
+-- The same, but only the implicit arguments: up to an auto one, or
+-- anything else.
+@pub fun insertImplicit (tc : Tc s) (ctx : Ctx) (core : Core) (ty : Value) : (Core, Value) ! { St s | e } =
+  match force tc ty with
+  | Value.Pi name Icit.Implicit grade _ dom cod ->
+      let arg = freshMetaWith tc ctx (Origin.Inferred ("the implicit argument " ++ name)) (Just dom) in
+      let argV = eval tc ctx.env arg in
+      let w = noteLinearWant tc ctx name dom cod argV in
+      insertImplicit tc ctx (Core.App core (argument tc grade arg)) (fst (splitComp tc (apply tc cod argV)))
+  | fty -> (core, fty)
+
+-- The auto arguments a type begins with, found.
+fun insertAutos (tc : Tc s) (ctx : Ctx) (core : Core) (ty : Value) : (Core, Value) ! { St s | e } =
+  match force tc ty with
+  | Value.Pi name Icit.Auto grade _ dom cod ->
+      let arg = A.autoArgument tc ctx dom in
+      let argV = eval tc ctx.env arg in
+      insertAutos tc ctx (Core.App core (argument tc grade arg)) (fst (splitComp tc (apply tc cod argV)))
+  | fty -> (core, fty)
+
+-- An application's result, with the auto arguments after the last one
+-- given found: what they are for is all there.
+fun autosAfter (tc : Tc s) (ctx : Ctx) (r : (Core, Value, Usage)) : (Core, Value, Usage) ! { St s | e } = autosAfterIf tc ctx True r
+
+-- The same, the auto arguments after the last one given inserted only if
+-- `trailing` (not before `@{d}`).
+fun autosAfterIf (tc : Tc s) (ctx : Ctx) (trailing : Bool) (r : (Core, Value, Usage)) : (Core, Value, Usage) ! { St s | e } =
+  match r with
+  | (core, ty, usage) ->
+      let (c2, t2) = if trailing then insertAutos tc ctx core ty else (core, ty) in
+      -- and one waiting for its type may have it now, as Lean synthesizes an
+      -- application's instances once its arguments are elaborated: so that
+      -- `2 + 2` in a type computes, rather than waiting for the end of the
+      -- definition
+      let w = if V.isEmpty (getRef tc.deferredAutos) and V.isEmpty (getRef tc.deferredLiterals) then False else A.settleAutosIn tc False True in
+      (c2, t2, usage)
+
+-- --- usage against grades ----------------------------------------------------------
+
+-- `used ⊑ allowed`, monomial by monomial; failing that, with a
+-- metavariable involved, the two made equal.
+@pub(pkg) fun gradeFits (tc : Tc s) (ctx : Ctx) (used0 : Poly) (allowed0 : Value) : Bool ! { St s | e } = gradeFitsAt tc ctx.lvl used0 allowed0
+
+fun gradeFitsAt (tc : Tc s) (lvl : Int) (used0 : Poly) (allowed0 : Value) : Bool ! { St s | e } =
+  let used = renormalise tc used0 in
+  let allowed = toPoly tc allowed0 in
+  if Va.asConstant allowed == Just G.any then True
+  else
+    let atoms = V.concatMap fst (V.append (Va.polyTerms used) (Va.polyTerms allowed)) in
+    if V.any isError atoms then True
+    else
+      let keys = V.append (Va.polyKeys used) (Va.polyKeys allowed) in
+      if V.all (\k -> G.fits (Va.coefficient used k) (Va.coefficient allowed k)) keys then True
+      else V.any isFlex atoms and unify tc lvl (Va.polyValue used) (Va.polyValue allowed)
+
+-- Leaving a binder: the uses of what is charged to `key` must fit its
+-- grade. `()` may be used less than its grade says: there is nothing to
+-- lose by dropping one.
+@pub(pkg) fun leaveKey (tc : Tc s) (ctx : Ctx) (key : Maybe Int) (allowed : Value) (usage : Usage) (inType : Bool) : Usage ! { St s | e } =
+  let (used, rest) = U.take usage key in
+  let ty = match key with | Just k -> X.typeOfKey ctx k | None -> None in
+  -- a value of a linear type is used at most once, whatever its binder's
+  -- grade
+  let linear =
+    match ty with
+    | Just t -> not inType and not (U.isUnknown rest) and linearUsage tc ctx t used
+    | None -> False
+  in
+  if linear then rest
+  else
+  let unit = M.map (\t -> force tc t) ty in
+  let isUnit = match unit with | Just (Value.LitTy Builtin.Unit) -> True | _ -> False in
+  -- a parameter that says no grade: its grade is worked out from its uses,
+  -- here, and what waited on it is checked against it
+  let w0 =
+    match unsettled tc allowed with
+    | Just m -> settleGrade tc m (if U.isUnknown rest then None else Just used) isUnit
+    | None -> ()
+  in
+  if U.isUnknown rest then rest
+  else if fitsOrWaits tc ctx used allowed False then rest
+  else
+    let unitFits = isUnit and gradeFits tc ctx used (Va.polyValue (Va.polyJoin (toPoly tc allowed) (Va.polyZero ()))) in
+    if unitFits then rest
+    else
+      let w = T.error tc "UsageMismatch" in
+      rest
+
+@pub(pkg) fun leaveBinder (tc : Tc s) (ctx : Ctx) (x : Ident) (allowed : Value) (usage : Usage) (inType : Bool) : Usage ! { St s | e } =
+  leaveKey tc ctx (keyOf x) allowed usage inType
+
+-- --- linear types -------------------------------------------------------------------
+--
+-- Types whose values are never shared, so that changing one in place is
+-- never seen (`linear.rs`): `MArray`, a data type with a field of a linear
+-- type, or one applied to a linear type. A variable of one is used at most
+-- once, whatever its grade (`linearUsage`); a function type's binder of one
+-- that says no grade is `[1]`; one is never boxed; a linear type is given
+-- for a type parameter only of something that holds values of that type at
+-- most once (`noteLinearWant`, `checkLinearWants`); and a program's
+-- top-level definition of one is used at most once, a library's none at all
+-- (`linearTopLevel`).
+
+fun atMostOnce () : Grade = M.unwrapOr G.one (G.range G.zero G.one)
+
+-- Whether values of `ty` are linear.
+@pub(pkg) fun isLinear (tc : Tc s) (ty : Value) : Bool ! { St s | e } =
+  match force tc ty with
+  | Value.Opaque u _ spine ->
+      (match Hm.lookup u (getRef tc.nativeInfo) with
+       | Just (name, _) -> name == "MArray"
+       | None ->
+           if not (Hm.member u (getRef tc.datas)) then False
+           else dataIsLinear tc u or V.any (\e -> match e with | Elim.App a -> isLinear tc a | _ -> False) spine)
+  | Value.BoxTy _ inner -> isLinear tc inner
+  | Value.Comp inner _ -> isLinear tc inner
+  | _ -> False
+
+-- Whether a data type has a field of a linear type, its parameters aside:
+-- worked out once (a data type that holds itself is not linear for that).
+fun dataIsLinear (tc : Tc s) (u : Int) : Bool ! { St s | e } =
+  match Hm.lookup u (getRef tc.linearDatas) with
+  | Just known -> known
+  | None ->
+      let w = setRef tc.linearDatas (Hm.insert u False (getRef tc.linearDatas)) in
+      let ctors = M.unwrapOr [] (Hm.lookup u (getRef tc.datas)) in
+      let linear = V.any (\c -> match Hm.lookup c (getRef tc.constants) with | Just ty -> fieldsLinear tc ty 0 | None -> False) ctors in
+      let w2 = setRef tc.linearDatas (Hm.insert u linear (getRef tc.linearDatas)) in
+      linear
+
+fun fieldsLinear (tc : Tc s) (ty : Value) (l : Int) : Bool ! { St s | e } =
+  match force tc ty with
+  | Value.Pi name icit _ _ dom cod ->
+      if icit == Icit.Explicit and isLinear tc dom then True
+      else fieldsLinear tc (apply tc cod (Va.vvar l name)) (l + 1)
+  | _ -> False
+
+-- Whether `ty` holds a value of the type variable at level `a`: is it, or
+-- has it among a data type's arguments or in a box, not under a function
+-- type.
+fun holds (tc : Tc s) (ty : Value) (a : Int) : Bool ! { St s | e } =
+  match force tc ty with
+  | Value.Rigid l _ spine -> l == a and V.isEmpty spine
+  | Value.Opaque _ _ spine -> V.any (\e -> match e with | Elim.App x -> holds tc x a | _ -> False) spine
+  | Value.BoxTy _ inner -> holds tc inner a
+  | Value.Comp inner _ -> holds tc inner a
+  | _ -> False
+
+-- Whether a function type, after its type parameter `name` bound at `lvl`
+-- (its body `cod`), takes a value holding one of that type at a grade that
+-- allows more than one use.
+fun shares (tc : Tc s) (lvl : Int) (name : String) (cod : Closure) : Bool ! { St s | e } =
+  sharesFrom tc lvl (apply tc cod (Va.vvar lvl name)) (lvl + 1)
+
+fun sharesFrom (tc : Tc s) (a : Int) (ty : Value) (l : Int) : Bool ! { St s | e } =
+  match force tc ty with
+  | Value.Pi name _ grade _ dom cod ->
+      let once = match constant tc grade with | Just g -> G.fits g (atMostOnce ()) | None -> False in
+      if not once and holds tc dom a then True
+      else sharesFrom tc a (fst (splitComp tc (apply tc cod (Va.vvar l name)))) (l + 1)
+  | _ -> False
+
+-- An implicit argument `given` for the parameter `name` of a function type
+-- whose body is `cod`, a type: if the function may share a value of that
+-- type, the argument is to be no linear type, checked once it is known.
+@pub(pkg) fun noteLinearWant (tc : Tc s) (ctx : Ctx) (name : String) (dom : Value) (cod : Closure) (given : Value) : () ! { St s | e } =
+  let isType = match force tc dom with | Value.Type _ -> True | _ -> False in
+  if isType and shares tc ctx.lvl name cod then setRef tc.linearWants (V.pushBack (getRef tc.linearWants) (ctx.lvl, given))
+  else ()
+
+-- The type parameters given what may be linear types: each that is one is
+-- an error.
+@pub(pkg) fun checkLinearWants (tc : Tc s) : () ! { St s | e } =
+  let wants = getRef tc.linearWants in
+  let w = setRef tc.linearWants [] in
+  V.foldl (\acc want -> match want with | (_, given) -> if isLinear tc given then T.error tc "LinearInstance" else acc) () wants
+
+-- A value of type `ty` boxed: no linear type may be.
+@pub(pkg) fun linearBox (tc : Tc s) (ty : Value) : () ! { St s | e } =
+  if isLinear tc ty then T.error tc "LinearBox" else ()
+
+-- A variable of a linear type `ty`, used as `used` says: at most once, or
+-- the error is reported (`True`), or waits on a grade being worked out.
+@pub(pkg) fun linearUsage (tc : Tc s) (ctx : Ctx) (ty : Value) (used : Poly) : Bool ! { St s | e } =
+  if not (isLinear tc ty) then False
+  else if fitsOrWaits tc ctx used (Va.polyValue (Va.polyConstant (atMostOnce ()))) False then False
+  else
+    let w = T.error tc "LinearUsage" in
+    True
+
+-- The variables a `let` bound, from level `from` of `ctx` on, used in its
+-- body as `usage` says: those of a linear type at most once.
+fun linearLets (tc : Tc s) (ctx : Ctx) (from : Int) (usage : Usage) (pending : [Pending]) : () ! { St s | e } =
+  if U.isUnknown usage then ()
+  else
+    V.foldl
+      (\acc l ->
+        match X.keyAt ctx l with
+        | Just key ->
+            let bound = V.any (\p -> match p with | Pending.NonRec (Just u) _ -> u == key | _ -> False) pending in
+            if bound then
+              let (used, _) = U.take usage (Just key) in
+              let w = linearUsage tc ctx (X.typeAt ctx l) used in
+              acc
+            else acc
+        | None -> acc)
+      ()
+      (V.range from ctx.lvl)
+
+-- A module's top-level definitions of a linear type. In a program (with an
+-- expression, or a `main`, which `uses` is the uses of) each is used at
+-- most once, what a definition uses being used once per use of it; in a
+-- library, which any module may use as often as it likes, there is none.
+@pub fun linearTopLevel (tc : Tc s) (ctx : Ctx) (groups : [(Maybe Ident, Pending)]) (uses : Maybe Usage) : () ! { St s | e } =
+  match uses with
+  | None ->
+      V.foldl
+        (\acc g ->
+          match g with
+          | (Just x, Pending.NonRec _ _) ->
+              (match X.lookup ctx x with
+               | Just (_, ty, _) -> if isLinear tc ty then T.error tc "LinearTopLevel" else acc
+               | None -> acc)
+          | _ -> acc)
+        ()
+        groups
+  | Just u0 ->
+      let w =
+        V.foldl
+          (\usage g ->
+            if U.isUnknown usage then usage
+            else
+              match g with
+              | (mx, Pending.NonRec unique rhs) ->
+                  let (n, rest) = U.take usage unique in
+                  let w1 =
+                    match mx with
+                    | Just x -> (match X.lookup ctx x with | Just (_, ty, _) -> linearUsage tc ctx ty n | None -> False)
+                    | None -> False
+                  in
+                  U.add rest (U.scale rhs n)
+              | (_, Pending.Rec uniques rhs) ->
+                  let (used, rest, rhs2) =
+                    V.foldl
+                      (\acc k ->
+                        match acc with
+                        | (b, u, r) ->
+                            let (n, u2) = U.take u k in
+                            let (_, r2) = U.take r k in
+                            (b or not (Va.polyIsZero n), u2, r2))
+                      (False, usage, rhs)
+                      uniques
+                  in
+                  U.add rest (U.scale rhs2 (Va.polyConstant (if used then G.default else G.zero))))
+          u0
+          (V.reverse groups)
+      in
+      ()
+
+-- --- grades worked out ---------------------------------------------------------------
+
+-- A grade for a parameter that says none, to be worked out from its uses: a
+-- constant, so its metavariable is applied to nothing, and a type whose
+-- arrows' grades are being worked out does not depend on the parameters
+-- before them for that.
+fun inferredGrade (tc : Tc s) (ctx : Ctx) (name : String) : (Core, Value) ! { St s | e } =
+  let m = T.newMeta tc (MetaInfo.MetaInfo 0 (Origin.Inferred ("the grade of " ++ name)) None) in
+  let w = setRef tc.inferred (Hm.insert m [] (getRef tc.inferred)) in
+  (Core.Meta m, eval tc ctx.env (Core.Meta m))
+
+-- Two alternatives' usages joined: each count the larger of the two, as
+-- `U.join` makes it; but a count that mentions a grade still being worked
+-- out is a metavariable of its own, standing for the join, and worked out
+-- with it. Joined coefficient by coefficient, `join(1, ?g)` would be `0..1 +
+-- 0..1 ?g`, which is `0..2` once `?g` is `1`, where the join is `1`: a
+-- parameter used in one equation and handed to the recursion in the other
+-- could never be linear.
+@pub(pkg) fun joinUsage (tc : Tc s) (a : Usage) (b : Usage) : Usage ! { St s | e } =
+  U.joinWith a b (\p q ->
+    if M.isSome (waitsOn tc p) or M.isSome (waitsOn tc q) then
+      let j = T.newMeta tc (MetaInfo.MetaInfo 0 (Origin.Inferred "the larger of two uses") None) in
+      let w = setRef tc.joins (V.pushBack (getRef tc.joins) (j, p, q)) in
+      Va.polyAtom (Value.Flex j [])
+    else Va.polyJoin p q)
+
+-- A join metavariable still standing for its join: what it joins.
+fun unsolvedJoin (tc : Tc s) (n : Int) : Maybe (Poly, Poly) ! { St s | e } =
+  match T.meta tc n with
+  | Just (Meta.Unsolved _) -> M.map (\t -> match t with | (_, p, q) -> (p, q)) (V.find (\t -> match t with | (j, _, _) -> j == n) (getRef tc.joins))
+  | _ -> None
+
+-- The first grade still being worked out that `p` mentions, itself or in a
+-- join it mentions.
+fun waitsOn (tc : Tc s) (p : Poly) : Maybe Int ! { St s | e } =
+  V.foldl
+    (\acc a ->
+      match acc with
+      | Just m -> Just m
+      | None ->
+          (match unsettled tc a with
+           | Just m -> Just m
+           | None ->
+               (match force tc a with
+                | Value.Flex n _ ->
+                    (match unsolvedJoin tc n with
+                     | Just (jp, jq) -> (match waitsOn tc jp with | Just m -> Just m | None -> waitsOn tc jq)
+                     | None -> None)
+                | _ -> None)))
+    None
+    (V.concatMap fst (Va.polyTerms p))
+
+-- Solve each join whose parts no longer wait on anything, now that a grade
+-- is settled; one with a grade variable in it, at `[]`.
+fun solveJoins (tc : Tc s) : () ! { St s | e } =
+  let ready =
+    V.filter
+      (\t -> match t with | (j, p, q) -> M.isSome (unsolvedJoin tc j) and M.isNone (waitsOn tc p) and M.isNone (waitsOn tc q))
+      (getRef tc.joins)
+  in
+  if V.isEmpty ready then
+    setRef tc.joins (V.filter (\t -> match t with | (j, _, _) -> M.isSome (unsolvedJoin tc j)) (getRef tc.joins))
+  else
+    let w =
+      V.foldl
+        (\u t ->
+          match t with
+          | (j, p, q) ->
+              let g =
+                match (gradeUnder tc p (0 - 1) G.any, gradeUnder tc q (0 - 1) G.any) with
+                | (Just a, Just b) -> G.join a b
+                | _ -> G.any
+              in
+              match T.meta tc j with
+              | Just (Meta.Unsolved _) -> T.solve tc j (eval tc (Va.emptyEnv ()) (Core.GradeLit g))
+              | _ -> ())
+        ()
+        ready
+    in
+    solveJoins tc
+
+-- The metavariable of a grade still being worked out, if `g` is one.
+fun unsettled (tc : Tc s) (g : Value) : Maybe Int ! { St s | e } =
+  match force tc g with
+  | Value.Flex m _ ->
+      if Hm.member m (getRef tc.inferred) then (match T.meta tc m with | Just (Meta.Unsolved _) -> Just m | _ -> None) else None
+  | _ -> None
+
+-- Whether `used` fits `allowed`, as `gradeFits` says; or, if `allowed`
+-- mentions a grade still being worked out (a field's, of a parameter that
+-- says none), true for now, the question kept for when it is settled.
+@pub(pkg) fun fitsOrWaits (tc : Tc s) (ctx : Ctx) (used : Poly) (allowed : Value) (field : Bool) : Bool ! { St s | e } = fitsOrWaitsAt tc ctx.lvl used allowed field
+
+fun fitsOrWaitsAt (tc : Tc s) (lvl : Int) (used : Poly) (allowed : Value) (field : Bool) : Bool ! { St s | e } =
+  let waits = match waitsOn tc (toPoly tc allowed) with | Just m -> Just m | None -> waitsOn tc used in
+  match waits with
+  | Just m ->
+      let waits = Hm.getOr [] m (getRef tc.inferred) in
+      let w = setRef tc.inferred (Hm.insert m (V.pushBack waits (Waiting.Waiting lvl used allowed field)) (getRef tc.inferred)) in
+      True
+  | None -> gradeFitsAt tc lvl used allowed
+
+-- Settle a parameter's grade, which said none: the tightest of `1`, `0..1`
+-- and `[]` its uses (`used`, if known) and what waited on it allow, as an
+-- everyday grade is; never `0`, which would erase it. In trying each, the
+-- grade is that one wherever it occurs, and any other grade still being
+-- worked out is taken at `[]`. What waited on it is then checked against it.
+-- A `()` may be used as often as wanted, whatever its grade says, so its
+-- grade stays `[]`, as is written least.
+fun settleGrade (tc : Tc s) (m : Int) (used : Maybe Poly) (unit : Bool) : () ! { St s | e } =
+  let waiting = Hm.getOr [] m (getRef tc.inferred) in
+  let candidates = [G.one, M.unwrapOr G.any (G.range G.zero G.one), G.any] in
+  let tries =
+    \c ->
+      match used with
+      | None -> False
+      | Just u ->
+          let direct = not unit and (match gradeUnder tc u m c with | Just g -> G.fits g c | None -> False) in
+          direct
+            and V.all
+              (\w ->
+                match w with
+                | Waiting.Waiting _ wu wa _ ->
+                    (match (gradeUnder tc wu m c, gradeUnder tc (toPoly tc wa) m c) with
+                     | (Just a, Just b) -> G.fits a b
+                     | _ -> False))
+              waiting
+  in
+  settleAs tc m (M.unwrapOr G.any (V.find tries candidates))
+
+-- `p`'s grade with `m` taken at `c` and every other grade still being worked
+-- out at `[]`; nothing if it mentions anything else not known.
+fun gradeUnder (tc : Tc s) (p : Poly) (m : Int) (c : Grade) : Maybe Grade ! { St s | e } =
+  V.foldl
+    (\acc t ->
+      match (acc, t) with
+      | (Just total, (atoms, coefficient)) ->
+          let product =
+            V.foldl
+              (\pr a ->
+                match pr with
+                | Just g ->
+                    (match force tc a with
+                     | Value.Flex n _ ->
+                         if n == m then Just (G.mul g c)
+                         else if Hm.member n (getRef tc.inferred) then Just (G.mul g G.any)
+                         else
+                           -- a join still standing: worked out from its parts
+                           (match unsolvedJoin tc n with
+                            | Just (jp, jq) ->
+                                (match (gradeUnder tc jp m c, gradeUnder tc jq m c) with
+                                 | (Just a, Just b) -> Just (G.mul g (G.join a b))
+                                 | _ -> None)
+                            | None -> None)
+                     | _ -> None)
+                | None -> None)
+              (Just coefficient)
+              atoms
+          in
+          M.map (\pg -> G.add total pg) product
+      | _ -> None)
+    (Just G.zero)
+    (Va.polyTerms (renormalise tc p))
+
+-- Solve a grade being worked out as `g`, and check what waited on it.
+fun settleAs (tc : Tc s) (m : Int) (g : Grade) : () ! { St s | e } =
+  match Hm.lookup m (getRef tc.inferred) with
+  | None -> ()
+  | Just waiting ->
+      let w = setRef tc.inferred (Hm.delete m (getRef tc.inferred)) in
+      let w2 = match T.meta tc m with | Just (Meta.Unsolved _) -> T.solve tc m (eval tc (Va.emptyEnv ()) (Core.GradeLit g)) | _ -> () in
+      let w3 = solveJoins tc in
+      V.foldl
+        (\u wt ->
+          match wt with
+          | Waiting.Waiting wlvl wu wa field ->
+              if fitsOrWaitsAt tc wlvl wu wa field then ()
+              else T.error tc (if field then "FieldUsage" else "UsageMismatch"))
+        ()
+        waiting
+
+-- The grades being worked out that nothing settled (a parameter whose
+-- definition did not check), but those in `keep`: `[]`, in the order they
+-- were made.
+fun settleRest (tc : Tc s) (keep : [Int]) : () ! { St s | e } =
+  let rest = Srt.sort (V.filter (\m -> not (V.elem m keep)) (Hm.keys (getRef tc.inferred))) in
+  V.foldl (\u m -> settleAs tc m G.any) () rest
+
+-- How many explicit parameters a definition's equations take: its lambdas,
+-- or its clauses' patterns. Only those of its signature's arrows are its
+-- parameters, whose grades may be worked out from it; a function it returns
+-- is a value, whose type is as written.
+fun parameters (h : HirArena) (rhs : HirExpr) : Int =
+  match (h, rhs) with
+  | HirExprLam _ _ _ body -> 1 + parameters h body
+  | HirExprMatch clauses -> (match V.head clauses with | Just c -> explicitPatterns h (hirClausePats h c) | None -> 0)
+  | _ -> 0
+
+-- Whether `t` is equations one of which names its next argument, which is
+-- `icit`: `{p}` for an implicit one, `@{p}` for an auto one.
+@pub(pkg) fun namesImplicit (h : HirArena) (t : HirExpr) (icit : Icit) : Bool =
+  match (h, t) with
+  | HirExprMatch clauses ->
+      V.any
+        (\c ->
+          match M.map (\p -> (h, p)) (V.head (hirClausePats h c)) with
+          | Just (HirPatternImplicit i _) -> i == icit
+          | _ -> False)
+        clauses
+  | _ -> False
+
+-- --- bindings ----------------------------------------------------------------------
+
+-- A definition against its signature: the implicit binders the signature
+-- starts with are bound to the names it gave them, which the body may use;
+-- an auto binder is what a search inside may find.
+fun checkAgainstSig (tc : Tc s) (ctx : Ctx) (rhs : HirExpr) (sig : HirExpr) (vsig : Value) : (Core, Usage) ! { St s | e } =
+  let h = hirOf tc in
+  let fsig = force tc vsig in
+  let implicitSig =
+    match (h, sig) with
+    | HirExprPi (Just x) icit _ _ sigCod -> if icit != Icit.Explicit then Just (identOf h x, sigCod, icit) else None
+    | _ -> None
+  in
+  match (implicitSig, fsig) with
+  -- (up to one the equations name, `f {n} xs = ..`)
+  | (Just (x, sigCod, sigIcit), Value.Pi name icit grade _ dom cod) if icit != Icit.Explicit and not (namesImplicit h rhs sigIcit) ->
+      let ctx1 = X.graded (X.bind ctx (Just x) name dom) grade in
+      let ctx2 = if sigIcit == Icit.Auto then X.autoBound ctx1 else ctx1 in
+      let (codV, allowed) = splitComp tc (apply tc cod (Va.vvar ctx.lvl name)) in
+      let (body, usage) = checkAgainstSig tc ctx2 rhs sigCod codV in
+      let u1 = closeEffects tc ctx2 usage allowed in
+      let u2 = leaveBinder tc ctx2 x grade u1 False in
+      (lam tc ctx name grade dom body, u2)
+  | _ ->
+      -- equations that name an implicit argument bind it and those after
+      -- it themselves: those the signature names, as it names them
+      let w =
+        if namesImplicit h rhs Icit.Implicit or namesImplicit h rhs Icit.Auto then setRef tc.quantified (quantifiedIn h sig)
+        else ()
+      in
+      let checked = check tc ctx rhs fsig in
+      let w2 = setRef tc.quantified [] in
+      checked
+
+-- The names a signature gives its implicit and auto binders, in order.
+fun quantifiedIn (h : HirArena) (sig : HirExpr) : [Ident] =
+  match (h, sig) with
+  | HirExprPi x icit _ _ cod ->
+      let rest = quantifiedIn h cod in
+      (match x with
+       | Just i -> if icit != Icit.Explicit then V.append [identOf h i] rest else rest
+       | None -> rest)
+  | _ -> []
+
+-- An unannotated binder's grade: unrestricted, or once in a linear module.
+@pub(pkg) fun defaultGrade (tc : Tc s) : Grade ! { St s | e } = if getRef tc.linear then G.one else G.default
+
+-- One group, in the mode of the module it was written in: the context with
+-- its bindings, what it owes, and how to bind it again in Core.
+@pub fun checkGroup (tc : Tc s) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, Maybe (String, Core)) ! { St s | e } =
+  let h = hirOf tc in
+  let linear = V.any (\b -> hirBindLinear h b) (groupBinds h group) in
+  let outer = getRef tc.linear in
+  let w = setRef tc.linear linear in
+  let result = checkGroupIn tc ctx group in
+  let w2 = setRef tc.linear outer in
+  result
+
+-- A signature's type and the effects it allows: `x : b ! e`.
+fun signature (tc : Tc s) (ctx : Ctx) (sig : HirExpr) (params : Int) : (HirExpr, Core, Value) ! { St s | e } =
+  let (ty, allowed) =
+    match (hirOf tc, sig) with
+    | HirExprEff ty r -> (ty, checkRow tc ctx r)
+    | _ -> (sig, Core.Row [] [])
+  in
+  let w = setRef tc.inferSpine params in
+  let (_, vsig) = checkType tc ctx ty in
+  let w2 = setRef tc.inferSpine 0 in
+  (ty, allowed, vsig)
+
+-- What the program declares, for the dump: at the top level only.
+fun declare (tc : Tc s) (x : Ident) (name : String) (ty : Core) =
+  setRef tc.declared (V.pushBack (getRef tc.declared) (H.uniqueOf x, name, ty))
+
+-- A group's bindings, and a binding's name.
+@pub(pkg) fun groupBinds (h : HirArena) (g : HirGroup) : [HirBind] =
+  match (h, g) with
+  | HirGroupNonRec b -> [b]
+  | HirGroupRec bs -> bs
+
+fun bindName (h : HirArena) (b : HirBind) : Ident = identOf h (hirBindName h b)
+
+fun checkGroupIn (tc : Tc s) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, Maybe (String, Core)) ! { St s | e } =
+  let h = hirOf tc in
+  -- (what of the recursive definitions this group makes, for what it put off)
+  let mark = V.len (getRef tc.recDefs) in
+  let top = getRef tc.lets == 0 in
+  match (h, group) with
+  | HirGroupNonRec hb ->
+      let b = BindOf { name = bindName h hb, ty = hirBindTy h hb, rhs = hirBindRhs h hb } in
+      let (rhs0, ty, usage) =
+        match b.ty with
+        -- no signature: inferred, and the definition is transparent (its
+        -- parameters' grades worked out from its body)
+        | None ->
+            let w = setRef tc.inferSpine (parameters h b.rhs) in
+            infer tc ctx b.rhs
+        | Just sig ->
+            let (sigTy, allowed, vsig) = signature tc ctx sig (parameters h b.rhs) in
+            -- what a type searches for is found before the type is computed with
+            let ws = if top then O.settle tc else () in
+            let (rhsC, usage) = checkAgainstSig tc ctx b.rhs sigTy vsig in
+            let w =
+              match effectsOf tc usage with
+              | Just effects -> if effectsFit tc ctx.lvl effects (eval tc ctx.env allowed) then () else T.error tc "EffectNotAllowed"
+              | None -> ()
+            in
+            (rhsC, vsig, usage)
+      in
+      -- what it put off, once all of it is checked: found, and written over
+      let rhs =
+        if top then
+          let s1 = O.settle tc in
+          let s2 = A.resolveRecDefs tc mark in
+          let s3 = A.specializeRecDefs tc ctx mark in
+          A.specialize tc ctx (A.resolve tc rhs0 ctx.lvl) ctx.lvl
+        else rhs0
+      in
+      -- what it left open is closed before its type is recorded
+      let w =
+        if getRef tc.lets == 0 then
+          let a = retryPostponed tc False in
+          closeOpened tc
+        else ()
+      in
+      let w2 = if getRef tc.lets == 0 then declare tc b.name (H.textOf b.name) (quote tc ctx.lvl ty) else () in
+      -- a definition with effects has a value only at run time
+      let bound =
+        match effectsOf tc usage with
+        | Just _ -> X.defineEffectful ctx b.name ty
+        | None -> X.define ctx b.name ty (eval tc ctx.env rhs)
+      in
+      (bound, Pending.NonRec (keyOf b.name) usage, Just (H.textOf b.name, rhs))
+  | HirGroupRec hbs ->
+      let bs = V.map (\hb -> BindOf { name = bindName h hb, ty = hirBindTy h hb, rhs = hirBindRhs h hb }) hbs in
+      -- every member needs a signature: there is nothing else to check the
+      -- recursive uses against
+      let sigs =
+        V.map
+          (\(b : BindOf) ->
+            match b.ty with
+            | None ->
+                let w = T.error tc "RecursiveBindingNeedsSignature" in
+                Value.Error
+            | Just sig ->
+                let w = setRef tc.inferSpine (parameters h b.rhs) in
+                let ty = snd (checkType tc ctx sig) in
+                let w2 = setRef tc.inferSpine 0 in
+                let w3 = if top then O.settle tc else () in
+                ty)
+          bs
+      in
+      -- each a constant, so that unification cannot unfold one forever
+      let ctxRec = V.foldl (\c bt -> match bt with | (b, ty) -> declareConstant tc c (nameOf b) ty) ctx (V.zip bs sigs) in
+      let checked = V.map (\bt -> match bt with | (b, ty) -> checkMember tc ctxRec b ty) (V.zip bs sigs) in
+      let rhs = V.foldl (\acc cu -> U.add acc (snd cu)) (U.none ()) checked in
+      let members0 = V.map (\bc -> match bc with | (b, (core, _)) -> (H.uniqueOf (nameOf b), core)) (V.zip bs checked) in
+      -- what they put off, once all of them are checked; and an instance
+      -- with no parameters, what of it a method call can be made into
+      let members =
+        if top then
+          let s1 = O.settle tc in
+          let s2 = A.resolveRecDefs tc mark in
+          let s3 = A.specializeRecDefs tc ctxRec mark in
+          let ms = V.map (\uc -> match uc with | (u, core) -> (u, A.specialize tc ctxRec (A.resolve tc core ctxRec.lvl) ctxRec.lvl)) members0 in
+          let s4 = V.foldl (\acc uc -> match uc with | (u, core) -> if V.elem u (getRef tc.hints) then A.noteInstance tc ctxRec u core else ()) () ms in
+          ms
+        else members0
+      in
+      -- if they terminate they may compute in types from here on; if they may
+      -- not, they must say so, unless `@terminating` says they end after all
+      let terminates = checkTermination tc ctxRec members in
+      let w0 = unfoldInstances tc ctxRec members in
+      let w =
+        if terminates then ()
+        else
+          V.foldl
+            (\acc bct ->
+              match bct with
+              | ((b, ty), (core, _)) ->
+                  let u = H.uniqueOf (nameOf b) in
+                  if V.elem u (getRef tc.terminating) then ()
+                  else if declaresDiv tc ctxRec.lvl ty (arity core) then ()
+                  else T.error tc "MayNotTerminate")
+            ()
+            (V.zip (V.zip bs sigs) checked)
+      in
+      (ctxRec, Pending.Rec (V.map (\(b : BindOf) -> keyOf b.name) bs) rhs, None)
+  | _ -> (ctx, Pending.Rec [] (U.none ()), None)
+
+-- A binding, read off the tables: its name, signature and right-hand side.
+record BindOf = {
+  name : Ident,
+  ty : Maybe HirExpr,
+  rhs : HirExpr
+}
+
+fun nameOf (b : BindOf) : Ident = b.name
+
+-- Whether a type says `! Div` where a call with `arity` arguments gets to.
+fun declaresDiv (tc : Tc s) (lvl : Int) (ty : Value) (n : Int) : Bool ! { St s | e } =
+  match force tc ty with
+  | Value.Error -> True
+  | _ ->
+      let walked =
+        V.foldl
+          (\acc i ->
+            match acc with
+            | None -> None
+            | Just (t, r) ->
+                (match force tc t with
+                 | Value.Pi name _ _ _ _ cod -> Just (splitComp tc (apply tc cod (Va.vvar (lvl + i) name)))
+                 | _ -> None))
+          (Just (ty, Va.emptyRow ()))
+          (V.range 0 n)
+      in
+      (match walked with
+       | Just (_, r) ->
+           n > 0 and (match rowParts tc r with | Row.Row ls _ -> V.any (\kv -> match snd kv with | Value.LitTy Builtin.Div -> True | _ -> False) ls)
+       | None -> False)
+
+-- One member of a recursive group, against its signature: its Core and
+-- usage.
+fun checkMember (tc : Tc s) (ctxRec : Ctx) (b : BindOf) (ty : Value) : (Core, Usage) ! { St s | e } =
+  let (core, usage) =
+    match b.ty with
+    | Just sig -> checkAgainstSig tc ctxRec b.rhs sig ty
+    | None -> check tc ctxRec b.rhs ty
+  in
+  let w = if getRef tc.lets == 0 then declare tc b.name (H.textOf b.name) (quote tc ctxRec.lvl ty) else () in
+  let w2 = setRef tc.recDefs (V.pushBack (getRef tc.recDefs) (H.uniqueOf b.name, ctxRec.lvl, core)) in
+  let w3 = if getRef tc.lets > 0 then setRef tc.localRecs (V.pushBack (getRef tc.localRecs) (H.uniqueOf b.name)) else () in
+  let w4 = setRef tc.recNames (Hm.insert (H.uniqueOf b.name) (H.textOf b.name) (getRef tc.recNames)) in
+  (core, usage)
+
+-- The groups of a `let`: what is defined there is local.
+fun enterLet (tc : Tc s) (ctx : Ctx) (groups : [HirGroup]) : (Ctx, [Pending], [Maybe (String, Core)]) ! { St s | e } =
+  let w = setRef tc.lets (getRef tc.lets + 1) in
+  let entered = enterGroups tc ctx groups in
+  let w2 = setRef tc.lets (getRef tc.lets - 1) in
+  entered
+
+fun defineGlobal (tc : Tc s) (ctx : Ctx) (g : HirGroup) : () ! { St s | e } =
+  let h = hirOf tc in
+  match (h, g) with
+  | HirGroupNonRec b ->
+      let u = V.getOr (0 - 1) (hirIdentUniques h (hirBindName h b)) 0 in
+      (match Hm.lookup u ctx.names with
+       | Just (Entry.Local level) ->
+           (match V.get ctx.binders level with
+            | Just (Binder.Binder Info.Defined _ _ _ _) ->
+                if Hm.member u (getRef tc.globals) then () else setRef tc.globals (Hm.insert u (X.value ctx level) (getRef tc.globals))
+            | _ -> ())
+       | _ -> ())
+  | _ -> ()
+
+@pub fun enterGroups (tc : Tc s) (ctx : Ctx) (groups : [HirGroup]) : (Ctx, [Pending], [Maybe (String, Core)]) ! { St s | e } =
+  V.foldl
+    (\acc g ->
+      match acc with
+      | (c, ps, ws) ->
+          -- (an enclosing definition's grades are not this group's to settle)
+          let outer = Hm.keys (getRef tc.inferred) in
+          let (next, p, wr) = checkGroup tc c g in
+          -- (a top-level definition's value, by its name: what a
+          -- dependency's exported right-hand side names the prelude's by)
+          let wg = if getRef tc.lets == 0 then defineGlobal tc next g else () in
+          let s = settleRest tc outer in
+          -- what had to wait for the rest of the definition to be known
+          let a = retryPostponed tc False in
+          -- and at the top level, the rows it left open are closed
+          let b = if getRef tc.lets == 0 then closeOpened tc else () in
+          (next, V.pushBack ps p, V.pushBack ws wr))
+    (ctx, [], [])
+    groups
+
+-- Whether a type waits on a meta, at its head or inside it, as far as
+-- `depth` constructors down: a meta applied to something, or a definition
+-- that would unfold but for one (`Elem ?c ?d`), as the domain of a function
+-- type (`Elem ?c ?d -> Bool`) or an argument of a data type (`Box c (Elem
+-- ?c ?d)`) as much as on its own (`Checker::stuck_within`).
+fun stuckWithin (tc : Tc s) (lvl : Int) (v : Value) (depth : Int) : Bool ! { St s | e } =
+  match force tc v with
+  | Value.Flex _ sp -> not (V.isEmpty sp)
+  | Value.Opaque u _ sp ->
+      if blocked tc v then True
+      else if depth > 0 and Hm.member u (getRef tc.datas) then
+        V.any (\el -> match el with | Elim.App a -> stuckWithin tc lvl a (depth - 1) | _ -> False) sp
+      else False
+  | Value.Pi name _ _ _ dom cod ->
+      if depth > 0 then stuckWithin tc lvl dom (depth - 1) or stuckWithin tc (lvl + 1) (apply tc cod (Va.vvar lvl name)) (depth - 1)
+      else False
+  | Value.Comp t _ -> if depth > 0 then stuckWithin tc lvl t (depth - 1) else False
+  | _ -> False
+
+fun coreHead (c : Core) : Core =
+  match c with
+  | Core.App f a -> coreHead f
+  | other -> other
+
+-- A term of type `actual` was to have type `expected` and they do not
+-- unify yet: kept for later if either is stuck on a metavariable applied to
+-- something, which what is checked after it may solve.
+fun postpone (tc : Tc s) (lvl : Int) (actual : Value) (expected : Value) : Bool ! { St s | e } =
+  if not (stuckWithin tc lvl expected 3 or stuckWithin tc lvl actual 3) then False
+  else
+    let w = setRef tc.postponed (V.pushBack (getRef tc.postponed) (Postponed.Postponed lvl actual expected)) in
+    True
+
+-- The postponed questions asked again until none can be answered; with
+-- `last`, what is still unanswered is a mismatch.
+@pub fun retryPostponed (tc : Tc s) (last : Bool) =
+  let w = retryRound tc in
+  if last then
+    let left = getRef tc.postponed in
+    let w2 = setRef tc.postponed [] in
+    V.foldl (\acc p -> T.error tc "Mismatch") () left
+  else ()
+
+fun retryRound (tc : Tc s) =
+  let waiting = getRef tc.postponed in
+  let w = setRef tc.postponed [] in
+  let w2 =
+    V.foldl
+      (\acc p ->
+        match p with
+        | Postponed.Postponed l a x -> if subtype tc l a x then () else setRef tc.postponed (V.pushBack (getRef tc.postponed) p))
+      ()
+      waiting
+  in
+  if V.len (getRef tc.postponed) == V.len waiting then () else retryRound tc
+
+-- Each definition's right-hand side charged for the uses its scope made of
+-- it. A right-hand side with effects runs once, used or not. A recursive
+-- group used at all may call itself any number of times.
+fun leaveGroups (usage : Usage) (pending : [Pending]) : Usage =
+  V.foldl
+    (\u p ->
+      match p with
+      | Pending.NonRec unique rhs ->
+          let (n0, rest) = U.take u unique in
+          let n =
+            if V.isEmpty (U.effectsOf rhs) then n0
+            else
+              match Va.asConstant n0 with
+              | Just g -> Va.polyConstant (G.atLeastOnce g)
+              | None -> n0
+          in
+          U.add rest (U.scale rhs n)
+      | Pending.Rec uniques rhs ->
+          let (used, rest, rhs2) =
+            V.foldl
+              (\acc x ->
+                match acc with
+                | (usedSoFar, r, h) ->
+                    let (n, r2) = U.take r x in
+                    let (_, h2) = U.take h x in
+                    (usedSoFar or not (Va.polyIsZero n), r2, h2))
+              (False, u, rhs)
+              uniques
+          in
+          U.add rest (U.scale rhs2 (Va.polyConstant (if used then G.any else G.zero))))
+    usage
+    (V.reverse pending)
+
+@pub fun wrapLets (body : Core) (wraps : [Maybe (String, Core)]) : Core =
+  V.foldl
+    (\acc w ->
+      match w with
+      | Just (name, rhs) -> Core.Let name rhs acc
+      | None -> acc)
+    body
+    (V.reverse wraps)
+
+-- --- the pass ---------------------------------------------------------------------
+
+-- What the pass carries down: the checker's state, the context, and the
+-- goal -- the type the term is checked against, or none, to infer it.
+@pub record Cx s = {
+  tc : Tc s,
+  ctx : Ctx,
+  goal : Maybe Value
+}
+
+-- A term's type, worked out, and the term in Core. Implicit arguments are
+-- not inserted at the end: the places that need a function or a type do.
+@pub fun infer (tc : Tc s) (ctx : Ctx) (t : HirExpr) : (Core, Value, Usage) ! { St s | e } =
+  -- only a signature's own arrows are its spine, not a type inside one
+  let spine = getRef tc.inferSpine in
+  let w = setRef tc.inferSpine 0 in
+  let w2 = setRef tc.spineHere spine in
+  elaborate tc (Cx { tc, ctx, goal = None }) t
+
+-- The pass's function for an expression, as `install` set it up for the
+-- module being checked.
+-- A term headed by a name with several meanings is the one that fits (once
+-- an implicit function wanted has bound its argument: see `within`).
+fun elaborate (tc : Tc s) (cx : Cx s) (t : HirExpr) : (Core, Value, Usage) ! { St s | e } =
+  -- what is found wrong meanwhile is found at `t`
+  let before = getRef tc.at in
+  let here = metaHirExpr (hirOf tc) t in
+  let w = setRef tc.at here in
+  let answer = elaborateAt tc cx t in
+  let w2 = setRef tc.at before in
+  -- (and its type, if a place in it is asked about)
+  let w3 = if getRef tc.want >= 0 then (match answer with | (_, ty, _) -> T.noteType tc here (quote tc cx.ctx.lvl ty)) else () in
+  answer
+
+fun elaborateAt (tc : Tc s) (cx : Cx s) (t : HirExpr) : (Core, Value, Usage) ! { St s | e } =
+  match O.overloadedHead tc t with
+  | None -> (getRef tc.elab) cx t
+  | Just head ->
+      (match cx.goal with
+       | None -> O.overloaded tc cx.ctx t head None
+       | Just g0 ->
+           (match force tc g0 with
+            | Value.Error -> (Core.Error, Value.Error, U.unknown ())
+            | Value.Pi name icit grade _ dom cod if icit != Icit.Explicit ->
+                let ctx = cx.ctx in
+                let ctx1 = X.graded (X.bind ctx None name dom) grade in
+                let ctx2 = if icit == Icit.Auto then X.autoBound ctx1 else ctx1 in
+                let (codV, allowed) = splitComp tc (apply tc cod (Va.vvar ctx.lvl name)) in
+                let (bodyC, _, usage) = elaborate tc { cx | ctx = ctx2, goal = Just codV } t in
+                let u2 = closeEffects tc ctx2 usage allowed in
+                (lam tc ctx name grade dom bodyC, force tc g0, u2)
+            | g -> O.overloaded tc cx.ctx t head (Just g)))
+
+-- Set the pass up to check a module, writing into `out`. (Its cases answer
+-- the checker's own data, and write nothing there yet: what is written out
+-- is the program, once it is checked.)
+@pub fun install (tc : Tc s) out =
+  let w = setRef tc.through (\ctx lit ty -> literalThrough tc ctx lit ty) in
+  setRef tc.elab (\cx t -> elabExpr (getRef tc.hir) out cx t)
+
+-- A number literal at the type variable `ty`: `fromInt` (`fromFloat`) of
+-- it, at that type, its instance searched for (`literals.rs`).
+fun literalThrough (tc : Tc s) (ctx : Ctx) (lit : Literal) (ty : Value) : Core ! { St s | e } =
+  let method = match lit with | Literal.Float _ -> "fromFloat" | _ -> "fromInt" in
+  let mismatch = \u -> let w = T.error tc "Mismatch" in Core.Error in
+  match M.andThen (\u -> X.lookup ctx (H.Ident [u] method)) (Hm.lookup method (getRef tc.numberLits)) with
+  | None -> mismatch ()
+  | Just (f0, fty0, _) ->
+      let (f, fty) = insert tc ctx f0 fty0 in
+      (match force tc fty with
+       | Value.Pi _ _ _ _ _ cod ->
+           let arg = Core.Lit lit in
+           let result = fst (splitComp tc (apply tc cod (eval tc ctx.env arg))) in
+           if unify tc ctx.lvl result ty then Core.App f arg else mismatch ()
+       | _ -> mismatch ())
+
+-- A term checked against a type: the term in Core, and its usage.
+@pub fun check (tc : Tc s) (ctx : Ctx) (t : HirExpr) (expected : Value) : (Core, Usage) ! { St s | e } =
+  match elaborate tc (Cx { tc, ctx, goal = Just expected }) t with
+  | (core, _, usage) -> (core, usage)
+
+-- What every case does first, as checking always does: what the goal
+-- should have been failed already, and was reported; and where an implicit
+-- function is wanted, its argument is bound here, with no name, and the
+-- term checked against what is under it. Then the case, `body`, with the
+-- goal as far as it is known.
+fun within (cx : Cx s) (again : Cx s -> (Core, Value, Usage) ! { St s | e }) (body : Cx s -> (Core, Value, Usage) ! { St s | e }) : (Core, Value, Usage) ! { St s | e } =
+  match cx.goal with
+  | None -> body cx
+  | Just g0 ->
+      let tc = cx.tc in
+      let ctx = cx.ctx in
+      let g = force tc g0 in
+      (match g with
+       | Value.Error -> (Core.Error, Value.Error, U.unknown ())
+       | Value.Pi name icit grade _ dom cod if icit != Icit.Explicit ->
+           let ctx1 = X.graded (X.bind ctx None name dom) grade in
+           -- an auto binder is what a search inside may find
+           let ctx2 = if icit == Icit.Auto then X.autoBound ctx1 else ctx1 in
+           let (codV, allowed) = splitComp tc (apply tc cod (Va.vvar ctx.lvl name)) in
+           let (bodyC, _, usage) = again { cx | ctx = ctx2, goal = Just codV } in
+           let u2 = closeEffects tc ctx2 usage allowed in
+           (lam tc ctx name grade dom bodyC, g, u2)
+       | _ -> body { cx | goal = Just g })
+
+-- A case: what it infers, and what it does told its type -- by default,
+-- infer and then ask for a subtype.
+fun mode
+    (cx : Cx s)
+    (again : Cx s -> (Core, Value, Usage) ! { St s | e })
+    (inferring : Cx s -> (Core, Value, Usage) ! { St s | e })
+    (checking : Cx s -> Value -> (Core, Value, Usage) ! { St s | e })
+    : (Core, Value, Usage) ! { St s | e } =
+  within cx again (\(c : Cx s) ->
+    match c.goal with
+    | None -> inferring c
+    | Just g -> checking c g)
+
+fun byInference (again : Cx s -> (Core, Value, Usage) ! { St s | e }) : Cx s -> Value -> (Core, Value, Usage) ! { St s | e } = \(c : Cx s) g -> fallback c again g
+
+-- Inferred, its implicit arguments filled in, and then a subtype of what
+-- is expected. Unless nothing is known of what is expected: then the term
+-- is taken as it is, implicit binders and all, which is the most general
+-- thing it could be, if it is small enough.
+fun fallback (cx : Cx s) (again : Cx s -> (Core, Value, Usage) ! { St s | e }) (expected : Value) : (Core, Value, Usage) ! { St s | e } =
+  let tc = cx.tc in
+  let ctx = cx.ctx in
+  let (core0, actual0, usage) = again { cx | goal = None } in
+  let (core, actual) =
+    match force tc expected with
+    | Value.Flex m sp -> if V.isEmpty sp and fitsMeta tc ctx m actual0 then (core0, actual0) else insert tc ctx core0 actual0
+    | _ -> insert tc ctx core0 actual0
+  in
+  if subtype tc ctx.lvl actual expected then (core, expected, usage)
+  else if postpone tc ctx.lvl actual expected then (core, expected, usage)
+  else
+    -- an ill-typed term is never evaluated
+    let w = T.error tc "Mismatch" in
+    (Core.Error, expected, usage)
+
+-- A check's answer, the type its goal.
+fun checked (g : Value) (cu : (Core, Usage)) = match cu with | (c, u) -> (c, g, u)
+
+pass! {
+  elab : Hir -> Elaborated with cx from Expr
+    | Ident { uniques, text } -> Ident.Ident uniques text
+    | Type {} ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode cx again (\(c : Cx s) -> (Core.Type 0, Value.Type 1, U.none ())) (byInference again))
+    | Expr.Var { ident } ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode cx again (\(c : Cx s) -> variable c.tc c.ctx node ident) (byInference again))
+    | Expr.Lit { lit } ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode cx again (\(c : Cx s) -> (Core.Lit lit, Value.LitTy (C.literalBuiltin lit), U.none ())) (\(c : Cx s) g -> literalAgainst c again lit g))
+    -- forming a function type uses what its parts use, and the codomain
+    -- must use the binder as its second grade says
+    | Pi { name, icit, raw grade, raw dom, raw cod } ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode cx again (\(c : Cx s) -> inferPi c.tc c.ctx name icit grade dom cod) (byInference again))
+    | Lam { name, raw grade, raw ty, raw body } ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode
+           cx
+           again
+           (\(c : Cx s) -> inferLam c.tc c.ctx name grade ty body)
+           (\(c : Cx s) g ->
+             match g with
+             | Value.Pi _ _ piGrade piInType dom cod -> checked g (checkLam c.tc c.ctx name grade ty body piGrade piInType dom cod)
+             | _ -> fallback c again g))
+    | App { raw func, raw arg } ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode
+           cx
+           again
+           (\(c : Cx s) -> inferApp c.tc c.ctx func arg)
+           (\(c : Cx s) g ->
+             match (force c.tc g, arithmetic src (getRef c.tc.methods) node) with
+             | (Value.LitTy Builtin.Grade, Just (op, a, b)) ->
+                 (let (aC, _) = checkGrade c.tc c.ctx a in
+                  let (bC, _) = checkGrade c.tc c.ctx b in
+                  ((if op == Prim.IntAdd then Core.GradeAdd aC bC else Core.GradeMul aC bC), g, U.none ()))
+             | _ -> fallback c again g))
+    -- `f @{d}`: `f`'s next auto argument is `d`, rather than one searched
+    -- for; the implicit ones before it are worked out
+    | AutoApp { raw func, raw arg } ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode cx again (\(c : Cx s) -> inferAutoApp c.tc c.ctx func arg) (byInference again))
+    -- what a search for something of the type expected finds
+    | Search {} ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode
+           cx
+           again
+           (\(c : Cx s) ->
+             let tyC = freshMeta c.tc c.ctx "what to look for" in
+             let ty = eval c.tc c.ctx.env tyC in
+             (A.autoArgument c.tc c.ctx ty, ty, U.none ()))
+           (\(c : Cx s) g -> (A.autoArgument c.tc c.ctx g, g, U.none ())))
+    -- `f {a}`: `f`'s next implicit argument is `a`, rather than one worked out
+    | ImplicitApp { raw func, raw arg } ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode cx again (\(c : Cx s) -> inferImplicitApp c.tc c.ctx func arg) (byInference again))
+    | Ann { raw expr, raw ty } ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode
+           cx
+           again
+           (\(c : Cx s) ->
+             let (_, vsig) = checkType c.tc c.ctx ty in
+             let (eC, usage) = check c.tc c.ctx expr vsig in
+             (eC, vsig, usage))
+           (byInference again))
+    -- a hole has the type expected, so nothing needs inferring; where
+    -- nothing says its type, that needs a metavariable too
+    | Hole {} ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode
+           cx
+           again
+           (\(c : Cx s) ->
+             let ty = freshValue c.tc c.ctx "the type of this hole" in
+             (elabHole c.tc c.ctx ty, ty, U.none ()))
+           (\(c : Cx s) g -> (elabHole c.tc c.ctx g, g, U.none ())))
+    -- a goal is whatever was wanted where it is, as a hole is
+    | Goal { name } ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode
+           cx
+           again
+           (\(c : Cx s) ->
+             let ty = freshValue c.tc c.ctx "the type of this goal" in
+             (elabGoal c.tc c.ctx name ty, ty, U.unknown ()))
+           -- (what it will use is not known yet: nothing is held to its
+           -- grade over it)
+           (\(c : Cx s) g -> (elabGoal c.tc c.ctx name g, g, U.unknown ())))
+    -- promotion: to provide `e` `grade` times, what `e` uses is used that
+    -- often; with nothing to say how often, the grade is to be found
+    | Box { raw expr } ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode
+           cx
+           again
+           (\(c : Cx s) ->
+             let grade = freshValue c.tc c.ctx "the grade of this box" in
+             let (eC, eTy, usage) = infer c.tc c.ctx expr in
+             let w = linearBox c.tc eTy in
+             (Core.BoxIntro eC, Value.BoxTy grade eTy, U.scale usage (toPoly c.tc grade)))
+           (\(c : Cx s) g ->
+             match g with
+             | Value.BoxTy grade a ->
+                 (let (eC, usage) = check c.tc c.ctx expr a in
+                  let wLinear = linearBox c.tc a in
+                  let w =
+                    if constant c.tc grade == Just G.zero then
+                      (match effectsOf c.tc usage with
+                       | Just _ -> T.error c.tc "ImpureArgument"
+                       | None -> ())
+                    else ()
+                  in
+                  (Core.BoxIntro (argument c.tc grade eC), g, U.scale usage (toPoly c.tc grade)))
+             | _ -> fallback c again g))
+    | Inf {} ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode cx again (\(c : Cx s) -> (C.grade G.inf, gradeTy (), U.none ())) (byInference again))
+    | Range { raw lo, raw hi } ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode cx again (\(c : Cx s) -> inferRange c.tc c.ctx lo hi) (byInference again))
+    | LetBox { name, raw value, raw body } ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode
+           cx
+           again
+           (\(c : Cx s) ->
+             match unbox c.tc c.ctx name value with
+             | Just (ctx2, grade, unboxed, boxedU) ->
+                 (let (bodyC, ty, usage) = infer c.tc ctx2 body in
+                  let u2 = leaveBinder c.tc ctx2 name grade usage False in
+                  (Core.Let (H.textOf name) unboxed bodyC, ty, U.add boxedU u2))
+             | None -> failed ())
+           (\(c : Cx s) g ->
+             match unbox c.tc c.ctx name value with
+             | Just (ctx2, grade, unboxed, boxedU) ->
+                 (let (bodyC, usage) = check c.tc ctx2 body g in
+                  let u2 = leaveBinder c.tc ctx2 name grade usage False in
+                  (Core.Let (H.textOf name) unboxed bodyC, g, U.add boxedU u2))
+             | None -> (Core.Error, g, U.unknown ())))
+    | Let { raw groups, raw body } ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode
+           cx
+           again
+           (\(c : Cx s) -> inferLet c.tc c.ctx groups body)
+           (\(c : Cx s) g ->
+             let (ctx2, pending, wraps) = enterLet c.tc c.ctx groups in
+             let (bodyC, usage) = check c.tc ctx2 body g in
+             let w = linearLets c.tc ctx2 c.ctx.lvl usage pending in
+             (wrapLets bodyC wraps, g, leaveGroups usage pending)))
+    | Case { raw scrutinee, raw clauses } ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode
+           cx
+           again
+           (\(c : Cx s) -> caseOf c.tc c.ctx scrutinee clauses None)
+           (\(c : Cx s) g -> (match caseOf c.tc c.ctx scrutinee clauses (Just g) with | (core, _, usage) -> (core, g, usage))))
+    | Match { raw clauses } ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         let matched = \u -> mode cx again (\(c : Cx s) -> inferMatch c.tc c.ctx clauses) (\(c : Cx s) g -> checked g (elabMatch c.tc c.ctx clauses g)) in
+         -- equations that name the implicit argument wanted, `f {n} xs = ..`,
+         -- bind it themselves (see `Matching`)
+         match cx.goal with
+         | Just g0 ->
+             (match force cx.tc g0 with
+              | Value.Pi _ icit _ _ _ _ if icit != Icit.Explicit and namesImplicit src node icit -> checked g0 (elabMatch cx.tc cx.ctx clauses g0)
+              | _ -> matched ())
+         | None -> matched ())
+    | Omitted {} ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode
+           cx
+           again
+           (\(c : Cx s) ->
+             let ty = freshValue c.tc c.ctx "the type of this" in
+             (freshMetaWith c.tc c.ctx (Origin.Inferred "this") (Just ty), ty, U.none ()))
+           (\(c : Cx s) g -> (freshMetaWith c.tc c.ctx (Origin.Inferred "this") (Just g), g, U.none ())))
+    | Eff {} ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode
+           cx
+           again
+           (\(c : Cx s) ->
+             let w = T.error c.tc "EffectOutsideArrow" in
+             failed ())
+           (byInference again))
+    -- a row: effects and row variables
+    | Row { raw labels, raw tail } ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode
+           cx
+           again
+           (\(c : Cx s) ->
+             let ls = V.map (\l -> rowPart c.tc c.ctx l) labels in
+             let ts = V.map (\l -> rowPart c.tc c.ctx l) (vecOf tail) in
+             let many = V.any snd (V.append ls ts) in
+             let kind = if many then manyEffectKind () else Core.LitTy Builtin.Effect in
+             (Core.Row (V.map fst ls) (V.map fst ts), eval c.tc c.ctx.env kind, U.none ()))
+           (byInference again))
+    | Handle { raw body, raw clauses } ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode
+           cx
+           again
+           (\(c : Cx s) -> handled c.tc c.ctx body clauses None)
+           (\(c : Cx s) g -> (match handled c.tc c.ctx body clauses (Just g) with | (core, _, usage) -> (core, g, usage))))
+    -- a sequence is built as the type it is expected to be, if that is
+    -- known
+    | Expr.SeqNil {} ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode cx again (\(c : Cx s) -> inferSeq c.tc c.ctx node) (\(c : Cx s) g -> if isFlex g then fallback c again g else checked g (checkSeq c.tc c.ctx node g)))
+    | Expr.SeqCons {} ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode cx again (\(c : Cx s) -> inferSeq c.tc c.ctx node) (\(c : Cx s) g -> if isFlex g then fallback c again g else checked g (checkSeq c.tc c.ctx node g)))
+    -- an array of what is expected is made of elements checked against that
+    | Array { raw items } ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode
+           cx
+           again
+           (\(c : Cx s) -> arrayLiteral c.tc c.ctx items None)
+           (\(c : Cx s) g ->
+             match arrayElement c.tc g with
+             | Just elem -> (match arrayLiteral c.tc c.ctx items (Just elem) with | (core, _, usage) -> (core, g, usage))
+             | None -> fallback c again g))
+}
+
+-- A name: the binder it means, which it uses once; of an overloaded name,
+-- the meaning chosen for it where it is written, `node`.
+fun variable (tc : Tc s) (ctx : Ctx) (node : Int) (x0 : Ident) : (Core, Value, Usage) ! { St s | e } =
+  let x = match Hm.lookup node (getRef tc.forced) with | Just u -> Ident.Ident [u] (H.textOf x0) | None -> x0 in
+  let us = H.uniquesOf x in
+  if V.isEmpty us then failed ()
+  else if V.len us > 1 then
+    -- (chosen where it heads a term; anywhere else, nothing to choose by)
+    let w = T.error tc "AmbiguousName" in
+    failed ()
+  else
+    match X.lookup ctx x with
+    | Just (core, ty, key) -> (core, ty, U.var key)
+    | None ->
+        let w = T.error tc "UnknownVariable" in
+        failed ()
+
+-- Where a type is wanted, `()` is the unit type; where a grade is, a
+-- numeral is one.
+fun literalAgainst (cx : Cx s) (again : Cx s -> (Core, Value, Usage) ! { St s | e }) (lit : Literal) (g : Value) : (Core, Value, Usage) ! { St s | e } =
+  match (lit, g) with
+  | (Literal.Unit, Value.Type _) -> (Core.LitTy Builtin.Unit, g, U.none ())
+  -- a number is read at the type wanted (see `Literals`)
+  | (_, Value.LitTy b) if L.readsAs lit b -> (Core.Lit (L.readNumber cx.tc lit b), g, U.none ())
+  -- (a metavariable under binders is applied to them, `?a y`)
+  -- (or one that waits on a metavariable, `T.Elem ?p`)
+  | (Literal.Int _, _) if blocked cx.tc g -> (L.deferLiteral cx.tc cx.ctx lit g, g, U.none ())
+  | (Literal.Float _, _) if blocked cx.tc g -> (L.deferLiteral cx.tc cx.ctx lit g, g, U.none ())
+  -- at a type variable, through its instance (see `Literals`)
+  | (Literal.Int _, Value.Rigid _ _ sp) if V.isEmpty sp -> (literalThrough cx.tc cx.ctx lit g, g, U.none ())
+  | (Literal.Float _, Value.Rigid _ _ sp) if V.isEmpty sp -> (literalThrough cx.tc cx.ctx lit g, g, U.none ())
+  | (Literal.Int n, Value.LitTy Builtin.Grade) ->
+      if n >= 0 then (C.grade (G.exact n), g, U.none ())
+      else
+        let w = T.error cx.tc "GradeTooLarge" in
+        (Core.Error, g, U.unknown ())
+  | _ -> fallback cx again g
+
+fun inferRange (tc : Tc s) (ctx : Ctx) (lo : HirExpr) (hi : HirExpr) : (Core, Value, Usage) ! { St s | e } =
+  let (loC, loV) = checkGrade tc ctx lo in
+  let (hiC, hiV) = checkGrade tc ctx hi in
+  let empty =
+    match (constant tc loV, constant tc hiV) with
+    | (Just a, Just b) -> M.isNone (G.range a b)
+    | _ -> False
+  in
+  if empty then
+    let w = T.error tc "EmptyRange" in
+    failed ()
+  else (Core.GradeRange loC hiC, gradeTy (), U.none ())
+
+-- `(x : [r] a) -> b`: it lives in the larger of its parts' universes.
+fun inferPi (tc : Tc s) (ctx : Ctx) (mx : Maybe Ident) (icit : Icit) (ann : Maybe HirGrade) (dom : HirExpr) (cod : HirExpr) : (Core, Value, Usage) ! { St s | e } =
+  let spine = getRef tc.spineHere in
+  let h = hirOf tc in
+  let name = match mx with | Just x -> H.textOf x | None -> "_" in
+  -- an implicit argument is erased; an auto one is a value, used as often
+  -- as wanted
+  let default = if icit == Icit.Implicit then G.zero else if icit == Icit.Auto then G.default else defaultGrade tc in
+  let (gs, its) = binderGrades tc ctx ann default in
+  let (inType, inTypeV) = its in
+  let (domC, domV, domLevel, domU) =
+    if kindHirExpr h dom == HirExprKind.Omitted then
+      -- a variable a signature mentions without binding it: its type is
+      -- for unification to find
+      let c = freshMeta tc ctx ("the type of " ++ name) in
+      (c, eval tc ctx.env c, 0, U.none ())
+    else inferType tc ctx dom
+  in
+  -- a binder of a linear type that says no grade is used once, whatever
+  -- the module's default; a parameter of a definition that says no grade,
+  -- in a module that is not linear, has its grade worked out from the body
+  let grade =
+    if icit == Icit.Explicit and M.isNone ann and isLinear tc domV then C.grade G.one
+    else if spine > 0 and icit == Icit.Explicit and M.isNone ann and not (getRef tc.linear) then fst (inferredGrade tc ctx name)
+    else fst gs
+  in
+  let ctx1 = X.bind ctx mx name domV in
+  -- an auto binder is what a search in the rest of the type may find:
+  -- `{auto o : Ord k} -> Map k v` is `MapBy k o v`'s; and so is a trait's
+  -- superclass, a field of its record, in the fields after it, and the
+  -- record a projection reads its fields off, `self`
+  let dictionary = S.startsWith "#super" name or name == "self" in
+  let ctx2 = if icit == Icit.Auto or dictionary then X.autoBound ctx1 else ctx1 in
+  -- the codomain goes on with the spine, one parameter fewer
+  let w0 = setRef tc.inferSpine (if icit == Icit.Explicit then (if spine > 0 then spine - 1 else 0) else spine) in
+  let (codC, codLevel, codU) =
+    match (h, cod) with
+    | HirExprEff ty r ->
+        let (tyC, _, level, usage) = inferType tc ctx2 ty in
+        let rowC = checkRow tc ctx2 r in
+        (Core.Comp tyC rowC, level, usage)
+    | _ ->
+        let (c, _, level, usage) = inferType tc ctx2 cod in
+        (c, level, usage)
+  in
+  let codU2 =
+    match mx with
+    | Just x -> leaveBinder tc ctx2 x inTypeV codU True
+    | None -> codU
+  in
+  (Core.Pi name icit grade inType domC codC, Value.Type (maxOf domLevel codLevel), U.add domU codU2)
+
+fun inferLam (tc : Tc s) (ctx : Ctx) (x : Ident) (ann : Maybe HirGrade) (tyAnn : Maybe HirExpr) (body : HirExpr) : (Core, Value, Usage) ! { St s | e } =
+  let spine = getRef tc.spineHere in
+  let h = hirOf tc in
+  let name = H.textOf x in
+  let dom =
+    match tyAnn with
+    | Just ta -> snd (checkType tc ctx ta)
+    | None -> freshValue tc ctx ("the type of the binder " ++ name)
+  in
+  let w = if M.isSome (M.andThen (\g -> hirGradeInType h g) ann) then T.error tc "UncheckedInTypeGrade" else () in
+  let (gs, its) = binderGrades tc ctx ann (defaultGrade tc) in
+  -- a parameter of a definition with no signature, which says no grade:
+  -- its uses will. (Not any lambda's: one whose type is inferred may then be
+  -- what others must have exactly, as a handler's clauses must.)
+  let grade = if spine > 0 and M.isNone ann and not (getRef tc.linear) then snd (inferredGrade tc ctx name) else snd gs in
+  let inType = snd its in
+  let ctx2 = X.graded (X.bind ctx (Just x) name dom) grade in
+  -- the body goes on with the definition's parameters
+  let w1 = setRef tc.inferSpine (if spine > 0 then spine - 1 else 0) in
+  let (bodyC, bodyTy, usage) = infer tc ctx2 body in
+  -- what calling it does is what its body does
+  let effects = row tc (U.effectsOf usage) in
+  let bodyTy2 = comp tc bodyTy effects in
+  let usage2 = leaveBinder tc ctx2 x grade (U.withoutEffects usage) False in
+  let cod = Closure.Closure ctx.env (quote tc ctx2.lvl bodyTy2) in
+  (lam tc ctx name grade dom bodyC, Value.Pi name Icit.Explicit grade inType dom cod, usage2)
+
+-- A lambda gets its binder's type and grade from the function type. A
+-- written grade that disagrees is said once, and the body held to what was
+-- written.
+fun checkLam (tc : Tc s) (ctx : Ctx) (x : Ident) (ann : Maybe HirGrade) (tyAnn : Maybe HirExpr) (body : HirExpr) piGrade piInType dom cod : (Core, Usage) ! { St s | e } =
+  let h = hirOf tc in
+  let w =
+    match tyAnn with
+    | Just ta ->
+        let (_, annV) = checkType tc ctx ta in
+        -- (one the expected type is stuck on a meta for is asked again once
+        -- more is known)
+        if unify tc ctx.lvl annV dom then () else if postpone tc ctx.lvl annV dom then () else T.error tc "BinderMismatch"
+    | None -> ()
+  in
+  let allowed =
+    match ann with
+    | Just g ->
+        let written = V.append [(hirGradeUses h g, piGrade, True)] (V.map (\r -> (r, piInType, False)) (vecOf (hirGradeInType h g))) in
+        V.foldl
+          (\acc wr ->
+            match wr with
+            | (term, wanted, isSubject) ->
+                let (_, given) = checkGrade tc ctx term in
+                if unify tc ctx.lvl given wanted then acc
+                else
+                  let w2 = T.error tc "BinderGradeMismatch" in
+                  if isSubject then given else acc)
+          piGrade
+          written
+    | None -> piGrade
+  in
+  let name = H.textOf x in
+  let ctx2 = X.graded (X.bind ctx (Just x) name dom) allowed in
+  let (codV, effects) = splitComp tc (apply tc cod (Va.vvar ctx.lvl name)) in
+  let (bodyC, usage) = check tc ctx2 body codV in
+  let u1 = closeEffects tc ctx2 usage effects in
+  let lamC = lam tc ctx name allowed dom bodyC in
+  (lamC, leaveBinder tc ctx2 x allowed u1 False)
+
+fun inferLet (tc : Tc s) (ctx : Ctx) (groups : [HirGroup]) (body : HirExpr) : (Core, Value, Usage) ! { St s | e } =
+  let (ctx2, pending, wraps) = enterLet tc ctx groups in
+  let (bodyC, ty, usage) = infer tc ctx2 body in
+  -- the type may not mention what has a value only at run time
+  let quoted = quote tc ctx2.lvl ty in
+  let escaped = V.any (\k -> X.infoAt ctx2 k == Just Info.Effectful and mentions quoted (ctx2.lvl - k - 1)) (V.range ctx.lvl ctx2.lvl) in
+  let ty2 =
+    if escaped then
+      let w = T.error tc "EffectfulLetEscapes" in
+      Value.Error
+    else ty
+  in
+  let w = linearLets tc ctx2 ctx.lvl usage pending in
+  (wrapLets bodyC wraps, ty2, leaveGroups usage pending)
+
+fun unsupported (tc : Tc s) (what : String) : (Core, Value, Usage) ! { St s | e } =
+  let w = T.cannot tc what in
+  failed ()
+
+-- `Effect []`: the kind of a row that may hold operations resumed more than
+-- once.
+@pub fun manyEffectKind () : Core = Core.BoxTy (C.grade G.any) (Core.LitTy Builtin.Effect)
+
+-- `f a`; `Type n`, `Type` applied to a level (`Type [r]` is the
+-- modality); `() [r]`, the unit type, since that is what can be boxed.
+fun inferImplicitApp (tc : Tc s) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value, Usage) ! { St s | e } =
+  let (fC, fTy, fU) = infer tc ctx f in
+  match force tc fTy with
+  | Value.Pi _ Icit.Implicit _ _ _ _ -> applyTo tc ctx fC fTy fU a
+  | Value.Error -> failed ()
+  | _ ->
+      let w = T.error tc "NoImplicitArgument" in
+      failed ()
+
+-- `f @{d}`, the implicit arguments before `d`'s worked out.
+fun inferAutoApp (tc : Tc s) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value, Usage) ! { St s | e } =
+  -- (the head of `f x @{d}` leaves its auto argument for `d`)
+  let w0 = setRef tc.autoGiven (kindHirExpr (hirOf tc) f == HirExprKind.App) in
+  let (fC0, fTy0, fU) = infer tc ctx f in
+  let w1 = setRef tc.autoGiven False in
+  let (fC, fTy) = insertImplicit tc ctx fC0 fTy0 in
+  match fTy with
+  | Value.Pi _ Icit.Auto _ _ _ _ -> applyTo tc ctx fC fTy fU a
+  | Value.Error -> failed ()
+  | _ ->
+      let w = T.error tc "NoAutoArgument" in
+      failed ()
+
+fun inferApp (tc : Tc s) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value, Usage) ! { St s | e } =
+  let h = hirOf tc in
+  -- (the head of `f x @{d}`: its auto argument is `d`)
+  let given = getRef tc.autoGiven in
+  let w0 = setRef tc.autoGiven False in
+  let argIsBox = kindHirExpr h a == HirExprKind.Box in
+  if kindHirExpr h f == HirExprKind.Type and not argIsBox then
+    match (h, a) with
+    | HirExprLit (Literal.Int k) ->
+        if k >= 0 then (Core.Type k, Value.Type (k + 1), U.none ())
+        else
+          let w = T.error tc "LevelNotANumber" in
+          failed ()
+    | _ ->
+        let w = T.error tc "LevelNotANumber" in
+        failed ()
+  else
+    let (fC0, fTy0, fU) =
+      if isUnitLit h f and argIsBox then
+        let (c, _, _, usage) = inferType tc ctx f in
+        (c, Value.Type 0, usage)
+      else infer tc ctx f
+    in
+    let (fC, fTy) = insert tc ctx fC0 fTy0 in
+    let boxed = match (h, a) with | HirExprBox g -> Just g | _ -> None in
+    match (fTy, boxed) with
+    -- brackets after a type are the graded modality, `a [r]`
+    | (Value.Type n, Just g) ->
+        let (gC, _) = checkGrade tc ctx g in
+        (Core.BoxTy gC fC, Value.Type n, fU)
+    -- and after what could be one, as a variable a signature binds for
+    -- itself
+    | (Value.Flex _ _, Just g) ->
+        if unify tc ctx.lvl fTy (Value.Type 0) then
+          let (gC, _) = checkGrade tc ctx g in
+          (Core.BoxTy gC fC, Value.Type 0, fU)
+        else autosAfterIf tc ctx (not given) (applyTo tc ctx fC fTy fU a)
+    | _ -> autosAfterIf tc ctx (not given) (applyTo tc ctx fC fTy fU a)
+
+-- `f a`, for an `f` elaborated already, its implicit arguments inserted.
+@pub fun applyTo (tc : Tc s) (ctx : Ctx) (fC : Core) (fTy : Value) (fU : Usage) (a : HirExpr) : (Core, Value, Usage) ! { St s | e } =
+  match fTy with
+  | Value.Error -> failed ()
+  | _ ->
+      let param = match fTy with | Value.Pi name _ _ _ _ _ -> name | _ -> "" in
+      let pi =
+        match fTy with
+        | Value.Pi _ _ grade _ dom cod -> Just (grade, dom, cod)
+        -- not known to be a function yet: made one
+        | Value.Flex _ _ ->
+            let dom = freshValue tc ctx "the argument type of this function" in
+            let ctxArg = X.bind ctx None "x" dom in
+            let codC = freshMeta tc ctxArg "the result type of this function" in
+            let cod = Closure.Closure ctx.env codC in
+            let grade = gradeValue G.default in
+            let piV = Value.Pi "x" Icit.Explicit grade (gradeValue G.defaultInType) dom cod in
+            if unify tc ctx.lvl fTy piV then Just (grade, dom, cod) else None
+        | _ -> None
+      in
+      (match pi with
+       | Just (grade, dom, cod) ->
+           -- (a type a constructor is given, a record's field that is a type,
+           -- is used nowhere: a type has nothing at run time but its
+           -- descriptor, kept all the same; so an instance may give its own
+           -- parameter as an associated type, `Elem = a`)
+           let isType = match force tc dom with | Value.Type _ -> True | _ -> False in
+           let built = match coreHead fC with | Core.Opaque u _ -> M.isSome (T.ctorInfo tc u) | _ -> False in
+           let (aC, aU) = check tc ctx a dom in
+           let aV0 = eval tc ctx.env aC in
+           let wLinear = noteLinearWant tc ctx param dom cod aV0 in
+           -- a computation with effects never reaches a type: not as an
+           -- argument the result mentions, nor as an erased one
+           let aV =
+             match effectsOf tc aU with
+             | Just _ ->
+                 let erased = constant tc grade == Just G.zero in
+                 if erased or depends tc ctx.lvl cod then
+                   let w = T.error tc "ImpureArgument" in
+                   Value.Error
+                 else aV0
+             | None -> aV0
+           in
+           let (result, effects) = splitComp tc (apply tc cod aV) in
+           let charged = if isType and built then Va.polyConstant G.zero else toPoly tc grade in
+           let usage = U.add (U.add fU (U.scale aU charged)) (U.performs effects) in
+           (Core.App fC (argument tc grade aC), result, usage)
+       | None ->
+           let w = T.error tc "NotAFunction" in
+           failed ())
+
+-- `let [x] = boxed in ..`: the box elaborated, and `x` defined as its
+-- contents, which lets the body's type mention `x`.
+fun unbox (tc : Tc s) (ctx : Ctx) (x : Ident) (boxed : HirExpr) : Maybe (Ctx, Value, Core, Usage) ! { St s | e } =
+  let (bC0, bTy0, bU) = infer tc ctx boxed in
+  let (bC, bTy) = insert tc ctx bC0 bTy0 in
+  match bTy with
+  | Value.Error -> None
+  | _ ->
+      let parts =
+        match bTy with
+        | Value.BoxTy g a -> Just (g, a)
+        -- not known to be a box yet: made one, of metavariables with the
+        -- old one's spine
+        | Value.Flex _ sp ->
+            let part = \desc -> Value.Flex (T.newMeta tc (MetaInfo.MetaInfo 0 (Origin.Inferred desc) None)) sp in
+            let g = part "the grade of this box" in
+            let a = part "the type inside this box" in
+            if unify tc ctx.lvl bTy (Value.BoxTy g a) then Just (g, a) else None
+        | _ -> None
+      in
+      (match parts with
+       | Just (grade, a) ->
+           let unboxed = Core.Runtime (Note.Binds (constant tc grade) (Just (quote tc ctx.lvl a))) (Core.Unbox bC) in
+           let value = eval tc ctx.env unboxed in
+           Just (X.define ctx x a value, grade, unboxed, bU)
+       | None ->
+           let w = T.error tc "NotABox" in
+           None)
+
+-- --- the end of a module -------------------------------------------------------------
+
+-- Close the row variables made to keep rows open that nothing filled: a
+-- definition's effects are then what it was found to do.
+@pub fun closeOpened (tc : Tc s) =
+  let opened = getRef tc.opened in
+  let w = setRef tc.opened [] in
+  V.foldl (\acc o -> match o with | (m, n) -> closeMeta tc m n) () opened
+
+fun closeMeta (tc : Tc s) (m : Int) (n : Int) =
+  match T.meta tc m with
+  | Just (Meta.Unsolved info) ->
+      let none = V.foldl (\body i -> Core.Lam "_" body) (Core.Row [] []) (V.range 0 n) in
+      T.solve tc m (eval tc (Va.emptyEnv ()) none)
+  | _ -> ()
+
+-- A row variable nothing constrained stands for no more effects.
+@pub fun closeRows (tc : Tc s) =
+  V.foldl
+    (\acc m ->
+      match T.meta tc m with
+      | Just (Meta.Unsolved (MetaInfo.MetaInfo _ _ (Just (MetaTy.MetaTy _ spine ty)))) ->
+          if M.isSome (rowKind tc ty) then closeMeta tc m (V.len spine) else ()
+      | _ -> ())
+    ()
+    (V.range 0 (V.len (getRef tc.metas)))
+
+-- Every goal, `?name`, reported with the type wanted where it is: a
+-- warning, so what is around it can still be worked on.
+@pub fun reportGoals (tc : Tc s) =
+  let goals = getRef tc.goals in
+  let w = setRef tc.goals [] in
+  V.foldl
+    (\acc g ->
+      match g with
+      | GoalAt.GoalAt at name l ty -> T.goal tc at "goal ?${name} : ${C.shown False (quote tc l ty)}")
+    ()
+    goals
+
+-- Every `_`, reported: filled in or not.
+@pub fun reportHoles (tc : Tc s) =
+  let holes = getRef tc.holes in
+  let w = setRef tc.holes [] in
+  V.foldl
+    (\acc h ->
+      match h with
+      | HoleAt.HoleAt l v ty ->
+          (match force tc v with
+           | Value.Flex _ _ -> T.error tc "HoleUnsolved"
+           | _ -> T.error tc "HoleSolved"))
+    ()
+    holes
+
+-- What unification never pinned down.
+@pub fun reportUnsolved (tc : Tc s) =
+  V.foldl
+    (\acc entry ->
+      match entry with
+      | Meta.Unsolved (MetaInfo.MetaInfo _ (Origin.Inferred _) _) -> T.error tc "UnsolvedMeta"
+      | _ -> ())
+    ()
+    (getRef tc.metas)

@@ -22,6 +22,21 @@ fn every_stage_is_shown_in_order() {
 }
 
 #[test]
+fn the_stages_after_cut_are_meadows() {
+    // the Cut inlined, what Meadow lowers that to, and what Silo compiles
+    // that to
+    let block = "double : Int -> Int\ndouble n = n * 2\n\ndouble 21";
+    // `double` is small, and its call known: inlined, the entry multiplies
+    let inlined = stage("", block, "inlined");
+    let entry = &inlined[inlined.find("def idyll:Main/\"#entry\"").expect("the entry")..];
+    assert!(entry.contains("prim mul(") && !entry.contains("idyll:Main/double("), "{inlined}");
+    let axcut = stage("", block, "axcut");
+    assert!(axcut.contains("-- idyll:Main/double") && axcut.contains("extern Mul("), "{axcut}");
+    let llvm = stage("", block, "llvm");
+    assert!(llvm.contains("define ") && llvm.contains("mul "), "{llvm}");
+}
+
+#[test]
 fn the_early_stages_show_the_block_alone() {
     let block = "double : Int -> Int\ndouble n = n * 2";
     // layout's braces and semicolons, which nobody wrote
@@ -39,7 +54,7 @@ fn the_early_stages_show_the_block_alone() {
 #[test]
 fn core_shows_the_definitions_and_the_expression() {
     let core = stage("", "double : Int -> Int\ndouble n = n * 2\n\ndouble 21", "core");
-    assert_eq!(core, "double : Int -> Int\ndouble = \\n -> * n 2\n\ndouble 21");
+    assert_eq!(core, "double : (_ : [1] Int) -> Int\ndouble = \\n -> * n 2\n\ndouble 21");
     // a recursive definition is among them, a type former is not run
     let nat = "data Nat = Z | S Nat\n\nuse Nat.*\n\nplus : Nat -> Nat -> Nat\nplus Z m = m\nplus (S n) m = S (plus n m)\n";
     let core = stage("", nat, "core");
@@ -51,8 +66,6 @@ fn a_block_of_declarations_is_lowered_with_them_kept() {
     // nothing calls `double`, and it is lowered all the same
     let cut = stage("", "double : Int -> Int\ndouble n = n * 2\n", "cut");
     assert!(cut.contains("def idyll:Main/double (n_") && cut.contains("prim mul(n_"), "{cut}");
-    let axcut = stage("", "double : Int -> Int\ndouble n = n * 2\n", "axcut");
-    assert!(axcut.contains("extern mul"), "{axcut}");
 }
 
 #[test]
@@ -66,8 +79,6 @@ fn the_sessions_declarations_are_in_scope() {
     assert!(cut.contains("def idyll:Main/double"), "{cut}");
     assert!(cut.contains("def idyll:Prelude/showInt"), "{cut}");
     assert!(!cut.contains("putStrLn"), "{cut}");
-    let llvm = stage(earlier, "double 21", "llvm");
-    assert!(llvm.contains("define"), "{llvm}");
 }
 
 #[test]

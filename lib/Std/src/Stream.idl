@@ -1,0 +1,165 @@
+-- Streams, as Meadow's `Std.Stream`: generators built on `Std.Yield`. A
+-- producer performs `yield x` whenever it has a value, and a consumer, a
+-- handler, says what that means; the producer is written as a plain loop
+-- and never knows who is listening.
+--
+--   countdown : (n : Int) -> () ! {Yield Int, Div}
+--   countdown n = if n <= 0 then () else let u = yield n in countdown (n - 1)
+--
+--   toVec (\u -> countdown 3)      -- #[3, 2, 1]
+--
+-- The consumers are deep handlers, so a `yield` from inside a nested call
+-- reaches them too, and each resumes the producer at most once, which keeps
+-- a stream a stream rather than a tree of possibilities. `take` stops asking
+-- for more by not resuming it: what a lazy list gives for free, and an eager
+-- language does with an effect.
+--
+-- A producer gives back `()`, as `Std.Yield`'s `collect` takes one: what it
+-- gives is what it yields. `yield` itself is `Std.Yield`'s.
+
+use Std.Yield (Yield, yield)
+use Std.Collections.Vector (Vector)
+use Std.Collections.Vector as V
+
+-- --- consuming ---------------------------------------------------------------
+
+-- Every value yielded, in order, as a `Vector`.
+@pub
+toVec : {a : Type} -> (producer : (u : ()) -> () ! {Yield a | r}) -> Vector a ! r
+toVec producer = collecting producer V.empty
+
+collecting : {a : Type} -> (producer : (u : ()) -> () ! {Yield a | r}) -> ((acc : Vector a) -> Vector a ! r) ! r
+collecting producer = handle producer () with
+  return u -> \(acc : Vector a) -> acc
+  yield x k -> \(acc : Vector a) -> k () (V.pushBack acc x)
+
+-- Every value yielded, in order, as a `List`.
+@pub
+toList : {a : Type} -> (producer : (u : ()) -> () ! {Yield a | r}) -> List a ! r
+toList producer = handle producer () with
+  return u -> Nil
+  yield x k -> x :: k ()
+
+-- `f` given each value as it comes, and nothing kept: a stream's point.
+@pub
+forEach : {a : Type} -> (f : ((x : a) -> () ! r)) -> (producer : (u : ()) -> () ! {Yield a | r}) -> () ! r
+forEach f producer = handle producer () with
+  return u -> ()
+  yield x k -> let v = f x in k ()
+
+-- The values folded from the left into `z`.
+@pub
+fold : {a b : Type} -> (f : ((acc : b) -> (x : a) -> b ! r)) -> (z : b) -> (producer : (u : ()) -> () ! {Yield a | r}) -> b ! r
+fold f z producer = folding f producer z
+
+folding : {a b : Type} -> (f : ((acc : b) -> (x : a) -> b ! r)) -> (producer : (u : ()) -> () ! {Yield a | r}) -> ((acc : b) -> b ! r) ! r
+folding f producer = handle producer () with
+  return u -> \(acc : b) -> acc
+  yield x k -> \(acc : b) -> k () (f acc x)
+
+-- How many values it yields.
+@pub
+count : {a : Type} -> (producer : (u : ()) -> () ! {Yield a | r}) -> Int ! r
+count producer = fold (\(n : Int) (x : a) -> n + 1) 0 producer
+
+@pub
+sum : (producer : (u : ()) -> () ! {Yield Int | r}) -> Int ! r
+sum producer = fold (\(n : Int) (x : Int) -> n + x) 0 producer
+
+-- --- limiting ----------------------------------------------------------------
+
+-- The first `n` values, as a `Vector`.
+@pub
+take : {a : Type} -> (n : Int) -> (producer : (u : ()) -> () ! {Yield a | r}) -> Vector a ! r
+take n producer = taking producer n V.empty
+
+taking : {a : Type} -> (producer : (u : ()) -> () ! {Yield a | r}) -> ((i : Int) -> (acc : Vector a) -> Vector a ! r) ! r
+taking producer = handle producer () with
+  return u -> \(i : Int) (acc : Vector a) -> acc
+  yield x k -> \(i : Int) (acc : Vector a) -> if i <= 0 then acc else k () (i - 1) (V.pushBack acc x)
+
+-- The values up to the first `keep` turns down, as a `Vector`.
+@pub
+takeWhile : {a : Type} -> (keep : ((x : a) -> Bool ! r)) -> (producer : (u : ()) -> () ! {Yield a | r}) -> Vector a ! r
+takeWhile keep producer = keeping keep producer V.empty
+
+keeping : {a : Type} -> (keep : ((x : a) -> Bool ! r)) -> (producer : (u : ()) -> () ! {Yield a | r}) -> ((acc : Vector a) -> Vector a ! r) ! r
+keeping keep producer = handle producer () with
+  return u -> \(acc : Vector a) -> acc
+  yield x k -> \(acc : Vector a) -> if keep x then k () (V.pushBack acc x) else acc
+
+-- The first value, if there is one.
+@pub
+first : {a : Type} -> (producer : (u : ()) -> () ! {Yield a | r}) -> Maybe a ! r
+first producer = handle producer () with
+  return u -> Nothing
+  yield x k -> Just x
+
+-- Whether some value passes `pred`; it stops at the first that does.
+@pub
+any : {a : Type} -> (pred : ((x : a) -> Bool ! r)) -> (producer : (u : ()) -> () ! {Yield a | r}) -> Bool ! r
+any pred producer = handle producer () with
+  return u -> False
+  yield x k -> if pred x then True else k ()
+
+-- Whether every value passes `pred`; it stops at the first that does not.
+@pub
+all : {a : Type} -> (pred : ((x : a) -> Bool ! r)) -> (producer : (u : ()) -> () ! {Yield a | r}) -> Bool ! r
+all pred producer = handle producer () with
+  return u -> True
+  yield x k -> if pred x then k () else False
+
+-- The first value that passes `pred`, if one does.
+@pub
+find : {a : Type} -> (pred : ((x : a) -> Bool ! r)) -> (producer : (u : ()) -> () ! {Yield a | r}) -> Maybe a ! r
+find pred producer = handle producer () with
+  return u -> Nothing
+  yield x k -> if pred x then Just x else k ()
+
+-- --- transforming ------------------------------------------------------------
+--
+-- These yield again, so they are producers themselves and compose: `map f
+-- p` is something `toVec`, `take` or another `map` consumes.
+
+@pub
+map : {a b : Type} -> (f : ((x : a) -> b ! {Yield b | r})) -> (producer : (u : ()) -> () ! {Yield a | r}) -> () ! {Yield b | r}
+map f producer = handle producer () with
+  return u -> ()
+  yield x k -> let v = yield (f x) in k ()
+
+@pub
+filter : {a : Type} -> (keep : ((x : a) -> Bool ! {Yield a | r})) -> (producer : (u : ()) -> () ! {Yield a | r}) -> () ! {Yield a | r}
+filter keep producer = handle producer () with
+  return u -> ()
+  yield x k -> let v = (if keep x then yield x else ()) in k ()
+
+-- --- producing ---------------------------------------------------------------
+
+-- Each element of a list, in turn.
+@pub
+ofList : {a : Type} -> (xs : List a) -> () ! Yield a
+ofList Nil = ()
+ofList (x :: rest) = let u = yield x in ofList rest
+
+-- Each element of a vector, in turn.
+@pub
+ofVec : {a : Type} -> (v : Vector a) -> () ! Yield a
+ofVec v = V.forEach (\(x : a) -> yield x) v
+
+-- From `lo` up to but not including `hi`.
+@pub
+@terminating
+range : (lo : Int) -> (hi : Int) -> () ! Yield Int
+range lo hi = if lo >= hi then () else let u = yield lo in range (lo + 1) hi
+
+-- `x`, `n` times.
+@pub
+@terminating
+repeat : {a : Type} -> (n : Int) -> (x : a) -> () ! Yield a
+repeat n x = if n <= 0 then () else let u = yield x in repeat (n - 1) x
+
+-- `start`, `f start`, `f (f start)`, ..., `n` of them.
+@pub
+@terminating
+iterate : {a : Type} -> (n : Int) -> (f : ((x : a) -> a ! {Yield a | r})) -> (start : a) -> () ! {Yield a | r}
+iterate n f start = if n <= 0 then () else let u = yield start in iterate (n - 1) f (f start)

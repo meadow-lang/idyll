@@ -1,0 +1,23 @@
+-- Proofs are programs. `Eq x y` is the type of proofs that `x` and `y` are
+-- the same, and its one constructor, `Refl`, proves `x` is `x`. A function
+-- that returns one for every `n` proves something for every `n`, by
+-- induction: the equation for `S k` calls itself on `k` for the case
+-- before, and the termination checker sees that it ends.
+
+use Std.Num.Nat (Nat, plus, double, plusSucc, plusZero)
+use Std.Num.Nat.Nat.*
+use Std.Eq (Eq, cong, sym, trans)
+use Std.Eq.Eq.*
+
+-- Doubling is adding a number to itself. For zero both sides compute to
+-- `Z`. For `S k`, `double (S k)` is `S (S (double k))` and `plus (S k)
+-- (S k)` is `S (plus k (S k))`: the case before gives the first, and
+-- `plusSucc` moves the inner `S` out of the second.
+doubleIsPlus : (n : Nat) -> Eq (double n) (plus n n)
+doubleIsPlus Z = Refl
+doubleIsPlus (S k) = cong S (trans (cong S (doubleIsPlus k)) (sym (plusSucc k k)))
+
+-- Adding zero on the right does nothing; `plus` matches on its left, so
+-- this one too takes induction (the standard library's `plusZero`).
+rightZero : (n : Nat) -> Eq (plus n Z) n
+rightZero n = plusZero n

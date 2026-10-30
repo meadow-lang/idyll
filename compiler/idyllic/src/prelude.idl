@@ -1,0 +1,966 @@
+@linear
+
+@seq(nil = Nil, cons = (::))
+data List a = Nil | (::) a (List a)
+
+@derive(Display, Debug, PartialEq, PartialOrd)
+data Maybe a = Nothing | Just a
+
+@derive(Display, Debug, PartialEq, PartialOrd)
+data Result e a = Err e | Ok a
+
+data Pair a b = Pair a b
+
+use List.*
+use Maybe.*
+use Result.*
+
+trait Add (a : Type) where
+  (+) : a -> a -> a
+
+trait Sub (a : Type) where
+  (-) : a -> a -> a
+
+trait Mul (a : Type) where
+  (*) : a -> a -> a
+
+trait Divide (a : Type) where
+  (/) : a -> a -> a
+
+trait Rem (a : Type) where
+  (%) : a -> a -> a
+
+instance Add Int where
+  (+) = intAdd
+
+instance Sub Int where
+  (-) = intSub
+
+instance Mul Int where
+  (*) = intMul
+
+instance Divide Int where
+  (/) = intDiv
+
+instance Rem Int where
+  (%) = intMod
+
+trait PartialEq (a : Type) where
+  (==) : (x : [] a) -> (y : [] a) -> Bool
+  (!=) : (x : [] a) -> (y : [] a) -> Bool
+  (!=) x y = if x == y then False else True
+
+trait PartialEq a => PartialOrd (a : Type) where
+  (<) : (x : [] a) -> (y : [] a) -> Bool
+  (>) : (x : [] a) -> (y : [] a) -> Bool
+  (>) x y = y < x
+  (<=) : (x : [] a) -> (y : [] a) -> Bool
+  (<=) x y = if y < x then False else True
+  (>=) : (x : [] a) -> (y : [] a) -> Bool
+  (>=) x y = if x < y then False else True
+
+instance PartialEq Int where
+  (==) = intEq
+  (!=) = intNe
+
+instance PartialOrd Int where
+  (<) = intLt
+  (>) = intGt
+  (<=) = intLe
+  (>=) = intGe
+
+instance PartialEq Bool where
+  x == y = if x then y else if y then False else True
+
+instance PartialEq Char where
+  x == y = intEq (charCode x) (charCode y)
+
+instance PartialOrd Char where
+  x < y = intLt (charCode x) (charCode y)
+
+instance PartialEq String where
+  x == y = intEq (stringCompare x y) 0
+
+instance PartialOrd String where
+  x < y = intLt (stringCompare x y) 0
+
+instance PartialEq () where
+  x == y = True
+
+instance PartialEq a => PartialEq b => PartialEq (a, b) where
+  p == q = case p of
+    (a, b) -> case q of
+      (c, d) -> if a == c then b == d else False
+
+instance PartialEq a => PartialEq (List a) where
+  Nil == Nil = True
+  (x :: xs) == (y :: ys) = if x == y then xs == ys else False
+  xs == ys = False
+
+intNe : (x : [] Int) -> (y : [] Int) -> Bool
+intNe x y = if intEq x y then False else True
+
+intGt : (x : [] Int) -> (y : [] Int) -> Bool
+intGt x y = intLt y x
+
+intLe : (x : [] Int) -> (y : [] Int) -> Bool
+intLe x y = if intLt y x then False else True
+
+intGe : (x : [] Int) -> (y : [] Int) -> Bool
+intGe x y = if intLt x y then False else True
+
+trait Display (a : Type) where
+  display : (x : [] a) -> String
+
+trait Debug (a : Type) where
+  debug : (x : [] a) -> String
+
+instance Display Int where
+  display n = showInt n
+
+instance Display String where
+  display s = s
+
+instance Display Char where
+  display c = charString c
+
+instance Display Bool where
+  display b = if b then "True" else "False"
+
+instance Display () where
+  display u = "()"
+
+instance Display a => Display b => Display (a, b) where
+  display p = case p of
+    (x, y) -> "(" ++ display x ++ ", " ++ display y ++ ")"
+
+instance Debug Int where
+  debug n = showInt n
+
+instance Debug String where
+  debug s = "\"" ++ escapedChars (arrayToList (stringToChars s)) ++ "\""
+
+instance Debug Char where
+  debug c = "'" ++ escaped c ++ "'"
+
+instance Debug Bool where
+  debug b = if b then "True" else "False"
+
+instance Debug () where
+  debug u = "()"
+
+instance Debug a => Debug b => Debug (a, b) where
+  debug p = case p of
+    (x, y) -> "(" ++ debug x ++ ", " ++ debug y ++ ")"
+
+-- a list as its literal is written, `#[1, 2]`
+instance Debug a => Debug (List a) where
+  debug xs = "#[" ++ debugItems xs ++ "]"
+
+debugItems : {a : Type} -> {auto d : Debug a} -> (xs : [] List a) -> String
+debugItems Nil = ""
+debugItems (x :: Nil) = debug x
+debugItems (x :: rest@(y :: more)) = debug x ++ ", " ++ debugItems rest
+
+charString : (c : [] Char) -> String
+charString c = charsToString (arrayFromList (c :: Nil))
+
+escapedChars : (cs : [] List Char) -> String
+escapedChars Nil = ""
+escapedChars (c :: rest) = escaped c ++ escapedChars rest
+
+escaped : (c : [] Char) -> String
+escaped c = if charCode c == 34 then backslashed 34 else if charCode c == 92 then backslashed 92 else if charCode c == 10 then backslashed 110 else if charCode c == 9 then backslashed 116 else charString c
+
+backslashed : (k : [] Int) -> String
+backslashed k = charsToString (arrayFromList (charFromCode 92 :: charFromCode k :: Nil))
+
+@native
+Array : Type -> Type
+
+@native
+arrayLen : {a : Type} -> (xs : [0..1] Array a) -> Int
+
+@native
+arrayGet : {a : Type} -> (xs : [0..1] Array a) -> Int -> a
+
+@native
+arrayGetOr : {a : Type} -> (d : [0..1] a) -> (xs : [0..1] Array a) -> Int -> a
+
+@native
+arraySet : {a : Type} -> (xs : [0..1] Array a) -> Int -> a -> Array a
+
+@native
+arrayPush : {a : Type} -> Array a -> a -> Array a
+
+@native
+arrayPop : {a : Type} -> (xs : [0..1] Array a) -> Array a
+
+@native
+arraySlice : {a : Type} -> (xs : [0..1] Array a) -> Int -> Int -> Array a
+
+@native
+arrayConcat : {a : Type} -> Array a -> Array a -> Array a
+
+@native
+arrayFromList : {a : Type} -> List a -> Array a
+
+@native
+arrayToList : {a : Type} -> Array a -> List a
+
+@native
+stringByteLength : (s : [0..1] String) -> Int
+
+@native
+stringByteAt : (s : [0..1] String) -> Int -> Int
+
+@native
+stringSlice : (s : [0..1] String) -> Int -> Int -> String
+
+@native
+stringCompare : (a : [0..1] String) -> (b : [0..1] String) -> Int
+
+@native
+stringIndexOf : (s : [0..1] String) -> (needle : [0..1] String) -> Int -> Int
+
+@native
+stringToChars : (s : [0..1] String) -> Array Char
+
+@native
+charsToString : (cs : [0..1] Array Char) -> String
+
+@native
+charCode : Char -> Int
+
+@native
+charFromCode : Int -> Char
+
+-- Sized integers and floats, as Meadow has them: each wraps at its width,
+-- or is an IEEE float, and its operations are natives (one for each type:
+-- `int8Add`) that the instances below are made of. A number literal is read
+-- at the type wanted, an `Int` or a `Float` if nothing says which. Mixing
+-- two types is a type error: a conversion says which is meant, `toInt x`,
+-- `toFloat n`, `toInt8 n`, `floor f`. A conversion to a sized integer keeps
+-- the low bits.
+
+Int64 : Type
+Int64 = Int
+
+Float64 : Type
+Float64 = Float
+
+-- An integer type: what its conversions go through; and what an integer
+-- literal is read through at a type variable (`fromInt`).
+trait Integer (a : Type) where
+  toInt : a -> Int
+  toFloat : a -> Float
+  fromInt : Int -> a
+
+-- A float type; and what a literal with a point is read through at a type
+-- variable (`fromFloat`).
+trait Floating (a : Type) where
+  toFloat64 : a -> Float
+  toFloat32 : a -> Float32
+  floor : a -> Int
+  fromFloat : Float -> a
+
+instance Integer Int where
+  toInt n = n
+  toFloat = intToFloat
+  fromInt n = n
+
+@native
+intToFloat : Int -> Float
+
+@native
+int8Add : Int8 -> Int8 -> Int8
+
+@native
+int8Sub : Int8 -> Int8 -> Int8
+
+@native
+int8Mul : Int8 -> Int8 -> Int8
+
+@native
+int8Div : Int8 -> Int8 -> Int8
+
+@native
+int8Mod : Int8 -> Int8 -> Int8
+
+@native
+int8Eq : (x : [] Int8) -> (y : [] Int8) -> Bool
+
+@native
+int8Lt : (x : [] Int8) -> (y : [] Int8) -> Bool
+
+@native
+int8Show : (x : [] Int8) -> String
+
+@native
+int8ToInt : Int8 -> Int
+
+@native
+int8FromInt : Int -> Int8
+
+@native
+int8ToFloat : Int8 -> Float
+
+instance Add Int8 where
+  (+) = int8Add
+
+instance Sub Int8 where
+  (-) = int8Sub
+
+instance Mul Int8 where
+  (*) = int8Mul
+
+instance Divide Int8 where
+  (/) = int8Div
+
+instance Rem Int8 where
+  (%) = int8Mod
+
+instance PartialEq Int8 where
+  (==) = int8Eq
+
+instance PartialOrd Int8 where
+  (<) = int8Lt
+
+instance Display Int8 where
+  display = int8Show
+
+instance Debug Int8 where
+  debug = int8Show
+
+instance Integer Int8 where
+  toInt = int8ToInt
+  toFloat = int8ToFloat
+  fromInt = int8FromInt
+
+toInt64 : {a : Type} -> Integer a => a -> Int64
+toInt64 x = toInt x
+
+toInt8 : {a : Type} -> Integer a => a -> Int8
+toInt8 x = int8FromInt (toInt x)
+
+@native
+int16Add : Int16 -> Int16 -> Int16
+
+@native
+int16Sub : Int16 -> Int16 -> Int16
+
+@native
+int16Mul : Int16 -> Int16 -> Int16
+
+@native
+int16Div : Int16 -> Int16 -> Int16
+
+@native
+int16Mod : Int16 -> Int16 -> Int16
+
+@native
+int16Eq : (x : [] Int16) -> (y : [] Int16) -> Bool
+
+@native
+int16Lt : (x : [] Int16) -> (y : [] Int16) -> Bool
+
+@native
+int16Show : (x : [] Int16) -> String
+
+@native
+int16ToInt : Int16 -> Int
+
+@native
+int16FromInt : Int -> Int16
+
+@native
+int16ToFloat : Int16 -> Float
+
+instance Add Int16 where
+  (+) = int16Add
+
+instance Sub Int16 where
+  (-) = int16Sub
+
+instance Mul Int16 where
+  (*) = int16Mul
+
+instance Divide Int16 where
+  (/) = int16Div
+
+instance Rem Int16 where
+  (%) = int16Mod
+
+instance PartialEq Int16 where
+  (==) = int16Eq
+
+instance PartialOrd Int16 where
+  (<) = int16Lt
+
+instance Display Int16 where
+  display = int16Show
+
+instance Debug Int16 where
+  debug = int16Show
+
+instance Integer Int16 where
+  toInt = int16ToInt
+  toFloat = int16ToFloat
+  fromInt = int16FromInt
+
+toInt16 : {a : Type} -> Integer a => a -> Int16
+toInt16 x = int16FromInt (toInt x)
+
+@native
+int32Add : Int32 -> Int32 -> Int32
+
+@native
+int32Sub : Int32 -> Int32 -> Int32
+
+@native
+int32Mul : Int32 -> Int32 -> Int32
+
+@native
+int32Div : Int32 -> Int32 -> Int32
+
+@native
+int32Mod : Int32 -> Int32 -> Int32
+
+@native
+int32Eq : (x : [] Int32) -> (y : [] Int32) -> Bool
+
+@native
+int32Lt : (x : [] Int32) -> (y : [] Int32) -> Bool
+
+@native
+int32Show : (x : [] Int32) -> String
+
+@native
+int32ToInt : Int32 -> Int
+
+@native
+int32FromInt : Int -> Int32
+
+@native
+int32ToFloat : Int32 -> Float
+
+instance Add Int32 where
+  (+) = int32Add
+
+instance Sub Int32 where
+  (-) = int32Sub
+
+instance Mul Int32 where
+  (*) = int32Mul
+
+instance Divide Int32 where
+  (/) = int32Div
+
+instance Rem Int32 where
+  (%) = int32Mod
+
+instance PartialEq Int32 where
+  (==) = int32Eq
+
+instance PartialOrd Int32 where
+  (<) = int32Lt
+
+instance Display Int32 where
+  display = int32Show
+
+instance Debug Int32 where
+  debug = int32Show
+
+instance Integer Int32 where
+  toInt = int32ToInt
+  toFloat = int32ToFloat
+  fromInt = int32FromInt
+
+toInt32 : {a : Type} -> Integer a => a -> Int32
+toInt32 x = int32FromInt (toInt x)
+
+@native
+uint8Add : UInt8 -> UInt8 -> UInt8
+
+@native
+uint8Sub : UInt8 -> UInt8 -> UInt8
+
+@native
+uint8Mul : UInt8 -> UInt8 -> UInt8
+
+@native
+uint8Div : UInt8 -> UInt8 -> UInt8
+
+@native
+uint8Mod : UInt8 -> UInt8 -> UInt8
+
+@native
+uint8Eq : (x : [] UInt8) -> (y : [] UInt8) -> Bool
+
+@native
+uint8Lt : (x : [] UInt8) -> (y : [] UInt8) -> Bool
+
+@native
+uint8Show : (x : [] UInt8) -> String
+
+@native
+uint8ToInt : UInt8 -> Int
+
+@native
+uint8FromInt : Int -> UInt8
+
+@native
+uint8ToFloat : UInt8 -> Float
+
+instance Add UInt8 where
+  (+) = uint8Add
+
+instance Sub UInt8 where
+  (-) = uint8Sub
+
+instance Mul UInt8 where
+  (*) = uint8Mul
+
+instance Divide UInt8 where
+  (/) = uint8Div
+
+instance Rem UInt8 where
+  (%) = uint8Mod
+
+instance PartialEq UInt8 where
+  (==) = uint8Eq
+
+instance PartialOrd UInt8 where
+  (<) = uint8Lt
+
+instance Display UInt8 where
+  display = uint8Show
+
+instance Debug UInt8 where
+  debug = uint8Show
+
+instance Integer UInt8 where
+  toInt = uint8ToInt
+  toFloat = uint8ToFloat
+  fromInt = uint8FromInt
+
+toUInt8 : {a : Type} -> Integer a => a -> UInt8
+toUInt8 x = uint8FromInt (toInt x)
+
+@native
+uint16Add : UInt16 -> UInt16 -> UInt16
+
+@native
+uint16Sub : UInt16 -> UInt16 -> UInt16
+
+@native
+uint16Mul : UInt16 -> UInt16 -> UInt16
+
+@native
+uint16Div : UInt16 -> UInt16 -> UInt16
+
+@native
+uint16Mod : UInt16 -> UInt16 -> UInt16
+
+@native
+uint16Eq : (x : [] UInt16) -> (y : [] UInt16) -> Bool
+
+@native
+uint16Lt : (x : [] UInt16) -> (y : [] UInt16) -> Bool
+
+@native
+uint16Show : (x : [] UInt16) -> String
+
+@native
+uint16ToInt : UInt16 -> Int
+
+@native
+uint16FromInt : Int -> UInt16
+
+@native
+uint16ToFloat : UInt16 -> Float
+
+instance Add UInt16 where
+  (+) = uint16Add
+
+instance Sub UInt16 where
+  (-) = uint16Sub
+
+instance Mul UInt16 where
+  (*) = uint16Mul
+
+instance Divide UInt16 where
+  (/) = uint16Div
+
+instance Rem UInt16 where
+  (%) = uint16Mod
+
+instance PartialEq UInt16 where
+  (==) = uint16Eq
+
+instance PartialOrd UInt16 where
+  (<) = uint16Lt
+
+instance Display UInt16 where
+  display = uint16Show
+
+instance Debug UInt16 where
+  debug = uint16Show
+
+instance Integer UInt16 where
+  toInt = uint16ToInt
+  toFloat = uint16ToFloat
+  fromInt = uint16FromInt
+
+toUInt16 : {a : Type} -> Integer a => a -> UInt16
+toUInt16 x = uint16FromInt (toInt x)
+
+@native
+uint32Add : UInt32 -> UInt32 -> UInt32
+
+@native
+uint32Sub : UInt32 -> UInt32 -> UInt32
+
+@native
+uint32Mul : UInt32 -> UInt32 -> UInt32
+
+@native
+uint32Div : UInt32 -> UInt32 -> UInt32
+
+@native
+uint32Mod : UInt32 -> UInt32 -> UInt32
+
+@native
+uint32Eq : (x : [] UInt32) -> (y : [] UInt32) -> Bool
+
+@native
+uint32Lt : (x : [] UInt32) -> (y : [] UInt32) -> Bool
+
+@native
+uint32Show : (x : [] UInt32) -> String
+
+@native
+uint32ToInt : UInt32 -> Int
+
+@native
+uint32FromInt : Int -> UInt32
+
+@native
+uint32ToFloat : UInt32 -> Float
+
+instance Add UInt32 where
+  (+) = uint32Add
+
+instance Sub UInt32 where
+  (-) = uint32Sub
+
+instance Mul UInt32 where
+  (*) = uint32Mul
+
+instance Divide UInt32 where
+  (/) = uint32Div
+
+instance Rem UInt32 where
+  (%) = uint32Mod
+
+instance PartialEq UInt32 where
+  (==) = uint32Eq
+
+instance PartialOrd UInt32 where
+  (<) = uint32Lt
+
+instance Display UInt32 where
+  display = uint32Show
+
+instance Debug UInt32 where
+  debug = uint32Show
+
+instance Integer UInt32 where
+  toInt = uint32ToInt
+  toFloat = uint32ToFloat
+  fromInt = uint32FromInt
+
+toUInt32 : {a : Type} -> Integer a => a -> UInt32
+toUInt32 x = uint32FromInt (toInt x)
+
+@native
+uint64Add : UInt64 -> UInt64 -> UInt64
+
+@native
+uint64Sub : UInt64 -> UInt64 -> UInt64
+
+@native
+uint64Mul : UInt64 -> UInt64 -> UInt64
+
+@native
+uint64Div : UInt64 -> UInt64 -> UInt64
+
+@native
+uint64Mod : UInt64 -> UInt64 -> UInt64
+
+@native
+uint64Eq : (x : [] UInt64) -> (y : [] UInt64) -> Bool
+
+@native
+uint64Lt : (x : [] UInt64) -> (y : [] UInt64) -> Bool
+
+@native
+uint64Show : (x : [] UInt64) -> String
+
+@native
+uint64ToInt : UInt64 -> Int
+
+@native
+uint64FromInt : Int -> UInt64
+
+@native
+uint64ToFloat : UInt64 -> Float
+
+instance Add UInt64 where
+  (+) = uint64Add
+
+instance Sub UInt64 where
+  (-) = uint64Sub
+
+instance Mul UInt64 where
+  (*) = uint64Mul
+
+instance Divide UInt64 where
+  (/) = uint64Div
+
+instance Rem UInt64 where
+  (%) = uint64Mod
+
+instance PartialEq UInt64 where
+  (==) = uint64Eq
+
+instance PartialOrd UInt64 where
+  (<) = uint64Lt
+
+instance Display UInt64 where
+  display = uint64Show
+
+instance Debug UInt64 where
+  debug = uint64Show
+
+instance Integer UInt64 where
+  toInt = uint64ToInt
+  toFloat = uint64ToFloat
+  fromInt = uint64FromInt
+
+toUInt64 : {a : Type} -> Integer a => a -> UInt64
+toUInt64 x = uint64FromInt (toInt x)
+
+@native
+floatAdd : Float -> Float -> Float
+
+@native
+floatSub : Float -> Float -> Float
+
+@native
+floatMul : Float -> Float -> Float
+
+@native
+floatDiv : Float -> Float -> Float
+
+@native
+floatEq : (x : [] Float) -> (y : [] Float) -> Bool
+
+@native
+floatLt : (x : [] Float) -> (y : [] Float) -> Bool
+
+@native
+floatShow : (x : [] Float) -> String
+
+instance Add Float where
+  (+) = floatAdd
+
+instance Sub Float where
+  (-) = floatSub
+
+instance Mul Float where
+  (*) = floatMul
+
+instance Divide Float where
+  (/) = floatDiv
+
+instance PartialEq Float where
+  (==) = floatEq
+
+instance PartialOrd Float where
+  (<) = floatLt
+
+instance Display Float where
+  display = floatShow
+
+instance Debug Float where
+  debug = floatShow
+
+@native
+float32Add : Float32 -> Float32 -> Float32
+
+@native
+float32Sub : Float32 -> Float32 -> Float32
+
+@native
+float32Mul : Float32 -> Float32 -> Float32
+
+@native
+float32Div : Float32 -> Float32 -> Float32
+
+@native
+float32Eq : (x : [] Float32) -> (y : [] Float32) -> Bool
+
+@native
+float32Lt : (x : [] Float32) -> (y : [] Float32) -> Bool
+
+@native
+float32Show : (x : [] Float32) -> String
+
+instance Add Float32 where
+  (+) = float32Add
+
+instance Sub Float32 where
+  (-) = float32Sub
+
+instance Mul Float32 where
+  (*) = float32Mul
+
+instance Divide Float32 where
+  (/) = float32Div
+
+instance PartialEq Float32 where
+  (==) = float32Eq
+
+instance PartialOrd Float32 where
+  (<) = float32Lt
+
+instance Display Float32 where
+  display = float32Show
+
+instance Debug Float32 where
+  debug = float32Show
+
+@native
+floatToFloat32 : Float -> Float32
+
+@native
+floatFloor : Float -> Int
+
+@native
+float32ToFloat : Float32 -> Float
+
+@native
+float32Floor : Float32 -> Int
+
+instance Floating Float where
+  toFloat64 x = x
+  toFloat32 = floatToFloat32
+  floor = floatFloor
+  fromFloat x = x
+
+instance Floating Float32 where
+  toFloat64 = float32ToFloat
+  toFloat32 x = x
+  floor = float32Floor
+  fromFloat = floatToFloat32
+
+effect Console where
+  putStr : String -> ()
+  putErr : String -> ()
+  readLine : () -> Maybe String
+
+putStrLn : String -> () ! Console
+putStrLn s = putStr (s ++ "\n")
+
+printInt : (n : [] Int) -> () ! Console
+printInt n = putStrLn (showInt n)
+
+showInt : (n : [] Int) -> String
+showInt n = if n < 0 then "-" ++ negativeDigits digitFuel n else negativeDigits digitFuel (0 - n)
+
+data DigitFuel = Spent | More DigitFuel
+
+digitFuel : DigitFuel
+digitFuel = DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More (DigitFuel.More DigitFuel.Spent)))))))))))))))))))
+
+negativeDigits : (fuel : [] DigitFuel) -> (n : [] Int) -> String
+negativeDigits DigitFuel.Spent n = ""
+negativeDigits (DigitFuel.More fuel) n =if (0 - 10) < n then digitString (0 - n) else negativeDigits fuel (n / 10) ++ digitString (0 - n % 10)
+
+digitString : (d : [] Int) -> String
+digitString d = if d == 0 then "0" else if d == 1 then "1" else if d == 2 then "2" else if d == 3 then "3" else if d == 4 then "4" else if d == 5 then "5" else if d == 6 then "6" else if d == 7 then "7" else if d == 8 then "8" else "9"
+
+effect Fs where
+  readToString : String -> Result String String
+  writeString : String -> String -> Result String ()
+  appendString : String -> String -> Result String ()
+  removeFile : String -> Result String ()
+  createDir : String -> Result String ()
+  createDirAll : String -> Result String ()
+  removeDir : String -> Result String ()
+  removeDirAll : String -> Result String ()
+  rename : String -> String -> Result String ()
+  copy : String -> String -> Result String Int
+  listDir : String -> Result String (Array String)
+  exists : String -> Bool
+  isFile : String -> Bool
+  isDir : String -> Bool
+
+effect Process where
+  exit : Int -> ()
+  currentPid : () -> Int
+  argv : () -> Array String
+  getEnv : String -> Maybe String
+  setEnv : String -> String -> ()
+  removeEnv : String -> ()
+  isTerminal : Int -> Bool
+
+readDir : String -> Result String (List String) ! Fs
+readDir path = case listDir path of
+  Err e -> Err e
+  Ok names -> Ok (arrayToList names)
+
+args : () -> List String ! Process
+args () = arrayToList (argv ())
+
+effect Random where
+  nextInt : () -> Int
+  intBetween : (lo : [] Int) -> (hi : [] Int) -> Int
+  nextSeed : () -> Int
+
+effect Time where
+  now : () -> Int
+  monotonic : () -> Int
+  sleep : (ms : [] Int) -> ()
+
+effect Test where
+  fail : String -> ()
+
+effect Abort where
+  abort : {a : Type} -> String -> a
+
+-- Mutable cells, as Meadow's: a `Ref` is a cell that may be shared, held
+-- in many places at once, and what is put in it is seen through every one
+-- of them. Making, reading and writing one is the effect `Mut`, which the
+-- runtime does itself: it has no operations a handler could take, its
+-- cells being the runtime's own. (A cell no one else holds is a linear
+-- one instead, with no effect: `Std.Collections.MArray`.)
+effect Mut where
+
+@native
+Ref : Type -> Type
+
+-- A new cell holding `x`.
+@native
+newRef : {a : Type} -> (x : [] a) -> Ref a ! Mut
+
+-- What a cell holds.
+@native
+getRef : {a : Type} -> Ref a -> a ! Mut
+
+-- Put `x` in a cell, in place of what it held.
+@native
+setRef : {a : Type} -> Ref a -> (x : [] a) -> () ! Mut
+
+effect Eff = {Console, Fs, Process, Random, Time, Test, Abort, Mut, Div}

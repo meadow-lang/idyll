@@ -1,0 +1,43 @@
+-- Matrices whose dimensions are in their types: a `Matrix r c` is `r` rows
+-- of `c` numbers each, so multiplying two that don't fit is a type error,
+-- found before anything runs, and nothing at run time checks sizes.
+
+use Std.Num.Nat (Nat)
+use Std.Num.Nat.Nat.*
+use Std.Collections.Vec (Vec, map, zipWith, replicate, sum, toList)
+use Std.Collections.Vec.Vec.*
+
+-- `r` rows of `c` numbers: a type, computed from two numbers by an
+-- ordinary definition.
+@pub
+Matrix : Nat -> Nat -> Type
+Matrix r c = Vec r (Vec c Int)
+
+-- The columns of `m` as rows. A matrix with no rows still has `c` columns,
+-- each of them empty, and `c` is needed to make them: so it is an
+-- argument, where the number of rows, never needed, stays implicit.
+@pub
+transpose : {r : Nat} -> (c : [] Nat) -> (m : Matrix r c) -> Matrix c r
+transpose c Nil = replicate c Nil
+transpose c (Cons row rows) = zipWith prepend row (transpose c rows)
+
+-- `x` in front of `xs`: `Cons` as a function of both. (A lambda here
+-- would have to name the length of `xs`, which is one less than the
+-- matrix's `r`, and has no name.)
+prepend : {n : Nat} -> (x : Int) -> (xs : Vec n Int) -> Vec (S n) Int
+prepend x xs = Cons x xs
+
+-- The sum of the products of two rows as long as each other.
+dot : {n : Nat} -> (xs : Vec n Int) -> (ys : Vec n Int) -> Int
+dot xs ys = sum (zipWith (\(x : Int) (y : Int) -> x * y) xs ys)
+
+-- The product of an `n` by `m` matrix and an `m` by `p` one: `n` by `p`,
+-- each row of `a` times each column of `b`.
+@pub
+multiply : {n m : Nat} -> (p : [] Nat) -> (a : Matrix n m) -> (b : Matrix m p) -> Matrix n p
+multiply p a b = let cols = transpose p b in map (\(row : Vec m Int) -> map (\(col : Vec m Int) -> dot row col) cols) a
+
+-- Each row on a line of its own.
+@pub
+rows : {r c : Nat} -> (m : Matrix r c) -> List String
+rows m = toList (map (\(row : Vec c Int) -> Std.String.unwords (Std.Collections.List.map showInt (toList row))) m)

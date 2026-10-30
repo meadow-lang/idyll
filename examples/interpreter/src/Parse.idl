@@ -1,0 +1,177 @@
+-- Reading a program from its text: its characters made tokens, and the
+-- tokens a `Syntax.Expr`, each name made the de Bruijn index of the binder
+-- it names. What does not read is an exception, `Exn String`, saying what
+-- went wrong.
+--
+--     expr ::= 'let' name '=' expr 'in' expr
+--            | '\' name '->' expr
+--            | 'rec' name name '->' expr      -- the function, its argument
+--            | 'ifz' expr 'then' expr 'else' expr
+--            | sum
+--     sum  ::= term (('+' | '-') term)*
+--     term ::= app (('*' | '/') app)*
+--     app  ::= atom atom*
+--     atom ::= number | name | '(' expr ')'
+
+use Std.Bool (not)
+use Std.Char (isDigit, isAlpha, isSpace)
+use Std.String (chars, fromChars, equal, contains)
+use Std.Exn (Exn, throw)
+use Syntax (Expr)
+use Syntax.Expr.*
+
+data Token = Number Int | Name String | Symbol String
+
+use Token.*
+
+-- ---------------------------------------------------------------------------
+-- Tokens
+-- ---------------------------------------------------------------------------
+
+-- The tokens of some characters.
+tokens : (cs : List Char) -> List Token ! {Exn String, Div}
+tokens Nil = Nil
+tokens (c :: rest) =
+  if isSpace c then tokens rest
+  else if isDigit c then number (c :: rest) 0
+  else if isAlpha c then word (c :: rest) Nil
+  else symbol c rest
+
+-- A number's digits, read onto `acc`, then the tokens after it.
+number : (cs : List Char) -> (acc : Int) -> List Token ! {Exn String, Div}
+number Nil acc = Number acc :: Nil
+number (c :: rest) acc = if isDigit c then number rest (acc * 10 + (charCode c - 48)) else Number acc :: tokens (c :: rest)
+
+-- A word's letters, read onto `acc` backwards, then the tokens after it.
+word : (cs : List Char) -> (acc : List Char) -> List Token ! {Exn String, Div}
+word Nil acc = Name (fromChars (Std.Collections.List.reverse acc)) :: Nil
+word (c :: rest) acc = if isAlpha c then word rest (c :: acc) else Name (fromChars (Std.Collections.List.reverse acc)) :: tokens (c :: rest)
+
+-- A symbol: `->`, or one of `+ - * / ( ) = \`.
+symbol : (c : Char) -> (rest : List Char) -> List Token ! {Exn String, Div}
+symbol '-' ('>' :: rest) = Symbol "->" :: tokens rest
+symbol c rest =
+  let s = Std.Char.toString c in
+  if contains s "+-*/()=\\" then Symbol s :: tokens rest else throw ("unexpected " ++ Std.Char.show c)
+
+-- Whether a token is this word or symbol.
+is : (s : String) -> (t : Token) -> Bool
+is s (Number n) = False
+is s (Name n) = equal s n
+is s (Symbol n) = equal s n
+
+keyword : (n : String) -> Bool
+keyword n = Std.Collections.List.any (equal n) #["let", "in", "rec", "ifz", "then", "else"]
+
+-- What is left after `s`, which must come next.
+expect : (s : String) -> (ts : List Token) -> List Token ! {Exn String, Div}
+expect s Nil = throw ("expected " ++ s ++ " at the end")
+expect s (t :: rest) = if is s t then rest else throw ("expected " ++ s ++ " before " ++ shown t)
+
+shown : (t : Token) -> String
+shown (Number n) = showInt n
+shown (Name n) = n
+shown (Symbol s) = s
+
+-- ---------------------------------------------------------------------------
+-- Expressions
+-- ---------------------------------------------------------------------------
+
+-- The binder `x` is, counting out from the nearest, among `scope`.
+index : (x : String) -> (scope : List String) -> Int ! {Exn String, Div}
+index x Nil = throw (x ++ " is bound nowhere")
+index x (y :: rest) = if equal x y then 0 else 1 + index x rest
+
+-- An expression at the start of `ts`, with the names of `scope` bound, and
+-- the tokens after it.
+expr : (scope : List String) -> (ts : List Token) -> (Expr, List Token) ! {Exn String, Div}
+expr scope (Name n :: rest) =
+  if equal n "let" then letIn scope rest
+  else if equal n "rec" then recursive scope rest
+  else if equal n "ifz" then ifZero scope rest
+  else sum scope (Name n :: rest)
+expr scope (Symbol s :: rest) = if equal s "\\" then lambda scope rest else sum scope (Symbol s :: rest)
+expr scope ts = sum scope ts
+
+letIn : (scope : List String) -> (ts : List Token) -> (Expr, List Token) ! {Exn String, Div}
+letIn scope (Name x :: rest) = case expr scope (expect "=" rest) of
+  (e, after) -> case expr (x :: scope) (expect "in" after) of
+    (body, left) -> (Let e body, left)
+letIn scope ts = throw "let wants a name"
+
+lambda : (scope : List String) -> (ts : List Token) -> (Expr, List Token) ! {Exn String, Div}
+lambda scope (Name x :: rest) = case expr (x :: scope) (expect "->" rest) of
+  (body, left) -> (Lam body, left)
+lambda scope ts = throw "\\ wants a name"
+
+-- `rec f x -> e`: `e` sees `x` nearest, then `f`.
+recursive : (scope : List String) -> (ts : List Token) -> (Expr, List Token) ! {Exn String, Div}
+recursive scope (Name f :: Name x :: rest) = case expr (x :: f :: scope) (expect "->" rest) of
+  (body, left) -> (Rec body, left)
+recursive scope ts = throw "rec wants two names"
+
+ifZero : (scope : List String) -> (ts : List Token) -> (Expr, List Token) ! {Exn String, Div}
+ifZero scope ts = case expr scope ts of
+  (c, a) -> case expr scope (expect "then" a) of
+    (t, b) -> case expr scope (expect "else" b) of
+      (e, left) -> (IfZero c t e, left)
+
+sum : (scope : List String) -> (ts : List Token) -> (Expr, List Token) ! {Exn String, Div}
+sum scope ts = case term scope ts of
+  (l, rest) -> sumRest scope l rest
+
+sumRest : (scope : List String) -> (l : Expr) -> (ts : List Token) -> (Expr, List Token) ! {Exn String, Div}
+sumRest scope l (Symbol s :: rest) =
+  if equal s "+" then (case term scope rest of
+    (r, left) -> sumRest scope (Add l r) left)
+  else if equal s "-" then (case term scope rest of
+    (r, left) -> sumRest scope (Sub l r) left)
+  else (l, Symbol s :: rest)
+sumRest scope l ts = (l, ts)
+
+term : (scope : List String) -> (ts : List Token) -> (Expr, List Token) ! {Exn String, Div}
+term scope ts = case app scope ts of
+  (l, rest) -> termRest scope l rest
+
+termRest : (scope : List String) -> (l : Expr) -> (ts : List Token) -> (Expr, List Token) ! {Exn String, Div}
+termRest scope l (Symbol s :: rest) =
+  if equal s "*" then (case app scope rest of
+    (r, left) -> termRest scope (Mul l r) left)
+  else if equal s "/" then (case app scope rest of
+    (r, left) -> termRest scope (Div l r) left)
+  else (l, Symbol s :: rest)
+termRest scope l ts = (l, ts)
+
+app : (scope : List String) -> (ts : List Token) -> (Expr, List Token) ! {Exn String, Div}
+app scope ts = case atom scope ts of
+  (f, rest) -> appRest scope f rest
+
+appRest : (scope : List String) -> (f : Expr) -> (ts : List Token) -> (Expr, List Token) ! {Exn String, Div}
+appRest scope f ts =
+  if startsAtom ts then (case atom scope ts of
+    (x, left) -> appRest scope (App f x) left)
+  else (f, ts)
+
+-- Whether an atom starts here: an argument, if something is applied.
+startsAtom : (ts : List Token) -> Bool
+startsAtom (Number n :: rest) = True
+startsAtom (Name n :: rest) = not (keyword n)
+startsAtom (Symbol s :: rest) = equal s "("
+startsAtom Nil = False
+
+atom : (scope : List String) -> (ts : List Token) -> (Expr, List Token) ! {Exn String, Div}
+atom scope (Number n :: rest) = (Num n, rest)
+atom scope (Name n :: rest) = (Var (index n scope), rest)
+atom scope (Symbol s :: rest) =
+  if equal s "(" then (case expr scope rest of
+    (e, left) -> (e, expect ")" left))
+  else throw ("unexpected " ++ s)
+atom scope Nil = throw "unexpected end"
+
+-- A whole program's text, read.
+@pub
+parse : (text : String) -> Expr ! {Exn String, Div}
+parse text = case expr Nil (tokens (chars text)) of
+  (e, rest) -> (case rest of
+    Nil -> e
+    t :: more -> throw ("left over: " ++ shown t))

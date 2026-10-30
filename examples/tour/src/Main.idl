@@ -1,0 +1,105 @@
+-- A tour of the language in one runnable program, after Meadow's
+-- `examples/Tour`:
+--
+--   idyll run
+--
+-- Each section is short and self-contained. `TUTORIAL.md` says more about
+-- all of it.
+--
+-- * data types, records and pattern matching, in `Shapes.idl`, a module of
+--   its own;
+-- * numbers: `Int` by default, sized integers and floats when you ask, and
+--   generic code that works on any of them;
+-- * sequences and maps;
+-- * mutation in place that does not leak, through linear values;
+-- * strings, and `++`.
+
+use Shapes (Shape, Point, area, describe, degenerate, distance)
+use Shapes.Shape.*
+use Std.St as St
+use Std.St (StArray)
+use Std.Collections.Vector as V
+use Std.Collections.Vector (Vector)
+use Std.Collections.HashMap as H
+use Std.Collections.HashMap (HashMap)
+use Std.String as S
+use Std.Test (assertEq, assertTrue)
+
+-- --- numbers -----------------------------------------------------------------
+
+-- Written once, for any integer type: a literal is read at whichever it
+-- is (`fromInt`, `Integer`'s).
+@terminating
+factorial : {n : Type} -> Integer n => PartialEq n => Sub n => Mul n => (k : [] n) -> n
+factorial k = if k == 0 then 1 else k * factorial (k - 1)
+
+-- --- mutation in place -------------------------------------------------------
+
+-- A sieve over a mutable array. The array is linear: each write gives it
+-- back, nothing else ever holds it, and so nobody outside can see it change;
+-- the type of `primesBelow` is as pure as if no array had ever been written.
+primesBelow : (n : [] Int) -> Vector Int
+primesBelow n =
+  let marks = St.forRange 2 n (sieveFrom n) (St.newArray n True) in
+  let [found] = St.toVec marks in
+  V.filter (\(i : Int) -> if i >= 2 then V.getOr False found i else False) (V.range 0 n)
+
+-- Crossing out the multiples of `i`, if no smaller number crossed it out.
+sieveFrom : (n : [] Int) -> (i : [] Int) -> (marks : StArray Bool) -> StArray Bool
+sieveFrom n i marks = case St.get marks i of
+  (b, m) -> let [prime] = b in
+    if prime then St.forRange 2 (n / i + 1) (\(j : [] Int) (m2 : StArray Bool) -> if i * j < n then St.set m2 (i * j) False else m2) m
+    else m
+
+-- --- sequences and maps ------------------------------------------------------
+
+-- How often each word appears.
+wordCounts : (text : String) -> HashMap String Int
+wordCounts text = V.foldl (\(counts : HashMap String Int) (w : String) -> H.insert w (H.getOr 0 w counts + 1) counts) H.empty (V.fromList (S.split " " text))
+
+-- --- main --------------------------------------------------------------------
+
+shapes : Vector Shape
+shapes = V.fromList (Circle 1.0 :: Rect 2.0 3.0 :: Rect 2.0 2.0 :: Triangle 3.0 4.0 5.0 :: Rect 0.0 4.0 :: Nil)
+
+main : () -> () ! Eff
+main () =
+  let u1 = putStrLn "== shapes: data types, records, matching" in
+  let u2 = V.forEach (\(s : Shape) -> putStrLn (describe s ++ " with area " ++ display (area s))) shapes in
+  let u3 = putStrLn ("degenerate: " ++ debug (V.filter (\(d : Maybe String) -> d != Nothing) (V.map degenerate shapes))) in
+  let u4 = putStrLn ("distance from (0, 0) to (3, 4): " ++ display (distance (Point { x = 0.0, y = 0.0 }) (Point { x = 3.0, y = 4.0 }))) in
+  let u5 = putStrLn "== numbers" in
+  let u6 = putStrLn ("factorial 20 as an Int: " ++ display (factorial 20)) in
+  let u7 = putStrLn ("factorial 30 as an Int, wrapping: " ++ display (factorial 30)) in
+  let u8 = putStrLn ("factorial 5 as a UInt8: " ++ display (factorial (toUInt8 5))) in
+  let u9 = putStrLn ("200 + 100 as a UInt8: " ++ display (toUInt8 200 + 100)) in
+  let u10 = putStrLn ("a third as a Float32 and a Float: " ++ debug (toFloat32 1.0 / 3.0, 1.0 / 3.0)) in
+  let u11 = putStrLn "== mutation in place" in
+  let u12 = putStrLn ("primes below 50: " ++ debug (primesBelow 50)) in
+  let u13 = putStrLn "== sequences and maps" in
+  let counts = wordCounts "the cat and the hat and the bat" in
+  putStrLn ("\"the\" appears " ++ display (H.getOr 0 "the" counts) ++ " times, \"cat\" " ++ display (H.getOr 0 "cat" counts))
+
+-- --- tests -------------------------------------------------------------------
+
+@test
+areasAreRight : () -> () ! Test
+areasAreRight u =
+  let a = assertEq (area (Rect 2.0 3.0)) 6.0 "a rectangle" in
+  assertTrue (area (Triangle 3.0 4.0 5.0) - 6.0 < 0.000001) "a 3-4-5 triangle has area 6"
+
+@test
+factorialIsGenericOverItsNumberType : () -> () ! Test
+factorialIsGenericOverItsNumberType u =
+  let a = assertEq (factorial 20) 2432902008176640000 "an Int" in
+  assertEq (factorial (toUInt8 5)) (toUInt8 120) "and a UInt8 while it fits"
+
+@test
+theSieveFindsThePrimes : () -> () ! Test
+theSieveFindsThePrimes u = assertEq (V.toList (primesBelow 20)) (2 :: 3 :: 5 :: 7 :: 11 :: 13 :: 17 :: 19 :: Nil) "below 20"
+
+@test
+wordsAreCounted : () -> () ! Test
+wordsAreCounted u =
+  let counts = wordCounts "a b a c a" in
+  assertEq (H.getOr 0 "a" counts, H.getOr 0 "b" counts, H.getOr 0 "z" counts) (3, 1, 0) "missing words count 0"

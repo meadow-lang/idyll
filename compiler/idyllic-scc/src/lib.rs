@@ -19,7 +19,7 @@
 //! Nat -> Type` wants `Nat`), and the modules of a package come in no
 //! particular order.
 
-use idyllic_hir::{Bind, BindGroup, Clause, DataDecl, GradeAnn, Module, PatKind, Pattern, Rhs, Term, TermKind};
+use idyllic_hir::{Bind, BindGroup, Clause, CtorShape, DataDecl, GradeAnn, Module, PatKind, Pattern, Rhs, Term, TermKind};
 use std::collections::{HashMap, HashSet};
 
 /// Retopologize a whole module: its top-level groups, and every nested `let`
@@ -27,9 +27,115 @@ use std::collections::{HashMap, HashSet};
 pub fn scc_module(m: Module) -> Module {
     // (each top-level group apart: the prelude's definitions all come before
     // the program's)
-    let groups = m.groups.into_iter().flat_map(|g| scc_groups(vec![g])).collect();
+    // (and the hints before what may want them, which is everything that
+    // they do not need themselves: a search for an auto argument finds only
+    // what has been checked)
+    // (so are a trait's superclass projections, which a search inside a
+    // definition may go through without its naming them)
+    let hints = m.hints.clone();
+    let early: HashSet<usize> = hints.iter().copied().chain(m.supers.values().flatten().copied()).collect();
+    let groups = m.groups.into_iter().flat_map(|g| scc_groups_with(vec![g], &hints, &early)).collect();
     let datas = order_datas(m.datas);
-    Module { groups, datas, body: m.body.map(scc_term), ..m }
+    let (datas, data_after, groups) = interleave(datas, groups);
+    Module { groups, datas, data_after, body: m.body.map(scc_term), ..m }
+}
+
+/// What a data type's declaration mentions: its parameters' kinds, its
+/// kind, and its constructors' types.
+fn data_uniques(d: &DataDecl) -> HashSet<usize> {
+    let mut out = HashSet::new();
+    for kind in d.params.iter().filter_map(|(_, k)| k.as_ref()).chain(d.kind.as_ref()) {
+        out.extend(free_uniques(kind));
+    }
+    for c in &d.ctors {
+        match &c.shape {
+            CtorShape::Fields(fields) => fields.iter().for_each(|f| out.extend(free_uniques(f))),
+            CtorShape::Sig(ty) => out.extend(free_uniques(ty)),
+        }
+    }
+    out
+}
+
+/// The data types and the groups in one order, each after what it
+/// mentions: a data type before every group, as the checker declared them
+/// all before, unless it mentions a definition (a type alias, a type
+/// family, a trait's associated type), when it comes after that
+/// definition's group, and every group that mentions it (its type or a
+/// constructor) after it. Otherwise everything keeps its place. What
+/// mentions itself through both (a data type and a definition that need
+/// each other) stays as it was, for the checker to report. The data types
+/// in their new order, how many groups come before each, and the groups.
+fn interleave(datas: Vec<DataDecl>, groups: Vec<BindGroup>) -> (Vec<DataDecl>, Vec<usize>, Vec<BindGroup>) {
+    let n_groups = groups.len();
+    let group_of: HashMap<usize, usize> = groups
+        .iter()
+        .enumerate()
+        .flat_map(|(g, grp)| grp.binds().iter().filter_map(|b| b.name.unique).map(move |u| (u, g)).collect::<Vec<_>>())
+        .collect();
+    let mentions: Vec<HashSet<usize>> = datas.iter().map(data_uniques).collect();
+    if !mentions.iter().any(|m| m.iter().any(|u| group_of.contains_key(u))) {
+        let after = vec![0; datas.len()];
+        return (datas, after, groups);
+    }
+    // each data type's uniques: its own and its constructors'
+    let data_of: HashMap<usize, usize> = datas
+        .iter()
+        .enumerate()
+        .flat_map(|(i, d)| std::iter::once(&d.name).chain(d.ctors.iter().map(|c| &c.name)).filter_map(|x| x.unique).map(move |u| (u, i)))
+        .collect();
+    // nodes: the data types, then the groups; an edge to what must come first
+    let n = datas.len() + n_groups;
+    let mut needs: Vec<HashSet<usize>> = vec![HashSet::new(); n];
+    for (i, m) in mentions.iter().enumerate() {
+        for u in m {
+            if let Some(&g) = group_of.get(u) {
+                needs[i].insert(datas.len() + g);
+            }
+            if let Some(&j) = data_of.get(u).filter(|&&j| j != i) {
+                needs[i].insert(j);
+            }
+        }
+    }
+    for (g, grp) in groups.iter().enumerate() {
+        for b in grp.binds() {
+            for u in free_uniques_bind(b) {
+                if let Some(&h) = group_of.get(&u).filter(|&&h| h != g) {
+                    needs[datas.len() + g].insert(datas.len() + h);
+                }
+                if let Some(&j) = data_of.get(&u) {
+                    needs[datas.len() + g].insert(j);
+                }
+            }
+        }
+    }
+    // where each would go by itself: a data type before the group after the
+    // last it mentions, a group where it is
+    let mut place: Vec<usize> = (0..n).map(|v| if v < datas.len() { 0 } else { 2 * (v - datas.len()) + 1 }).collect();
+    for (i, m) in mentions.iter().enumerate() {
+        place[i] = m.iter().filter_map(|u| group_of.get(u)).map(|&g| 2 * (g + 1)).max().unwrap_or(0);
+    }
+    // whatever is ready, the one whose place is first
+    let mut done = vec![false; n];
+    let mut order = Vec::with_capacity(n);
+    while order.len() < n {
+        let ready = (0..n).filter(|&v| !done[v] && needs[v].iter().all(|&w| done[w])).min_by_key(|&v| (place[v], v));
+        // (a cycle: what is left, in place order)
+        let next = ready.unwrap_or_else(|| (0..n).filter(|&v| !done[v]).min_by_key(|&v| (place[v], v)).expect("something left"));
+        done[next] = true;
+        order.push(next);
+    }
+    let (mut data_slots, mut group_slots): (Vec<Option<DataDecl>>, Vec<Option<BindGroup>>) =
+        (datas.into_iter().map(Some).collect(), groups.into_iter().map(Some).collect());
+    let (mut out_datas, mut after, mut out_groups) = (Vec::new(), Vec::new(), Vec::new());
+    for v in order {
+        if v < data_slots.len() {
+            out_datas.push(data_slots[v].take().expect("each data type once"));
+            after.push(out_groups.len());
+        } else {
+            out_groups.push(group_slots[v - data_slots.len()].take().expect("each group once"));
+        }
+    }
+    (out_datas, after, out_groups)
 }
 
 /// Data types, each after the ones its parameters' kinds and its own kind
@@ -75,12 +181,16 @@ fn order_datas(datas: Vec<DataDecl>) -> Vec<DataDecl> {
 /// renamer's conservative recursive group in place, and a plain nested
 /// `let x = 1` is then wrongly told it needs a signature.)
 fn scc_groups(groups: Vec<BindGroup>) -> Vec<BindGroup> {
+    scc_groups_with(groups, &HashSet::new(), &HashSet::new())
+}
+
+fn scc_groups_with(groups: Vec<BindGroup>, hints: &HashSet<usize>, early: &HashSet<usize>) -> Vec<BindGroup> {
     let binds = groups
         .into_iter()
         .flat_map(BindGroup::into_binds)
         .map(|b| Bind { ty: b.ty.map(scc_term), rhs: scc_term(b.rhs), ..b })
         .collect();
-    scc_binds(binds)
+    scc_binds_with(binds, hints, early)
 }
 
 /// Rewrite every `let` in a term so its groups are dependency-ordered SCCs,
@@ -88,8 +198,11 @@ fn scc_groups(groups: Vec<BindGroup>) -> Vec<BindGroup> {
 pub fn scc_term(t: Term) -> Term {
     use TermKind::*;
     let kind = match t.kind {
-        k @ (Type | Hole | Omitted | Inf | Lit(_) | Var(_) | SeqNil) => k,
+        k @ (Type | Hole | Goal(_) | Omitted | Inf | Lit(_) | Var(_) | SeqNil) => k,
         App(f, a) => App(Box::new(scc_term(*f)), Box::new(scc_term(*a))),
+        ImplicitApp(f, a) => ImplicitApp(Box::new(scc_term(*f)), Box::new(scc_term(*a))),
+        AutoApp(f, a) => AutoApp(Box::new(scc_term(*f)), Box::new(scc_term(*a))),
+        Search => Search,
         SeqCons(h, t) => SeqCons(Box::new(scc_term(*h)), Box::new(scc_term(*t))),
         ArrayLit(items) => ArrayLit(items.into_iter().map(scc_term).collect()),
         Ann(e, a) => Ann(Box::new(scc_term(*e)), Box::new(scc_term(*a))),
@@ -133,6 +246,7 @@ fn scc_pattern(p: Pattern) -> Pattern {
         PatKind::SeqCons(ps) => PatKind::SeqCons(ps.into_iter().map(scc_pattern).collect()),
         PatKind::As(x, q) => PatKind::As(x, Box::new(scc_pattern(*q))),
         PatKind::Dot(e) => PatKind::Dot(scc_term(e)),
+        PatKind::Implicit(icit, q) => PatKind::Implicit(icit, Box::new(scc_pattern(*q))),
         k @ (PatKind::Var(_) | PatKind::Wild | PatKind::Lit(_) | PatKind::SeqNil) => k,
     };
     Pattern { id: p.id, kind }
@@ -152,6 +266,12 @@ fn scc_grades(g: GradeAnn) -> GradeAnn {
 /// uses, components come out dependencies-first — the order type checking
 /// wants.  Members of a component keep their source order.
 pub fn scc_binds(binds: Vec<Bind>) -> Vec<BindGroup> {
+    scc_binds_with(binds, &HashSet::new(), &HashSet::new())
+}
+
+/// The same, with each of `hints` before every binding it does not itself
+/// lead to.
+fn scc_binds_with(binds: Vec<Bind>, hints: &HashSet<usize>, early: &HashSet<usize>) -> Vec<BindGroup> {
     let index_of: HashMap<usize, usize> = binds
         .iter()
         .enumerate()
@@ -168,18 +288,17 @@ pub fn scc_binds(binds: Vec<Bind>) -> Vec<BindGroup> {
             deps
         })
         .collect();
-
     let mut tarjan = Tarjan::new(binds.len());
     for v in 0..binds.len() {
         if tarjan.index[v].is_none() {
             tarjan.visit(v, &edges);
         }
     }
+    let components = early_first(&binds, &edges, tarjan.components, early, hints);
 
     // move the binds out by index, in the order the components were found
     let mut slots: Vec<Option<Bind>> = binds.into_iter().map(Some).collect();
-    tarjan
-        .components
+    components
         .into_iter()
         .map(|mut members| {
             members.sort_unstable();
@@ -195,13 +314,66 @@ pub fn scc_binds(binds: Vec<Bind>) -> Vec<BindGroup> {
             // (One with no signature stays as it is: a recursive definition's
             // type is not inferred.)
             let by_matching = bs.len() == 1 && bs[0].ty.is_some() && matches!(bs[0].rhs.kind, TermKind::Match(_));
-            if bs.len() == 1 && !self_edge && !by_matching {
+            // A hint, with its signature, is a recursive one too: an
+            // instance's methods find the instance itself, as what a
+            // recursive call at its type wants.
+            let hint = bs.len() == 1 && bs[0].ty.is_some() && bs[0].name.unique.is_some_and(|u| hints.contains(&u));
+            if bs.len() == 1 && !self_edge && !by_matching && !hint {
                 BindGroup::NonRec(bs.pop().unwrap())
             } else {
                 BindGroup::Rec(bs)
             }
         })
         .collect()
+}
+
+/// The components, dependencies first as Tarjan's algorithm finds them, with
+/// each holding one of `early` (a hint, a superclass projection) and what
+/// it needs moved as far forward as they can go: the projections first, in
+/// the order they come, then the hints (a search for a hint's own auto
+/// arguments may go through a projection it does not name), since a
+/// search finds only what has been checked, and need not be named.
+fn early_first(
+    binds: &[Bind],
+    edges: &[Vec<usize>],
+    components: Vec<Vec<usize>>,
+    early: &HashSet<usize>,
+    hints: &HashSet<usize>,
+) -> Vec<Vec<usize>> {
+    let is_early = |i: usize| binds[i].name.unique.is_some_and(|u| early.contains(&u));
+    if !(0..binds.len()).any(is_early) {
+        return components;
+    }
+    let mut component_of = vec![0; binds.len()];
+    for (c, members) in components.iter().enumerate() {
+        for &v in members {
+            component_of[v] = c;
+        }
+    }
+    fn emit(c: usize, components: &[Vec<usize>], edges: &[Vec<usize>], component_of: &[usize], done: &mut [bool], order: &mut Vec<usize>) {
+        if std::mem::replace(&mut done[c], true) {
+            return;
+        }
+        for &v in &components[c] {
+            for &w in &edges[v] {
+                emit(component_of[w], components, edges, component_of, done, order);
+            }
+        }
+        order.push(c);
+    }
+    let mut done = vec![false; components.len()];
+    let mut order = Vec::new();
+    let mut firsts: Vec<usize> = (0..binds.len()).filter(|&i| is_early(i)).collect();
+    let is_hint = |i: usize| binds[i].name.unique.is_some_and(|u| hints.contains(&u));
+    firsts.sort_unstable_by_key(|&i| (is_hint(i), i));
+    for v in firsts {
+        emit(component_of[v], &components, edges, &component_of, &mut done, &mut order);
+    }
+    for c in 0..components.len() {
+        emit(c, &components, edges, &component_of, &mut done, &mut order);
+    }
+    let mut slots: Vec<Option<Vec<usize>>> = components.into_iter().map(Some).collect();
+    order.into_iter().filter_map(|c| slots[c].take()).collect()
 }
 
 struct Tarjan {
@@ -274,13 +446,13 @@ pub fn free_uniques(t: &Term) -> HashSet<usize> {
     fn go(t: &Term, out: &mut HashSet<usize>) {
         use TermKind::*;
         match &t.kind {
-            Type | Hole | Omitted | Inf | Lit(_) | SeqNil => {}
+            Type | Hole | Goal(_) | Omitted | Inf | Lit(_) | SeqNil | Search => {}
             Var(i) => {
                 if let Some(u) = i.unique {
                     out.insert(u);
                 }
             }
-            App(f, a) | Ann(f, a) | Range(f, a) | Eff(f, a) | SeqCons(f, a) => {
+            App(f, a) | ImplicitApp(f, a) | AutoApp(f, a) | Ann(f, a) | Range(f, a) | Eff(f, a) | SeqCons(f, a) => {
                 go(f, out);
                 go(a, out);
             }
@@ -370,7 +542,7 @@ pub fn free_uniques(t: &Term) -> HashSet<usize> {
                 ps.iter().for_each(|p| pattern(p, out));
             }
             PatKind::SeqCons(ps) => ps.iter().for_each(|p| pattern(p, out)),
-            PatKind::As(_, q) => pattern(q, out),
+            PatKind::As(_, q) | PatKind::Implicit(_, q) => pattern(q, out),
             PatKind::Dot(e) => go(e, out),
             PatKind::Var(_) | PatKind::Wild | PatKind::Lit(_) | PatKind::SeqNil => {}
         }

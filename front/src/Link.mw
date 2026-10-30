@@ -1,0 +1,266 @@
+-- A program put together from the compiled packages it uses:
+-- `packages::link` in `compiler/idyllic-typecheck/src/packages.rs`.
+--
+-- The root package is checked against its dependencies' compiled packages,
+-- so its program has their definitions only as constants. The program run
+-- has them all: the prelude's definitions, then each package's in an order
+-- where each comes after those it depends on, the root's last, and the
+-- root's body under them. Each package's definitions are moved to the
+-- slots after those of the packages before it, a constant that is one of
+-- them becomes the variable for its slot, and each package's
+-- metavariables are solved away.
+
+use Std.St (StRef, newRef, getRef, setRef)
+use Idyll.Core (Core, Note, Head, CaseAlt, OpClause)
+use Idyll.Core as C
+use Idyll.Check (Checked)
+use Idyll.Interface
+use Idyll.Rename (PackageNames)
+use Idyll.Elaborated (ElaboratedProgram, newElaboratedBuilder, freezeElaborated, moduleRow)
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as Hm
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+-- A term of `p`'s with every metavariable in it replaced by what `p`'s
+-- checker solved it with.
+@pub fun zonk (p : Compiled) (c : Core) : Core = C.zonked c p.metaSolutions
+
+-- Whether `own`'s program refers to anything `dep` declares: a definition,
+-- a constructor (built, or matched on), an operation. What it computes,
+-- that is: through what its metavariables were solved with (an implicit
+-- argument used at run time may be one), and not into what is erased
+-- (`packages::uses`).
+@pub fun uses (own : Compiled) (dep : Compiled) : Bool =
+  let hit = \c -> mentions own dep c in
+  V.any (\l -> match l with | TopLet.TopLet _ _ rhs -> hit rhs) own.lets
+    or V.any (\d -> match d with | RecDef.RecDef _ _ _ core _ -> hit core) own.recDefs
+    or (match own.body with | Just (Body.Body core _) -> hit core | None -> False)
+
+fun mentions (own : Compiled) (dep : Compiled) (c : Core) : Bool =
+  let go = \x -> mentions own dep x in
+  match c with
+  | Core.Opaque u _ -> owns dep u
+  | Core.Meta m -> (match V.get own.metaSolutions m with | Just (Just s) -> go s | _ -> False)
+  | Core.Runtime n x -> (match n with | Note.Erased -> False | _ -> go x)
+  | Core.Pi _ _ g r d cod -> go g or go r or go d or go cod
+  | Core.Lam _ b -> go b
+  | Core.BoxIntro b -> go b
+  | Core.Unbox b -> go b
+  | Core.Let _ a b -> go a or go b
+  | Core.App a b -> go a or go b
+  | Core.BoxTy a b -> go a or go b
+  | Core.GradeAdd a b -> go a or go b
+  | Core.GradeMul a b -> go a or go b
+  | Core.GradeRange a b -> go a or go b
+  | Core.Comp a b -> go a or go b
+  | Core.Case s alts ->
+      go s or V.any (\a -> match a with | CaseAlt.CaseAlt h _ _ body -> (match h with | Head.Con u -> owns dep u | _ -> False) or go body) alts
+  | Core.Handle b r ops -> go b or go r or V.any (\o -> match o with | OpClause.OpClause u _ _ body -> owns dep u or go body) ops
+  | Core.Row ls ts -> V.any go ls or V.any go ts
+  | _ -> False
+
+-- The packages a program is to be linked with: all of `deps`, but Std only
+-- if something uses it -- the program itself, when Std is all there is, or
+-- any other package, which may (`pipeline::to_link`).
+@pub fun toLink (own : Compiled) (deps : [Compiled]) : [Compiled] =
+  let others = V.any (\(p : Compiled) -> p.name != "Std") deps in
+  V.filter (\(p : Compiled) -> p.name != "Std" or others or uses own p) deps
+
+-- `c`'s program, linked with the compiled packages it depends on (`deps`,
+-- each after those it depends on), `own` what checking it compiled to.
+@pub fun linked (c : Checked s) (own : Compiled) (deps : [Compiled]) : Checked s ! { St s | e } =
+  let packages = V.pushBack deps own in
+  -- each package's definitions get the slots after those before it
+  let (offsets, slots, _) =
+    V.foldl
+      (\acc (p : Compiled) ->
+        match acc with
+        | (os, sl, next) ->
+            let sl2 = V.foldl (\s2 kl -> match kl with | (k, TopLet.TopLet u _ _) -> Hm.insert u (next + k) s2) sl (V.zip (V.range 0 (V.len p.lets)) p.lets) in
+            (V.pushBack os next, sl2, next + V.len p.lets))
+      ([], Hm.empty, own.base)
+      packages
+  in
+  let relocate =
+    \(p : Compiled) offset at core ->
+      let moved = \l -> if l < p.base then l else l - p.base + offset in
+      let placed = moved at in
+      C.transform (zonk p core) 0 (\x d ->
+        match x with
+        | Core.Var i n -> if i >= d then Just (Core.Var (placed + d - 1 - moved (at - 1 - (i - d))) n) else None
+        | Core.Opaque u n -> M.map (\s -> Core.Var (placed + d - 1 - s) n) (Hm.lookup u slots)
+        | _ -> None)
+  in
+  let placedPackages = V.zip packages offsets in
+  let lets =
+    V.concatMap
+      (\po ->
+        match po with
+        | ((p : Compiled), off) ->
+            V.map (\kl -> match kl with | (k, TopLet.TopLet _ name rhs) -> (name, relocate p off (p.base + k) rhs)) (V.zip (V.range 0 (V.len p.lets)) p.lets))
+      placedPackages
+  in
+  -- the prelude's recursive definitions, which are no package's own, then
+  -- each package's
+  let ownsAny = \u -> V.any (\(p : Compiled) -> owns p u) packages in
+  let names = getRef c.tc.recNames in
+  let locals = getRef c.tc.localRecs in
+  let preludeRecs =
+    V.concatMap (\d -> match d with | (u, l, core) -> if ownsAny u then [] else [(u, Hm.getOr "" u names, l, core, V.elem u locals)]) (getRef c.tc.recDefs)
+  in
+  let packageRecs =
+    V.concatMap
+      (\po ->
+        match po with
+        | ((p : Compiled), off) ->
+            V.map
+              (\d ->
+                match d with
+                | RecDef.RecDef u name l core local -> (u, name, (if l < p.base then l else l - p.base + off), relocate p off l core, local))
+              p.recDefs)
+      placedPackages
+  in
+  let ownOffset = M.unwrapOr own.base (V.last offsets) in
+  let body = M.map (\b -> match b with | Body.Body core ty -> (relocate own ownOffset (own.base + V.len own.lets) core, zonk own ty)) own.body in
+  let program = M.map (\b -> V.foldr (\nr acc -> match nr with | (name, rhs) -> Core.Let name rhs acc) (fst b) (V.append c.preludeLets lets)) body in
+  let defs = V.append preludeRecs packageRecs in
+  let out = newElaboratedBuilder () in
+  let root = moduleRow out program defs [] in
+  let symbols =
+    V.foldl (\acc (p : Compiled) -> V.foldl (\a sy -> match sy with | Symbol.Symbol u pkg path -> Hm.insert u (pkg, path) a) acc p.symbols) c.symbols packages
+  in
+  {
+    c |
+    program,
+    elaborated = ElaboratedProgram (freezeElaborated out) root,
+    toplevel = V.append c.preludeTop (V.concatMap (\(p : Compiled) -> V.map (\l -> match l with | TopLet.TopLet u _ _ -> u) p.lets) packages),
+    -- (a package's definition has a value exactly when computing it has no
+    -- effects)
+    pure =
+      V.append
+        c.pure
+        (V.concatMap (\(p : Compiled) -> V.concatMap (\k -> match k with | Constant.Constant u _ _ (Just _) _ -> [u] | _ -> []) p.constants) packages),
+    symbols,
+    bodyType = if own.main then None else M.map snd body
+  }
+
+-- A package compiled a part at a time, as one package (`packages::merge`):
+-- what its dependents import and a program is linked from. Each part's
+-- code is moved to the slots after those of the parts before it (`parts`
+-- in an order where each comes after those it imports), its
+-- metavariables, numbered by its own checker, are solved away, and the
+-- body, the root's part's, is under every part's definitions.
+@pub fun merged (parts : [Compiled]) : Compiled =
+  let first = M.unwrapOr (emptyCompiled "") (V.head parts) in
+  let base = first.base in
+  let (offsets, total) = V.foldl (\acc (p : Compiled) -> match acc with | (os, n) -> (V.pushBack os n, n + V.len p.lets)) ([], base) parts in
+  let relocate =
+    \(p : Compiled) offset at placedAt core ->
+      let moved = \l -> if l < p.base then l else l - p.base + offset in
+      C.transform (zonk p core) 0 (\x d ->
+        match x with
+        | Core.Var i n -> if i >= d then Just (Core.Var (placedAt + d - 1 - moved (at - 1 - (i - d))) n) else None
+        | _ -> None)
+  in
+  let placed = V.zip parts offsets in
+  let lets =
+    V.concatMap
+      (\po ->
+        match po with
+        | ((p : Compiled), off) ->
+            V.map
+              (\kl -> match kl with | (k, TopLet.TopLet u name rhs) -> TopLet.TopLet u name (relocate p off (p.base + k) (off + k) rhs))
+              (V.zip (V.range 0 (V.len p.lets)) p.lets))
+      placed
+  in
+  let recDefs =
+    V.concatMap
+      (\po ->
+        match po with
+        | ((p : Compiled), off) ->
+            V.map
+              (\d ->
+                match d with
+                | RecDef.RecDef u name l core local ->
+                    let at = if l < p.base then l else l - p.base + off in
+                    RecDef.RecDef u name at (relocate p off l at core) local)
+              p.recDefs)
+      placed
+  in
+  let body =
+    V.foldl
+      (\acc po ->
+        match po with
+        | ((p : Compiled), off) ->
+            (match p.body with
+             | Just (Body.Body core ty) -> Just (Body.Body (relocate p off (p.base + V.len p.lets) total core) (zonk p ty))
+             | None -> acc))
+      None
+      placed
+  in
+  let fields = \(p : Compiled) -> V.map (\f -> match f with | Fields.Fields u fs -> Fields.Fields u (V.map (\x -> M.map (\c -> zonk p c) x) fs)) p.instanceFields in
+  let all = \f -> V.concatMap f parts in
+  Compiled {
+    name = first.name,
+    low = V.foldl (\acc (p : Compiled) -> if p.low < acc then p.low else acc) first.low parts,
+    high = V.foldl (\acc (p : Compiled) -> if p.high > acc then p.high else acc) first.high parts,
+    names = mergedNames (V.map (\(p : Compiled) -> p.names) parts),
+    constants = all (\(p : Compiled) -> p.constants),
+    ctors = all (\(p : Compiled) -> p.ctors),
+    datas = all (\(p : Compiled) -> p.datas),
+    positive = all (\(p : Compiled) -> p.positive),
+    seqs = all (\(p : Compiled) -> p.seqs),
+    effects = all (\(p : Compiled) -> p.effects),
+    ops = all (\(p : Compiled) -> p.ops),
+    natives = all (\(p : Compiled) -> p.natives),
+    base,
+    lets,
+    recDefs,
+    body,
+    main = V.any (\(p : Compiled) -> p.main) parts,
+    symbols = all (\(p : Compiled) -> p.symbols),
+    metaSolutions = [],
+    hints = all (\(p : Compiled) -> p.hints),
+    traits = all (\(p : Compiled) -> p.traits),
+    instanceFields = all fields,
+    opens = all (\(p : Compiled) -> p.opens)
+  }
+
+-- What several parts' modules give, as one package's.
+@pub fun mergedNames (ns : [PackageNames]) : PackageNames =
+  V.foldl
+    (\acc n ->
+      match (acc, n) with
+      | (PackageNames.PackageNames a1 a2 a3 a4 a5 a6 a7 a8, PackageNames.PackageNames b1 b2 b3 b4 b5 b6 b7 b8) ->
+          PackageNames.PackageNames (V.append a1 b1) (V.append a2 b2) (V.append a3 b3) (V.append a4 b4) (V.append a5 b5) (V.append a6 b6) (V.append a7 b7) (V.append a8 b8))
+    (PackageNames.PackageNames [] [] [] [] [] [] [] [])
+    ns
+
+-- A package with nothing in it.
+@pub fun emptyCompiled (name : String) : Compiled =
+  Compiled {
+    name,
+    low = 0,
+    high = 0,
+    names = PackageNames.PackageNames [] [] [] [] [] [] [] [],
+    constants = [],
+    ctors = [],
+    datas = [],
+    positive = [],
+    seqs = [],
+    effects = [],
+    ops = [],
+    natives = [],
+    base = 0,
+    lets = [],
+    recDefs = [],
+    body = None,
+    main = False,
+    symbols = [],
+    metaSolutions = [],
+    hints = [],
+    traits = [],
+    instanceFields = [],
+    opens = []
+  }

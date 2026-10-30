@@ -4,8 +4,9 @@ use idyllic_diagnostics::OutputStyle;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-/// The Idyll compiler: checks a program, runs it, and compiles it to native
-/// code.  The REPL is the `idyll` command, in idyll-driver/.
+/// The Idyll compiler: checks a program, lowers it to Cut, and runs that on
+/// Meadow's runtimes (`meadow cut`): Glade, or Silo for native code.  The
+/// REPL is the `idyll` command, in idyll-driver/.
 #[derive(Parser, Debug)]
 #[command(name = "idyllic", version, about)]
 struct Cli {
@@ -25,17 +26,16 @@ struct Cli {
     #[arg(long)]
     ascii: bool,
 
-    /// Print the AxCut each program is lowered to, and what running it did
-    /// with memory, before its result.  When compiling: the AxCut that is
-    /// compiled, which has been inlined.
+    /// Print the Cut the program is lowered to, before its result.
     #[arg(long)]
-    axcut: bool,
+    cut: bool,
 
-    /// Write the program as LLVM IR to this file.
-    #[arg(long, value_name = "FILE")]
-    emit_llvm: Option<PathBuf>,
+    /// Run it as native code, built by Silo, rather than on Glade.
+    #[arg(long)]
+    release: bool,
 
-    /// Compile the program to a native executable (needs clang and lld).
+    /// Build the program into a native executable, with Silo, and write it
+    /// here, rather than run it.
     #[arg(short, long, value_name = "EXE")]
     output: Option<PathBuf>,
 
@@ -67,16 +67,13 @@ fn command() -> ExitCode {
     style.unicode &= !cli.ascii;
     let opts = Options { debug: cli.debug, style, live: true };
 
-    if cli.emit_llvm.is_some() || cli.output.is_some() {
+    if cli.output.is_some() {
         compile_file(&cli.file, &opts, &cli)
     } else {
-        check_file(&cli.file, &opts, cli.axcut, cli.args.clone(), cli.linear)
+        check_file(&cli.file, &opts, &cli)
     }
 }
 
-/// Check a program and compile it: to LLVM IR, and with `-o`, on through
-/// clang to an executable.  The runtime is compiled along with it, with
-/// link-time optimisation, so that allocation is inlined into the program.
 /// The package at `path`: a directory's, or one file's, which is a package
 /// of one module named after it.
 fn load(path: &Path, linear: bool) -> Result<pipeline::PackageSource, String> {
@@ -109,53 +106,36 @@ fn compile_file(path: &Path, opts: &Options, cli: &Cli) -> ExitCode {
     if out.has_errors() {
         return ExitCode::FAILURE;
     }
-    let Some(program) = &out.native else { return fail("there is no expression to compile: the program only declares".into()) };
-    if cli.axcut {
-        println!("{program}\n");
-    }
-    let ir = match idyllic_llvm::emit(program, out.result_kind) {
-        Ok(ir) => ir,
-        Err(why) => return fail(why),
+    let Some(cut) = &out.cut else {
+        let why = if out.not_lowered.is_empty() { "the program only declares".to_string() } else { out.not_lowered.join("; ") };
+        return fail(format!("there is nothing to compile: {why}"));
     };
-    if let Some(ll) = &cli.emit_llvm {
-        if let Err(e) = std::fs::write(ll, &ir) {
-            return fail(format!("cannot write {}: {e}", ll.display()));
-        }
+    if cli.cut {
+        println!("{cut}\n");
     }
     let Some(exe) = &cli.output else { return ExitCode::SUCCESS };
     let dir = std::env::temp_dir().join(format!("idyllic-{}", std::process::id()));
-    let (ll, rt) = (dir.join("program.ll"), dir.join("idyll_rt.c"));
-    let written = std::fs::create_dir_all(&dir)
-        .and_then(|()| std::fs::write(&ll, &ir))
-        .and_then(|()| std::fs::write(&rt, idyllic_llvm::RUNTIME));
-    if let Err(e) = written {
-        return fail(format!("cannot write to {}: {e}", dir.display()));
-    }
-    let status = std::process::Command::new("clang")
-        .args(idyllic_llvm::clang_arguments())
-        .arg(&ll)
-        .arg(&rt)
-        .arg("-o")
-        .arg(exe)
-        .status();
+    let name = exe.file_stem().map_or("program".into(), |s| s.to_string_lossy().into_owned());
+    let built = idyllic::meadow::build(cut, idyllic::meadow::Runtime::Silo, &dir, &name)
+        .and_then(|made| std::fs::copy(&made, exe).map(|_| ()).map_err(|e| format!("cannot write {}: {e}", exe.display())));
     let _ = std::fs::remove_dir_all(&dir);
-    match status {
-        Ok(s) if s.success() => ExitCode::SUCCESS,
-        Ok(s) => fail(format!("clang failed ({s})")),
-        Err(e) => fail(format!("cannot run clang: {e}")),
+    match built {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(why) => fail(why),
     }
 }
 
-fn check_file(path: &Path, opts: &Options, axcut: bool, args: Vec<String>, linear: bool) -> ExitCode {
-    let package = match load(path, linear) {
+fn check_file(path: &Path, opts: &Options, cli: &Cli) -> ExitCode {
+    let package = match load(path, cli.linear) {
         Ok(package) => package,
         Err(why) => {
             eprintln!("error: {why}");
             return ExitCode::FAILURE;
         }
     };
-    let out = pipeline::run_package(&package, opts, args);
-    if let Some(report) = out.axcut_report().filter(|_| axcut) {
+    let runtime = if cli.release { idyllic::meadow::Runtime::Silo } else { idyllic::meadow::Runtime::Glade };
+    let out = pipeline::run_package_on(&package, opts, cli.args.clone(), runtime);
+    if let Some(report) = out.cut_report().filter(|_| cli.cut) {
         print!("{report}");
     }
     // (a `main` that printed nothing shows nothing)

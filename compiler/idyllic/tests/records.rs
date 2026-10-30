@@ -125,7 +125,7 @@ fn a_record_from_another_module_or_package() {
         linear: false,
         modules: vec![ModuleFile { path: Vec::new(), file: "Geo/src/Lib.idl".into(), text: geometry.into() }],
     };
-    let compiled = pipeline::compile_package_with(&lib, Deps { all: &[], direct: &[], first_unique: 1 << 20 }, &OPTS);
+    let compiled = pipeline::compile_package_with(&lib, Deps { all: &[], direct: &[], first_unique: 1 << 20, parts: None, tests: None }, &OPTS);
     assert!(compiled.diagnostics.is_empty(), "{:#?}", diags(&compiled));
     let geo: CompiledPackage = compiled.checked.and_then(|c| c.compiled).expect("compiled");
     let app = PackageSource {
@@ -138,7 +138,7 @@ fn a_record_from_another_module_or_package() {
             text: "use Geo (Point)\n\nmain () = printInt (Point { x = 3, y = 4 }).y\n".into(),
         }],
     };
-    let out = pipeline::run_package_with(&app, Deps { all: &[&geo], direct: &[("Geo", &geo)], first_unique: 2 << 20 }, &OPTS, Vec::new());
+    let out = pipeline::run_package_with(&app, Deps { all: &[&geo], direct: &[("Geo", &geo)], first_unique: 2 << 20, parts: None, tests: None }, &OPTS, Vec::new());
     assert!(out.diagnostics.is_empty(), "{:#?}", diags(&out));
     assert_eq!(out.printed, "4\n");
 }

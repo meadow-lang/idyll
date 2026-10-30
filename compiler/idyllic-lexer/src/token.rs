@@ -45,6 +45,10 @@ pub enum Token {
     LowerIdent(String),
     #[regex(r"[!$%&*+./<=>?@|\\~:^`\-]+", crate::text, priority = 1)]
     OpIdent(String),
+    /// A named hole, `?name`: a goal left for later. Its name, without the
+    /// `?`. (Longer than the `?` an operator would take, so it wins.)
+    #[regex(r"\?[_a-z][A-Za-z0-9_']*", crate::goal)]
+    Goal(String),
     /// A `:`-headed operator is a constructor operator; the priority breaks
     /// the tie with `OpIdent` on inputs like `::`.
     #[regex(r":[!$%&*+./<=>?@|\\~:^`\-]+", crate::text, priority = 3)]
@@ -57,11 +61,24 @@ pub enum Token {
     /// Any size: whether it fits an `Int` is the parser's to say.
     Int(BigInt),
 
+    /// A number with a point in it, `1.5`, as its IEEE-754 bits: digits on
+    /// both sides, so that `0..1` is a range.
+    #[regex(r"[0-9]+\.[0-9]+", crate::float)]
+    Float(u64),
+
     /// A backslash always pairs with the next character, so an escaped quote
     /// never terminates the literal; the escape itself is validated by the
     /// callback.
     #[regex(r#""([^"\\\n\r\x0c]|\\[^\n\r\x0c])*""#, crate::string)]
     Str(String),
+    /// The three pieces of a string with holes, `"a ${x} b ${y} c"`, which
+    /// the lexer reads by hand ([`crate::tokenize`]): the text up to the
+    /// first `${` (`"a ${`), the text between two holes (`} b ${`), and the
+    /// text after the last (`} c"`), each unquoted and unescaped. The tokens
+    /// of each hole come between them.
+    InterpStart(String),
+    InterpMid(String),
+    InterpEnd(String),
     #[regex(r"'([^'\\\n\r\x0c]|\\[^\n\r\x0c])'", crate::character)]
     Char(char),
 
@@ -114,6 +131,8 @@ pub enum Token {
     Infinity,
     #[token("mod")]
     Mod,
+    #[token("module")]
+    Module,
     #[token("use")]
     Use,
     #[token("data")]
@@ -155,8 +174,11 @@ impl fmt::Display for Token {
             Error => write!(f, "<lex-error>"),
             Newline => write!(f, "<newline>"),
             UpperIdent(s) | LowerIdent(s) | QualUpper(s) | QualLower(s) | OpIdent(s) | ConOpIdent(s) => write!(f, "{s}"),
+            Goal(s) => write!(f, "?{s}"),
             Int(n) => write!(f, "{n}"),
+            Float(x) => write!(f, "{}", f64::from_bits(*x)),
             Str(s) => write!(f, "{s:?}"),
+            InterpStart(_) | InterpMid(_) | InterpEnd(_) => write!(f, "<string piece>"),
             Char(c) => write!(f, "{c:?}"),
             LParen => write!(f, "("),
             RParen => write!(f, ")"),
@@ -183,6 +205,7 @@ impl fmt::Display for Token {
             At => write!(f, "@"),
             Infinity => write!(f, "∞"),
             Mod => write!(f, "mod"),
+            Module => write!(f, "module"),
             Use => write!(f, "use"),
             Data => write!(f, "data"),
             Type => write!(f, "Type"),

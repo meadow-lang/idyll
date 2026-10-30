@@ -1,0 +1,23 @@
+-- The smallest program worth running: `idyll run` in this directory builds
+-- the package and runs its `main`. What `main` may do is what the runtime
+-- handles, the effects in the prelude's `Eff`: the console, files, the
+-- process, randomness, time and `Div`. Whatever follows `--` on the command
+-- line, `idyll run -- Ada Grace`, is what `args ()` gives it.
+
+-- Counting down from `n`: an `Int` that no match takes apart, so the
+-- checker can't see the recursion end, and says it may not (`Div`, which
+-- `Eff` has).
+countdown : (n : [] Int) -> () ! Eff
+countdown n = if n == 0 then putStrLn "liftoff!" else let u = printInt n in countdown (n - 1)
+
+-- Whom to greet: everyone named on the command line, or the world.
+listed : (names : List String) -> String
+listed Nil = "world"
+listed (name :: Nil) = name
+listed (name :: last :: Nil) = name ++ " and " ++ last
+listed (name :: rest) = name ++ ", " ++ listed rest
+
+main : () -> () ! Eff
+main () =
+  let u = putStrLn ("Hello, " ++ listed (args ()) ++ "!") in
+  countdown 3

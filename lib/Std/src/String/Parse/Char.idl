@@ -1,0 +1,123 @@
+-- Parsers of characters, as Meadow's `Std.String.Parse.Char`: single
+-- characters and classes of them, strings, white space and line ends.
+--
+-- Meadow's are for any stream whose tokens are `Char`s; these are for a
+-- `String`, the stream of `Char`s there is (a type whose token is a `Char`
+-- is not a constraint Idyll's traits say).
+
+use Std.String.Parse as P
+use Std.String.Parse (Parser)
+use Std.Char as Ch
+use Std.Collections.Vector (Vector)
+use Std.Collections.Vector as V
+use Std.Bool (not)
+
+-- This character.
+@pub
+char : (c : Char) -> Parser String Char
+char c = P.single c
+
+-- This character, in either case: what was there is what it gives.
+@pub
+charCI : (c : Char) -> Parser String Char
+charCI c = P.label (debug c) (P.satisfy (\(x : Char) -> Ch.toLower x == Ch.toLower c))
+
+@pub
+newline : Parser String Char
+newline = P.label "newline" (char (Ch.fromCode 10))
+
+@pub
+crlf : Parser String String
+crlf = string (charsToString (arrayFromList (Ch.fromCode 13 :: Ch.fromCode 10 :: Nil)))
+
+-- A newline, or a carriage return before one.
+@pub
+eol : Parser String String
+eol = P.label "end of line" (P.alt (P.map (\(c : Char) -> charsToString (arrayFromList (c :: Nil))) newline) crlf)
+
+@pub
+tab : Parser String Char
+tab = P.label "tab" (char (Ch.fromCode 9))
+
+@pub
+anyChar : Parser String Char
+anyChar = P.anySingle
+
+-- This text, or nothing consumed.
+@pub
+string : (text : String) -> Parser String String
+string text = P.chunk text
+
+-- This text in any mix of cases: what was there is what it gives.
+@pub
+stringCI : (text : String) -> Parser String String
+stringCI text =
+  let want = V.map Ch.toLower (V.fromArray (stringToChars text)) in
+  P.label (debug text) (P.try (P.bind (P.takeP "a word" (V.len want)) (\(got : String) ->
+    if V.map Ch.toLower (V.fromArray (stringToChars got)) == want then P.pure got else P.empty)))
+
+isHorizontal : (c : Char) -> Bool
+isHorizontal c = if Ch.code c == 32 then True else Ch.code c == 9
+
+-- Any white space, maybe none.
+@pub
+space : Parser String ()
+space = P.void (P.takeWhileP Ch.isSpace)
+
+-- At least one white space character.
+@pub
+space1 : Parser String ()
+space1 = P.void (P.takeWhile1P "white space" Ch.isSpace)
+
+-- Spaces and tabs, maybe none: white space that stays on the line.
+@pub
+hspace : Parser String ()
+hspace = P.void (P.takeWhileP isHorizontal)
+
+@pub
+hspace1 : Parser String ()
+hspace1 = P.void (P.takeWhile1P "white space" isHorizontal)
+
+@pub
+spaceChar : Parser String Char
+spaceChar = P.label "white space" (P.satisfy Ch.isSpace)
+
+@pub
+upperChar : Parser String Char
+upperChar = P.label "an uppercase letter" (P.satisfy Ch.isUpper)
+
+@pub
+lowerChar : Parser String Char
+lowerChar = P.label "a lowercase letter" (P.satisfy Ch.isLower)
+
+@pub
+letterChar : Parser String Char
+letterChar = P.label "a letter" (P.satisfy Ch.isAlpha)
+
+@pub
+alphaNumChar : Parser String Char
+alphaNumChar = P.label "a letter or digit" (P.satisfy Ch.isAlphaNum)
+
+@pub
+digitChar : Parser String Char
+digitChar = P.label "a digit" (P.satisfy Ch.isDigit)
+
+@pub
+binDigitChar : Parser String Char
+binDigitChar = P.label "a binary digit" (P.satisfy (\(c : Char) -> if c == '0' then True else c == '1'))
+
+@pub
+octDigitChar : Parser String Char
+octDigitChar = P.label "an octal digit" (P.satisfy (Ch.isBetween '0' '7'))
+
+@pub
+hexDigitChar : Parser String Char
+hexDigitChar = P.label "a hexadecimal digit" (P.satisfy Ch.isHexDigit)
+
+@pub
+asciiChar : Parser String Char
+asciiChar = P.label "an ASCII character" (P.satisfy Ch.isAscii)
+
+@pub
+printChar : Parser String Char
+printChar = P.label "a printable character" (P.satisfy (\(c : Char) -> if Ch.code c >= 32 then Ch.code c != 127 else False))

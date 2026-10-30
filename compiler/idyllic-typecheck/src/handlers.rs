@@ -443,7 +443,11 @@ impl Checker {
                 .chain(clause_parts.labels.iter().map(|(_, v)| v.clone()))
                 .chain(clause_parts.tails.iter().filter(|(k, _)| *k != resumed_key).map(|(_, v)| v.clone())),
         );
-        if !self.unify(ctx.lvl, resumed, total.clone()) {
+        // (a clause may have made it more already: one that gives back a
+        // function, calling the resumption and performing the handled effect
+        // itself, `\st -> let u = putStr s in k () st`, has made resuming
+        // that function's effects; claiming more than it does is sound)
+        if !self.unify(ctx.lvl, resumed.clone(), total.clone()) && !self.effects_fit(ctx.lvl, total.clone(), resumed) {
             let row = self.quote(ctx.lvl, total.clone());
             self.error(nid, TypeErrorKind::AmbiguousHandler { effect: info.name.clone(), row });
         }

@@ -1,0 +1,85 @@
+-- How Idyll is set out: `idyll fmt`, Lingua's `format!` over the grammar
+-- (`Syntax`, `Style`), within 100 columns, a level two spaces.
+--
+-- Idyll's layout is part of its meaning: a block's items start at its
+-- column, a line further right goes on with the line before. So a block's
+-- items each start a line of their own (`Sep`, a layout `;`, is one line
+-- break), after what opens the block or under it a level in; a body that
+-- does not fit after its `=` or `->` goes under it a level in, and guards
+-- a line each. What formatting changes is the space between tokens, and
+-- nothing else: the tokens, comments among them, are the source's, in its
+-- order, and one blank line is kept where there were any. A line that goes
+-- on with the one before keeps how far further in it was.
+--
+-- A signature that fits on one line stays on one; one that does not is set
+-- out an entry a line, its name alone, the colon three spaces in and each
+-- arrow two, so that every type starts in one column (ROADMAP's
+-- principles).
+
+use Idyll.Syntax (parseIdyll, formatStyle)
+use Idyll.Surface as Surface
+use Lingua.Diagnostic (Diagnostic)
+use Std.Result.Result.*
+
+-- `text` set out, or what is wrong with it: a program with errors is not
+-- set out, as what it means may not be what it says.
+@pub fun formatted (text : String) : Result [Diagnostic] String =
+  match Surface.parsed text with
+  | Err ds -> Err ds
+  | Ok _ -> (match parseIdyll text with | (g, _) -> Ok (formatStyle g))
+
+use Std.Test (assertEq)
+
+fun set (text : String) : String = match formatted text with | Ok out -> out | Err _ -> "(error)"
+
+-- set out, and set out again the same
+fun once (text : String) =
+  let out = set text in
+  let w = assertEq (set out) out "formatting twice is formatting once" in
+  out
+
+@test fun aBlocksItemsAreEachALineAtItsColumn () =
+  assertEq
+    (once "x =\n  let a = 1\n      b = 2\n  in a + b\n")
+    "x =\n  let\n    a = 1\n    b = 2\n  in a + b\n"
+    "a let's bindings under it, its in under the let"
+
+@test fun aBlockThatFitsStaysOnALine () =
+  assertEq (once "x = let a = 1 in a\n") "x = let a = 1 in a\n" "one binding fits"
+
+@test fun guardsAreALineEachALevelIn () =
+  assertEq
+    (once "abs n | n < 0 = 0 - n\n  | otherwise = n\n")
+    "abs n\n  | n < 0 = 0 - n\n  | otherwise = n\n"
+    "each guard on its own line"
+
+@test fun commentsAndOneBlankLineAreKept () =
+  assertEq
+    (once "-- a\nx = 1\n\n\n\n-- b\ny = case x of\n  1 -> 2\n  _ -> 3  -- c\n")
+    "-- a\nx = 1\n\n-- b\ny =\n  case x of\n    1 -> 2\n    _ -> 3 -- c\n"
+    "the comments where they were, the blank lines one"
+
+@test fun aDeclarationBlockIsUnderWhatOpensIt () =
+  assertEq
+    (once "effect Ask where ask : Int\n")
+    "effect Ask where\n  ask : Int\n"
+    "an effect's operations under it"
+
+@test fun aLongSignatureIsAnEntryALine () =
+  let long = "compose : {a b c : Type} -> {r s : Grade} -> (f : (y : [s] b) -> c ! e) -> (g : [s] ((x : [r] a) -> b ! e)) -> (x : [s * r] a) -> c ! e\ncompose f g x = f (g x)\n" in
+  let a =
+    assertEq
+      (once long)
+      "compose\n   : {a b c : Type}\n  -> {r s : Grade}\n  -> (f : (y : [s] b) -> c ! e)\n  -> (g : [s] ((x : [r] a) -> b ! e))\n  -> (x : [s * r] a)\n  -> c ! e\ncompose f g x = f (g x)\n"
+      "the colon under the arrows' `>`, every type in one column"
+  in
+  assertEq (once "id : a -> a\nid x = x\n") "id : a -> a\nid x = x\n" "one that fits stays on its line"
+
+@test fun aContinuationLineKeepsItsPlace () =
+  assertEq (once "x = foo 1\n  2\n") "x =\n  foo 1\n    2\n" "the 2 still further in than foo"
+
+@test fun aWrittenSemicolonKeepsItsLine () =
+  assertEq (once "x = let a = 1; b = 2 in b\n") "x = let a = 1; b = 2 in b\n" "no line break after a written ;"
+
+@test fun aProgramWithErrorsIsLeftAlone () =
+  assertEq (set "x = (1 +\n") "(error)" "not set out"
