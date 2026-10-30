@@ -17,6 +17,7 @@ use Lingua.Lang (Meta)
 use Idyll.Session
 use Idyll.Find as Find
 use Idyll.Prove as Prove
+use Idyll.Tactic as Tactic
 use Idyll.Syntax (parseIdyll)
 use Idyll.Scc (sccModule)
 use Idyll.Check (checkedAgainst)
@@ -187,8 +188,50 @@ def promptCommands =
     ("reset", "", "forget every declaration entered", \db rest -> (let u = setSessionEarlier db 0 "" in Reply.Said "")),
     ("declarations", "", "the declarations entered so far, as source", \db rest -> Reply.Said (S.trimEnd (earlierIn db))),
     ("goals", "", "the goals (?name) left in what has been declared, each with its type", goalsSoFar),
-    ("prove", "TYPE", "look for a term of a type, or for the goal ?name: proof search", provedEntry)
+    ("prove", "TYPE", "look for a term of a type, or for the goal ?name: proof search", provedEntry),
+    ("tactic", "?NAME", "prove the goal ?name a step at a time, each step a `:by`", beganProof),
+    ("by", "TACTIC", "a step of the proof under way: intro, intros, exact, refine, apply, cases, search, undo", steppedProof),
+    ("qed", "", "keep the proof under way: the declarations, the goal filled", keptProof),
+    ("abandon", "", "drop the proof under way", \db rest -> (let u = setSessionProving db 0 None in Reply.Said "(abandoned)"))
   ]
+
+-- The proof under way in tactic mode, if one is.
+fun provingIn db = answered None (\() -> sessionProving db 0)
+
+fun preludeIn db = answered (Err []) (\() -> sessionPrelude db 0)
+
+-- `:tactic ?name`: a proof of that goal begun, and the goal said.
+fun beganProof db rest =
+  let std = stdIn db in
+  match Tactic.begin (earlierIn db) (S.trim rest) (preludeIn db) (\u -> std) with
+  | Err why -> Reply.Said why
+  | Ok p ->
+      let u = setSessionProving db 0 (Just p) in
+      Reply.Said (Tactic.shown p (preludeIn db) (\u -> std))
+
+-- `:by TACTIC`: the step taken, and the goal now worked on said; or why it
+-- cannot be.
+fun steppedProof db rest =
+  match provingIn db with
+  | None -> Reply.Said "no proof under way: `:tactic ?name` begins one"
+  | Just p ->
+      let std = stdIn db in
+      let catalog = answered [] (\() -> sessionCatalog db 0) in
+      match Tactic.step p rest (preludeIn db) (\u -> std) catalog with
+      | Err why -> Reply.Said why
+      | Ok p2 ->
+          let u = setSessionProving db 0 (Just p2) in
+          Reply.Said (Tactic.shown p2 (preludeIn db) (\u -> std))
+
+-- `:qed`: the declarations, with what the proof built in the goal's place;
+-- goals it left are goals still.
+fun keptProof db rest =
+  match provingIn db with
+  | None -> Reply.Said "no proof under way"
+  | Just p ->
+      let u = setSessionEarlier db 0 p.source in
+      let v = setSessionProving db 0 None in
+      Reply.Said (if V.isEmpty p.goals then "(proved)" else "(kept, with goals left: ${S.join ", " (V.map (\g -> "?" ++ g) p.goals)})")
 
 -- `:prove T`: terms of `T` the checker accepts, after what has been
 -- declared.
@@ -267,6 +310,47 @@ fun enteredAll (entries : [String]) =
   assertEq (M.map (\ps -> V.elem "x" ps) (okOf (proofsOf db "?other"))) (Just True) "x, which is in scope there"
 
 fun okOf r = match r with | Ok x -> Just x | Err _ -> None
+
+-- What each command, `(name, rest)`, says in turn, after `declared`.
+fun commandsSaid (declared : String) (commands : [(String, String)]) =
+  let db = batchSession () in
+  let w = setSessionSource db 0 declared in
+  let said = entered db 0 in
+  let run = \c -> match c with | (name, rest) -> (match V.find (\pc -> match pc with | (n, _, _, _) -> n == name) promptCommands with
+    | Just (_, _, _, act) -> (match act db rest with | Reply.Said s -> s | _ -> "")
+    | None -> "") in
+  (V.map run commands, earlierIn db)
+
+@test fun aGoalIsProvedAStepAtATime () =
+  let (said, after) =
+    commandsSaid
+      "data N = Z | S N\n\nplus : N -> N -> N\nplus m n = ?todo"
+      [("tactic", "?todo"), ("by", "cases m"), ("by", "exact n"), ("by", "exact N.S (plus m1 n)"), ("qed", "")]
+  in
+  let a = assertEq (V.getOr "" said 0) "?todo : N\n  m : N\n  n : N" "the goal, and what is in scope" in
+  let b = assertEq (V.getOr "" said 1) "?todo1 : N\n  m : N\n  n : N\n(and 1 goal more)" "a goal for each constructor" in
+  let c = assertEq (V.getOr "" said 4) "(proved)" "nothing left" in
+  assertEq (S.contains "N.S m1 -> (N.S (plus m1 n))" after) True "the proof, in the declarations"
+
+@test fun aStepTheCheckerRefusesIsNotTaken () =
+  let (said, after) =
+    commandsSaid
+      "pick : (b : Bool) -> (x : Int) -> Int\npick b x = ?p"
+      [("tactic", "?p"), ("by", "exact b"), ("by", "intro y"), ("by", "exact x"), ("qed", "")]
+  in
+  -- (a step taken says the goal worked on next; one refused, why)
+  let a = assertEq (S.startsWith "?" (V.getOr "" said 1)) False "a Bool is no Int" in
+  let b = assertEq (V.getOr "" said 2) "?p is not a function of that many arguments" "an Int is no function" in
+  assertEq (V.getOr "" said 4) "(proved)" "x was"
+
+@test fun introNamesWhatTheGoalTakes () =
+  let (said, after) =
+    commandsSaid
+      "twice : (f : Int -> Int) -> Int -> Int\ntwice = ?t"
+      [("tactic", "?t"), ("by", "intros"), ("by", "exact f (f x)"), ("by", "undo"), ("by", "apply f"), ("by", "apply f"), ("by", "exact x"), ("qed", "")]
+  in
+  let a = assertEq (V.getOr "" said 1) "?t1 : Int\n  f : Int -> Int\n  x : Int" "f, then x for the arrow with no name" in
+  assertEq (S.contains "(\\f -> \\x -> (f (f (x))))" after) True "built by apply, after undo"
 
 @test fun anEntryThatIsWrongIsForgotten () =
   let said = enteredAll ["x : Int\nx = True", "x"] in

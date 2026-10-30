@@ -22,6 +22,8 @@ use Idyll.Rename as Rename
 use Idyll.Scc (sccModule)
 use Idyll.Check (checkedAgainst, checkedWanting)
 use Idyll.Elab (goalNamed)
+use Idyll.Tc (Tc, CtorInfo, ctorInfo)
+use Std.Collections.HashMap as Hm
 use Idyll.Core as C
 use Idyll.Core (Core)
 use Idyll.Compiled (compiledOf)
@@ -40,6 +42,8 @@ database! {
     | input source (file : Int) : String
     -- the declarations a prompt has been given so far (`Prompt`)
     | input earlier (unit : Int) : String
+    -- the proof under way in tactic mode, if one is (`Tactic`)
+    | input proving (unit : Int) : Maybe Proof
     | query parsed (file : Int) : (Green Idyll, [(Int, String)]) = parseIdyll (querySource file)
     | query prelude (unit : Int) : Result [Diagnostic] SurfaceProgram = Surface.parsed D.prelude
     | query std (unit : Int) : Result String (PackageNames, Compiled) = stdOf (queryPrelude 0)
@@ -50,6 +54,17 @@ database! {
     -- its type and its type shown: what the finder searches, kept until a
     -- declaration is entered
     | query catalog (unit : Int) : [(String, Core, String)] = catalogOf (queryEarlier 0) (queryPrelude 0) (\u -> queryStd 0)
+}
+
+-- A proof under way in tactic mode (`Tactic`): the declarations, with
+-- what has been built so far in the goal's place; the goals left, the one
+-- worked on first; and each source and goals before a step, the last
+-- first, for `undo`.
+@derive(PartialEq)
+@pub record Proof = {
+  source : String,
+  goals : [String],
+  before : [(String, [String])]
 }
 
 -- --- what the queries do ----------------------------------------------------------
@@ -111,6 +126,49 @@ fun prepared (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std
         let c = checkedAgainst (sccModule m) False deps in
         goalNamed c.tc name)
   | Err _ -> None
+
+-- What tactic mode (`Tactic`) needs of the goal `?name`: the type wanted
+-- there; its definition's variables, each its name and type; and, for each
+-- of those whose type is a data type, its constructors, each as a pattern
+-- names it (`Maybe.Just`, or `::`) with how many fields it takes.
+@pub record GoalFacts = {
+  want : Core,
+  locals : [(String, Core)],
+  splits : [(String, [(String, Int)])]
+}
+
+@pub fun goalFacts (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (name : String) : Maybe GoalFacts ! e =
+  match prepared text prelude std with
+  | Ok (m, deps, _) ->
+      runSt (\() ->
+        let c = checkedAgainst (sccModule m) False deps in
+        match goalNamed c.tc name with
+        | None -> None
+        | Just (want, locals) ->
+            let splits = V.concatMap (\l -> match l with | (x, t) -> M.unwrapOr [] (M.map (\cs -> [(x, cs)]) (constructorsOf c.tc t))) locals in
+            Just (GoalFacts { want, locals, splits }))
+  | Err _ -> None
+
+-- The constructors of the data type `t` is, if it is one: each as a
+-- pattern names it, and its fields.
+fun constructorsOf (tc : Tc s) (t : Core) : Maybe [(String, Int)] ! { St s | e } =
+  match headOf t with
+  | Core.Opaque d dname ->
+      M.map
+        (\cs ->
+          V.concatMap
+            (\u ->
+              match ctorInfo tc u with
+              | Just (CtorInfo.CtorInfo name _ _ _ fields) -> [(if name == "::" then name else "${dname}.${name}", fields)]
+              | None -> [])
+            cs)
+        (Hm.lookup d (St.getRef tc.datas))
+  | _ -> None
+
+fun headOf (t : Core) : Core =
+  match t with
+  | Core.App f _ -> headOf f
+  | _ -> t
 
 -- The goals, `?name`, left in a program: each said with its type.
 @pub fun goalsIn (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : [String] ! e =

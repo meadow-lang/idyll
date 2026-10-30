@@ -90,7 +90,7 @@ fun filled (earlier : String) (name : String) (candidates : [String]) prelude st
         filled earlier name (V.drop candidates 1) prelude std limit (tried + 1) (if V.isEmpty wrong then V.pushBack found c else found)
 
 -- `text` with the goal `goal` (a whole word) given `filler` in its place.
-fun inPlace (text : String) (goal : String) (from : Int) (filler : String) : String =
+@pub fun inPlace (text : String) (goal : String) (from : Int) (filler : String) : String =
   match S.indexOfFrom goal text from with
   | None -> text
   | Just at ->

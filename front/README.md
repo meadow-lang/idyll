@@ -27,7 +27,7 @@ does, how it is checked, and why it is built the way it is.
 | Cut | `Lower.mw`, `Typer.mw`, `Prune.mw`, `CutAst.mw`, `Emit.mw` | done: the same Cut as `idyllic-cut` on every program that lowers (212) |
 | The formatter | `Syntax.mw` (a `format!`), `Format.mw` | done: `Idyll fmt`; every program comes out as the same program, and formatting it again changes nothing |
 | The language server | `Session.mw` (a `database!`), `Server.mw` (an `lsp!`) | begun: `Idyll lsp` publishes what is wrong with each open file where it is, says a term's type on hover, colours a file and sets it out |
-| The REPL | `Prompt.mw` (a `repl!`), over the same session | begun: `Idyll repl` keeps the declarations entered, runs expressions on the CEK machine, and says each answer and type as the Rust REPL does |
+| The REPL | `Prompt.mw` (a `repl!`), over the same session | begun: `Idyll repl` keeps the declarations entered, runs expressions on the CEK machine, and says each answer and type as the Rust REPL does; it finds by type, searches for proofs, and fills goals in tactic mode |
 
 "Every program" means 1082 programs: the test corpora in
 `compiler/idyllic/tests/corpus/`, the prelude, every `.idl` file in the
@@ -1028,8 +1028,8 @@ what the Rust REPL does (`pipeline::Session`):
 - an entry that ends in a signature waits for its equations.
 
 Tab completes names as the server does, Ctrl-F finds what has been
-declared, and `:type`, `:reset`, `:declarations` and `:goals` are its
-commands.
+declared, and `:type`, `:reset`, `:declarations`, `:goals`, `:prove`,
+`:tactic`, `:by`, `:qed` and `:abandon` are its commands.
 
 A goal, `?name`, is a term of its own from the lexer on (`Lex`'s `Goal`,
 `Syntax`'s `GoalA`, `Surface`'s and `Hir`'s `Goal`):
@@ -1040,6 +1040,32 @@ A goal, `?name`, is a term of its own from the lexer on (`Lex`'s `Goal`,
   "goal ?name : T" (its kind `Goal` among the dump's errors);
 - reaching one stops the program, saying so on standard error, with exit
   status 1: the CEK machine's `Control.Goal`, and `Lower.goalReached`.
+
+The prompt finds by name or by type (`Find.mw`, the `repl!`'s `search`),
+and looks for proofs (`Prove.mw`): `:prove T` builds candidate terms of
+`T` from its shape, and the checker keeps those it takes; `:prove ?name`
+does the same for a goal, its variables in scope, each candidate tried in
+the goal's place.
+
+Tactic mode (`Tactic.mw`) fills a goal a step at a time: `:tactic ?name`
+begins, `:by TACTIC` takes a step, `:qed` keeps what was built in the
+declarations, and `:abandon` drops it. A proof is the program's source,
+what has been built so far in the goal's place, and the goals left (the
+session's `proving` input). Each tactic writes source for the goal worked
+on, which may hold goals of its own:
+- `intro x`, `intros`: `(\x -> ?g1)`, as many as the goal's type takes;
+- `exact e`, `refine e`: `(e)`;
+- `apply f`: `(f ?g1 .. ?gn)`, the fewest arguments that check;
+- `cases x`: a case on a variable of a data type, a goal for each
+  constructor, laid out two columns in from the goal's line
+  (`Session.goalFacts` gives each variable's constructors);
+- `search`: the first term proof search finds;
+- `undo`.
+
+The program is then checked again, and the step is taken only if nothing
+is wrong; the new goals are what the checker says they are, type and
+context, as for any goal. So the tactics need no theory of their own: a
+step the checker does not take is not taken.
 
 ## Dependencies
 

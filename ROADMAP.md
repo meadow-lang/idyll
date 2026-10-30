@@ -928,7 +928,7 @@ accepted when what it does fits within what resuming was found to.
   it (`idyll-<version>.vsix`). Still to come: finding the server without
   `idyll.server.path` (Meadow's extension searches its install
   directories), and a release that ships the `.vsix`.
-- [~] **Named holes, for type-driven development** (Chris, 2026-10-16), as
+- [x] **Named holes, for type-driven development** (Chris, 2026-10-16), as
   Idris and Agda have them. Done, in both compilers (the differentials
   agree on the corpus's goals):
   - `?name` is a token and a term of its own;
@@ -941,7 +941,8 @@ accepted when what it does fits within what resuming was found to.
     error and exits 1, on the CEK machine and through Cut alike;
   - both REPLs have `:goals`, and front/'s server shows goals as warnings.
 
-  Still to come: proof search on a goal (`:prove ?name`), and tactic mode.
+  Proof search on a goal (`:prove ?name`) and tactic mode (`:tactic
+  ?name`) are done too, in front/'s REPL (below).
   `_` is a hole the checker fills in, as it does today. `?name` is a goal
   left for later:
   - it is reported with its type and its context: the variables in scope,
@@ -992,7 +993,14 @@ accepted when what it does fits within what resuming was found to.
   from the goal's shape and verifies them with the checker, in batches.
   `:prove ?name` searches for the goal of that name: its definition's
   variables are in scope, and each term is checked in the goal's place.
-  Tactic mode is left.
+  **Tactic mode is done** (`Tactic.mw`, 2026-10-29): `:tactic ?name`
+  begins on a goal, `:by TACTIC` takes a step, `:qed` keeps what was
+  built in the declarations. Each tactic writes source in the goal's place
+  (`intro`, `intros`, `exact`, `refine`, `apply`, `cases`, `search`,
+  `undo`), its new goals named after it, and the program is checked again:
+  the step is taken only if the checker takes it, and the new goals are
+  what the checker says of them. Still to come: `induction` (a `cases`
+  whose recursive calls are offered) and `rewrite` along `Eq`.
   - **A finder like Hoogle**: Ctrl-F searches by name, fuzzily, or by type.
     A type query finds what fits it up to the order of arguments,
     instantiation, implicits and grades, the closest first. Today's
