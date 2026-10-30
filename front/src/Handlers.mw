@@ -83,7 +83,7 @@ fun effectOf (tc : Tc s) (clauses : [Clause]) : Maybe (Maybe Int) ! { St s | e }
           else
             (match Hm.lookup (V.getOr 0 us 0) (getRef tc.ops) with
              | None ->
-                 let w = T.error tc "NotAnOperation" in
+                 let w = T.errorOf tc "NotAnOperation" [] [H.textOf op] in
                  None
              | Just (OpInfo.OpInfo _ eff _ _ _ _) ->
                  (match found with
@@ -125,7 +125,7 @@ fun handleEffect (tc : Tc s) (ctx : Ctx) (body : HirExpr) (clauses : [Clause]) (
           clauses
       in
       if not (V.isEmpty missing) then
-        let w = T.error tc "MissingOperations" in
+        let w = T.errorOf tc "MissingOperations" [] (V.map (\op -> match opInfo tc op with | OpInfo.OpInfo name _ _ _ _ _ -> name) missing) in
         failed ()
       else if duplicated then
         let w = T.error tc "DuplicateOperation" in

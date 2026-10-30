@@ -150,7 +150,7 @@ fun params (tc : Tc s) (ctx : Ctx) (kind : Value) (core : Core) : Core ! { St s 
            let core = app (app (Core.Opaque fromList "arrayFromList") elemC) list in
            (core, eval tc ctx.env (app (Core.Opaque array "Array") elemC), usage))
   | _ ->
-      let w = T.error tc "UnknownNative" in
+      let w = T.errorOf tc "UnknownNative" [] ["Array"] in
       failed ()
 
 -- The element type of an `Array a`, if `ty` is one.

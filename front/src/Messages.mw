@@ -121,6 +121,12 @@ fun worded (sols : [Maybe Core]) (linear : Bool) (at : Meta) (r : Report) : Diag
       else if kind == "ImpureArgument" then
         (if word 0 == "erased" then withLabel at "this has the effects ${ty 0}, but it is never run, so they could not happen" (errorAt at "an erased argument must be pure")
          else withLabel at "the result type mentions this argument, which has the effects ${ty 0}" (errorAt at "a type cannot depend on this"))
+      else if kind == "NotAnOperation" then withLabel at "a handler's clauses are for the operations of an effect, and return" (errorAt at "${word 0} is not an operation")
+      else if kind == "MissingOperations" then withLabel at "missing: ${S.join ", " words}" (errorAt at "the handler does not handle every operation")
+      else if kind == "IndexedNeedsSignatures" then withLabel at "declare them with where, as in  C : .. -> T i" (errorAt at "${word 0} has indices, so its constructors need types")
+      else if kind == "OpSignature" then withLabel at "an operation takes arguments and gives a result, as in a -> b; use () for none" (errorAt at "${word 0} is not an operation's type")
+      else if kind == "UnknownNative" then
+        withLabel at "@native declares something every back end implements, and this is not one of them" (errorAt at "there is no native called ${word 0}")
       else if kind == "UnsolvedMeta" then withNote "add a type annotation to pin it down" (withLabel at "could not infer ${word 0}" (errorAt at "unsolved metavariable"))
       else if kind == "MissingCases" then withLabel at "missing: ${S.join ", " words}" (errorAt at "the patterns do not cover every case")
       else if kind == "UnreachableClause" then withLabel at "the cases before this one cover everything it matches" (warningAt at "unreachable")

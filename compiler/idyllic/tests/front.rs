@@ -191,6 +191,11 @@ const PORTED: &[&str] = &[
     "a type must be pure",
     "an erased argument must be pure",
     "a type cannot depend on this",
+    "* is not an operation",
+    "the handler does not handle every operation",
+    "* has indices, so its constructors need types",
+    "* is not an operation's type",
+    "there is no native called *",
 ];
 
 /// Whether `headline` is of the shape `pattern`, each `*` in it any text.
