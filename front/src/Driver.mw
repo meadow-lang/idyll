@@ -270,7 +270,7 @@ fun packageNameIn (sources : [(String, String)]) : String =
 
 -- A module's path from its file's, `.../src/Collections/List.idl`, the part
 -- after the last `src`; `Main.idl` or `Lib.idl` the root's, empty.
-fun modulePathIn (file : String) : [String] =
+@pub fun modulePathIn (file : String) : [String] =
   let segs = V.concatMap (\x -> S.split "\\" x) (S.split "/" file) in
   let from = V.foldl (\acc i -> if V.getOr "" segs i == "src" then i + 1 else acc) 0 (V.range 0 (V.len segs)) in
   let rel = V.drop segs from in

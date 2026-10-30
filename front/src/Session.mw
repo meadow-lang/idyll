@@ -12,7 +12,7 @@
 
 use Lingua (database!)
 use Lingua.Green (Green)
-use Lingua.Diagnostic (Diagnostic, errorAt, warningAt, isError)
+use Lingua.Diagnostic (Diagnostic, errorAt, warningAt, isError, whereAt)
 use Lingua.Lang (Meta, spanMeta)
 use Idyll.Syntax (Idyll, parseIdyll)
 use Idyll.Surface (SurfaceProgram)
@@ -46,11 +46,13 @@ database! {
     | input earlier (unit : Int) : String
     -- the proof under way in tactic mode, if one is (`Tactic`)
     | input proving (unit : Int) : Maybe Proof
+    -- the package a file is a module of, if it is one (`Server`'s `opened`)
+    | input package (file : Int) : Maybe PackageContext
     | query parsed (file : Int) : (Green Idyll, [(Int, String)]) = parseIdyll (querySource file)
     | query prelude (unit : Int) : Result [Diagnostic] SurfaceProgram = Surface.parsed D.prelude
     | query std (unit : Int) : Result String (PackageNames, Compiled) = stdOf (queryPrelude 0)
     | query problems (file : Int) : [Diagnostic] =
-        problemsOf (querySource file) (queryPrelude 0) (\u -> queryStd 0)
+        problemsIn (querySource file) (queryPackage file) (queryPrelude 0) (\u -> queryStd 0)
     | query formatted (file : Int) : String = formattedOf (querySource file)
     -- what the prompt's declarations and the prelude declare, each its name,
     -- its type and its type shown: what the finder searches, kept until a
@@ -148,6 +150,71 @@ fun prepared (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std
         let c = checkedAgainst (sccModule m) False deps in
         goalNamed c.tc name)
   | Err _ -> None
+
+-- The package a file the editor opened is a module of (`Server`'s
+-- `opened`): its name, the file's module path, and the package's other
+-- modules, each its path and text as they were read.
+@derive(PartialEq)
+@pub record PackageContext = {
+  name : String,
+  own : [String],
+  others : [([String], String)]
+}
+
+-- What is wrong with a file: checked as a module of its package, if it is
+-- one, with the package's other modules; else as a lone program.
+@pub fun problemsIn (text : String) (package : Maybe PackageContext) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : [Diagnostic] ! e =
+  match package with
+  | None -> problemsOf text prelude std
+  | Just pc -> M.unwrapOr (problemsOf text prelude std) (packageProblems text pc prelude std)
+
+-- A module's problems, the package checked whole: each module, in the
+-- order of its imports, parsed after as many newlines as the modules
+-- before it have bytes, so that each has places of its own in one source
+-- map, as the Rust compiler's files do; what is in this module's places
+-- is kept, and shifted back to its text. Nothing, if another module does
+-- not parse (then the module is checked alone).
+fun packageProblems (text : String) (pc : PackageContext) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : Maybe [Diagnostic] ! e =
+  let modules = V.pushBack (V.filter (\m -> fst m != pc.own) pc.others) (pc.own, text) in
+  let paths = V.map (\m -> S.join "." (fst m)) modules in
+  let parted = V.concatMap Parts.partModules (Parts.parts pc.name paths (V.map snd modules)) in
+  let order = V.append (V.filter (\i -> V.getOr "" paths i == "") parted) (V.filter (\i -> V.getOr "" paths i != "") parted) in
+  let ordered = V.concatMap (\i -> match V.get modules i with | Just m -> [m] | None -> []) order in
+  let bases = V.foldl (\acc m -> V.pushBack acc (M.unwrapOr 0 (V.last acc) + S.byteLength (snd m) + 1)) [0] ordered in
+  let ownAt = M.unwrapOr 0 (V.find (\i -> M.map fst (V.get ordered i) == Just pc.own) (V.range 0 (V.len ordered))) in
+  let base = V.getOr 0 bases ownAt in
+  let mine = \(d : Diagnostic) -> match whereAt d with | Meta.Meta a b -> (a >= base and a <= base + S.byteLength text) or (a == 0 and b == 0) in
+  let back = \(ds : [Diagnostic]) -> V.map (\d -> shiftedBack d base) (V.filter mine ds) in
+  let parsedAll = V.map (\i -> match V.get ordered i with | Just (p, t) -> (p, Surface.parsed (S.repeat "\n" (V.getOr 0 bases i) ++ t)) | None -> ([], Err [])) (V.range 0 (V.len ordered)) in
+  match V.find (\x -> fst x == pc.own) parsedAll with
+  | Just (_, Err ds) -> Just (back ds)
+  | _ ->
+      if V.any (\x -> match snd x with | Err _ -> True | Ok _ -> False) parsedAll then None
+      else
+        match prelude with
+        | Err _ -> None
+        | Ok pre ->
+            let progs = V.concatMap (\x -> match snd x with | Ok p -> [(fst x, p)] | Err _ -> []) parsedAll in
+            let deps = if pc.name == "Std" or not (V.any (\m -> S.contains "Std" (snd m)) modules) then [] else (match std () with | Ok (names, c) -> [("Std", names, c)] | Err _ -> []) in
+            let first = V.foldl (\acc d -> match d with | (_, _, (c : Compiled)) -> if c.high > acc then c.high else acc) 0 deps in
+            let vis = V.any (\x -> Rename.mentionsVisibility (Rename.programOf (snd x))) progs in
+            (match Rename.renamePackageWith pc.name progs pre (V.map (\d -> match d with | (n, ns, _) -> (n, ns)) deps) [] first True vis with
+             | (m, _, _) ->
+                 let renaming = V.map (\p -> match p with | (at, why) -> errorAt at why) m.problemsAt in
+                 if not (V.isEmpty renaming) then Just (back renaming)
+                 else
+                   Just (back (runSt (\() ->
+                     let c = checkedAgainst (sccModule m) False (V.map (\d -> match d with | (_, _, cp) -> cp) deps) in
+                     placedDiagnostics (St.getRef c.tc.placed)))))
+
+-- A diagnostic `by` bytes further back.
+fun shiftedBack (d : Diagnostic) (by : Int) : Diagnostic =
+  match d with
+  | Diagnostic.Diagnostic s m w ls ns -> Diagnostic.Diagnostic s m (metaBack w by) (V.map (\l -> (metaBack (fst l) by, snd l)) ls) ns
+
+fun metaBack (m : Meta) (by : Int) : Meta =
+  match m with
+  | Meta.Meta a b -> if a >= by then Meta.Meta (a - by) (b - by) else Meta.Meta 0 0
 
 -- What tactic mode (`Tactic`) needs of the goal `?name`: the type wanted
 -- there; its definition's variables, each its name and type; and, for each

@@ -980,9 +980,20 @@ It answers from a session of the compiler's queries, a `database!`
 (`Session.mw`). Each open file's text is an input, and what is worked out
 from it is a query: its tree, what is wrong with it, and how it is set out.
 After an edit, a query is worked out again only if something it read
-changed. A file is checked as a lone program after the prelude, against Std
-if it names Std. Std is compiled once a session, from the copy this program
-holds (`Driver.stdModules`).
+changed. A file is checked in its package, if it is a module of one, else
+as a lone program after the prelude, against Std if it names Std. Std is
+compiled once a session, from the copy this program holds
+(`Driver.stdModules`), its modules each after those it imports.
+
+When the editor opens a file, the server (`lsp!`'s `opened`) looks for an
+`Idyll.toml` in the directories above it. If one is there, it reads the
+package's other modules into the session (its `package` input). What is
+wrong with the file (`Session.problemsIn`) is then what is wrong with it
+in its package. The package is checked whole, its modules in the order of
+their imports, each parsed after as many newlines as the modules before
+it have bytes. So every module has places of its own in one source map, as
+the Rust compiler's files do, and the open module's diagnostics are those
+in its places, shifted back to its text.
 
 A query may perform nothing but asking other queries, so that its answer
 can be kept. That is why the renamer, the checker and the lowering keep

@@ -917,7 +917,8 @@ accepted when what it does fits within what resuming was found to.
   For that, front/'s renamer, checker and lowering keep their state in `St`
   cells, since a query may perform nothing but asking other queries. Still
   to come:
-  - a file checked in its package, not as a lone program;
+  - hover, definitions and completion in a file's package (what is wrong
+    with it already is: below);
   - completion of the names in scope where the cursor is (locals, a
     module's after its alias), not only the program's top level;
   - hover, definitions and completion kept in the session, rather than
@@ -1460,13 +1461,15 @@ do yet `(unsupported)`, and the tests count those apart.
   evaluation needs it. The lowering's continuation-passing core stays
   hand-written, as do the CEK machine, the layout rule and the dumps the
   differentials compare.
-- [ ] A file checked in its package, in the language server: Lingua's
-  `opened` (lsp!) gives the server a file's path, from which it can read
-  the package's other modules. What is missing is knowing which module a
-  place is in. Each module's places are offsets into its own text, so when
-  the modules are checked together, an error does not say which file it is
-  about. The renamer and the checker would keep the module with each place
-  (or the parser would give each module's offsets a base of their own).
+- [x] A file checked in its package, in the language server (2026-10-30).
+  Lingua's `opened` gives the server a file's path; the server finds its
+  package (an `Idyll.toml` above it) and reads the other modules. The
+  package is checked whole, each module parsed after as many newlines as
+  the modules before it have bytes, so that each has places of its own in
+  one source map, as the Rust compiler's files do, and the open module's
+  diagnostics are shifted back to its text. Still to come: a package's
+  path and git dependencies there (Std is linked), and hover, definitions
+  and completion in the package too.
 
 *Done when:* `front/` compiles the corpus and the tutorial to Cut that Glade
 and Silo run with the answers the CEK machine gives. Done 2026-10-21, and
