@@ -1,0 +1,120 @@
+-- Idyll for agents (`mcp!`), `Idyll agent`: the harness's operations
+-- (`Harness`) served over the Model Context Protocol, from the same session
+-- as the prompt and the language server. An agent checks a file, lists
+-- its goals with their types and contexts, asks for the type at a place,
+-- searches by name or type, runs proof search, and fills goals a tactic or
+-- a term at a time, each answered as JSON.
+--
+-- A tool takes a file's path and reads the file each time it is called, so
+-- the agent may edit it between calls. `tactic` and `fill` answer the
+-- program with the step taken, and write it back only when told to
+-- (`write`), so that an agent can try a step before it keeps it.
+
+use Lingua (mcp!)
+use Idyll.Session
+use Idyll.Harness as H
+use Std.Fs (readToString, writeString)
+use Std.Json (Json)
+use Std.Json as Js
+use Std.Maybe as M
+use Std.String as S
+use Std.Result.Result.*
+use Std.Exn (toResult)
+
+mcp! {
+  pub Agent "idyll" for Session
+    | instructions = "Idyll, a dependently typed language with grades and effects. Check files, list the goals (?name) left in them with their types and the variables in scope, ask for the type at a place, search declarations by name or by type, run proof search on a goal, and fill goals a tactic or a term at a time. Every program a tool answers with has been type checked."
+    | tool check "What is wrong with an Idyll file: each diagnostic with its severity, message and place (lines and columns from 1), how many are errors, and how many goals are left." (path : String) = checkTool
+    | tool goals "The goals (?name) left in an Idyll file: each with its type, its place, and the variables in scope there with their types." (path : String) = goalsTool
+    | tool typeAt "The type of the term at a line and column (each from 1) of an Idyll file, and the span of that term." (path : String, line : Int, column : Int) = typeAtTool
+    | tool search "Search what an Idyll file and the prelude declare: by name, or by type (a query with an arrow, such as `Int -> String`), as Hoogle does." (path : String, query : String) = searchTool
+    | tool prove "Proof search: terms for the goal ?name of an Idyll file (with the variables in scope there), or of a type written out, each one the type checker accepts. At most `limit` of them (5 unless said)." (path : String, goal : String, limit : Maybe Int) = proveTool
+    | tool tactic "One step of tactic mode on the goal ?name of an Idyll file: intro x, intros, exact e, refine e (e may hold new ?goals), apply f, cases x, search, each checked by the type checker. Answers the program with the step taken and the new goals, the first to work on next; with write, the file is written too." (path : String, goal : String, step : String, write : Maybe Bool) = tacticTool
+    | tool fill "Fill the goal ?name of an Idyll file with a term, if the type checker takes it. Answers the program and the goals left; with write, the file is written too." (path : String, goal : String, term : String, write : Maybe Bool) = fillTool
+}
+
+-- The prelude and Std, as the session has them.
+fun preludeOf db = answered (Err []) (\() -> sessionPrelude db 0)
+
+-- A query's answer, or `fallback` if it has none.
+fun answered fallback act = match toResult act with | Ok x -> x | Err _ -> fallback
+
+-- (asked for only where a program names Std; the session keeps it once
+-- it is compiled)
+fun stdOfSession db = \u -> answered (Err "Std could not be compiled") (\() -> sessionStd db 0)
+
+-- A file's text, or why it cannot be read.
+fun textOf (path : String) : Result String String ! { Fs | e } =
+  match readToString path with
+  | Ok text -> Ok text
+  | Err why -> Err "cannot read ${path}: ${why}"
+
+fun withText db (path : String) act =
+  match textOf path with
+  | Err why -> Err why
+  | Ok text -> Ok (act text (preludeOf db) (stdOfSession db))
+
+fun checkTool db (path : String) = withText db path H.check
+
+fun goalsTool db (path : String) = withText db path (\text prelude std -> Json.Object [("goals", H.goals text prelude std)])
+
+fun typeAtTool db (path : String) (line : Int) (column : Int) = withText db path (\text prelude std -> H.typeAtPlace text line column prelude std)
+
+fun searchTool db (path : String) (query : String) = withText db path (\text prelude std -> Json.Object [("hits", H.search text query prelude std)])
+
+fun proveTool db (path : String) (goal : String) (limit : Maybe Int) =
+  withText db path (\text prelude std -> H.prove text (if S.startsWith "?" goal then goal else goal) (M.unwrapOr 5 limit) prelude std)
+
+fun tacticTool db (path : String) (goal : String) (step : String) (write : Maybe Bool) =
+  stepped db path (\text prelude std -> H.tactic text (unquestioned goal) step prelude std) write
+
+fun fillTool db (path : String) (goal : String) (term : String) (write : Maybe Bool) =
+  stepped db path (\text prelude std -> H.fill text (unquestioned goal) term prelude std) write
+
+-- A step's answer; the file written with the program it gives, if `write`.
+fun stepped db (path : String) act (write : Maybe Bool) =
+  match withText db path act with
+  | Err why -> Err why
+  | Ok said ->
+      match (Js.get "error" said, Js.get "source" said, M.unwrapOr False write) with
+      | (Just (Json.String why), _, _) -> Err why
+      | (_, Just (Json.String source), True) ->
+          (match writeString (path, source) with
+           | Ok _ -> Ok said
+           | Err why -> Err "cannot write ${path}: ${why}")
+      | _ -> Ok said
+
+fun unquestioned (goal : String) : String = if S.startsWith "?" goal then S.drop goal 1 else goal
+
+-- --- tests ---------------------------------------------------------------------------
+
+use Lingua.Mcp as Mcp
+use Std.Test (assertEq)
+use Std.Collections.Vector as V
+
+fun call (id : Int) (tool : String) (args : [(String, Json)]) : Json =
+  Json.Object [
+    ("jsonrpc", Json.String "2.0"),
+    ("id", Json.Int id),
+    ("method", Json.String "tools/call"),
+    ("params", Json.Object [("name", Json.String tool), ("arguments", Json.Object args)])
+  ]
+
+@test fun anAgentListsGoalsAndTakesSteps () =
+  let path = "target/idyll-agent-test.idl" in
+  let w = writeString (path, "data N = Z | S N\n\nplus : N -> N -> N\nplus m n = ?todo\n") in
+  let said =
+    Mcp.told
+      [
+        Json.Object [("jsonrpc", Json.String "2.0"), ("id", Json.Int 1), ("method", Json.String "tools/list")],
+        call 2 "goals" [("path", Json.String path)],
+        call 3 "tactic" [("path", Json.String path), ("goal", Json.String "?todo"), ("step", Json.String "cases m")],
+        call 4 "fill" [("path", Json.String path), ("goal", Json.String "todo"), ("term", Json.String "True")]
+      ]
+      serveAgent
+  in
+  let structured = \i -> M.andThen (Js.path ["result", "structuredContent"]) (V.get said i) in
+  let a = assertEq (M.map (\t -> V.len t) (M.andThen Js.asArray (M.andThen (Js.path ["result", "tools"]) (V.get said 0)))) (Just 7) "seven tools" in
+  let b = assertEq (M.andThen (Js.path ["goals"]) (structured 1) |> M.andThen (Js.index 0) |> M.andThen (Js.get "type")) (Just (Json.String "N")) "the goal's type" in
+  let c = assertEq (M.andThen (Js.get "goals") (structured 2)) (Just (Json.Array [Json.String "todo1", Json.String "todo2"])) "a goal for each constructor" in
+  assertEq (M.andThen (Js.path ["result", "isError"]) (V.get said 3)) (Just (Json.Bool True)) "a Bool is no N"

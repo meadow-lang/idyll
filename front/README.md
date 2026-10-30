@@ -27,7 +27,8 @@ does, how it is checked, and why it is built the way it is.
 | Cut | `Lower.mw`, `Typer.mw`, `Prune.mw`, `CutAst.mw`, `Emit.mw` | done: the same Cut as `idyllic-cut` on every program that lowers (212) |
 | The formatter | `Syntax.mw` (a `format!`), `Format.mw` | done: `Idyll fmt`; every program comes out as the same program, and formatting it again changes nothing |
 | The language server | `Session.mw` (a `database!`), `Server.mw` (an `lsp!`) | begun: `Idyll lsp` publishes what is wrong with each open file where it is, says a term's type on hover, colours a file and sets it out |
-| The REPL | `Prompt.mw` (a `repl!`), over the same session | begun: `Idyll repl` keeps the declarations entered, runs expressions on the CEK machine, and says each answer and type as the Rust REPL does; it finds by type, searches for proofs, and fills goals in tactic mode |
+| The REPL | `Prompt.mw` (a `repl!`), over the same session | begun: `Idyll repl` keeps the declarations entered, runs expressions on Glade (the CEK machine where Meadow cannot be run), and says each answer and type as the Rust REPL does; it finds by type, searches for proofs, and fills goals in tactic mode |
+| Tools for agents | `Agent.mw` (an `mcp!`), `Harness.mw`, over the same session | done: `Idyll agent` serves checking, goals, types, search, proof search and tactics over the Model Context Protocol |
 
 "Every program" means 1082 programs: the test corpora in
 `compiler/idyllic/tests/corpus/`, the prelude, every `.idl` file in the
@@ -1065,7 +1066,30 @@ on, which may hold goals of its own:
 The program is then checked again, and the step is taken only if nothing
 is wrong; the new goals are what the checker says they are, type and
 context, as for any goal. So the tactics need no theory of their own: a
-step the checker does not take is not taken.
+step the checker does not take is not taken. One check before a step and
+one after give all a step needs (`Session.checkup`: what is wrong, the
+goals in order and how each is said, and the facts of the goal worked on).
+
+The prompt runs an expression on Glade, as a program runs: the program,
+the declarations so far and the entry, is lowered to Cut (`Session.cutIn`,
+linked with Std where it names it) and handed to `meadow cut`, and what it
+prints is split from its answer. Where Meadow cannot be run, or
+`IDYLL_REPL_CEK` is set, the CEK machine runs it instead.
+
+`Idyll agent` (`Agent.mw`, an `mcp!`) serves the same things to agents,
+over the Model Context Protocol on standard input and output. Its tools
+(`Harness.mw`), each answered as JSON:
+- `check`: a file's diagnostics, each with its severity and place, and
+  how many goals are left;
+- `goals`: each goal with its type, its place, and the variables in scope;
+- `typeAt`: the type of the term at a line and column;
+- `search`: the finder, by name or by type;
+- `prove`: proof search on a goal, or for a type written out;
+- `tactic` and `fill`: a step of tactic mode on a goal, or a term in its
+  place, answered with the program and the goals it made; written to the
+  file only when asked (`write`), so that an agent may try a step first.
+
+A tool reads its file each time, so the agent may edit it between calls.
 
 ## Dependencies
 

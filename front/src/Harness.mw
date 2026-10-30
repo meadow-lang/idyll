@@ -20,6 +20,9 @@ use Idyll.Find as Find
 use Idyll.Prove as Prove
 use Idyll.Tactic as Tactic
 use Idyll.Core as C
+use Idyll.Surface (SurfaceProgram)
+use Idyll.Rename (PackageNames)
+use Idyll.Interface (Compiled)
 use Lingua.Diagnostic (Diagnostic, Severity, severity, message, whereAt)
 use Lingua.Lang (Meta)
 use Lingua.Repl (Hit)
@@ -33,7 +36,7 @@ use Std.Result.Result.*
 
 -- What is wrong with `text`, each with its severity and where, and how many
 -- goals are left.
-@pub fun check (text : String) prelude std : Json =
+@pub fun check (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : Json ! e =
   let ds = problemsOf text prelude std in
   Json.Object [
     ("diagnostics", Json.Array (V.map (\d -> diagnosticJson text d) ds)),
@@ -71,7 +74,7 @@ fun offsetFrom (text : String) (line : Int) (column : Int) (i : Int) (l : Int) :
 
 -- The goals of `text`, each its name, type, where it is, and the variables
 -- in scope there with their types.
-@pub fun goals (text : String) prelude std : Json =
+@pub fun goals (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : Json ! e =
   Json.Array (V.concatMap (\name -> M.unwrapOr [] (M.map (\f -> [goalJson text name f]) (goalFacts text prelude std name))) (goalNames text prelude std))
 
 fun goalJson (text : String) (name : String) (f : GoalFacts) : Json =
@@ -82,18 +85,18 @@ fun goalJson (text : String) (name : String) (f : GoalFacts) : Json =
     ("context", Json.Array (V.map (\l -> match l with | (x, t) -> Json.Object [("name", Json.String x), ("type", Json.String (C.shown False t))]) f.locals))
   ]
 
-fun goalNames (text : String) prelude std : [String] =
+fun goalNames (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : [String] ! e =
   V.map (\g -> S.drop (M.unwrapOr g (M.map (\at -> S.slice g 0 at) (S.indexOf " :" g))) 1) (goalsIn text prelude std)
 
 -- The type of the term at `line` and `column`, and the span it covers.
-@pub fun typeAtPlace (text : String) (line : Int) (column : Int) prelude std : Json =
+@pub fun typeAtPlace (text : String) (line : Int) (column : Int) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : Json ! e =
   match typeAt text prelude std (offsetOf text line column) with
   | None -> Json.Null
   | Just (Meta.Meta a b, ty) -> Json.Object [("type", Json.String ty), ("start", placeJson text a), ("end", placeJson text b)]
 
 -- The finder's hits for `query`, a name or a type, among what `text` and
 -- the prelude declare.
-@pub fun search (text : String) (query : String) prelude std : Json =
+@pub fun search (text : String) (query : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : Json ! e =
   Json.Array
     (V.map
       (\h -> match h with | Hit.Hit name kind from doc insert before -> Json.Object [("name", Json.String name), ("type", Json.String kind), ("from", Json.String from)])
@@ -101,7 +104,7 @@ fun goalNames (text : String) prelude std : [String] =
 
 -- Terms for the goal `?name` (or of the type `goal` written out), at most
 -- `limit`, each one the checker takes.
-@pub fun prove (text : String) (goal : String) (limit : Int) prelude std : Json =
+@pub fun prove (text : String) (goal : String) (limit : Int) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : Json ! e =
   let catalog = catalogOf text prelude std in
   let found =
     if S.startsWith "?" goal then Prove.provedAt text (S.drop goal 1) catalog prelude std limit
@@ -114,7 +117,7 @@ fun goalNames (text : String) prelude std : [String] =
 -- One step of tactic mode on the goal `?name` of `text`: the program with
 -- the step taken, and the goals the step made, the first to work on next;
 -- or why the step is not taken.
-@pub fun tactic (text : String) (goal : String) (step : String) prelude std : Json =
+@pub fun tactic (text : String) (goal : String) (step : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : Json ! e =
   match Tactic.begin text goal prelude std with
   | Err why -> Json.Object [("error", Json.String why)]
   | Ok p ->
@@ -124,7 +127,7 @@ fun goalNames (text : String) prelude std : [String] =
 
 -- The goal `?name` of `text` given `term`: the program, if the checker
 -- takes it, with the goals left.
-@pub fun fill (text : String) (goal : String) (term : String) prelude std : Json = tactic text goal ("exact " ++ term) prelude std
+@pub fun fill (text : String) (goal : String) (term : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : Json ! e = tactic text goal ("exact " ++ term) prelude std
 
 -- --- tests ---------------------------------------------------------------------------
 

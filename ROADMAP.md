@@ -954,7 +954,7 @@ accepted when what it does fits within what resuming was found to.
   The REPL lists the goals (`:goals`), proof search runs on one
   (`:prove ?name`), and tactic mode opens on one and puts what it builds
   in its place.
-- [ ] **A harness for agents** (Chris, 2026-10-16): an MCP server, or a
+- [x] **A harness for agents** (Chris, 2026-10-16): an MCP server, or a
   harness like it, so that an agent does type-driven development and
   proofs as a person does at the REPL, but in structured form. It would:
   - check a file, and answer with structured diagnostics;
@@ -969,6 +969,14 @@ accepted when what it does fits within what resuming was found to.
   It is the same functions the REPL and the language server use: one
   search, one proof search, one tactic engine in `front/`, three ways to
   reach them. Its natural home is beside Lingua's `repl!` and `lsp!`.
+
+  **Done** (2026-10-30): `Idyll agent` is an `mcp!` (Lingua's, written for
+  it, beside `repl!` and `lsp!`) over the same session. Its tools are
+  `check`, `goals`, `typeAt`, `search`, `prove`, `tactic` and `fill`
+  (`Harness.mw`), each answered as JSON. Each reads its file when called;
+  `tactic` and `fill` answer the program with the step taken, and write
+  the file only when asked, so an agent may try a step first and keep its
+  own history to undo.
 - [~] **front/'s REPL**, `Idyll repl`, a Lingua `repl!` over the language
   server's session. It works as the Rust REPL does:
   - the declarations entered so far are kept as source, and each entry is
@@ -980,8 +988,9 @@ accepted when what it does fits within what resuming was found to.
 
   Its commands are `:type`, `:reset` and `:declarations`; Tab completes
   names, and Ctrl-F finds what has been declared. Still to come: running
-  on Glade rather than the CEK machine, and the rest of the Rust REPL's
-  commands (`:ir`, `:load`, ...).
+  the rest of the Rust REPL's commands (`:ir`, `:load`, ...). It runs
+  expressions on Glade (2026-10-30), as a program runs, the CEK machine
+  where Meadow cannot be run.
 - [~] **Searching and proving in the REPL**, for the REPL `front/` gets
   from Lingua's `repl!` (Chris, 2026-10-16). The Rust REPL already has
   the first two, which carry over; the third is new. **The finder is
