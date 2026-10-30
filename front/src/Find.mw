@@ -1,0 +1,431 @@
+-- Finding a declaration, by name or by type: what the prompt's finder
+-- (Ctrl-F, `repl!`'s `search`) answers, as `idyll-driver/src/find.rs` does
+-- for the Rust REPL, after Meadow's `meadow-find`.
+--
+-- A query is read one of two ways. By name, fuzzily, with Lingua's own
+-- ranking (`ranked`): `shw` finds `showInt`. By type, the way Hoogle reads
+-- one, when the query has an arrow in it or starts with `:`: `Int ->
+-- String` finds `showInt`, and `: String` what makes one.
+--
+-- For a type search a signature is flattened into a `Sig`: its explicit
+-- arguments in order, and its result, over a small `Ty`. An implicit binder
+-- makes a type variable, and a grade or an effect is left out. A match is
+-- a unification of the query with the declaration, their variables kept
+-- apart, under every way of pairing the query's arguments with the
+-- declaration's; and it is priced, the cheapest first:
+--
+-- | what happened                                             | cost |
+-- | --------------------------------------------------------- | ---- |
+-- | the same type, up to naming its variables                 |    0 |
+-- | the arguments came in another order                       |    1 |
+-- | a variable of the declaration had to be a particular type |    1 |
+-- | the declaration takes an argument the query did not give  |    2 |
+-- | the declaration forces two of the query's variables equal |    2 |
+-- | a variable of the query had to be a particular type       |    3 |
+-- | the declaration's result is only a variable               |    3 |
+--
+-- The result has to unify or there is no match at all.
+
+use Idyll.Core (Core)
+use Idyll.Core as C
+use Idyll.Hir (Icit)
+use Lingua.Repl (Hit, ranked)
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as Hm
+use Std.Collections.HashMap (HashMap)
+use Std.String as S
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+-- A type, as simple as matching can make do with: a variable, numbered in
+-- its signature; a named type applied to its arguments; a function taken
+-- or given as a value, its arguments flattened; or anything at all (`_`, or
+-- what has not been typed yet).
+@derive(PartialEq)
+@pub data Ty = Var Int | Con String [Ty] | Fun [Ty] Ty | Any
+
+-- A signature flattened for comparison.
+@pub data Sig = Sig [Ty] Ty
+
+fun sigArgs (s : Sig) : [Ty] = match s with | Sig.Sig a _ -> a
+
+fun sigResult (s : Sig) : Ty = match s with | Sig.Sig _ r -> r
+
+-- --- a declaration's type ---------------------------------------------------------
+
+-- A declaration's type, as a search compares it.
+@pub fun sigOf (ty : Core) : Sig =
+  match fst (flatten ty [] 0) with
+  | Ty.Fun args result -> Sig.Sig args result
+  | result -> Sig.Sig [] result
+
+-- A type, its binders' variables in `vars` (innermost last), numbering new
+-- ones from `next`; and the next number after it.
+fun flatten (ty : Core) (vars : [Ty]) (next : Int) : (Ty, Int) =
+  match ty with
+  | Core.Pi _ icit _ _ dom cod ->
+      let (d, n1) = flatten dom vars next in
+      -- whatever the binder is, a use of it in what follows is a variable
+      let (rest, n2) = flatten cod (V.pushBack vars (Ty.Var n1)) (n1 + 1) in
+      if icit != Icit.Explicit then (rest, n2)
+      else
+        (match rest with
+         | Ty.Fun args result -> (Ty.Fun (V.append [d] args) result, n2)
+         | result -> (Ty.Fun [d] result, n2))
+  | Core.Comp t _ -> flatten t vars next
+  | Core.BoxTy _ t -> flatten t vars next
+  | Core.Runtime _ t -> flatten t vars next
+  | Core.Type _ -> (Ty.Con "Type" [], next)
+  | Core.LitTy _ -> (Ty.Con (C.shown False ty) [], next)
+  | Core.Var i name ->
+      (match V.get vars (V.len vars - i - 1) with
+       | Just t -> (t, next)
+       | None -> (Ty.Con (spelling name) [], next))
+  | Core.Opaque _ name -> (Ty.Con (spelling name) [], next)
+  | Core.App _ _ ->
+      let (head, args) = spineOf ty [] in
+      let (flatArgs, n1) = V.foldl (\acc a -> match acc with | (done, n) -> (match flatten a vars n with | (t, n2) -> (V.pushBack done t, n2))) ([], next) args in
+      (match flatten head vars n1 with
+       | (Ty.Con name already, n2) -> (Ty.Con name (V.append already flatArgs), n2)
+       | (_, n2) -> (Ty.Any, n2))
+  | _ -> (Ty.Any, next)
+
+fun spineOf (c : Core) (args : [Core]) : (Core, [Core]) =
+  match c with
+  | Core.App f a -> spineOf f (V.append [a] args)
+  | _ -> (c, args)
+
+-- `Nat.Z` is `Z`, and `Math.Vec` is `Vec`: a search matches spellings.
+fun spelling (name : String) : String = M.unwrapOr name (V.last (S.split "." name))
+
+-- --- a query, as somebody types it ------------------------------------------------
+
+@derive(PartialEq)
+data Tok = Arrow | Open | Close | OpenGrade | CloseGrade | OpenBrace | CloseBrace | Colon | Bang | Upper String | Lower String | Number String | Hole
+
+fun byte (s : String) (i : Int) : Int = if i >= 0 and i < S.byteLength s then toInt (stringByteAt s i) else 0 - 1
+
+fun isAlpha (b : Int) : Bool = (b >= 65 and b <= 90) or (b >= 97 and b <= 122)
+
+fun isWord (b : Int) : Bool = isAlpha b or (b >= 48 and b <= 57) or b == 95 or b == 39
+
+fun lexQuery (s : String) (i : Int) (out : [Tok]) : [Tok] =
+  let b = byte s i in
+  if b < 0 then out
+  else if b == 32 or b == 9 or b == 10 or b == 13 then lexQuery s (i + 1) out
+  else if b == 45 and byte s (i + 1) == 62 then lexQuery s (i + 2) (V.pushBack out Tok.Arrow)
+  else if b == 40 then lexQuery s (i + 1) (V.pushBack out Tok.Open)
+  else if b == 41 then lexQuery s (i + 1) (V.pushBack out Tok.Close)
+  else if b == 91 then lexQuery s (i + 1) (V.pushBack out Tok.OpenGrade)
+  else if b == 93 then lexQuery s (i + 1) (V.pushBack out Tok.CloseGrade)
+  else if b == 123 then lexQuery s (i + 1) (V.pushBack out Tok.OpenBrace)
+  else if b == 125 then lexQuery s (i + 1) (V.pushBack out Tok.CloseBrace)
+  else if b == 58 then lexQuery s (i + 1) (V.pushBack out Tok.Colon)
+  else if b == 33 then lexQuery s (i + 1) (V.pushBack out Tok.Bang)
+  else if isWord b then
+    let stop = wordEnd s i in
+    let word = S.slice s i stop in
+    let last = spelling word in
+    let first = byte last 0 in
+    let t =
+      if last == "_" then Tok.Hole
+      else if first >= 48 and first <= 57 then Tok.Number last
+      else if first >= 65 and first <= 90 then Tok.Upper last
+      else Tok.Lower last
+    in
+    lexQuery s stop (V.pushBack out t)
+  -- anything else is not something a type is written with: skipping it
+  -- is kinder than refusing the whole query
+  else lexQuery s (i + 1) out
+
+-- Where a word starting at `i` ends: a `.` within it if a letter follows.
+fun wordEnd (s : String) (i : Int) : Int =
+  let b = byte s i in
+  if isWord b or (b == 46 and isAlpha (byte s (i + 1))) then wordEnd s (i + 1) else i
+
+-- The parser's state: the tokens, where it is, and each variable's name in
+-- the order the query first mentions it.
+record P = { toks : [Tok], at : Int, vars : [String] }
+
+fun peek (p : P) : Maybe Tok = V.get p.toks p.at
+
+fun ahead (p : P) (n : Int) : Maybe Tok = V.get p.toks (p.at + n)
+
+fun step (p : P) : P = { p | at = p.at + 1 }
+
+fun eat (p : P) (t : Tok) : (Bool, P) = if peek p == Just t then (True, step p) else (False, p)
+
+-- Read a type the way it is written in a signature, forgiving what has not
+-- been typed yet: `List a -> ` is a function from `List a` to anything.
+@pub fun parseQuery (query : String) : Sig =
+  match arrow (P { toks = lexQuery query 0 [], at = 0, vars = [] }) with
+  | (Ty.Fun args result, _) -> Sig.Sig args result
+  | (result, _) -> Sig.Sig [] result
+
+-- A type, arrows and all: right-associative, and flattened as it goes.
+fun arrow (p : P) : (Ty, P) =
+  match eat p Tok.OpenBrace with
+  -- `{a : Type} ->`: a variable, and nothing to pass
+  | (True, p1) ->
+      let p2 = skipTo p1 Tok.CloseBrace in
+      let p3 = snd (eat (snd (eat p2 Tok.CloseBrace)) Tok.Arrow) in
+      arrow p3
+  | (False, _) ->
+      let (first, p1) = match binder p with | Just r -> r | None -> app p in
+      (match eat p1 Tok.Arrow with
+       | (False, _) -> (first, p1)
+       | (True, p2) ->
+           -- nothing after the arrow yet is a result not typed yet
+           let (rest, p3) = if startsType p2 then arrow p2 else (Ty.Any, p2) in
+           (match rest with
+            | Ty.Fun args result -> (Ty.Fun (V.append [first] args) result, p3)
+            | result -> (Ty.Fun [first] result, p3)))
+
+fun skipTo (p : P) (t : Tok) : P =
+  match peek p with
+  | None -> p
+  | Just u -> if u == t then p else skipTo (step p) t
+
+-- `(x : [g] T)`, a named binder: its type.
+fun binder (p : P) : Maybe (Ty, P) =
+  let named = match ahead p 1 with | Just (Tok.Lower _) -> True | Just Tok.Hole -> True | _ -> False in
+  if peek p == Just Tok.Open and named and ahead p 2 == Just Tok.Colon then
+    let p1 = grade { p | at = p.at + 3 } in
+    let (ty, p2) = arrow p1 in
+    Just (ty, snd (eat p2 Tok.Close))
+  else None
+
+-- A grade, `[..]`, left out.
+fun grade (p : P) : P =
+  match eat p Tok.OpenGrade with
+  | (True, p1) -> snd (eat (skipTo p1 Tok.CloseGrade) Tok.CloseGrade)
+  | (False, _) -> p
+
+fun startsType (p : P) : Bool = peek p == Just Tok.OpenBrace or startsAtom p
+
+fun startsAtom (p : P) : Bool =
+  match peek p with
+  | Just (Tok.Upper _) -> True
+  | Just (Tok.Lower _) -> True
+  | Just (Tok.Number _) -> True
+  | Just Tok.Hole -> True
+  | Just Tok.Open -> True
+  | _ -> False
+
+-- `Maybe a`, or anything else an atom starts; a grade after it is left out.
+fun app (p : P) : (Ty, P) =
+  if not (startsAtom p) then (Ty.Any, p)
+  else
+    let (head, p1) = atom p in
+    let (args, p2) = appArgs p1 [] in
+    match head with
+    | Ty.Con name already -> (if V.isEmpty already then (Ty.Con name args, p2) else (head, p2))
+    -- a variable applied to something is more than this search compares:
+    -- it matches anything
+    | _ -> (if V.isEmpty args then (head, p2) else (Ty.Any, p2))
+
+fun appArgs (p : P) (args : [Ty]) : ([Ty], P) =
+  if peek p == Just Tok.OpenGrade then appArgs (grade p) args
+  else if startsAtom p then (match atom p with | (t, p1) -> appArgs p1 (V.pushBack args t))
+  else (args, p)
+
+fun atom (p : P) : (Ty, P) =
+  match peek p with
+  | None -> (Ty.Any, p)
+  | Just t ->
+      let p1 = step p in
+      (match t with
+       | Tok.Upper name -> (Ty.Con name [], p1)
+       | Tok.Number name -> (Ty.Con name [], p1)
+       | Tok.Lower name -> variable p1 name
+       | Tok.Hole -> (Ty.Any, p1)
+       | Tok.Open ->
+           (match eat p1 Tok.Close with
+            | (True, p2) -> (Ty.Con "()" [], p2)
+            | (False, _) -> (match arrow p1 with | (inner, p2) -> (inner, snd (eat p2 Tok.Close))))
+       -- punctuation where a type should be: `!` starts an effect, which is
+       -- the end of what is compared; anything else is a slip
+       | _ -> (Ty.Any, { p1 | at = V.len p1.toks }))
+
+fun variable (p : P) (name : String) : (Ty, P) =
+  match V.find (\i -> V.getOr "" p.vars i == name) (V.range 0 (V.len p.vars)) with
+  | Just i -> (Ty.Var i, p)
+  | None -> (Ty.Var (V.len p.vars), { p | vars = V.pushBack p.vars name })
+
+-- --- matching ---------------------------------------------------------------------
+
+-- Where a declaration's variables are numbered from while it is matched, so
+-- that they and the query's are never the same variable by accident.
+def declBase = 16777216
+
+-- A type, its variables moved clear of others by `by`.
+fun renamed (t : Ty) (by : Int) : Ty =
+  match t with
+  | Ty.Var v -> Ty.Var (by + v)
+  | Ty.Con n args -> Ty.Con n (V.map (\a -> renamed a by) args)
+  | Ty.Fun args r -> Ty.Fun (V.map (\a -> renamed a by) args) (renamed r by)
+  | Ty.Any -> Ty.Any
+
+type Subst = HashMap Int Ty
+
+fun walk (s : Subst) (t : Ty) : Ty =
+  match t with
+  | Ty.Var v -> (match Hm.lookup v s with | Just next -> walk s next | None -> t)
+  | _ -> t
+
+fun resolved (s : Subst) (t : Ty) : Ty =
+  match walk s t with
+  | Ty.Con n args -> Ty.Con n (V.map (\a -> resolved s a) args)
+  | Ty.Fun args r -> Ty.Fun (V.map (\a -> resolved s a) args) (resolved s r)
+  | other -> other
+
+fun occurs (s : Subst) (v : Int) (t : Ty) : Bool =
+  match walk s t with
+  | Ty.Var w -> w == v
+  | Ty.Con _ args -> V.any (\a -> occurs s v a) args
+  | Ty.Fun args r -> V.any (\a -> occurs s v a) args or occurs s v r
+  | Ty.Any -> False
+
+-- `a` and `b` made one, or `None` if they cannot be.
+fun unify (s : Subst) (a : Ty) (b : Ty) : Maybe Subst =
+  match (walk s a, walk s b) with
+  | (Ty.Any, _) -> Just s
+  | (_, Ty.Any) -> Just s
+  | (Ty.Var x, Ty.Var y) -> if x == y then Just s else Just (Hm.insert x (Ty.Var y) s)
+  | (Ty.Var x, t) -> if occurs s x t then None else Just (Hm.insert x t s)
+  | (t, Ty.Var x) -> if occurs s x t then None else Just (Hm.insert x t s)
+  | (Ty.Con n1 a1, Ty.Con n2 a2) -> if n1 == n2 and V.len a1 == V.len a2 then unifyAll s a1 a2 else None
+  | (Ty.Fun p1 r1, Ty.Fun p2 r2) -> if V.len p1 == V.len p2 then M.andThen (\s2 -> unify s2 r1 r2) (unifyAll s p1 p2) else None
+  | _ -> None
+
+fun unifyAll (s : Subst) (xs : [Ty]) (ys : [Ty]) : Maybe Subst =
+  V.foldl (\acc i -> M.andThen (\s2 -> unify s2 (V.getOr Ty.Any xs i) (V.getOr Ty.Any ys i)) acc) (Just s) (V.range 0 (V.len xs))
+
+-- What it costs to read `decl` as an answer to `query`: `None` if it is not
+-- one, the cheaper the better otherwise.
+@pub fun cost (query : Sig) (decl : Sig) : Maybe Int =
+  let m = V.len (sigArgs query) in
+  let n = V.len (sigArgs decl) in
+  -- more arguments than the declaration takes, it cannot be given
+  if m > n then None
+  else
+    let result = renamed (sigResult decl) declBase in
+    let args = V.map (\a -> renamed a declBase) (sigArgs decl) in
+    -- the result is what cannot be negotiated, and trying it first rules
+    -- out nearly every declaration before any argument is looked at
+    match unify Hm.empty (sigResult query) result with
+    | None -> None
+    | Just base ->
+        let priced =
+          V.concatMap
+            (\pick ->
+              match unifyAll base (sigArgs query) (V.map (\j -> V.getOr Ty.Any args j) pick) with
+              | None -> []
+              | Just s ->
+                  let extra = n - m in
+                  let c = price s query decl + extra * (if m == 0 then 1 else 2) in
+                  let reordered = V.any (\i -> V.getOr 0 pick i > V.getOr 0 pick (i + 1)) (V.range 0 (V.len pick - 1)) in
+                  [if reordered then c + 1 else c])
+            (pairings m n)
+        in
+        M.map (\c -> c + anythingCost query decl) (V.foldl (\best c -> match best with | Just b -> Just (if c < b then c else b) | None -> Just c) None priced)
+
+-- A declaration whose result is a bare type variable answers every query
+-- anybody types, which is rarely what they meant.
+fun anythingCost (query : Sig) (decl : Sig) : Int =
+  let asked = match sigResult query with | Ty.Var _ -> False | Ty.Any -> False | _ -> True in
+  match sigResult decl with
+  | Ty.Var _ -> if asked then 3 else 0
+  | _ -> 0
+
+-- Every way of giving `m` query arguments to `n` declaration arguments, one
+-- each: all of them while there are few, and past that only the ones that
+-- keep the query's order.
+fun pairings (m : Int) (n : Int) : [[Int]] =
+  let every = V.foldl (\acc k -> acc * k) 1 (V.range (n - m + 1) (n + 1)) <= 120 in
+  pairs m n every [] []
+
+fun pairs (m : Int) (n : Int) (every : Bool) (current : [Int]) (out : [[Int]]) : [[Int]] =
+  if V.len current == m then V.pushBack out current
+  else
+    let from = if every then 0 else (match V.last current with | Just j -> j + 1 | None -> 0) in
+    V.foldl (\acc j -> if V.elem j current then acc else pairs m n every (V.pushBack current j) acc) out (V.range from n)
+
+-- What the variables had to become for the match to hold.
+fun price (s : Subst) (query : Sig) (decl : Sig) : Int =
+  let qvars = distinct (V.concatMap varsOf (V.pushBack (sigArgs query) (sigResult query))) in
+  let dvars = distinct (V.concatMap (\t -> varsOf (renamed t declBase)) (V.pushBack (sigArgs decl) (sigResult decl))) in
+  let side =
+    \vs perConcrete ->
+      V.foldl
+        (\acc v ->
+          match acc with
+          | (c, roots) ->
+              (match resolved s (Ty.Var v) with
+               | Ty.Var root -> (c, V.pushBack roots root)
+               | Ty.Any -> (c, roots)
+               | _ -> (c + perConcrete, roots)))
+        (0, [])
+        vs
+  in
+  let (qc, qroots) = side qvars 3 in
+  let (dc, droots) = side dvars 1 in
+  -- two of the query's variables made one costs 2; two of the declaration's, 1
+  let merged = \roots per -> V.foldl (\acc r -> acc + per * (count r roots - 1)) 0 (distinct roots) in
+  qc + dc + merged qroots 2 + merged droots 1
+
+fun count (x : Int) (xs : [Int]) : Int = V.len (V.filter (\y -> y == x) xs)
+
+fun distinct (xs : [Int]) : [Int] = V.foldl (\acc x -> if V.elem x acc then acc else V.pushBack acc x) [] xs
+
+fun varsOf (t : Ty) : [Int] =
+  match t with
+  | Ty.Var v -> [v]
+  | Ty.Con _ args -> V.concatMap varsOf args
+  | Ty.Fun args r -> V.append (V.concatMap varsOf args) (varsOf r)
+  | Ty.Any -> []
+
+-- --- the search --------------------------------------------------------------------
+
+-- Whether a query is a type: it has an arrow in it, or starts with `:`.
+@pub fun byType (query : String) : Bool = S.contains "->" query or S.startsWith ":" (S.trim query)
+
+-- What a query finds among declarations, each a name, its type and its
+-- type as written: by type the cheapest matches first, by name Lingua's
+-- ranking.
+@pub fun found (query : String) (decls : [(String, Core, String)]) : [Hit] =
+  let hit = \d -> match d with | (name, _, shown) -> Hit.Hit name shown "" "" name "" in
+  if byType query then
+    let q = parseQuery (if S.startsWith ":" (S.trim query) then S.drop (S.trim query) 1 else query) in
+    let priced = V.concatMap (\d -> match d with | (_, ty, _) -> (match cost q (sigOf ty) with | Just c -> [(c, d)] | None -> [])) decls in
+    let ordered = V.foldl (\acc x -> V.concat [V.filter (\y -> fst y <= fst x) acc, [x], V.filter (\y -> fst y > fst x) acc]) [] priced in
+    V.map (\x -> hit (snd x)) (V.take ordered 50)
+  else V.map hit (ranked query (\d -> match d with | (name, _, _) -> name) decls)
+
+use Std.Test (assertEq)
+
+@test fun aQueryIsReadAsASignatureIsWritten () =
+  assertEq
+    (parseQuery "{a : Type} -> (n : [] Int) -> List a [2] -> (a -> b) -> Maybe b ! Console")
+    (Sig.Sig [Ty.Con "Int" [], Ty.Con "List" [Ty.Var 0], Ty.Fun [Ty.Var 0] (Ty.Var 1)] (Ty.Con "Maybe" [Ty.Var 1]))
+    "the explicit arguments, and the result"
+
+@test fun whatIsNotTypedYetIsAnything () =
+  assertEq (parseQuery "List a -> ") (Sig.Sig [Ty.Con "List" [Ty.Var 0]] Ty.Any) "a result not typed yet"
+
+@test fun theSameTypeUnderOtherNamesCostsNothing () =
+  assertEq (cost (parseQuery "(a -> b) -> List a -> List b") (parseQuery "(x -> y) -> List x -> List y")) (Just 0) "nothing"
+
+@test fun aDifferentResultIsNoMatch () =
+  let a = assertEq (cost (parseQuery "List a -> Int") (parseQuery "List a -> String")) None "the result" in
+  assertEq (cost (parseQuery "a -> b -> c") (parseQuery "a -> c")) None "more arguments than it takes"
+
+@test fun argumentsInAnotherOrderStillMatch () =
+  let take = parseQuery "Int -> List a -> List a" in
+  let a = assertEq (cost (parseQuery "List a -> Int -> List a") take) (Just 1) "another order" in
+  assertEq (cost (parseQuery "Int -> List a -> List a") take) (Just 0) "the same order"
+
+@test fun moreGeneralIsBetterThanLess () =
+  let general = M.unwrapOr 99 (cost (parseQuery "List Int -> Int") (parseQuery "List a -> Int")) in
+  let specific = M.unwrapOr 99 (cost (parseQuery "List a -> Int") (parseQuery "List Int -> Int")) in
+  assertEq (general < specific) True "general first"

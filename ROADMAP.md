@@ -967,9 +967,13 @@ accepted when what it does fits within what resuming was found to.
   names, and Ctrl-F finds what has been declared. Still to come: running
   on Glade rather than the CEK machine, and the rest of the Rust REPL's
   commands (`:ir`, `:load`, ...).
-- [ ] **Searching and proving in the REPL**, for the REPL `front/` gets
+- [~] **Searching and proving in the REPL**, for the REPL `front/` gets
   from Lingua's `repl!` (Chris, 2026-10-16). The Rust REPL already has
-  the first two, which carry over; the third is new.
+  the first two, which carry over; the third is new. **The finder is
+  done** in front/: `repl!`'s `search` (`Find.mw`, a port of `find.rs`)
+  reads a query by name, with Lingua's ranking, or by type, as Hoogle
+  does. It searches a `catalog` query of the session, kept until a
+  declaration is entered. Proof search and tactic mode are left.
   - **A finder like Hoogle**: Ctrl-F searches by name, fuzzily, or by type.
     A type query finds what fits it up to the order of arguments,
     instantiation, implicits and grades, the closest first. Today's

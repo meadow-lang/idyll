@@ -11,10 +11,11 @@
 -- drawn against the entry.
 
 use Lingua (repl!)
-use Lingua.Repl (Reply)
+use Lingua.Repl (Reply, hitName)
 use Lingua.Diagnostic (Diagnostic, renderAll, whereAt, isError)
 use Lingua.Lang (Meta)
 use Idyll.Session
+use Idyll.Find as Find
 use Idyll.Syntax (parseIdyll)
 use Idyll.Scc (sccModule)
 use Idyll.Check (checkedAgainst)
@@ -38,6 +39,7 @@ repl! {
     | errors = errorsIn
     | completion = completedIn
     | declarations = declaredSoFar
+    | search = searchedFor
     | commands = promptCommands
     | prompt = "> "
     | history = ".idyll_history"
@@ -159,6 +161,12 @@ fun completedIn db file at =
   let before = earlierIn db in
   answered [] (\() -> completionsIn (before ++ sessionSource db file) (sessionPrelude db 0) (\u -> stdIn db) (S.byteLength before + at))
 
+-- What the finder finds for a query: by name, or by type as Hoogle reads
+-- one (`Find`), among what has been declared and what the prelude has.
+fun searchedFor db file (query : String) =
+  let w = if answered True (\() -> (let x = sessionEarlier db 0 in False)) then setSessionEarlier db 0 "" else () in
+  answered [] (\() -> Find.found query (sessionCatalog db 0))
+
 -- What has been declared so far, for the finder: each name and its type.
 fun declaredSoFar db file =
   let before = earlierIn db in
@@ -219,6 +227,11 @@ fun enteredAll (entries : [String]) =
   let w = setSessionSource db 0 "half : Int -> Int\nhalf n = ?todo" in
   let said = entered db 0 in
   assertEq (goalsIn (earlierIn db) (sessionPrelude db 0) (\u -> stdIn db)) ["?todo : Int"] "the goal, with its type"
+
+@test fun theFinderFindsByType () =
+  let db = batchSession () in
+  let names = V.map (\h -> hitName h) (searchedFor db 0 "Int -> String") in
+  assertEq (V.elem "showInt" names) True "showInt : Int -> String"
 
 @test fun anEntryThatIsWrongIsForgotten () =
   let said = enteredAll ["x : Int\nx = True", "x"] in
