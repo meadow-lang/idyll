@@ -19,7 +19,6 @@ use Std.Json as Js
 use Std.Maybe as M
 use Std.String as S
 use Std.Result.Result.*
-use Std.Exn (toResult)
 
 mcp! {
   pub Agent "idyll" for Session
@@ -33,15 +32,13 @@ mcp! {
     | tool fill "Fill the goal ?name of an Idyll file with a term, if the type checker takes it. Answers the program and the goals left; with write, the file is written too." (path : String, goal : String, term : String, write : Maybe Bool) = fillTool
 }
 
--- The prelude and Std, as the session has them.
-fun preludeOf db = answered (Err []) (\() -> sessionPrelude db 0)
-
--- A query's answer, or `fallback` if it has none.
-fun answered fallback act = match toResult act with | Ok x -> x | Err _ -> fallback
+-- The prelude and Std, as the session has them. (A query that cannot be
+-- answered is the tool's error: `mcp!` says so for it.)
+fun preludeOf db = sessionPrelude db 0
 
 -- (asked for only where a program names Std; the session keeps it once
 -- it is compiled)
-fun stdOfSession db = \u -> answered (Err "Std could not be compiled") (\() -> sessionStd db 0)
+fun stdOfSession db = \u -> sessionStd db 0
 
 -- A file's text, or why it cannot be read.
 fun textOf (path : String) : Result String String ! { Fs | e } =
