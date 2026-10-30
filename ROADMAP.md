@@ -973,7 +973,10 @@ accepted when what it does fits within what resuming was found to.
   done** in front/: `repl!`'s `search` (`Find.mw`, a port of `find.rs`)
   reads a query by name, with Lingua's ranking, or by type, as Hoogle
   does. It searches a `catalog` query of the session, kept until a
-  declaration is entered. Proof search and tactic mode are left.
+  declaration is entered. **Proof search is done** too: `:prove T`, and
+  `?T` in the finder (`Prove.mw`, a port of `prove.rs`). It proposes terms
+  from the goal's shape and verifies them with the checker, in batches.
+  Tactic mode is left.
   - **A finder like Hoogle**: Ctrl-F searches by name, fuzzily, or by type.
     A type query finds what fits it up to the order of arguments,
     instantiation, implicits and grades, the closest first. Today's

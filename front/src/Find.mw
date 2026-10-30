@@ -47,9 +47,12 @@ use Std.Maybe.Maybe.*
 -- A signature flattened for comparison.
 @pub data Sig = Sig [Ty] Ty
 
-fun sigArgs (s : Sig) : [Ty] = match s with | Sig.Sig a _ -> a
+-- The signature as a type: a function of its arguments, if it has any.
+@pub fun sigTy (s : Sig) : Ty = match s with | Sig.Sig args r -> if V.isEmpty args then r else Ty.Fun args r
 
-fun sigResult (s : Sig) : Ty = match s with | Sig.Sig _ r -> r
+@pub fun sigArgs (s : Sig) : [Ty] = match s with | Sig.Sig a _ -> a
+
+@pub fun sigResult (s : Sig) : Ty = match s with | Sig.Sig _ r -> r
 
 -- --- a declaration's type ---------------------------------------------------------
 
@@ -96,7 +99,7 @@ fun spineOf (c : Core) (args : [Core]) : (Core, [Core]) =
   | _ -> (c, args)
 
 -- `Nat.Z` is `Z`, and `Math.Vec` is `Vec`: a search matches spellings.
-fun spelling (name : String) : String = M.unwrapOr name (V.last (S.split "." name))
+@pub fun spelling (name : String) : String = M.unwrapOr name (V.last (S.split "." name))
 
 -- --- a query, as somebody types it ------------------------------------------------
 
@@ -256,24 +259,24 @@ fun variable (p : P) (name : String) : (Ty, P) =
 
 -- Where a declaration's variables are numbered from while it is matched, so
 -- that they and the query's are never the same variable by accident.
-def declBase = 16777216
+@pub def declBase = 16777216
 
 -- A type, its variables moved clear of others by `by`.
-fun renamed (t : Ty) (by : Int) : Ty =
+@pub fun renamed (t : Ty) (by : Int) : Ty =
   match t with
   | Ty.Var v -> Ty.Var (by + v)
   | Ty.Con n args -> Ty.Con n (V.map (\a -> renamed a by) args)
   | Ty.Fun args r -> Ty.Fun (V.map (\a -> renamed a by) args) (renamed r by)
   | Ty.Any -> Ty.Any
 
-type Subst = HashMap Int Ty
+@pub type Subst = HashMap Int Ty
 
 fun walk (s : Subst) (t : Ty) : Ty =
   match t with
   | Ty.Var v -> (match Hm.lookup v s with | Just next -> walk s next | None -> t)
   | _ -> t
 
-fun resolved (s : Subst) (t : Ty) : Ty =
+@pub fun resolved (s : Subst) (t : Ty) : Ty =
   match walk s t with
   | Ty.Con n args -> Ty.Con n (V.map (\a -> resolved s a) args)
   | Ty.Fun args r -> Ty.Fun (V.map (\a -> resolved s a) args) (resolved s r)
@@ -286,20 +289,34 @@ fun occurs (s : Subst) (v : Int) (t : Ty) : Bool =
   | Ty.Fun args r -> V.any (\a -> occurs s v a) args or occurs s v r
   | Ty.Any -> False
 
--- `a` and `b` made one, or `None` if they cannot be.
-fun unify (s : Subst) (a : Ty) (b : Ty) : Maybe Subst =
+-- `a` and `b` made one, or `None` if they cannot be: every variable may
+-- become a type, as a search for a declaration lets the query's be, at a
+-- price.
+@pub fun unify (s : Subst) (a : Ty) (b : Ty) : Maybe Subst = unifyWith False s a b
+
+-- The same, `rigid`: the variables below `declBase` (a goal's) each stand
+-- for one particular type, unknown, which a declaration's variable may
+-- become but nothing else may. What proof search needs.
+@pub fun unifyWith (rigid : Bool) (s : Subst) (a : Ty) (b : Ty) : Maybe Subst =
+  let flexible = \v -> not rigid or v >= declBase in
   match (walk s a, walk s b) with
   | (Ty.Any, _) -> Just s
   | (_, Ty.Any) -> Just s
-  | (Ty.Var x, Ty.Var y) -> if x == y then Just s else Just (Hm.insert x (Ty.Var y) s)
-  | (Ty.Var x, t) -> if occurs s x t then None else Just (Hm.insert x t s)
-  | (t, Ty.Var x) -> if occurs s x t then None else Just (Hm.insert x t s)
-  | (Ty.Con n1 a1, Ty.Con n2 a2) -> if n1 == n2 and V.len a1 == V.len a2 then unifyAll s a1 a2 else None
-  | (Ty.Fun p1 r1, Ty.Fun p2 r2) -> if V.len p1 == V.len p2 then M.andThen (\s2 -> unify s2 r1 r2) (unifyAll s p1 p2) else None
+  | (Ty.Var x, Ty.Var y) ->
+      if x == y then Just s
+      else if flexible x then Just (Hm.insert x (Ty.Var y) s)
+      else if flexible y then Just (Hm.insert y (Ty.Var x) s)
+      else None
+  | (Ty.Var x, t) -> if flexible x and not (occurs s x t) then Just (Hm.insert x t s) else None
+  | (t, Ty.Var x) -> if flexible x and not (occurs s x t) then Just (Hm.insert x t s) else None
+  | (Ty.Con n1 a1, Ty.Con n2 a2) -> if n1 == n2 and V.len a1 == V.len a2 then unifyAllWith rigid s a1 a2 else None
+  | (Ty.Fun p1 r1, Ty.Fun p2 r2) -> if V.len p1 == V.len p2 then M.andThen (\s2 -> unifyWith rigid s2 r1 r2) (unifyAllWith rigid s p1 p2) else None
   | _ -> None
 
-fun unifyAll (s : Subst) (xs : [Ty]) (ys : [Ty]) : Maybe Subst =
-  V.foldl (\acc i -> M.andThen (\s2 -> unify s2 (V.getOr Ty.Any xs i) (V.getOr Ty.Any ys i)) acc) (Just s) (V.range 0 (V.len xs))
+fun unifyAll (s : Subst) (xs : [Ty]) (ys : [Ty]) : Maybe Subst = unifyAllWith False s xs ys
+
+fun unifyAllWith (rigid : Bool) (s : Subst) (xs : [Ty]) (ys : [Ty]) : Maybe Subst =
+  V.foldl (\acc i -> M.andThen (\s2 -> unifyWith rigid s2 (V.getOr Ty.Any xs i) (V.getOr Ty.Any ys i)) acc) (Just s) (V.range 0 (V.len xs))
 
 -- What it costs to read `decl` as an answer to `query`: `None` if it is not
 -- one, the cheaper the better otherwise.
@@ -424,6 +441,11 @@ use Std.Test (assertEq)
   let take = parseQuery "Int -> List a -> List a" in
   let a = assertEq (cost (parseQuery "List a -> Int -> List a") take) (Just 1) "another order" in
   assertEq (cost (parseQuery "Int -> List a -> List a") take) (Just 0) "the same order"
+
+@test fun aRigidVariableIsOneType () =
+  let a = assertEq (M.isSome (unifyWith True Hm.empty (Ty.Var 0) (Ty.Con "Int" []))) False "a goal's variable is no Int" in
+  let b = assertEq (M.isSome (unifyWith True Hm.empty (Ty.Var declBase) (Ty.Var 0))) True "a name's may be the goal's" in
+  assertEq (M.isSome (unifyWith True Hm.empty (Ty.Var declBase) (Ty.Con "Int" []))) True "and may be an Int"
 
 @test fun moreGeneralIsBetterThanLess () =
   let general = M.unwrapOr 99 (cost (parseQuery "List Int -> Int") (parseQuery "List a -> Int")) in

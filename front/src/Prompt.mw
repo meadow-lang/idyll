@@ -11,11 +11,12 @@
 -- drawn against the entry.
 
 use Lingua (repl!)
-use Lingua.Repl (Reply, hitName)
+use Lingua.Repl (Reply, Hit, hitName)
 use Lingua.Diagnostic (Diagnostic, renderAll, whereAt, isError)
 use Lingua.Lang (Meta)
 use Idyll.Session
 use Idyll.Find as Find
+use Idyll.Prove as Prove
 use Idyll.Syntax (parseIdyll)
 use Idyll.Scc (sccModule)
 use Idyll.Check (checkedAgainst)
@@ -165,7 +166,12 @@ fun completedIn db file at =
 -- one (`Find`), among what has been declared and what the prelude has.
 fun searchedFor db file (query : String) =
   let w = if answered True (\() -> (let x = sessionEarlier db 0 in False)) then setSessionEarlier db 0 "" else () in
-  answered [] (\() -> Find.found query (sessionCatalog db 0))
+  -- `?T`: terms of `T`, found by proof search
+  if S.startsWith "?" (S.trim query) then
+    (match proofsOf db (S.drop (S.trim query) 1) with
+     | Ok proofs -> V.map (\p -> Hit.Hit p (S.drop (S.trim query) 1) "" "a term of the type, found by proof search" p "") proofs
+     | Err _ -> [])
+  else answered [] (\() -> Find.found query (sessionCatalog db 0))
 
 -- What has been declared so far, for the finder: each name and its type.
 fun declaredSoFar db file =
@@ -180,8 +186,21 @@ def promptCommands =
     ("type", "EXPR", "what an expression is, without running it", typeOfEntry),
     ("reset", "", "forget every declaration entered", \db rest -> (let u = setSessionEarlier db 0 "" in Reply.Said "")),
     ("declarations", "", "the declarations entered so far, as source", \db rest -> Reply.Said (S.trimEnd (earlierIn db))),
-    ("goals", "", "the goals (?name) left in what has been declared, each with its type", goalsSoFar)
+    ("goals", "", "the goals (?name) left in what has been declared, each with its type", goalsSoFar),
+    ("prove", "TYPE", "look for a term of a type: proof search", provedEntry)
   ]
+
+-- `:prove T`: terms of `T` the checker accepts, after what has been
+-- declared.
+fun provedEntry db rest =
+  match proofsOf db rest with
+  | Err why -> Reply.Said why
+  | Ok [] -> Reply.Said "(no proof found)"
+  | Ok proofs -> Reply.Said (S.join "\n" proofs)
+
+fun proofsOf db (goal : String) =
+  let w = if answered True (\() -> (let x = sessionEarlier db 0 in False)) then setSessionEarlier db 0 "" else () in
+  Prove.proved (earlierIn db) goal (answered [] (\() -> sessionCatalog db 0)) (answered (Err []) (\() -> sessionPrelude db 0)) (\u -> stdIn db) 5
 
 fun goalsSoFar db rest =
   let goals = goalsIn (earlierIn db) (answered (Err []) (\() -> sessionPrelude db 0)) (\u -> stdIn db) in
@@ -232,6 +251,10 @@ fun enteredAll (entries : [String]) =
   let db = batchSession () in
   let names = V.map (\h -> hitName h) (searchedFor db 0 "Int -> String") in
   assertEq (V.elem "showInt" names) True "showInt : Int -> String"
+
+@test fun proofSearchFindsATerm () =
+  let db = batchSession () in
+  assertEq (proofsOf db "{a : Type} -> a -> a") (Ok ["\\x -> x"]) "the identity"
 
 @test fun anEntryThatIsWrongIsForgotten () =
   let said = enteredAll ["x : Int\nx = True", "x"] in
