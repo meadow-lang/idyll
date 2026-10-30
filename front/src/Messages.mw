@@ -105,6 +105,22 @@ fun worded (sols : [Maybe Core]) (linear : Bool) (at : Meta) (r : Report) : Diag
       else if kind == "RecursiveBindingNeedsSignature" then
         withLabel at "its type cannot be inferred from a recursive definition" (errorAt at "the recursive binding ${word 0} needs a type signature")
       else if kind == "NumberTooLarge" then withLabel at "an ${word 1} is from ${rangeOf (word 1)}" (errorAt at "${word 0} does not fit in an ${word 1}")
+      else if kind == "NotImpossible" then withLabel at "some values match these patterns" (errorAt at "not impossible")
+      else if kind == "MisplacedImplicitPattern" then
+        withLabel at "`{p}` matches an implicit argument, and `@{p}` an auto one, where the type has one next" (errorAt at "no implicit argument is here to match")
+      else if kind == "StringPattern" then withLabel at "use a guard with a comparison instead" (errorAt at "strings cannot be matched on yet")
+      else if kind == "LevelNotANumber" then withLabel at "level variables are not supported yet" (errorAt at "a universe level is a number")
+      else if kind == "HandlerMixesEffects" then withLabel at "this operation belongs to another effect than the clauses before it" (errorAt at "one handler, one effect")
+      else if kind == "HandlerHandlesNothing" then withLabel at "give it a clause for each operation of the effect it is for" (errorAt at "this handler handles nothing")
+      else if kind == "EffectNotAllowed" then
+        withLabel at "this has the effects ${ty 0}, but its type allows ${rowOrNone linear (V.getOr Core.Error types 1)}" (errorAt at "effects not allowed")
+      else if kind == "UnhandledEffects" then
+        withNote "at the top of a program, only the effects in Eff are handled, by the runtime"
+          (withLabel at "the program has the effects ${ty 0}, and nothing handles them" (errorAt at "unhandled effects"))
+      else if kind == "ImpureType" then withLabel at "computing this type has the effects ${ty 0}" (errorAt at "a type must be pure")
+      else if kind == "ImpureArgument" then
+        (if word 0 == "erased" then withLabel at "this has the effects ${ty 0}, but it is never run, so they could not happen" (errorAt at "an erased argument must be pure")
+         else withLabel at "the result type mentions this argument, which has the effects ${ty 0}" (errorAt at "a type cannot depend on this"))
       else if kind == "UnsolvedMeta" then withNote "add a type annotation to pin it down" (withLabel at "could not infer ${word 0}" (errorAt at "unsolved metavariable"))
       else if kind == "MissingCases" then withLabel at "missing: ${S.join ", " words}" (errorAt at "the patterns do not cover every case")
       else if kind == "UnreachableClause" then withLabel at "the cases before this one cover everything it matches" (warningAt at "unreachable")
@@ -126,6 +142,13 @@ def ranges : [(String, String)] =
     ("Int64", "-9223372036854775808 to 9223372036854775807"),
     ("UInt8", "0 to 255"), ("UInt16", "0 to 65535"), ("UInt32", "0 to 4294967295"), ("UInt64", "0 to 18446744073709551615")
   ]
+
+-- A row as the Rust checker's `row_or_none` says it: `none` for the empty
+-- one.
+fun rowOrNone (linear : Bool) (r : Core) : String =
+  match r with
+  | Core.Row [] [] -> "none"
+  | _ -> C.shown linear r
 
 -- How often a grade says something is used, in words, as the Rust
 -- checker's `times` says it.

@@ -223,7 +223,7 @@ fun elabHole (tc : Tc s) (ctx : Ctx) (ty : Value) : Core ! { St s | e } =
 -- may have no effects.
 @pub fun checkType (tc : Tc s) (ctx : Ctx) (t : HirExpr) : (Core, Value) ! { St s | e } =
   let (core, value, level, usage) = inferType tc ctx t in
-  if pure tc usage then (core, value) else (Core.Error, Value.Error)
+  if pure tc ctx usage then (core, value) else (Core.Error, Value.Error)
 
 -- The effects a usage records, as one row; none if there are none.
 @pub fun effectsOf (tc : Tc s) (usage : Usage) : Maybe Value ! { St s | e } =
@@ -234,11 +234,11 @@ fun elabHole (tc : Tc s) (ctx : Ctx) (ty : Value) : Core ! { St s | e } =
     | r -> Just r
 
 -- A type, or anything else never run, whose computation has effects.
-fun pure (tc : Tc s) (usage : Usage) : Bool ! { St s | e } =
+fun pure (tc : Tc s) (ctx : Ctx) (usage : Usage) : Bool ! { St s | e } =
   match effectsOf tc usage with
   | None -> True
-  | Just _ ->
-      let w = T.error tc "ImpureType" in
+  | Just effects ->
+      let w = T.errorOf tc "ImpureType" [quote tc ctx.lvl effects] [] in
       False
 
 -- Where a lambda ends: its body's effects are what calling it does, and
@@ -249,7 +249,7 @@ fun pure (tc : Tc s) (usage : Usage) : Bool ! { St s | e } =
   let w =
     if U.isUnknown rest then ()
     else if effectsFit tc ctx.lvl effects allowed then ()
-    else T.error tc "EffectNotAllowed"
+    else T.errorOf tc "EffectNotAllowed" [quote tc ctx.lvl (shownRow tc effects), quote tc ctx.lvl (shownRow tc allowed)] []
   in
   rest
 
@@ -939,7 +939,7 @@ fun checkGroupIn (tc : Tc s) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, May
             let (rhsC, usage) = checkAgainstSig tc ctx b.rhs sigTy vsig in
             let w =
               match effectsOf tc usage with
-              | Just effects -> if effectsFit tc ctx.lvl effects (eval tc ctx.env allowed) then () else T.error tc "EffectNotAllowed"
+              | Just effects -> if effectsFit tc ctx.lvl effects (eval tc ctx.env allowed) then () else T.errorOf tc "EffectNotAllowed" [quote tc ctx.lvl effects, quote tc ctx.lvl (eval tc ctx.env allowed)] []
               | None -> ()
             in
             (rhsC, vsig, usage)
@@ -1820,10 +1820,10 @@ fun inferApp (tc : Tc s) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value,
     | HirExprLit (Literal.Int k) ->
         if k >= 0 then (Core.Type k, Value.Type (k + 1), U.none ())
         else
-          let w = T.error tc "LevelNotANumber" in
+          let w = T.errorOf tc "LevelNotANumber" [] [] in
           failed ()
     | _ ->
-        let w = T.error tc "LevelNotANumber" in
+        let w = T.errorOf tc "LevelNotANumber" [] [] in
         failed ()
   else
     let (fC0, fTy0, fU) =
@@ -1883,10 +1883,10 @@ fun inferApp (tc : Tc s) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value,
            -- argument the result mentions, nor as an erased one
            let aV =
              match effectsOf tc aU with
-             | Just _ ->
+             | Just effects ->
                  let erased = constant tc grade == Just G.zero in
                  if erased or depends tc ctx.lvl cod then
-                   let w = T.error tc "ImpureArgument" in
+                   let w = T.errorOf tc "ImpureArgument" [quote tc ctx.lvl effects] [if erased then "erased" else ""] in
                    Value.Error
                  else aV0
              | None -> aV0

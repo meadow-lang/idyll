@@ -180,6 +180,17 @@ const PORTED: &[&str] = &[
     "a type-level grade needs a function type to check it against",
     "the recursive binding * needs a type signature",
     "* does not fit in an *",
+    "not impossible",
+    "no implicit argument is here to match",
+    "strings cannot be matched on yet",
+    "a universe level is a number",
+    "one handler, one effect",
+    "this handler handles nothing",
+    "effects not allowed",
+    "unhandled effects",
+    "a type must be pure",
+    "an erased argument must be pure",
+    "a type cannot depend on this",
 ];
 
 /// Whether `headline` is of the shape `pattern`, each `*` in it any text.

@@ -406,7 +406,7 @@ fun intro (tc : Tc s) (m : Matcher s) (ctx : Ctx) (problems : [Problem]) (goal0 
                       | Just q -> Problem.Problem c i (V.drop pending 1) (V.pushBack cs (q, Target.Slot lvl)) bs ds
                       | None ->
                           if icit == Icit.Explicit then
-                            let w4 = T.error tc "MisplacedImplicitPattern" in
+                            let w4 = T.errorOf tc "MisplacedImplicitPattern" [] [] in
                             let w5 = fail m in
                             Problem.Problem c i (V.drop pending 1) (V.pushBack cs (implicitInner hir pat, Target.Slot lvl)) bs ds
                           else p)
@@ -479,7 +479,7 @@ fun simplify (tc : Tc s) (ctx : Ctx) (p : Problem) : (Step, Problem) ! { St s | 
             | HirPatternAs x q -> again (V.append [(q, target)] rest) (V.pushBack bindings (identOf hir x, target)) dots
             | HirPatternDot e -> again rest bindings (V.pushBack dots (e, target))
             | HirPatternLit (Literal.Str _) ->
-                let w = T.error tc "StringPattern" in
+                let w = T.errorOf tc "StringPattern" [] [] in
                 (Step.Failed, p)
             | HirPatternLit written ->
                 let ty = targetType ctx target in
@@ -513,7 +513,7 @@ fun simplify (tc : Tc s) (ctx : Ctx) (p : Problem) : (Step, Problem) ! { St s | 
             -- (an implicit pattern meets an implicit binder in `intro`: one
             -- here is where no implicit argument is)
             | HirPatternImplicit _ _ ->
-                let w = T.error tc "MisplacedImplicitPattern" in
+                let w = T.errorOf tc "MisplacedImplicitPattern" [] [] in
                 (Step.Failed, p)
             | _ -> (Step.Failed, p)))
 
@@ -651,7 +651,7 @@ fun leaf (tc : Tc s) (m : Matcher s) (ctx : Ctx) (p : Problem) (rest : [Problem]
            (match emptySplit tc m ctx with
             | Just found -> found
             | None ->
-                let w2 = T.error tc "NotImpossible" in
+                let w2 = T.errorOf tc "NotImpossible" [] [] in
                 let w3 = fail m in
                 nothing ())
        | (_, rhs) ->

@@ -401,7 +401,7 @@ fun unhandled (tc : Tc s) (ctx : Ctx) (usage : Usage) (world : Value) =
            let left = V.append (V.map snd (V.filter (\kv -> not (V.any (\h -> fst h == fst kv) hs)) ls)) (V.map snd ts) in
            if V.any (\v -> match force tc v with | Value.Error -> True | _ -> False) left then ()
            else if V.isEmpty left then ()
-           else T.error tc "UnhandledEffects")
+           else T.errorOf tc "UnhandledEffects" [quote tc ctx.lvl (row tc left)] [])
 
 -- `main : () -> () ! e`, every effect in `e` the runtime's.
 fun checkMain (tc : Tc s) (ctx : Ctx) (main : Ident) (world : Value) : Bool ! { St s | e } =

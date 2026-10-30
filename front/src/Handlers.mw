@@ -90,7 +90,7 @@ fun effectOf (tc : Tc s) (clauses : [Clause]) : Maybe (Maybe Int) ! { St s | e }
                   | None -> Just (Just eff)
                   | Just e ->
                       if e != eff then
-                        let w = T.error tc "HandlerMixesEffects" in
+                        let w = T.errorOf tc "HandlerMixesEffects" [] [] in
                         None
                       else acc)))
     (Just None)
@@ -102,7 +102,7 @@ fun effectOf (tc : Tc s) (clauses : [Clause]) : Maybe (Maybe Int) ! { St s | e }
   match effectOf tc clauses with
   | None -> failed ()
   | Just None ->
-      let w = T.error tc "HandlerHandlesNothing" in
+      let w = T.errorOf tc "HandlerHandlesNothing" [] [] in
       failed ()
   | Just (Just eff) ->
       (match Hm.lookup eff (getRef tc.effects) with
