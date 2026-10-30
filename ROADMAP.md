@@ -1362,7 +1362,13 @@ do yet `(unsupported)`, and the tests count those apart.
   constructor (of the type matched, or with that many fields), what cannot
   be matched on or unboxed, sequences of no sequence type, resuming too
   often, recursive bindings with no signature, type-level grades with
-  nothing to check them, and numbers too large for their type. The
+  nothing to check them, numbers too large for their type, effects (not
+  allowed, unhandled, in a type, in an argument a type depends on), and
+  handlers, natives and indexed data (44 kinds). Still to port: the
+  overloading errors (ambiguous names, names with no meaning that fits),
+  whose words name the type wanted and the candidates, and a few rarer
+  kinds (instances that overlap or are orphans, constructor results,
+  linear values at the top level or boxed, large fields). The
   renamer's errors are compared too, each headline as the Rust renamer's
   (a problem's text is its headline, and its label on a line after). The
   rest of the checker's kinds still say their kind, and an error's place
