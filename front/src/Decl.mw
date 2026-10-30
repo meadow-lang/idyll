@@ -263,7 +263,7 @@ fun declareCtors (tc : Tc s) (ctx : Ctx) (d : DataDecl) (ks : [Core]) (indices :
             | CtorShape.Fields fields ->
                 if indices == 0 then Just (ctorFields tc d params fields)
                 else
-                  let w = T.error tc "IndexedNeedsSignatures" in
+                  let w = T.errorOf tc "IndexedNeedsSignatures" [] [H.textOf d.name] in
                   None
             | CtorShape.Sig sig -> Just (ctorSig tc d params ctx.lvl sig indices)
           in
@@ -478,7 +478,7 @@ fun linearFields (h : HirArena) (sig : HirExpr) (core : Core) : Core =
                   let (sigC, _) = checkType tc params opTy in
                   (match withRow sigC 0 label with
                    | None ->
-                       let w = match sigC with | Core.Error -> () | _ -> T.error tc "OpSignature" in
+                       let w = match sigC with | Core.Error -> () | _ -> T.errorOf tc "OpSignature" [] [H.textOf x] in
                        declareConstant tc c2 x Value.Error
                    | Just (ty0, implicit, arity) ->
                        let ty = eval tc c2.env (underParams e.params ks ty0 G.zero Icit.Implicit) in
@@ -545,7 +545,7 @@ fun native (name : String) : Maybe (Bool, Int) =
            | None ->
                if types then c
                else
-                 let w = T.error tc "UnknownNative" in
+                 let w = T.errorOf tc "UnknownNative" [] [H.textOf x] in
                  declareConstant tc c x Value.Error
            | Just (isType, arity) ->
                if isType != types then c

@@ -940,6 +940,13 @@ effect Test where
 effect Abort where
   abort : {a : Type} -> String -> a
 
+-- A line a program says it is doing, at a level from 0 (debug) to 3
+-- (error). Unhandled, the runtime writes it to standard error with when
+-- and at what level, if `MEADOW_LOG` lets it. `Std.Log` has the levels,
+-- `info` and the rest, and the handlers.
+effect Log where
+  logAt : (level : [] Int) -> (message : [0..1] String) -> ()
+
 -- Mutable cells, as Meadow's: a `Ref` is a cell that may be shared, held
 -- in many places at once, and what is put in it is seen through every one
 -- of them. Making, reading and writing one is the effect `Mut`, which the
@@ -963,4 +970,4 @@ getRef : {a : Type} -> Ref a -> a ! Mut
 @native
 setRef : {a : Type} -> Ref a -> (x : [] a) -> () ! Mut
 
-effect Eff = {Console, Fs, Process, Random, Time, Test, Abort, Mut, Div}
+effect Eff = {Console, Fs, Process, Random, Time, Test, Abort, Log, Mut, Div}

@@ -26,6 +26,10 @@ use Idyll.Rename as Rename
 use Idyll.Scc (sccModule)
 use Idyll.Check (checkedAgainst)
 use Idyll.Core (Core)
+use Idyll.Surface (SurfaceProgram)
+use Idyll.Rename (PackageNames)
+use Idyll.Interface (Compiled)
+use Lingua.Diagnostic (Diagnostic)
 use Std.St (runSt)
 use Std.St as St
 use Std.Collections.Vector as V
@@ -47,11 +51,8 @@ def perArgument = 4
 -- Terms of `goal` (an Idyll type, as written), after the declarations
 -- `earlier`, with `catalog` what can head a term: the smallest first, at
 -- most `limit` of them; or why the goal is not a type.
-@pub fun proved (earlier : String) (goal : String) (catalog : [(String, Core, String)]) prelude std (limit : Int) =
+@pub fun proved (earlier : String) (goal : String) (catalog : [(String, Core, String)]) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (limit : Int) : Result String [String] ! e =
   let g = S.trim goal in
-  -- (Std asked for once, and given on as what it was)
-  let stdNow = std () in
-  let std = \u -> stdNow in
   if S.isEmpty g then Err "prove what? `:prove` takes a type"
   else
     match goalType earlier g prelude std with
@@ -64,9 +65,7 @@ def perArgument = 4
 -- Terms for the goal `?name` of `earlier`, with the variables of its
 -- definition in scope: each tried in the goal's place, and kept if the
 -- program then has nothing wrong with it; at most `limit` of them.
-@pub fun provedAt (earlier : String) (name : String) (catalog : [(String, Core, String)]) prelude std (limit : Int) =
-  let stdNow = std () in
-  let std = \u -> stdNow in
+@pub fun provedAt (earlier : String) (name : String) (catalog : [(String, Core, String)]) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (limit : Int) : Result String [String] ! e =
   match goalIn earlier prelude std name with
   | None -> Err "no goal ?${name} in what has been declared"
   | Just (ty, context) ->
@@ -79,7 +78,7 @@ def perArgument = 4
 def tries = 40
 
 -- The candidates that, put in the goal's place, leave nothing wrong.
-fun filled (earlier : String) (name : String) (candidates : [String]) prelude std (limit : Int) (tried : Int) (found : [String]) : [String] =
+fun filled (earlier : String) (name : String) (candidates : [String]) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (limit : Int) (tried : Int) (found : [String]) : [String] ! e =
   match V.head candidates with
   | None -> found
   | Just c ->
@@ -90,7 +89,7 @@ fun filled (earlier : String) (name : String) (candidates : [String]) prelude st
         filled earlier name (V.drop candidates 1) prelude std limit (tried + 1) (if V.isEmpty wrong then V.pushBack found c else found)
 
 -- `text` with the goal `goal` (a whole word) given `filler` in its place.
-fun inPlace (text : String) (goal : String) (from : Int) (filler : String) : String =
+@pub fun inPlace (text : String) (goal : String) (from : Int) (filler : String) : String =
   match S.indexOfFrom goal text from with
   | None -> text
   | Just at ->
@@ -111,7 +110,7 @@ fun byDepth heads (goal : Ty) (locals : [(String, Ty)]) (depth : Int) (made : In
 
 -- The goal, as the checker reads it: `__goal : goal`, declared after
 -- `earlier`; or what is wrong with it.
-fun goalType (earlier : String) (goal : String) prelude std =
+fun goalType (earlier : String) (goal : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : Result String Core ! e =
   -- (its body a goal, which is no error, where a hole would be one)
   let source = "${earlier}__goal : ${goal}\n__goal = ?proof\n" in
   let from = S.byteLength earlier in
@@ -132,7 +131,7 @@ fun wrongKind (said : String) : Bool = not (S.startsWith "goal ?" said) and said
 
 -- Which candidates the checker takes as terms of `goal`, in order, `limit`
 -- at most: a batch at a time.
-fun verifiedAll (earlier : String) (goal : String) (candidates : [String]) prelude std (limit : Int) (sofar : [String]) : [String] =
+fun verifiedAll (earlier : String) (goal : String) (candidates : [String]) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (limit : Int) (sofar : [String]) : [String] ! e =
   if V.isEmpty candidates or V.len sofar >= limit then sofar
   else verifiedAll earlier goal (V.drop candidates 64) prelude std limit (V.append sofar (verified earlier goal (V.take candidates 64) prelude std))
 
@@ -140,7 +139,7 @@ fun verifiedAll (earlier : String) (goal : String) (candidates : [String]) prelu
 -- at once, each a definition of its own. An error that is in none of them,
 -- or one that kept them from being checked, could be any of them's: each is
 -- then asked about alone.
-fun verified (earlier : String) (goal : String) (candidates : [String]) prelude std : [String] =
+fun verified (earlier : String) (goal : String) (candidates : [String]) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : [String] ! e =
   let pieces = V.map (\i -> "__proof${show i} : ${goal}\n__proof${show i} = ${V.getOr "" candidates i}\n\n") (V.range 0 (V.len candidates)) in
   let ranges = rangesOf (S.byteLength earlier) pieces 0 [] in
   let source = earlier ++ S.join "" pieces in

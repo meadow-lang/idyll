@@ -69,18 +69,18 @@ unitFloat v = toFloat (ushr v 11) / 9007199254740992.0
 -- Run `act` with the pure generator, from `n`: the same `n` gives the same
 -- numbers, on every machine and every run.
 @pub
-withSeed : {a : Type} -> (n : Int) -> (act : (u : ()) -> a ! {Random | r}) -> a ! r
+withSeed : {a : Type} -> (n : Int) -> (act : (u : ()) -> a ! {Random | e}) -> a ! e
 withSeed n act = seeded act (seed n)
 
 -- Like `withSeed`, but also giving back the state it ended in, so that a run
 -- can be continued.
 @pub
-withSeedFrom : {a : Type} -> (n : Int) -> (act : (u : ()) -> a ! {Random | r}) -> (a, Int) ! r
+withSeedFrom : {a : Type} -> (n : Int) -> (act : (u : ()) -> a ! {Random | e}) -> (a, Int) ! e
 withSeedFrom n act = seededFrom act (seed n)
 
 -- `act`, as a function of the state it starts in: each clause is one,
 -- passing on the state that follows it.
-seeded : {a : Type} -> (act : (u : ()) -> a ! {Random | r}) -> ((st : Int) -> a ! r) ! r
+seeded : {a : Type} -> (act : (u : ()) -> a ! {Random | e}) -> ((st : Int) -> a ! e) ! e
 seeded act = handle act () with
   return x -> \(st : Int) -> x
   nextInt u k -> \(st : Int) -> case step st of
@@ -90,7 +90,7 @@ seeded act = handle act () with
   intBetween lo hi k -> \(st : Int) -> case stepBetween lo hi st of
     (v, s2) -> k v s2
 
-seededFrom : {a : Type} -> (act : (u : ()) -> a ! {Random | r}) -> ((st : Int) -> (a, Int) ! r) ! r
+seededFrom : {a : Type} -> (act : (u : ()) -> a ! {Random | e}) -> ((st : Int) -> (a, Int) ! e) ! e
 seededFrom act = handle act () with
   return x -> \(st : Int) -> (x, st)
   nextInt u k -> \(st : Int) -> case step st of

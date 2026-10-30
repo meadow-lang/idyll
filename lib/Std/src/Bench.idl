@@ -1,0 +1,219 @@
+-- Timing small pieces of code, in the manner of Rust's Criterion, as
+-- Meadow's `Std.Bench`.
+--
+--   use Std.Bench as B
+--
+--   naiveFib : Int -> Int ! Div
+--   naiveFib n = if n < 2 then n else naiveFib (n - 1) + naiveFib (n - 2)
+--
+--   main : () -> () ! Eff
+--   main u = B.runAll (V.fromList (B.bench "fib 20" (\v -> naiveFib 20) :: B.bench "fib 25" (\v -> naiveFib 25) :: Nil))
+--
+-- What is taken from Criterion: an iteration count calibrated by doubling
+-- until a sample lasts long enough to be worth timing, so the same
+-- benchmark suits something that takes a microsecond and something that
+-- takes a second; a warm-up, since the heap starts small and grows, and the
+-- first runs of anything that allocates pay for collections the rest do
+-- not; many samples, not one, since a single measurement of a shared
+-- machine is a rumour; and throughput, as calls (or units of work) a
+-- second.
+--
+-- What is left out: bootstrapped confidence intervals (the work is
+-- deterministic and the noise is the operating system, so what matters is
+-- the minimum, the run interrupted least, and the spread, how much
+-- interference there was); a saved baseline (the comparison that matters is
+-- between runtimes, Glade and Silo, which needs nothing kept between runs);
+-- and `black_box` (the language is strict, so a call whose result is
+-- dropped still happens).
+
+use Std.Num.Int as I
+use Std.String as S
+use Std.Time as T
+use Std.Sort (sortVector)
+use Std.Console (println)
+use Std.Collections.Vector (Vector)
+use Std.Collections.Vector as V
+
+@pub
+record BenchConfig = {
+  -- run for about this many nanoseconds before measuring anything
+  warmupNanos : Int,
+  -- aim for one sample to take about this long: bigger is steadier, and
+  -- slower
+  sampleNanos : Int,
+  -- how many samples to take once the count is settled
+  samples : Int
+}
+
+@pub
+defaultConfig : BenchConfig
+defaultConfig = BenchConfig { warmupNanos = 50000000, sampleNanos = 20000000, samples = 12 }
+
+-- A quicker, noisier configuration, for when you are changing the code
+-- rather than quoting a number.
+@pub
+quickConfig : BenchConfig
+quickConfig = BenchConfig { warmupNanos = 5000000, sampleNanos = 2000000, samples = 5 }
+
+@pub
+record Report = {
+  name : String,
+  -- calls per sample, chosen by calibration
+  iterations : Int,
+  samples : Int,
+  -- nanoseconds per call: the best sample, and the middle one
+  best : Int,
+  median : Int,
+  -- the median absolute deviation, in nanoseconds per call: large next to
+  -- `median` means the machine was busy, and the number should not be
+  -- quoted
+  spread : Int,
+  -- calls of the benchmark itself, a second
+  perSecond : Int,
+  -- how much work one call does, in whatever unit the benchmark counts
+  -- (Criterion's `Throughput`): `naiveFib 20` makes 21891 calls, so 88 of
+  -- it a second says less than 1.9 million calls a second. 1 means the
+  -- call is the unit.
+  unitsPerCall : Int,
+  unitsPerSecond : Int
+}
+
+-- ---------------------------------------------------------------------------
+-- Running
+-- ---------------------------------------------------------------------------
+
+-- Call `act` `n` times, dropping each result: strict evaluation makes this
+-- a measurement and not nothing, since the call happens whether or not
+-- anyone looks at what it gives.
+@terminating
+spin : {b : Type} -> Int -> (act : (u : ()) -> b ! {Time | e}) -> () ! {Time | e}
+spin n act = if n <= 0 then () else let x = act () in spin (n - 1) act
+
+-- Nanoseconds for `n` calls, the loop around them included.
+timeLoop : {b : Type} -> Int -> (act : (u : ()) -> b ! {Time | e}) -> Int ! {Time | e}
+timeLoop n act =
+  let start = monotonic () in
+  let u = spin n act in
+  monotonic () - start
+
+-- The loop itself, with nothing in it, which every measurement has taken
+-- off it: in an interpreter, calling an empty closure a million times
+-- costs real time, and a benchmark of something small would otherwise
+-- report mostly the harness.
+loopOverhead : Int -> Int ! Time
+loopOverhead n = timeLoop n (\(u : ()) -> ())
+
+-- The count doubled until one sample lasts `target` nanoseconds.
+@terminating
+calibrate : {b : Type} -> Int -> (act : (u : ()) -> b ! {Time | e}) -> Int -> Int ! {Time | e}
+calibrate n act target =
+  if n >= 100000000 then n else if timeLoop n act >= target then n else calibrate (n * 2) act target
+
+@terminating
+warmUp : {b : Type} -> Int -> (act : (u : ()) -> b ! {Time | e}) -> () ! {Time | e}
+warmUp deadline act = if monotonic () >= deadline then () else let u = spin 64 act in warmUp deadline act
+
+@terminating
+collect : {b : Type} -> Int -> Int -> (act : (u : ()) -> b ! {Time | e}) -> Vector Int -> Vector Int ! {Time | e}
+collect k n act acc = if k <= 0 then acc else collect (k - 1) n act (V.pushBack acc (timeLoop n act))
+
+-- `act` measured under `config`, counting `units` of work a call.
+@pub
+benchUnitsWith : {b : Type} -> (config : BenchConfig) -> (name : String) -> (units : Int) -> (act : (u : ()) -> b ! {Time | e}) -> Report ! {Time | e}
+benchUnitsWith config name units act =
+  let w = warmUp (monotonic () + config.warmupNanos) act in
+  let n = calibrate 1 act config.sampleNanos in
+  let overhead = loopOverhead n in
+  let raw = collect (BenchConfig.samples config) n act V.empty in
+  let perCall = sortVector (V.map (\(total : Int) -> I.max 0 (total - overhead) / n) raw) in
+  let mid = middle perCall in
+  Report {
+    name = name,
+    iterations = n,
+    samples = BenchConfig.samples config,
+    best = V.getOr 0 perCall 0,
+    median = mid,
+    spread = middle (sortVector (V.map (\(x : Int) -> I.abs (x - mid)) perCall)),
+    perSecond = 1000000000 / I.max 1 mid,
+    unitsPerCall = units,
+    unitsPerSecond = units * 1000000000 / I.max 1 mid
+  }
+
+-- `act` measured under `config`.
+@pub
+benchWith : {b : Type} -> (config : BenchConfig) -> (name : String) -> (act : (u : ()) -> b ! {Time | e}) -> Report ! {Time | e}
+benchWith config name act = benchUnitsWith config name 1 act
+
+-- `act` measured under `defaultConfig`.
+@pub
+bench : {b : Type} -> (name : String) -> (act : (u : ()) -> b ! {Time | e}) -> Report ! {Time | e}
+bench name act = benchUnitsWith defaultConfig name 1 act
+
+-- `act` measured under `defaultConfig`, counting `units` of work a call:
+-- the throughput column then says units, not calls.
+@pub
+benchUnits : {b : Type} -> (name : String) -> (units : Int) -> (act : (u : ()) -> b ! {Time | e}) -> Report ! {Time | e}
+benchUnits name units act = benchUnitsWith defaultConfig name units act
+
+-- ---------------------------------------------------------------------------
+-- Statistics
+-- ---------------------------------------------------------------------------
+
+-- The middle of a vector already sorted, or 0 of an empty one. Of an even
+-- count, the higher of the two middles, not their mean, so that the result
+-- is a measurement that was made.
+@pub
+middle : (sorted : Vector Int) -> Int
+middle sorted = if V.isEmpty sorted then 0 else V.getOr 0 sorted (V.len sorted / 2)
+
+-- ---------------------------------------------------------------------------
+-- Reporting
+-- ---------------------------------------------------------------------------
+
+-- A duration, in whichever unit reads best: `Std.Time.formatNanos`.
+@pub
+formatNanos : (ns : Int) -> String
+formatNanos ns = T.formatNanos ns
+
+-- A count, its thousands set apart by `_` so that its size reads.
+@pub
+@terminating
+formatCount : (n : Int) -> String
+formatCount n = if n < 1000 then S.fromInt n else formatCount (n / 1000) ++ "_" ++ pad3 (n % 1000)
+
+pad3 : Int -> String
+pad3 n = if n < 10 then "00" ++ S.fromInt n else if n < 100 then "0" ++ S.fromInt n else S.fromInt n
+
+@pub
+formatReport : (r : Report) -> String
+formatReport r =
+  padTo 22 r.name ++ padTo 12 (formatNanos r.median) ++ padTo 12 (formatNanos r.best)
+    ++ padTo 12 ("+-" ++ formatNanos r.spread) ++ padTo 16 (formatCount (throughput r) ++ "/s")
+    ++ "x" ++ formatCount r.iterations
+
+-- Units a second where the benchmark counts them, calls a second otherwise.
+@pub
+throughput : (r : Report) -> Int
+throughput r = if r.unitsPerCall > 1 then r.unitsPerSecond else r.perSecond
+
+-- Padded to `width` characters: not bytes, of which `µs` has one more.
+padTo : Int -> String -> String
+padTo width s = let n = S.charLength s in if n >= width then s ++ " " else s ++ S.repeat " " (width - n)
+
+@pub
+header : String
+header = padTo 22 "benchmark" ++ padTo 12 "median" ++ padTo 12 "best" ++ padTo 12 "spread" ++ padTo 16 "throughput" ++ "iters"
+
+-- A table of reports already measured.
+@pub
+report : (reports : Vector Report) -> () ! Console
+report reports =
+  let a = println header in
+  let b = println (S.repeat "-" 78) in
+  V.forEach (\(r : Report) -> println (formatReport r)) reports
+
+-- Nothing measured (the reports are made already): there so that the usual
+-- shape reads as one expression, `main u = runAll (...)`.
+@pub
+runAll : (reports : Vector Report) -> () ! Console
+runAll reports = report reports

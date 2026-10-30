@@ -59,8 +59,10 @@ use Idyll.Format as Fmt
 use Idyll.Session as Session
 use Idyll.Server (serveServer)
 use Idyll.Prompt (runPrompt)
+use Idyll.Agent (serveAgent)
 use Lingua.Green (dump)
-use Lingua.Diagnostic (renderAll)
+use Lingua.Diagnostic (renderAll, Diagnostic)
+use Idyll.Messages as Messages
 use Std.Collections.Vector as V
 use Std.Result.Result.*
 use Std.Maybe.Maybe.*
@@ -91,6 +93,7 @@ cli! {
       }
     | lsp "Serve the language server, on standard input and output" {}
     | repl "Read entries, and say what each is: declarations stay for those after" {}
+    | agent "Serve tools for agents over the Model Context Protocol, on standard input and output: check, goals, types, search, proof search and tactics" {}
     | fmt "Set each file out, in place" {
         files : [String] "the files"
         check : Flag "Change nothing: say which files are not set out, and fail if any is not"
@@ -101,6 +104,7 @@ cli! {
     | errors "What is wrong with each file's syntax, drawn where it is" { files : [String] "the files" }
     | rename "Each file renamed: its HIR" { files : [String] "the files" } with Dump
     | types "Each file's declarations' types, and its errors" { files : [String] "the files" } with Dump
+    | messages "Each file's errors, in words: each one's headline and label" { files : [String] "the files" } with Dump
     | cut "Each file lowered to Cut" { files : [String] "the files" } with Dump
     | parted "A package's parts, and their dumps" { name : String "the package's name"  dir : String "its sources" } with Dump
     | compiled "A package compiled: its interface" { name : String "the package's name"  dir : String "its sources" } with Dump
@@ -121,6 +125,7 @@ fun main () =
   | (every, Tool.Update r) -> D.updateCommand r.names r.dryRun
   | (every, Tool.Lsp) -> serveServer ()
   | (every, Tool.Repl) -> runPrompt ()
+  | (every, Tool.Agent) -> serveAgent ()
   | (every, Tool.Fmt r) -> if V.foldl (\ok f -> fmtFile r.check f and ok) True r.files then () else exit 1
   | (every, Tool.Tokens r) -> V.foldl (\u f -> each f dumpTokens) () r.files
   | (every, Tool.Tree r) -> V.foldl (\u f -> each f dumpTree) () r.files
@@ -128,6 +133,7 @@ fun main () =
   | (every, Tool.Errors r) -> V.foldl (\u f -> each f (errorsIn f)) () r.files
   | (every, Tool.Rename r) -> withPreludeOf r.dump.prelude (\prelude -> V.foldl (\u f -> each f (renamed prelude)) () r.files)
   | (every, Tool.Types r) -> withPreludeOf r.dump.prelude (\prelude -> eachAgainstStd prelude r.dump.std r.files typed typedAgainst)
+  | (every, Tool.Messages r) -> withPreludeOf r.dump.prelude (\prelude -> eachAgainstStd prelude r.dump.std r.files (\pre text -> messagesIn pre None text) (\pre names std text -> messagesIn pre (Just (names, std)) text))
   | (every, Tool.Cut r) -> withPreludeOf r.dump.prelude (\prelude -> eachAgainstStd prelude r.dump.std r.files cutOf cutAgainst)
   | (every, Tool.Parted r) -> withPreludeOf r.dump.prelude (\prelude -> packageDump prelude r.name r.dir (\modules texts -> partedDump prelude r.name modules texts))
   | (every, Tool.Compiled r) -> withPreludeOf r.dump.prelude (\prelude -> packageDump prelude r.name r.dir (\modules texts -> compiledDump prelude r.name modules))
@@ -255,6 +261,33 @@ fun renamed prelude (text : String) : String =
 -- A program checked after the prelude, as `Check` writes it; `(error)` if
 -- it does not parse or rename.
 fun typed prelude (text : String) : String = typedWith prelude None text
+
+-- A program's errors in words, as the message differential compares them:
+-- each diagnostic's headline and its label, a line each, sorted; checked
+-- against Std compiled, if it names Std. `(error)` if it does not parse or
+-- rename.
+fun messagesIn prelude (std : Maybe (Rename.PackageNames, Compiled)) (text : String) : String =
+  match Surface.parsed text with
+  | Err _ -> "(error)"
+  | Ok prog ->
+      let deps = if not (S.contains "Std" text) then [] else (match std with | Just (names, c) -> [("Std", names, c)] | None -> []) in
+      let first = V.foldl (\acc d -> match d with | (_, _, (c : Compiled)) -> if c.high > acc then c.high else acc) 0 deps in
+      let vis = Rename.mentionsVisibility (Rename.programOf prog) in
+      (match Rename.renamePackageWith "Main" [([], prog)] prelude (V.map (\d -> match d with | (n, ns, _) -> (n, ns)) deps) [] first True vis with
+       | (m, _, problems) ->
+           -- what renaming found, each said as the Rust renamer says it
+           if not (V.isEmpty problems) then S.join "\n" (V.map (\p -> "rename: " ++ M.unwrapOr (snd p) (V.head (S.split "\n" (snd p)))) m.problemsAt)
+           else
+             let lines =
+               runSt (\() ->
+                 let c = checkedAgainst (sccModule m) False (V.map (\d -> match d with | (_, _, cp) -> cp) deps) in
+                 V.map messageLine (Messages.diagnosticsIn c.tc m.linearBody))
+             in
+             S.join "\n" (V.foldl (\acc l -> V.concat [V.filter (\x -> not (S.lessThan l x)) acc, [l], V.filter (\x -> S.lessThan l x) acc]) [] lines))
+
+fun messageLine (d : Diagnostic) : String =
+  match d with
+  | Diagnostic.Diagnostic _ said _ labels _ -> said ++ (match V.head labels with | Just (_, l) -> ": " ++ l | None -> "")
 
 -- A program's Cut: checked against Std compiled, if it names Std, and
 -- linked with it.

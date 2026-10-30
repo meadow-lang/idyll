@@ -46,14 +46,14 @@ fun defaultSeq (tc : Tc s) : Maybe (Int, Int) ! { St s | e } = Hm.lookup (getRef
 @pub fun checkSeq (tc : Tc s) (ctx : Ctx) (t : HirExpr) (expected : Value) : (Core, Usage) ! { St s | e } =
   match seqCtors tc expected with
   | None ->
-      let w = T.error tc "NotASequence" in
+      let w = T.errorOf tc "NotASequence" [quote tc ctx.lvl expected] [] in
       (Core.Error, U.unknown ())
   | Just ctors ->
       let (core0, actual0, usage) = buildSeq tc ctx t ctors (Just expected) in
       let (core, actual) = insert tc ctx core0 actual0 in
       if subtype tc ctx.lvl actual expected then (core, usage)
       else
-        let w = T.error tc "Mismatch" in
+        let w = T.errorOf tc "Mismatch" [quote tc ctx.lvl expected, quote tc ctx.lvl actual] [] in
         (Core.Error, usage)
 
 -- A literal with nothing to say what it is: a `List`.
@@ -150,7 +150,7 @@ fun params (tc : Tc s) (ctx : Ctx) (kind : Value) (core : Core) : Core ! { St s 
            let core = app (app (Core.Opaque fromList "arrayFromList") elemC) list in
            (core, eval tc ctx.env (app (Core.Opaque array "Array") elemC), usage))
   | _ ->
-      let w = T.error tc "UnknownNative" in
+      let w = T.errorOf tc "UnknownNative" [] ["Array"] in
       failed ()
 
 -- The element type of an `Array a`, if `ty` is one.

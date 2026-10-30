@@ -253,13 +253,33 @@ impl Checker {
                 let key = self.fresh_key();
                 // a value with nothing inside (a truth value, a number, an
                 // enumeration's) is looked at once, which is all a match
-                // does with it; one with fields gives them the default grade
-                let grade = self.fieldless(&s_ty).then(|| Poly::constant(Grade::ONE).into_value());
+                // does with it; one with fields, where a binder that says
+                // nothing may be used as often as wanted, has the tightest
+                // grade its fields' uses allow, as a parameter that says
+                // none does: `case k () of (x, rest) -> ..` resumes `k`
+                // once. (In a linear module, or of a linear type, the
+                // fields have the default grade, and say so where they are
+                // used too often.)
+                let inferred = !self.fieldless(&s_ty) && self.default_grade() == Grade::ANY && !self.is_linear(&s_ty);
+                let (grade, meta) = if self.fieldless(&s_ty) {
+                    (Some(Poly::constant(Grade::ONE).into_value()), None)
+                } else if inferred {
+                    let (c, v) = self.inferred_grade(ctx, nid, "the matched value");
+                    let Core::Meta(m) = &*c else { unreachable!("an inferred grade is a meta") };
+                    (Some(v), Some(*m))
+                } else {
+                    (None, None)
+                };
                 let ctx2 = ctx.bind_keyed(key, "_", s_ty, grade);
                 let (core, mut usage) =
                     self.run_match(&ctx2, nid, clauses, problems(ctx.lvl), goal.clone(), vec![ctx.lvl], false);
                 // what the scrutinee uses, as often as its variable is used
-                let n = usage.take(Some(key));
+                let mut n = usage.take(Some(key));
+                if let Some(m) = meta {
+                    let used = (!usage.is_unknown()).then_some(&n);
+                    self.settle_grade(m, used, false);
+                    n = self.renormalise(&n);
+                }
                 (Rc::new(Core::Let("_".into(), s_c, core)), goal, usage + s_usage.scale(&n))
             }
         }

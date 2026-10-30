@@ -299,7 +299,9 @@ fun useName (r : Rn s) (name : String) =
     let w =
       if V.isEmpty found then
         if V.isEmpty (constructorTypes r name) then bad r "name not in scope: ${name}"
-        else bad r "a constructor lives under its type: ${name}"
+        -- (as the Rust renamer says it: the headline, and on a line of its
+        -- own the label, which `Session` puts at the name)
+        else bad r "name not in scope: ${name}\na constructor lives under its type: ${S.join " or " (V.map (\t -> t ++ "." ++ name) (constructorTypes r name))}"
       else ()
     in
     Ident.Ident (distinct (V.map (asWritten r) found)) name

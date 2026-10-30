@@ -625,7 +625,7 @@ impl Checker {
     /// still being worked out is taken at `[]`. What waited on it is then
     /// checked against it. A `()` may be used as often as wanted, whatever
     /// its grade says, so its grade stays `[]`, as is written least.
-    fn settle_grade(&mut self, m: MetaVar, used: Option<&Poly>, unit: bool) {
+    pub(super) fn settle_grade(&mut self, m: MetaVar, used: Option<&Poly>, unit: bool) {
         let waiting = self.inferred.get(&m).map(|i| i.waiting.clone()).unwrap_or_default();
         let candidates = [Grade::ONE, Grade::range(Grade::ZERO, Grade::ONE).expect("0 <= 1"), Grade::ANY];
         let mut chosen = Grade::ANY;
@@ -1415,6 +1415,10 @@ impl Checker {
                 let grade_c = self.fresh_meta(ctx, nid, "the grade of this box");
                 let grade = self.eval(&ctx.env, &grade_c);
                 let (e_c, e_ty, usage) = self.infer(ctx, e);
+                // what goes in a box is a value: `[Nothing]` boxes a
+                // `Maybe ?a`, its implicit argument given, not a function
+                // of a type, which no box holds
+                let (e_c, e_ty) = self.insert(ctx, e.id, e_c, e_ty);
                 self.linear_box(ctx, e.id, &e_ty);
                 let usage = usage.scale(&self.to_poly(grade.clone()));
                 (Rc::new(Core::BoxIntro(e_c)), Rc::new(Value::BoxTy(grade, e_ty)), usage)

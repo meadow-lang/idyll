@@ -58,6 +58,14 @@ fun nothing () : Answer = Answer.Con "Nothing" 0 []
     let u = setRef w.errors (getRef w.errors ++ str) in
     Just (Ok Answer.Unit)
   else if op == "readLine" then Just (Ok (nothing ()))
+  -- `Log`'s line, as the Rust world keeps it for a captured run: without
+  -- the time, at `info` and above
+  else if op == "logAt" then
+    let level = match V.get args 0 with | Just (Arg.AInt n) -> n | _ -> 0 in
+    let message = match V.get args 1 with | Just (Arg.AStr s) -> s | _ -> "" in
+    let name = if level <= 0 then "DEBUG" else if level == 1 then "INFO " else if level == 2 then "WARN " else "ERROR" in
+    let u = if level >= 1 then setRef w.errors (getRef w.errors ++ name ++ " " ++ message ++ "\n") else () in
+    Just (Ok Answer.Unit)
   else if op == "nextInt" or op == "nextSeed" then Just (Ok (Answer.Int (nextRandom w)))
   else if op == "intBetween" then
     let (lo, hi) = (int 0, int 1) in

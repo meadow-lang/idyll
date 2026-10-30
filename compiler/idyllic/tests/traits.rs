@@ -249,3 +249,14 @@ fn an_associated_type_waits_for_its_instance_inside_a_type() {
     assert_eq!(value(src), "Just 3");
 }
 
+
+#[test]
+fn an_instance_whose_type_is_in_error_is_no_hint() {
+    // `use Level.*` puts the constructor `Debug` where the trait was, so
+    // the derived instance's type is in error; reported there, it is no
+    // candidate for every other search, as it once was ("more than one hint
+    // gives a PartialOrd Int ... the instance ?!")
+    let src = "@derive(Debug)\ndata Level = Debug | Info\n\nuse Level.*\n\nsmall : Int -> Bool\nsmall n = n <= 1\n\nsmall 0\n";
+    let said = rejected(src);
+    assert!(!said.iter().any(|m| m.starts_with("more than one hint")), "{said:#?}");
+}

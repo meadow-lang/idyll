@@ -374,15 +374,56 @@ fun numberLit (s : Syn) =
   let tok = M.andThen idyllNumberValue (asIdyllNumber s) in
   if isKind TokenFloat tok then Literal.Float (floatText (textOf tok)) else Literal.Int (intLit s)
 
--- `1.5`, as the nearest `Float`: its digits as one integer, divided by the
--- power of ten its fraction is, which is that, rounded once, for every
--- literal of fifteen digits or fewer (as Rust's `parse` gives it for any).
+-- `1.5`, as the nearest `Float`, as Rust's `parse` gives it: its digits as
+-- one integer, over the power of ten its fraction is, worked out exactly,
+-- in `BigInt`s, and rounded once. (In machine integers, the digits of
+-- `0.000000000060771005063039659766`, which `Std.Num.Float` writes, would
+-- overflow, and a float division rounds more than once.)
 fun floatText (text : String) : Float =
   let point = M.unwrapOr 0 (S.indexOf "." text) in
   let digits = stringSlice text 0 point ++ stringSlice text (point + 1) (stringByteLength text) in
-  let whole = V.foldl (\acc i -> acc * 10 + (toInt (stringByteAt digits i) - 48)) 0 (V.range 0 (stringByteLength digits)) in
+  let ten : BigInt = toBigInt 10 in
+  let whole = V.foldl (\acc i -> acc * ten + toBigInt (toInt (stringByteAt digits i) - 48)) (toBigInt 0) (V.range 0 (stringByteLength digits)) in
   let places = stringByteLength text - point - 1 in
-  toFloat whole / V.foldl (\acc i -> acc * 10.0) 1.0 (V.range 0 places)
+  nearestFloat whole (V.foldl (\acc i -> acc * ten) (toBigInt 1) (V.range 0 places))
+
+-- The `Float` nearest `num / den`, for `num` and `den` above zero, and a
+-- quotient a float holds as a normal number (every literal): a 53-bit
+-- quotient `q` of `num · 2^s / den`, rounded half to even by what is left
+-- over, then `q · 2^-s`, which is exact.
+fun nearestFloat (num : BigInt) (den : BigInt) : Float =
+  if num == toBigInt 0 then 0.0
+  else
+    (let s = settledShift num den (53 - (bitLength num - bitLength den)) in
+     let (a, b) = shifted num den s in
+     let q = a / b in
+     let twice = (a - q * b) * toBigInt 2 in
+     let up = twice > b or (twice == b and q % toBigInt 2 == toBigInt 1) in
+     let q2 = if up then q + toBigInt 1 else q in
+     -- rounding up to 2^53 is still exact as a float
+     timesTwoTo (toFloat q2) (0 - s))
+
+-- `num · 2^s` and `den`, or `num` and `den · 2^-s`.
+fun shifted (num : BigInt) (den : BigInt) (s : Int) : (BigInt, BigInt) =
+  if s >= 0 then (num * powTwo s, den) else (num, den * powTwo (0 - s))
+
+-- The shift from `s` that makes the quotient 53 bits, 2^52 up to 2^53.
+fun settledShift (num : BigInt) (den : BigInt) (s : Int) : Int =
+  let (a, b) = shifted num den s in
+  let q = a / b in
+  if q < powTwo 52 then settledShift num den (s + 1)
+  else if q >= powTwo 53 then settledShift num den (s - 1)
+  else s
+
+fun powTwo (k : Int) : BigInt = if k <= 0 then toBigInt 1 else toBigInt 2 * powTwo (k - 1)
+
+-- How many bits `x` takes, for `x` at or above zero.
+fun bitLength (x : BigInt) : Int = if x == toBigInt 0 then 0 else 1 + bitLength (x / toBigInt 2)
+
+-- `x · 2^k`, a factor of two at a time: exact while what it makes is a
+-- normal float.
+fun timesTwoTo (x : Float) (k : Int) : Float =
+  if k > 0 then timesTwoTo (x * 2.0) (k - 1) else if k < 0 then timesTwoTo (x / 2.0) (k + 1) else x
 
 -- A string literal's text, its escapes resolved as the Rust lexer resolves
 -- them.
@@ -2633,6 +2674,16 @@ fun fileText (a : SurfaceArena) (f : SurfaceFile) : String =
 
 use Std.Test (assertEq)
 use Lingua.Diagnostic (whereAt)
+
+-- Meadow's own lexer reads a float literal as Rust's `parse` does, so the
+-- same literal here is what `floatText` has to come to, however many
+-- digits it has.
+@test fun aFloatLiteralIsTheNearestFloat () =
+  let a = assertEq (floatText "0.000000000060771005063039659766") 0.000000000060771005063039659766 "past a machine integer" in
+  let b = assertEq (floatText "0.00000000000000000000202226624879595063154") 0.00000000000000000000202226624879595063154 "tiny" in
+  let c = assertEq (floatText "123456789012345678901234567890.5") 123456789012345678901234567890.5 "huge" in
+  let d = assertEq (floatText "0.1") 0.1 "a tenth" in
+  assertEq (floatText "0.0") 0.0 "zero"
 
 @test fun operatorsGroupByLevelAndIfIsACase () =
   assertEq

@@ -1,0 +1,13 @@
+-- | -- matching what a resumption answers resumes it once, however many fields the pattern takes apart
+-- | effect Tell where
+-- |   tell : Int -> ()
+-- | 
+-- | told : {a : Type} -> (body : (u : ()) -> a ! {Tell | e}) -> (a, List Int) ! e
+-- | told body = handle body () with
+-- |   return x -> (x, Nil)
+-- |   tell n k -> case k () of
+-- |     (x, said) -> (x, n :: said)
+-- | 
+-- | told (\u -> let a = tell 1 in let b = tell 2 in 3)
+answer: (3, 1 :: 2 :: Nil)
+exit: 0

@@ -1,45 +1,45 @@
--- `Result e a`, which the prelude declares: an error `Err e`, or `Ok` an
--- `a`. What the world's operations give back.
+-- `Result a b`, which the prelude declares: an error `Err a`, or `Ok` a
+-- `b`. What the world's operations give back.
 
 @pub
-isOk : {e a : Type} -> (r : Result e a) -> Bool
-isOk (Err e) = False
+isOk : {a b : Type} -> (r : Result a b) -> Bool
+isOk (Err err) = False
 isOk (Ok x) = True
 
 @pub
-isErr : {e a : Type} -> (r : Result e a) -> Bool
-isErr (Err e) = True
+isErr : {a b : Type} -> (r : Result a b) -> Bool
+isErr (Err err) = True
 isErr (Ok x) = False
 
 -- What it is if it is `Ok`, or `default`; the error is dropped.
 @pub
-withDefault : {e a : Type} -> (default : a) -> (r : Result e a) -> a
-withDefault d (Err e) = d
+withDefault : {a b : Type} -> (default : b) -> (r : Result a b) -> b
+withDefault d (Err err) = d
 withDefault d (Ok x) = x
 
 @pub
-map : {e a b : Type} -> (f : ((x : a) -> b ! r)) -> (v : Result e a) -> Result e b ! r
-map f (Err e) = Err e
+map : {a b c : Type} -> (f : ((x : b) -> c ! e)) -> (v : Result a b) -> Result a c ! e
+map f (Err err) = Err err
 map f (Ok x) = Ok (f x)
 
 @pub
-mapErr : {e d a : Type} -> (f : ((err : e) -> d ! r)) -> (v : Result e a) -> Result d a ! r
-mapErr f (Err e) = Err (f e)
+mapErr : {a d b : Type} -> (f : ((err : a) -> d ! e)) -> (v : Result a b) -> Result d b ! e
+mapErr f (Err err) = Err (f err)
 mapErr f (Ok x) = Ok x
 
 -- `f` of the value, if there is one, which may itself fail.
 @pub
-andThen : {e a b : Type} -> (f : ((x : a) -> Result e b ! r)) -> (v : Result e a) -> Result e b ! r
-andThen f (Err e) = Err e
+andThen : {a b c : Type} -> (f : ((x : b) -> Result a c ! e)) -> (v : Result a b) -> Result a c ! e
+andThen f (Err err) = Err err
 andThen f (Ok x) = f x
 
 -- Either way, one answer: `onErr` of the error or `onOk` of the value.
 @pub
-fold : {e a b : Type} -> (onErr : e -> b ! r) -> (onOk : a -> b ! r) -> (v : Result e a) -> b ! r
-fold f g (Err e) = f e
+fold : {a b c : Type} -> (onErr : a -> c ! e) -> (onOk : b -> c ! e) -> (v : Result a b) -> c ! e
+fold f g (Err err) = f err
 fold f g (Ok x) = g x
 
 @pub
-toMaybe : {e a : Type} -> (r : Result e a) -> Maybe a
-toMaybe (Err e) = Nothing
+toMaybe : {a b : Type} -> (r : Result a b) -> Maybe b
+toMaybe (Err err) = Nothing
 toMaybe (Ok x) = Just x

@@ -1,0 +1,221 @@
+-- What is wrong with a program, in words: the checker's errors as Lingua
+-- `Diagnostic`s, at the nodes they were found at, for the language server
+-- and the prompt.
+--
+-- An error the checker reported with what its words are made of
+-- (`Tc.errorOf`, a `Report`: its kind, its types as Core, and anything
+-- else it names) is said as the Rust checker says it
+-- (`idyllic-typecheck`'s `TypeError::to_diagnostic`): the same headline
+-- and label, its types shown once their metavariables are solved
+-- (`solvedIn`, as `solved_in` does), in the module's linear or
+-- unrestricted way. The differential `the_messages_agree` holds the two
+-- to each other, kind by kind as each is ported. Any other error is said
+-- by its kind (`said`).
+
+use Idyll.Tc (Tc, Report)
+use Idyll.Tc as T
+use Idyll.Core as C
+use Idyll.Core (Core)
+use Idyll.Grade as G
+use Idyll.Eval (quote)
+use Lingua.Diagnostic (Diagnostic, errorAt, warningAt, withLabel, withNote)
+use Lingua.Lang (Meta)
+use Std.St (StRef, getRef)
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+-- The checker's errors, each once where it was found, in words; a goal,
+-- and a hole filled in, are warnings, since what is around them can still
+-- be worked on.
+@pub fun diagnosticsIn (tc : Tc s) (linear : Bool) : [Diagnostic] ! { St s | e } =
+  let reports = getRef tc.reported in
+  -- (the solutions quoted only if some error is to be said with types)
+  let sols = if V.isEmpty reports then [] else solutionsOf tc in
+  -- each error, with the report made with it if one was: `errorOf` puts
+  -- one in each list, in the same order, and `error` only the first
+  let (said, _) =
+    V.foldl
+      (\acc p ->
+        match (acc, p) with
+        | ((out, next), (at, kind)) ->
+            match V.get reports next with
+            | Just (a, Report.Report k ts ws) ->
+                if a == at and k == kind then (V.pushBack out (worded sols linear at (Report.Report k ts ws)), next + 1)
+                else (V.pushBack out (plain at kind), next)
+            | None -> (V.pushBack out (plain at kind), next))
+      ([], 0)
+      (getRef tc.placed)
+  in
+  -- each once: an error found twice at the same node says the same twice
+  V.foldl (\acc d -> if V.elem d acc then acc else V.pushBack acc d) [] said
+
+-- An error by its kind alone; a goal, and a hole filled in, are warnings,
+-- since what is around them can still be worked on.
+fun plain (at : Meta) (kind : String) : Diagnostic =
+  if S.startsWith "goal ?" kind then warningAt at kind else errorAt at (said kind)
+
+-- The same, without the checker's state at hand: each error by its kind.
+@pub fun placedDiagnostics (placed : [(Meta, String)]) : [Diagnostic] =
+  V.map
+    (\p ->
+      match p with
+      | (at, kind) -> if S.startsWith "goal ?" kind then warningAt at kind else if kind == "HoleSolved" then warningAt at (said kind) else errorAt at (said kind))
+    (V.foldl (\acc p -> if V.elem p acc then acc else V.pushBack acc p) [] placed)
+
+-- An error reported with its words' makings, said as the Rust checker says
+-- it.
+fun worded (sols : [Maybe Core]) (linear : Bool) (at : Meta) (r : Report) : Diagnostic =
+  match r with
+  | Report.Report kind types words ->
+      -- (a mismatch's types with what was solved since put in, as the Rust
+      -- checker puts it in for a mismatch alone)
+      let ty = \i -> let t = V.getOr Core.Error types i in C.shown linear (if kind == "Mismatch" then solvedIn sols t else t) in
+      let word = \i -> V.getOr "" words i in
+      if kind == "Mismatch" then withLabel at "expected ${ty 0}, but this has type ${ty 1}" (errorAt at "type mismatch")
+      else if kind == "NotAFunction" then withLabel at "it has type ${ty 0}, so it cannot be applied" (errorAt at "this is not a function")
+      else if kind == "NoInstance" then
+        (let wanted = ty 0 in
+         let article = if V.any (\c -> S.startsWith c wanted) ["A", "E", "I", "O", "U"] then "an" else "a" in
+         withLabel at "an auto argument is wanted here" (errorAt at "nothing in scope gives ${article} ${wanted}"))
+      else if kind == "AmbiguousInstance" then withLabel at "an auto argument is wanted here" (errorAt at "more than one hint gives a ${ty 0}")
+      else if kind == "UnknownInstance" then
+        withLabel at "an auto argument of type ${ty 0} is wanted here, and what it is is never worked out" (errorAt at "cannot tell what to look for")
+      else if kind == "NoAutoArgument" then withLabel at "given by hand, but what it is given to has type ${ty 0}" (errorAt at "no auto argument is taken here")
+      else if kind == "NoImplicitArgument" then withLabel at "given by hand, but what it is given to has type ${ty 0}" (errorAt at "no implicit argument is taken here")
+      else if kind == "HoleUnsolved" then withLabel at "_ : ${ty 0}, and nothing determines it" (errorAt at "unsolved hole")
+      else if kind == "HoleSolved" then withLabel at "_ : ${ty 0}  =  ${ty 1}" (warningAt at "found hole")
+      else if kind == "UsageMismatch" or kind == "FieldUsage" then
+        (if word 1 == "in type" then withLabel at "${word 0} has grade ${ty 1} in this type, but the type mentions it ${times linear (V.getOr Core.Error types 0)}" (errorAt at "usage mismatch")
+         else withLabel at "${word 0} has grade ${ty 1}, but is used ${times linear (V.getOr Core.Error types 0)}" (errorAt at "usage mismatch"))
+      else if kind == "LinearUsage" then
+        withLabel at "${word 0} is of type ${ty 1}, which is linear, but is used ${times linear (V.getOr Core.Error types 0)}" (errorAt at "a linear value used more than once")
+      else if kind == "NotAConstructor" then withLabel at "only a constructor can be matched on" (errorAt at "${word 0} is not a constructor")
+      else if kind == "NotAConstructorOf" then withLabel at "what is being matched has type ${ty 0}" (errorAt at "${word 0} is not a constructor of this type")
+      else if kind == "WrongFieldCount" then withLabel at "one pattern for each field" (errorAt at "${word 0} has ${word 1} fields, not ${word 2}")
+      else if kind == "NotADataType" then withLabel at "it has type ${ty 0}, which is not a data type" (errorAt at "this cannot be matched on")
+      else if kind == "NotABox" then withLabel at "it has type ${ty 0}, so it cannot be unboxed" (errorAt at "this is not a box")
+      else if kind == "NotASequence" then withLabel at "the type wanted here is ${ty 0}, which #[..] cannot build" (errorAt at "a sequence literal needs a sequence type")
+      else if kind == "ResumesTooOften" then
+        withNote "to let a handler resume it more than once, declare it `@many ${word 0} : ..` in `effect ${word 1}`"
+          (withLabel at "this clause may resume ${word 0} more than once, and ${word 1} declares it to be resumed at most once" (errorAt at "${word 0} is resumed more than once"))
+      else if kind == "UncheckedInTypeGrade" then
+        withLabel at "the type of this function is inferred, so nothing holds it to ${word 0}'s second grade" (errorAt at "a type-level grade needs a function type to check it against")
+      else if kind == "RecursiveBindingNeedsSignature" then
+        withLabel at "its type cannot be inferred from a recursive definition" (errorAt at "the recursive binding ${word 0} needs a type signature")
+      else if kind == "NumberTooLarge" then withLabel at "an ${word 1} is from ${rangeOf (word 1)}" (errorAt at "${word 0} does not fit in an ${word 1}")
+      else if kind == "NotImpossible" then withLabel at "some values match these patterns" (errorAt at "not impossible")
+      else if kind == "MisplacedImplicitPattern" then
+        withLabel at "`{p}` matches an implicit argument, and `@{p}` an auto one, where the type has one next" (errorAt at "no implicit argument is here to match")
+      else if kind == "StringPattern" then withLabel at "use a guard with a comparison instead" (errorAt at "strings cannot be matched on yet")
+      else if kind == "LevelNotANumber" then withLabel at "level variables are not supported yet" (errorAt at "a universe level is a number")
+      else if kind == "HandlerMixesEffects" then withLabel at "this operation belongs to another effect than the clauses before it" (errorAt at "one handler, one effect")
+      else if kind == "HandlerHandlesNothing" then withLabel at "give it a clause for each operation of the effect it is for" (errorAt at "this handler handles nothing")
+      else if kind == "EffectNotAllowed" then
+        withLabel at "this has the effects ${ty 0}, but its type allows ${rowOrNone linear (V.getOr Core.Error types 1)}" (errorAt at "effects not allowed")
+      else if kind == "UnhandledEffects" then
+        withNote "at the top of a program, only the effects in Eff are handled, by the runtime"
+          (withLabel at "the program has the effects ${ty 0}, and nothing handles them" (errorAt at "unhandled effects"))
+      else if kind == "ImpureType" then withLabel at "computing this type has the effects ${ty 0}" (errorAt at "a type must be pure")
+      else if kind == "ImpureArgument" then
+        (if word 0 == "erased" then withLabel at "this has the effects ${ty 0}, but it is never run, so they could not happen" (errorAt at "an erased argument must be pure")
+         else withLabel at "the result type mentions this argument, which has the effects ${ty 0}" (errorAt at "a type cannot depend on this"))
+      else if kind == "NotAnOperation" then withLabel at "a handler's clauses are for the operations of an effect, and return" (errorAt at "${word 0} is not an operation")
+      else if kind == "MissingOperations" then withLabel at "missing: ${S.join ", " words}" (errorAt at "the handler does not handle every operation")
+      else if kind == "IndexedNeedsSignatures" then withLabel at "declare them with where, as in  C : .. -> T i" (errorAt at "${word 0} has indices, so its constructors need types")
+      else if kind == "OpSignature" then withLabel at "an operation takes arguments and gives a result, as in a -> b; use () for none" (errorAt at "${word 0} is not an operation's type")
+      else if kind == "UnknownNative" then
+        withLabel at "@native declares something every back end implements, and this is not one of them" (errorAt at "there is no native called ${word 0}")
+      else if kind == "UnsolvedMeta" then withNote "add a type annotation to pin it down" (withLabel at "could not infer ${word 0}" (errorAt at "unsolved metavariable"))
+      else if kind == "MissingCases" then withLabel at "missing: ${S.join ", " words}" (errorAt at "the patterns do not cover every case")
+      else if kind == "UnreachableClause" then withLabel at "the cases before this one cover everything it matches" (warningAt at "unreachable")
+      else if kind == "MayNotTerminate" then
+        withNote "say so in its type, as in ${word 0} : .. -> .. ! Div"
+          (withLabel at "no argument gets smaller on every round of its recursion, so it has the effect Div" (errorAt at "${word 0} may not terminate"))
+      else errorAt at (said kind)
+
+-- What a sized integer type holds, as the Rust checker's `number_range`
+-- says it.
+fun rangeOf (ty : String) : String =
+  match V.find (\r -> fst r == ty) ranges with
+  | Just (_, r) -> r
+  | None -> "what it holds"
+
+def ranges : [(String, String)] =
+  [
+    ("Int8", "-128 to 127"), ("Int16", "-32768 to 32767"), ("Int32", "-2147483648 to 2147483647"),
+    ("Int64", "-9223372036854775808 to 9223372036854775807"),
+    ("UInt8", "0 to 255"), ("UInt16", "0 to 65535"), ("UInt32", "0 to 4294967295"), ("UInt64", "0 to 18446744073709551615")
+  ]
+
+-- A row as the Rust checker's `row_or_none` says it: `none` for the empty
+-- one.
+fun rowOrNone (linear : Bool) (r : Core) : String =
+  match r with
+  | Core.Row [] [] -> "none"
+  | _ -> C.shown linear r
+
+-- How often a grade says something is used, in words, as the Rust
+-- checker's `times` says it.
+fun times (linear : Bool) (used : Core) : String =
+  match used with
+  | Core.GradeLit g -> if g == G.zero then "never" else if g == G.one then "once" else if g == G.any then "an unrestricted number of times" else "${C.shown linear used} times"
+  | _ -> "${C.shown linear used} times"
+
+-- Each metavariable's solution, quoted, if it is solved with one that
+-- mentions no variable: what the Rust checker's `solved_in` puts in its
+-- place.
+fun solutionsOf (tc : Tc s) : [Maybe Core] ! { St s | e } =
+  V.map
+    (\entry ->
+      match entry with
+      | T.Meta.Solved v _ -> (let answer = quote tc 0 v in if open answer then None else Just answer)
+      | _ -> None)
+    (getRef tc.metas)
+
+-- `c` with each metavariable `sols` has a solution for replaced by it,
+-- and the solution's own in turn: a mismatch's types as the Rust checker
+-- shows them once the module is checked.
+fun solvedIn (sols : [Maybe Core]) (c : Core) : Core =
+  C.transform c 0 (\x d ->
+    match x with
+    | Core.Meta m -> (match V.get sols m with | Just (Just a) -> Just (solvedIn sols a) | _ -> None)
+    | _ -> None)
+
+-- Whether a term mentions a variable bound outside it.
+fun open (c : Core) : Bool =
+  C.anyNode (C.transform c 0 (\x d -> match x with | Core.Var i _ -> (if i >= d then Just (Core.Opaque (0 - 1) "#open") else None) | _ -> None)) (\y -> match y with | Core.Opaque u _ -> u == 0 - 1 | _ -> False)
+
+-- An error's kind, said in words: the commonest in a sentence, the rest by
+-- the name the Rust checker gives the kind, its words apart
+-- (`NotAConstructorOf`, "not a constructor of").
+@pub fun said (kind : String) : String =
+  match V.find (\p -> fst p == kind) errorWords with
+  | Just (_, words) -> words
+  | None -> wordsOf kind
+
+def errorWords : [(String, String)] =
+  [
+    ("Mismatch", "this has a type other than the one wanted"),
+    ("UnknownVariable", "nothing of this name is in scope"),
+    ("NotAFunction", "this is applied, but it is not a function"),
+    ("UsageMismatch", "this is used other than as its grade allows"),
+    ("UnsolvedMeta", "what this is could not be worked out"),
+    ("MissingCases", "these patterns do not cover every case"),
+    ("UnreachableClause", "this clause can never be reached"),
+    ("AmbiguousName", "this name has more than one meaning here"),
+    ("MayNotTerminate", "this may not terminate"),
+    ("UnhandledEffects", "this performs effects nothing here handles")
+  ]
+
+-- `NotAConstructorOf` as "not a constructor of".
+fun wordsOf (name : String) : String =
+  let n = S.byteLength name in
+  let step =
+    \acc i ->
+      let c = S.slice name i (i + 1) in
+      let lower = S.toLower c in
+      if i > 0 and c != lower then acc ++ " " ++ lower else acc ++ lower
+  in
+  V.foldl step "" (V.range 0 n)

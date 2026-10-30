@@ -38,7 +38,7 @@ use Std.Maybe.Maybe.*
 
 -- A use that had to fit a grade still being worked out: at what length of
 -- context, what was used, what was allowed, and whether it is a field's.
-@pub data Waiting = Waiting Int Poly Value Bool
+@pub data Waiting = Waiting Int Poly Value Bool String
 
 @pub data Meta = Unsolved MetaInfo | Solved Value MetaInfo
 
@@ -116,6 +116,10 @@ use Std.Maybe.Maybe.*
   -- the same, each where it was found: the node being checked then (`at`,
   -- which `Elab.elaborate` keeps), for the language server
   placed : StRef s [(Lang.Meta, String)],
+  -- the errors said in words where the Rust checker's are (`Messages`):
+  -- each where, its kind, and what its words are made of, its types kept
+  -- as Core to be shown once their metavariables are solved
+  reported : StRef s [(Lang.Meta, Report)],
   at : StRef s Lang.Meta,
   -- a place asked about (or -1), and the innermost node checked yet that
   -- holds it, with its type: what hover says
@@ -251,6 +255,7 @@ use Std.Maybe.Maybe.*
     spineHere = newRef 0,
     errors = newRef [],
     placed = newRef [],
+    reported = newRef [],
     at = newRef (spanMeta 0 0),
     want = newRef (0 - 1),
     found = newRef None,
@@ -323,6 +328,7 @@ use Std.Maybe.Maybe.*
     spineHere = newRef (getRef tc.spineHere),
     errors = newRef (getRef tc.errors),
     placed = newRef (getRef tc.placed),
+    reported = newRef (getRef tc.reported),
     at = newRef (getRef tc.at),
     want = newRef (getRef tc.want),
     found = newRef (getRef tc.found),
@@ -392,6 +398,7 @@ use Std.Maybe.Maybe.*
   let w10 = setRef tc.spineHere (getRef saved.spineHere) in
   let w11 = setRef tc.errors (getRef saved.errors) in
   let w11a = setRef tc.placed (getRef saved.placed) in
+  let w11d = setRef tc.reported (getRef saved.reported) in
   let w11b = setRef tc.at (getRef saved.at) in
   let w11c = setRef tc.found (getRef saved.found) in
   let w12 = setRef tc.holes (getRef saved.holes) in
@@ -432,6 +439,17 @@ use Std.Maybe.Maybe.*
   ()
 
 @pub fun problem (tc : Tc s) (why : String) = setRef tc.problems (V.pushBack (getRef tc.problems) why)
+
+-- What an error's words are made of: its kind, the types it names, and
+-- anything else it says (a name, a grade), as the Rust checker's
+-- `TypeErrorKind` carries them.
+@pub data Report = Report String [Core] [String]
+
+-- An error with what its words are made of (`Report`), found at the node
+-- being checked.
+@pub fun errorOf (tc : Tc s) (kind : String) (types : [Core]) (words : [String]) =
+  let w = setRef tc.reported (V.pushBack (getRef tc.reported) (getRef tc.at, Report.Report kind types words)) in
+  error tc kind
 
 -- An error, by its kind's name, found at the node being checked.
 @pub fun error (tc : Tc s) (kind : String) =

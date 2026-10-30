@@ -113,12 +113,12 @@ readLines u = case readLine () of
 -- they are used up every `readLine` answers `Nothing`. What it writes goes
 -- on to the console there is.
 @pub
-withInput : {a : Type} -> (lines : Vector String) -> (body : (u : ()) -> a ! {Console | r}) -> a ! {Console | r}
+withInput : {a : Type} -> (lines : Vector String) -> (body : (u : ()) -> a ! {Console | e}) -> a ! {Console | e}
 withInput lines body = fed lines body 0
 
 -- (each clause a function of the next line's place, as `State`'s are of
 -- the state)
-fed : {a : Type} -> (lines : Vector String) -> (body : (u : ()) -> a ! {Console | r}) -> ((next : Int) -> a ! {Console | r}) ! {Console | r}
+fed : {a : Type} -> (lines : Vector String) -> (body : (u : ()) -> a ! {Console | e}) -> ((next : Int) -> a ! {Console | e}) ! {Console | e}
 fed lines body = handle body () with
   return x -> \(next : Int) -> x
   putStr s k -> \(next : Int) -> let u = putStr s in k () next
@@ -129,10 +129,10 @@ fed lines body = handle body () with
 -- and the text. What it reads it reads from the console there is, so this
 -- and `withInput` go inside each other either way round.
 @pub
-withOutput : {a : Type} -> (body : (u : ()) -> a ! {Console | r}) -> (a, String) ! {Console | r}
+withOutput : {a : Type} -> (body : (u : ()) -> a ! {Console | e}) -> (a, String) ! {Console | e}
 withOutput body = collected body ""
 
-collected : {a : Type} -> (body : (u : ()) -> a ! {Console | r}) -> ((written : [1] String) -> (a, String) ! {Console | r}) ! {Console | r}
+collected : {a : Type} -> (body : (u : ()) -> a ! {Console | e}) -> ((written : [1] String) -> (a, String) ! {Console | e}) ! {Console | e}
 collected body = handle body () with
   return x -> \(written : String) -> (x, written)
   putStr s k -> \(written : String) -> k () (written ++ s)

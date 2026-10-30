@@ -1,0 +1,7 @@
+-- | -- Std.Log: lines captured by a handler, in order, with their levels
+-- | use Std.Log as Log
+-- | use Std.Log (Level)
+-- | 
+-- | Log.captured (\u -> let a = Log.info "one" in let b = Log.atLeast Level.Warn (\v -> let c = Log.debug "dropped" in Log.warn "two") in 7)
+answer: (7, (Info, "one") :: (Warn, "two") :: Nil)
+exit: 0

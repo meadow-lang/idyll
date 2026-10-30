@@ -74,7 +74,8 @@ def nativeOps : [(String, String)] =
     ("exit", "Process.exit"), ("currentPid", "Process.currentPid"), ("argv", "Process.argv"), ("getEnv", "Process.getEnv"),
     ("setEnv", "Process.setEnv"), ("removeEnv", "Process.removeEnv"), ("isTerminal", "Process.isTerminal"),
     ("nextInt", "Random.nextInt"), ("intBetween", "Random.intBetween"), ("nextSeed", "Random.nextSeed"),
-    ("now", "Time.now"), ("monotonic", "Time.monotonic"), ("sleep", "Time.sleep"), ("fail", "Test.fail")
+    ("now", "Time.now"), ("monotonic", "Time.monotonic"), ("sleep", "Time.sleep"), ("fail", "Test.fail"),
+    ("logAt", "Log.logAt")
   ]
 
 -- The roles the prelude's types play, by their paths there.
@@ -471,9 +472,10 @@ fun opInfo (l : L s) (u : Int) : Maybe OpInfo ! { St s | e } = Hm.lookup u (getR
 -- in: its tables and the checker's state are that state's.
 @pub fun lowerIn (checked : Checked s) (package : String) : Result [String] String ! { St s | e } =
   let tc = checked.tc in
-  -- an answer is shown with the prelude's `showInt`, so it stays
+  -- an answer is shown with the prelude's `showInt`, so it stays; a
+  -- program that runs its `main` shows none
   let showIntU = V.find (\kv -> snd kv == ("Prelude", "showInt")) (Hm.toVec checked.symbols) in
-  let roots = V.map fst (vecOf showIntU) in
+  let roots = if checked.ranMain then [] else V.map fst (vecOf showIntU) in
   -- a hole is what it was solved with: first, so that what only a solution
   -- uses is kept; and what the program never uses is left out
   let (ready, live) = Pr.prepared checked.elaborated checked.toplevel (getRef tc.ctors) roots checked.pure in

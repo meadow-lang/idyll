@@ -523,3 +523,14 @@ fn the_old_prefix_forms_are_gone() {
     assert_eq!(ty, "NONE");
     assert!(diags[0].starts_with("parse error"), "{diags:#?}");
 }
+
+/// What goes in a box is a value: a constructor with an implicit argument,
+/// boxed where nothing yet says its type (inside a pair, whose parts are
+/// inferred), is given that argument before it is boxed. It was boxed as
+/// the function of a type it is, which no box may hold ("universe too
+/// large").
+#[test]
+fn a_box_holds_a_value_its_implicits_given() {
+    ok("x : (Maybe Int [], Int)\nx = ([Nothing], 1)\n\nx", "(Maybe Int [], Int)");
+    ok("x : (List Bool [0..1], Int)\nx = ([Nil], 1)\n\nx", "(List Bool [0..1], Int)");
+}

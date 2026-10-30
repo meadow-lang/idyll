@@ -18,7 +18,7 @@ use Idyll.Core as C
 use Idyll.Value (Value)
 use Idyll.Tc (Tc, Meta, MetaInfo, Origin)
 use Idyll.Tc as T
-use Idyll.Eval (force, eval, blocked)
+use Idyll.Eval (force, eval, blocked, quote)
 use Idyll.Unify (unify)
 use Idyll.Ctx (Ctx)
 use Idyll.Num as N
@@ -55,7 +55,7 @@ fun defaultOf (lit : Literal) : Builtin =
   match (lit, b) with
   | (Literal.Int n, Builtin.Number w) if not (C.isFloatType w) ->
       let k = N.wrap w n in
-      let u = if k != n then T.error tc "NumberTooLarge" else () in
+      let u = if k != n then T.errorOf tc "NumberTooLarge" [] [show n, w] else () in
       Literal.Word w k
   | (Literal.Float x, Builtin.Number "Float32") -> Literal.Float32 (toFloat32 x)
   | _ -> lit
@@ -111,7 +111,7 @@ fun isBareMeta (tc : Tc s) (ty : Value) : Bool ! { St s | e } =
               | _ ->
                   if unify tc ctx.lvl t (Value.LitTy (defaultOf lit)) then Core.Lit lit
                   else
-                    let w3 = T.error tc "Mismatch" in
+                    let w3 = T.errorOf tc "Mismatch" [quote tc ctx.lvl t, Core.LitTy (defaultOf lit)] [] in
                     Core.Error
             in
             let value = eval tc ctx.env core in

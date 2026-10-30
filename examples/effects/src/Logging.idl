@@ -23,17 +23,17 @@ logged m (x, ms) = (x, m :: ms)
 -- `logged` takes the run once, so `k` is resumed once, as a `log` may be.
 -- (A `case` here would bind the run's parts as a lambda's binder is,
 -- unrestricted, and so use `k` without limit.)
-kept : (body : () -> a ! {Log | r}) -> (a, List String) ! r
+kept : (body : () -> a ! {Log | e}) -> (a, List String) ! e
 kept body = handle body () with
   return x -> (x, Nil)
   log m k -> logged m (k ())
 
 -- Run `body`, throwing away what it logs.
-quiet : (body : () -> a ! {Log | r}) -> a ! r
+quiet : (body : () -> a ! {Log | e}) -> a ! e
 quiet body = handle body () with
   log m k -> k ()
 
 -- Run `body`, writing what it logs to the console as it goes.
-printed : (body : () -> a ! {Log, Console | r}) -> a ! {Console | r}
+printed : (body : () -> a ! {Log, Console | e}) -> a ! {Console | e}
 printed body = handle body () with
   log m k -> let u = putStrLn ("  log: " ++ m) in k ()

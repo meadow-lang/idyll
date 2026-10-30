@@ -7,7 +7,7 @@ effect Yield (a : Type) where
 
 -- Every value `body` yields, in order.
 @pub
-collect : {a : Type} -> (body : (u : ()) -> () ! {Yield a | r}) -> List a ! r
+collect : {a : Type} -> (body : (u : ()) -> () ! {Yield a | e}) -> List a ! e
 collect body = handle body () with
   return u -> Nil
   yield x k -> x :: k ()

@@ -796,10 +796,24 @@ and a `Map` built with one `Ord` is rejected when used with another.
   declares `Maybe`, `Result` and the world's effects themselves; what is
   left of those modules is their functions, and the operations phase 2
   left out.)
-  Meadow's other modules are not placed yet: `Bench`, `Collections.Tree`
-  and `Collections.HashTable`, `Num.Float`, `Ops`, `Path`, `Log`,
-  `Terminal`, `Test.Fuzz` and `Test.Property`, `Eff`, and those on the
-  runtimes' larger natives (`Thread`, `Stm`, `Net`, `Http`, `Tls`, `Ffi`,
+  `Path`, Meadow's paths as strings, is done too (2026-10-29), and `Log`
+  (2026-10-29): the prelude declares the effect, `logAt`, which both
+  lowerings map to the runtimes' `Log.logAt` (a line on standard error,
+  with the time and level, as `MEADOW_LOG` lets it), and `Std.Log` has the
+  levels and Meadow's handlers, `captured`, `silenced` and `atLeast`.
+  Meadow's `Ops` and `Eff` are the prelude's own: its operator traits, and
+  its `effect Eff` (which has `Log` as Meadow's does, and not yet `Net` or
+  `Thread`, whose runtimes' natives are not bound).
+  `Num.Float`, `Collections.Tree`, `Test.Property` and `Test.Fuzz` are
+  done as well (2026-10-29), each with what Meadow's own tests check of it;
+  of `Test.Fuzz`, `fuzz` only, since `fuzzGuided` steers by the runtime's
+  `Process.covered`, which Idyll does not bind yet.
+  So are `Bench` and `Collections.HashTable`, the table written in place:
+  in Meadow a place inside `runSt`, here linear, as `St` is, each operation
+  taking the table and giving it back.
+  Meadow's other modules are not placed yet: `Terminal`, whose raw mode,
+  keys and size are Console operations Cut does not offer yet, and those
+  on the runtimes' larger natives (`Thread`, `Stm`, `Net`, `Http`, `Tls`, `Ffi`,
   `Macro`).
 - [x] **Adapt rather than copy**: `St` becomes linear mutable references
   and arrays (`MArray`, and a cell beside it) rather than an effect: a
@@ -903,7 +917,6 @@ accepted when what it does fits within what resuming was found to.
   For that, front/'s renamer, checker and lowering keep their state in `St`
   cells, since a query may perform nothing but asking other queries. Still
   to come:
-  - a file checked in its package, not as a lone program;
   - completion of the names in scope where the cursor is (locals, a
     module's after its alias), not only the program's top level;
   - hover, definitions and completion kept in the session, rather than
@@ -914,7 +927,7 @@ accepted when what it does fits within what resuming was found to.
   it (`idyll-<version>.vsix`). Still to come: finding the server without
   `idyll.server.path` (Meadow's extension searches its install
   directories), and a release that ships the `.vsix`.
-- [~] **Named holes, for type-driven development** (Chris, 2026-10-16), as
+- [x] **Named holes, for type-driven development** (Chris, 2026-10-16), as
   Idris and Agda have them. Done, in both compilers (the differentials
   agree on the corpus's goals):
   - `?name` is a token and a term of its own;
@@ -927,7 +940,8 @@ accepted when what it does fits within what resuming was found to.
     error and exits 1, on the CEK machine and through Cut alike;
   - both REPLs have `:goals`, and front/'s server shows goals as warnings.
 
-  Still to come: proof search on a goal (`:prove ?name`), and tactic mode.
+  Proof search on a goal (`:prove ?name`) and tactic mode (`:tactic
+  ?name`) are done too, in front/'s REPL (below).
   `_` is a hole the checker fills in, as it does today. `?name` is a goal
   left for later:
   - it is reported with its type and its context: the variables in scope,
@@ -939,7 +953,7 @@ accepted when what it does fits within what resuming was found to.
   The REPL lists the goals (`:goals`), proof search runs on one
   (`:prove ?name`), and tactic mode opens on one and puts what it builds
   in its place.
-- [ ] **A harness for agents** (Chris, 2026-10-16): an MCP server, or a
+- [x] **A harness for agents** (Chris, 2026-10-16): an MCP server, or a
   harness like it, so that an agent does type-driven development and
   proofs as a person does at the REPL, but in structured form. It would:
   - check a file, and answer with structured diagnostics;
@@ -954,6 +968,14 @@ accepted when what it does fits within what resuming was found to.
   It is the same functions the REPL and the language server use: one
   search, one proof search, one tactic engine in `front/`, three ways to
   reach them. Its natural home is beside Lingua's `repl!` and `lsp!`.
+
+  **Done** (2026-10-30): `Idyll agent` is an `mcp!` (Lingua's, written for
+  it, beside `repl!` and `lsp!`) over the same session. Its tools are
+  `check`, `goals`, `typeAt`, `search`, `prove`, `tactic` and `fill`
+  (`Harness.mw`), each answered as JSON. Each reads its file when called;
+  `tactic` and `fill` answer the program with the step taken, and write
+  the file only when asked, so an agent may try a step first and keep its
+  own history to undo.
 - [~] **front/'s REPL**, `Idyll repl`, a Lingua `repl!` over the language
   server's session. It works as the Rust REPL does:
   - the declarations entered so far are kept as source, and each entry is
@@ -965,8 +987,9 @@ accepted when what it does fits within what resuming was found to.
 
   Its commands are `:type`, `:reset` and `:declarations`; Tab completes
   names, and Ctrl-F finds what has been declared. Still to come: running
-  on Glade rather than the CEK machine, and the rest of the Rust REPL's
-  commands (`:ir`, `:load`, ...).
+  the rest of the Rust REPL's commands (`:ir`, `:load`, ...). It runs
+  expressions on Glade (2026-10-30), as a program runs, the CEK machine
+  where Meadow cannot be run.
 - [~] **Searching and proving in the REPL**, for the REPL `front/` gets
   from Lingua's `repl!` (Chris, 2026-10-16). The Rust REPL already has
   the first two, which carry over; the third is new. **The finder is
@@ -978,7 +1001,15 @@ accepted when what it does fits within what resuming was found to.
   from the goal's shape and verifies them with the checker, in batches.
   `:prove ?name` searches for the goal of that name: its definition's
   variables are in scope, and each term is checked in the goal's place.
-  Tactic mode is left.
+  **Tactic mode is done** (`Tactic.mw`, 2026-10-29): `:tactic ?name`
+  begins on a goal, `:by TACTIC` takes a step, `:qed` keeps what was
+  built in the declarations. Each tactic writes source in the goal's place
+  (`intro`, `intros`, `exact`, `refine`, `apply`, `cases`, `search`,
+  `undo`), its new goals named after it, and the program is checked again:
+  the step is taken only if the checker takes it, and the new goals are
+  what the checker says of them. `induction` and `rewrite` (2026-10-30):
+  a case on a variable, the recursive call on a field its hypothesis; and
+  a case on a proof of an equality, whose `Refl` refines the goal.
   - **A finder like Hoogle**: Ctrl-F searches by name, fuzzily, or by type.
     A type query finds what fits it up to the order of arguments,
     instantiation, implicits and grades, the closest first. Today's
@@ -1316,9 +1347,33 @@ do yet `(unsupported)`, and the tests count those apart.
   and the passes work out which it was from the tree's typed nodes.
 - [x] Syntax errors as Lingua `Diagnostic`s at the nodes they are about,
   drawn with Nettle (`Idyll errors`).
-- [ ] Error messages compared with the Rust compiler's, not only whether
+- [~] Error messages compared with the Rust compiler's, not only whether
   there is one; the renamer's and the checker's at nodes too (HIR and Core
-  would carry where they came from).
+  would carry where they came from). Begun (2026-10-30): front/'s checker
+  keeps what an error's words are made of (`Tc.errorOf`, a `Report`: its
+  kind, its types as Core, its names), and `Messages` says it as the Rust
+  checker does once checking is done, a mismatch's metavariables solved
+  as `solved_in` solves them. `the_messages_agree` holds each headline and
+  label to the Rust checker's, over the corpus, for the kinds ported:
+  mismatches, applying what is no function, unsolved metavariables and
+  holes, found holes, missing and unreachable cases, what may not
+  terminate, the instance searches (none, more than one, unknown), given
+  implicit and auto arguments, usage and linear usage, what is no
+  constructor (of the type matched, or with that many fields), what cannot
+  be matched on or unboxed, sequences of no sequence type, resuming too
+  often, recursive bindings with no signature, type-level grades with
+  nothing to check them, numbers too large for their type, effects (not
+  allowed, unhandled, in a type, in an argument a type depends on), and
+  handlers, natives and indexed data (44 kinds). Still to port: the
+  overloading errors (ambiguous names, names with no meaning that fits),
+  whose words name the type wanted and the candidates, and a few rarer
+  kinds (instances that overlap or are orphans, constructor results,
+  linear values at the top level or boxed, large fields). The
+  renamer's errors are compared too, each headline as the Rust renamer's
+  (a problem's text is its headline, and its label on a line after). The
+  rest of the checker's kinds still say their kind, and an error's place
+  (front/ places one at the node being checked when it is found) is still
+  to compare.
 - [x] **Renaming** (`Rename`: `resolve`, a `pass!` from `Surface` to `Hir`,
   a `lang!`, under a driver for packages and `use`s), for a module after the prelude:
   every program agrees with `idyllic-rename`, binder for binder (the test
@@ -1429,13 +1484,18 @@ do yet `(unsupported)`, and the tests count those apart.
   evaluation needs it. The lowering's continuation-passing core stays
   hand-written, as do the CEK machine, the layout rule and the dumps the
   differentials compare.
-- [ ] A file checked in its package, in the language server: Lingua's
-  `opened` (lsp!) gives the server a file's path, from which it can read
-  the package's other modules. What is missing is knowing which module a
-  place is in. Each module's places are offsets into its own text, so when
-  the modules are checked together, an error does not say which file it is
-  about. The renamer and the checker would keep the module with each place
-  (or the parser would give each module's offsets a base of their own).
+- [x] A file checked in its package, in the language server (2026-10-30).
+  Lingua's `opened` gives the server a file's path; the server finds its
+  package (an `Idyll.toml` above it) and reads the other modules. The
+  package is checked whole, each module parsed after as many newlines as
+  the modules before it have bytes, so that each has places of its own in
+  one source map, as the Rust compiler's files do, and the open module's
+  diagnostics are shifted back to its text. Hover, definitions,
+  references, completion and the outline are answered in the package too
+  (`Session.preparedFor`), each place moved by the module's base and back.
+  Still to come: a package's path and git dependencies there (Std is
+  linked), and a definition in another module of the package, which is in
+  another file.
 
 *Done when:* `front/` compiles the corpus and the tutorial to Cut that Glade
 and Silo run with the answers the CEK machine gives. Done 2026-10-21, and

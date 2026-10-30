@@ -53,6 +53,7 @@ pub const OPERATIONS: &[(&str, usize)] = &[
     ("sleep", 1),
     ("fail", 1),
     ("abort", 1),
+    ("logAt", 2),
 ];
 
 /// What an operation is given.
@@ -169,6 +170,24 @@ impl World {
         (self.output, self.errors)
     }
 
+    /// `Log`'s line at `level`, as Meadow's runtime writes it: a live world
+    /// writes it to standard error with the time, if `MEADOW_LOG` lets it;
+    /// a captured one keeps it without the time, at `info` and above, so
+    /// that a run is the same every time.
+    fn log(&mut self, level: i64, message: &str) {
+        let threshold = if self.live { log_threshold() } else { 1 };
+        if level < threshold {
+            return;
+        }
+        let name = LOG_LEVELS[level.clamp(0, 3) as usize];
+        let line = if self.live {
+            format!("{} {name} {message}\n", rfc3339(std::time::SystemTime::now()))
+        } else {
+            format!("{name} {message}\n")
+        };
+        self.print_error(&line);
+    }
+
     fn print_error(&mut self, s: &str) {
         if self.live {
             let _ = std::io::stdout().flush();
@@ -231,6 +250,11 @@ impl World {
                 Answer::Unit
             }
             ("readLine", [_]) => self.read_line().map_or_else(Answer::nothing, |l| Answer::just(Answer::str(l))),
+            // Log
+            ("logAt", [Int(level), Str(message)]) => {
+                self.log(*level, message);
+                Answer::Unit
+            }
             // Time
             ("now", [_]) => {
                 let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
@@ -340,6 +364,41 @@ impl World {
 fn monotonic_nanos() -> u128 {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     START.get_or_init(std::time::Instant::now).elapsed().as_nanos()
+}
+
+/// `Log`'s level names, by rank, padded to one width so messages line up.
+const LOG_LEVELS: [&str; 4] = ["DEBUG", "INFO ", "WARN ", "ERROR"];
+
+/// The least level a live world writes, as `MEADOW_LOG` names it (`debug`,
+/// `info`, `warn`, `error` or `off`), `info` otherwise; read once.
+fn log_threshold() -> i64 {
+    static AT: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+    *AT.get_or_init(|| match std::env::var("MEADOW_LOG").ok().map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        Some("debug" | "trace" | "all") => 0,
+        Some("warn" | "warning") => 2,
+        Some("error") => 3,
+        Some("off" | "none") => 4,
+        _ => 1,
+    })
+}
+
+/// `when` in UTC as RFC 3339, to the millisecond, as Meadow's runtime
+/// writes it: `2026-10-17T19:12:04.512Z`.
+fn rfc3339(when: std::time::SystemTime) -> String {
+    let since = when.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let secs = since.as_secs() as i64;
+    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // Howard Hinnant's civil_from_days
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{:03}Z", rem / 3600, rem % 3600 / 60, rem % 60, since.subsec_millis())
 }
 
 #[cfg(test)]

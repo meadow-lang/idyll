@@ -46,6 +46,6 @@ toList (Just x) = x :: Nil
 
 -- What is there, or `err`.
 @pub
-toResult : {e a : Type} -> (err : e) -> Maybe a -> Result e a
+toResult : {a b : Type} -> (err : a) -> Maybe b -> Result a b
 toResult err Nothing = Err err
 toResult err (Just x) = Ok x

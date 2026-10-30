@@ -75,6 +75,7 @@ const NATIVE: &[(&str, &str)] = &[
     ("monotonic", "Time.monotonic"),
     ("sleep", "Time.sleep"),
     ("fail", "Test.fail"),
+    ("logAt", "Log.logAt"),
 ];
 
 /// The roles the prelude's types play, by their paths there.

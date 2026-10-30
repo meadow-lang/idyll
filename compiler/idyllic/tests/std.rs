@@ -811,3 +811,190 @@ fn the_console_is_read_and_written_by_handlers_as_meadows_is() {
         "(((), \"ab\\n42\\n\"), (7, \"x\"), (Just \"ada\", \"name: \"), (Just \"one\", Just \"two\"), (Just \"only\", Nothing, Nothing), (\"here\", \"gone\"), Just \"rock\", (Just \"a\", \"b\" :: \"c\" :: Nil), (Just True, \"?again\\n?again\\n?\"), Nothing, \"?again\\n?again\\n?\")"
     );
 }
+
+/// `Std.Path`, Meadow's: paths as strings, the disk never touched.
+#[test]
+fn paths() {
+    let run = |e: &str| value(&format!("use Std.Path as P\n\n{e}\n"));
+    assert_eq!(run("P.join \"a/b\" \"c.txt\""), "\"a/b/c.txt\"");
+    assert_eq!(run("P.join \"a/\" \"b\""), "\"a/b\"");
+    assert_eq!(run("P.join \"a\" \"/b\""), "\"/b\"", "an absolute right-hand side wins");
+    assert_eq!(run("P.fileName \"a/b/c.txt\""), "\"c.txt\"");
+    assert_eq!(run("P.fileStem \"a/b/c.txt\""), "\"c\"");
+    assert_eq!(run("P.extension \"a/b/c.txt\""), "\"txt\"");
+    assert_eq!(run("P.extension \".gitignore\""), "\"\"", "a leading dot is a name");
+    assert_eq!(run("P.parent \"a/b/c.txt\""), "Just \"a/b\"");
+    assert_eq!(run("P.parent \"c.txt\""), "Nothing");
+    assert_eq!(run("P.withExtension \"a/b/c.txt\" \"md\""), "\"a/b/c.md\"");
+    assert_eq!(run("P.withFileName \"a/b/c.txt\" \"d.md\""), "\"a/b/d.md\"");
+    assert_eq!(run("P.components \"/a//b/\""), "\"a\" :: \"b\" :: Nil");
+    assert_eq!(run("P.isAbsolute \"C:/a\""), "True");
+    assert_eq!(run("P.normalize \"a/./b/../c\""), "\"a/c\"");
+    assert_eq!(run("P.normalize \"/../a\""), "\"/a\"", "the root has no parent");
+    assert_eq!(run("P.normalize \"../a\""), "\"../a\"", "a leading .. stays");
+    assert_eq!(run("P.normalize \"C:\\\\Users\\\\me\\\\..\\\\you\""), "\"C:/Users/you\"", "a drive stays first");
+}
+
+/// `Std.Log`, Meadow's: lines at levels, captured, silenced or filtered by a
+/// handler, and written to standard error by the world otherwise.
+#[test]
+fn logs() {
+    let run = |e: &str| value(&format!("use Std.Log as Log\nuse Std.Log.Level.*\n\n{e}\n"));
+    assert_eq!(
+        run("Log.captured (\\u -> let a = Log.info \"one\" in let b = Log.warn \"two\" in let c = Log.log Error \"three\" in 7)"),
+        "(7, (Info, \"one\") :: (Warn, \"two\") :: (Error, \"three\") :: Nil)"
+    );
+    assert_eq!(
+        run("Log.captured (\\u -> Log.atLeast Warn (\\v -> let a = Log.debug \"d\" in let b = Log.info \"i\" in Log.error \"e\"))"),
+        "((), (Error, \"e\") :: Nil)",
+        "a level below the least is dropped"
+    );
+    assert_eq!(run("Log.silenced (\\u -> let a = Log.info \"x\" in 3)"), "3");
+    assert_eq!(run("Log.rank (Log.levelOf 9)"), "3", "the nearest level");
+}
+
+/// `Std.Num.Float`, Meadow's: roots, sines, angles, exponentials and
+/// logarithms from the four operations, each within a part in 10^15 (10^13
+/// for `pow`, made through `exp` and `ln`) of the true value.
+#[test]
+fn floats() {
+    let near = "near : Float -> Float -> Bool\nnear want got = F.abs (want - got) <= 0.000000000000001 * (1.0 + F.abs want)\n\n\
+                close : Float -> Float -> Bool\nclose want got = F.abs (want - got) <= 0.0000000000001 * (1.0 + F.abs want)\n\n";
+    let holds = |e: &str| assert_eq!(value(&format!("use Std.Num.Float as F\n\n{near}{e}\n")), "True", "{e}");
+    holds("near 1.4142135623730951 (F.sqrt 2.0)");
+    holds("near 0.001 (F.sqrt 0.000001)");
+    holds("F.isNaN (F.sqrt (0.0 - 1.0))");
+    holds("near 0.5 (F.sin (F.pi / 6.0))");
+    holds("near (0.0 - 1.0) (F.cos F.pi)");
+    holds("near (0.0 - 0.5063656411097588) (F.sin 100.0)");
+    holds("near 0.8623188722876839 (F.cos 100.0)");
+    holds("near (F.pi / 3.0) (F.atan 1.7320508075688772)");
+    holds("near (3.0 * F.pi / 4.0) (F.atan2 1.0 (0.0 - 1.0))");
+    holds("near 5.0 (F.hypot 3.0 4.0)");
+    holds("near (F.pi / 6.0) (F.asin 0.5)");
+    holds("F.isNaN (F.asin 1.5)");
+    holds("near 2.718281828459045 (F.exp 1.0)");
+    holds("near (0.0 - 6.907755278982137) (F.ln 0.001)");
+    holds("close 1.4142135623730951 (F.pow 2.0 0.5)");
+    holds("close (0.0 - 8.0) (F.pow (0.0 - 2.0) 3.0)");
+    assert_eq!(value("use Std.Num.Float as F\n\n(F.ceil 1.2, F.ceil (0.0 - 1.2), F.round 2.5, F.round (0.0 - 2.5), F.round 2.4)\n"), "(2, -1, 3, -3, 2)");
+}
+
+/// `Std.Collections.Tree`, Meadow's unbalanced search tree: in order
+/// whatever order it was built in, and compared by its elements, not its
+/// shape.
+#[test]
+fn trees() {
+    let run = |e: &str| {
+        value(&format!(
+            "use Std.Collections.Tree as T\nuse Std.Collections.Tree (Tree)\n\nsample : Tree Int\nsample = T.fromList (5 :: 3 :: 8 :: 1 :: Nil)\n\n{e}\n"
+        ))
+    };
+    assert_eq!(run("(T.member 5 sample, T.member 9 sample, T.member 1 T.empty)"), "(True, False, False)");
+    assert_eq!(run("(T.size sample, T.size (T.insert 5 sample), T.depth sample)"), "(4, 4, 3)", "re-inserting is no duplicate");
+    assert_eq!(run("T.toList sample"), "1 :: 3 :: 5 :: 8 :: Nil");
+    assert_eq!(run("(T.minElem sample, T.maxElem sample)"), "(Just 1, Just 8)");
+    assert_eq!(run("T.toList (T.delete 5 sample)"), "1 :: 3 :: 8 :: Nil");
+    assert_eq!(run("T.toList (T.map (\\(x : Int) -> x * 10) sample)"), "10 :: 30 :: 50 :: 80 :: Nil");
+    assert_eq!(run("(sample == T.fromList (8 :: 1 :: 3 :: 5 :: Nil), sample < T.insert 9 sample)"), "(True, True)", "by elements, not shape");
+}
+
+/// `Std.Test.Property`, Meadow's: a property checked on a hundred generated
+/// cases, the same every run, and a failing one shrunk by its draws to the
+/// smallest that still fails, named with its draws for `replay`.
+#[test]
+fn properties() {
+    let run = |e: &str| {
+        value(&format!(
+            "use Std.Test (assertEq, assertTrue, failure)\nuse Std.Test.Property as P\nuse Std.Collections.Vector (Vector)\nuse Std.Collections.Vector as V\n\n\
+             small : () -> Vector Int ! P.Gen\nsmall u = P.vector 20 (\\(x : ()) -> P.between 0 100)\n\n{e}\n"
+        ))
+    };
+    assert_eq!(
+        run("failure (\\(v : ()) -> P.forAll small (\\(xs : Vector Int) -> assertEq (V.reverse (V.reverse xs)) xs \"reversed twice\"))"),
+        "(False, \"\")"
+    );
+    assert_eq!(
+        run("failure (\\(v : ()) -> P.forAll small (\\(xs : Vector Int) -> assertTrue (V.len xs < 3) \"short\"))"),
+        "(True, \"short: expected True, got False\\n  for #[0, 0, 0]\\n  after 1 cases, on draws #[1, 0, 1, 0, 1, 0, 0]\")",
+        "shrunk to the smallest vector too long"
+    );
+    assert_eq!(
+        run("failure (\\(v : ()) -> P.replay (V.fromList (1 :: 0 :: 1 :: 0 :: 1 :: 0 :: 0 :: Nil)) (\\(u : ()) -> assertTrue (V.len (small ()) < 3) \"short\"))"),
+        "(True, \"short: expected True, got False\\n  on draws #[1, 0, 1, 0, 1, 0, 0]\")",
+        "a failure's draws replayed"
+    );
+    assert_eq!(run("V.toList (P.generated (V.fromList (1 :: 7 :: 1 :: 9 :: Nil)) small)"), "7 :: 9 :: Nil", "draws past the end are 0, and end it");
+    assert_eq!(run("V.len (P.sample 7 (\\(u : ()) -> P.vector 3 (\\(w : ()) -> P.bool ()))) <= 3"), "True");
+}
+
+/// `Std.Test.Fuzz`, Meadow's `fuzz`: inputs made by changing examples, and
+/// the one that fails shrunk to the fewest changes of the earliest example.
+#[test]
+fn fuzzing() {
+    let run = |e: &str| {
+        value(&format!(
+            "use Std.Test (assertTrue, failure)\nuse Std.Test.Fuzz as F\nuse Std.Test.Property (generated)\nuse Std.Collections.Vector (Vector)\nuse Std.Collections.Vector as V\nuse Std.String as S\n\n\
+             @terminating\ndepthOf : List Char -> Int -> Int\ndepthOf Nil depth = depth\n\
+             depthOf (c :: rest) depth = if depth < 0 then depth else depthOf rest (if c == '(' then depth + 1 else if c == ')' then depth - 1 else depth)\n\n\
+             balanced : String -> Bool\nbalanced s = depthOf (S.chars s) 0 == 0\n\n\
+             made : List Int -> String\nmade draws = S.fromChars (V.toList (generated (V.fromList draws) (\\(u : ()) -> F.changed (V.fromList (\"abcdef\" :: \"XYZ\" :: Nil)) (V.fromList (\"let\" :: Nil)) (V.fromList (S.chars \"abcdef\")))))\n\n{e}\n"
+        ))
+    };
+    assert_eq!(
+        run("failure (\\(u : ()) -> F.fuzz (V.fromList (\"(a (b) c)\" :: \"()\" :: Nil)) (V.fromList (\"(\" :: \")\" :: Nil)) (\\(s : String) -> assertTrue (balanced s) \"balanced\"))"),
+        "(True, \"balanced: expected True, got False\\n  for \\\"a (b) c)\\\"\\n  after 1 cases, on draws #[0, 1, 0, 0, 0]\")",
+        "the first example less a bracket"
+    );
+    assert_eq!(run("generated (V.fromList (1 :: Nil)) (\\(u : ()) -> F.mutated (V.fromList (\"abc\" :: \"xyz\" :: Nil)) V.empty)"), "\"xyz\"");
+    assert_eq!(
+        run("(made (0 :: 1 :: 1 :: Nil), made (1 :: 1 :: 1 :: Nil), made (2 :: 3 :: 0 :: 0 :: Nil), made (3 :: 0 :: 2 :: 1 :: 0 :: Nil), made (4 :: 6 :: 0 :: 0 :: 0 :: Nil))"),
+        "(\"adef\", \"abcbcdef\", \"abcletdef\", \"XYZabcdef\", \"abcdefa\")",
+        "each of the kinds of change"
+    );
+}
+
+/// `Std.Bench`, Meadow's: its statistics and its report. Nothing here times
+/// anything, which would make a test as flaky as the module is there to
+/// keep benchmarks from being.
+#[test]
+fn benchmarks() {
+    let run = |e: &str| {
+        value(&format!(
+            "use Std.Bench as B\nuse Std.Bench (Report)\nuse Std.Collections.Vector as V\n\n\
+             r : Report\nr = Report {{ name = \"fib\", iterations = 64, samples = 12, best = 900, median = 1000, spread = 50, perSecond = 1000000, unitsPerCall = 1, unitsPerSecond = 1000000 }}\n\n\
+             units : Report\nunits = Report {{ name = \"n\", iterations = 1, samples = 1, best = 1000, median = 1000, spread = 0, perSecond = 1000000, unitsPerCall = 1000, unitsPerSecond = 1000000000 }}\n\n{e}\n"
+        ))
+    };
+    assert_eq!(run("(B.middle (V.fromList (1 :: 2 :: 3 :: Nil)), B.middle (V.fromList (1 :: 2 :: 3 :: 4 :: Nil)), B.middle V.empty)"), "(2, 3, 0)");
+    assert_eq!(run("(B.formatNanos 999, B.formatNanos 1500, B.formatNanos 3000000000)"), "(\"999ns\", \"1.50\u{b5}s\", \"3.00s\")");
+    assert_eq!(run("(B.formatCount 42, B.formatCount 1000, B.formatCount 12345678)"), "(\"42\", \"1_000\", \"12_345_678\")");
+    assert_eq!(run("B.formatReport r"), "\"fib                   1.00\u{b5}s      900ns       +-50ns      1_000_000/s     x64\"");
+    assert_eq!(run("(B.throughput units, B.throughput r)"), "(1000000000, 1000000)", "units win where there are units");
+}
+
+/// `Std.Collections.HashTable`, Meadow's table written in place, made
+/// linear: each operation takes the table and gives it back, a read beside
+/// what it read, and `entries` ends it.
+#[test]
+fn hash_tables() {
+    let run = |e: &str| {
+        value(&format!(
+            "use Std.Collections.HashTable as HT\nuse Std.Collections.HashTable (HashTable)\nuse Std.Collections.Vector as V\n\n\
+             countAll : List String -> HashTable String Int -> HashTable String Int\ncountAll Nil t = t\n\
+             countAll (w :: ws) t = countAll ws (HT.insertWith (\\(a : [] Int) (b : [] Int) -> a + b) w 1 t)\n\n\
+             filled : Int -> HashTable Int Int -> HashTable Int Int ! Div\nfilled i t = if i >= 100 then t else filled (i + 1) (HT.insert i (i * i) t)\n\n\
+             result : Int ! Div\nresult = {e}\n\nresult\n"
+        ))
+    };
+    assert_eq!(
+        run("let [c] = HT.entries (countAll (\"a\" :: \"b\" :: \"a\" :: \"c\" :: \"a\" :: Nil) (HT.new ())) in V.len c * 100 + V.foldl (\\(n : Int) (p : (String, Int)) -> case p of\n  (w, k) -> if w == \"a\" then n + k else n) 0 c"),
+        "303",
+        "three words, and `a` counted three times"
+    );
+    assert_eq!(
+        run("case HT.lookup 7 (filled 0 (HT.new ())) of\n  (b, t) -> let [found] = b in case HT.size (HT.delete 7 t) of\n    (bs, t2) -> let [n] = bs in let u = HT.done t2 in n * 1000 + (case found of\n      Just v -> v\n      Nothing -> 0)"),
+        "99049",
+        "a hundred entries, through growing, and one deleted"
+    );
+}

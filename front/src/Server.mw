@@ -9,6 +9,12 @@ use Idyll.Session
 use Idyll.Syntax (parseIdyll)
 use Std.Exn (toResult)
 use Std.Result.Result.*
+use Lingua.Lsp (pathOf)
+use Idyll.Driver as D
+use Std.Path as Path
+use Std.Fs (exists, readToString, readToStringOr, createDirAll, writeString)
+use Std.Maybe as M
+use Std.Collections.Vector as V
 
 lsp! {
   pub Server "idyll" for Session
@@ -21,10 +27,44 @@ lsp! {
     | references = referencesAt
     | completion = completionAt
     | symbols = symbolsOf
+    | opened = openedIn
 }
+
+-- A file the editor opened: the package it is a module of found (an
+-- `Idyll.toml` in a directory above it, its modules under `src`), and its
+-- other modules read, so that what is wrong with it is what is wrong with
+-- it in its package. A file in no package is a lone program.
+fun openedIn db file (uri : String) =
+  let path = pathOf uri in
+  setSessionPackage db file (M.andThen (\root -> contextOf root path) (packageRoot (Path.parent path)))
+
+-- The nearest directory from `dir` up with an `Idyll.toml` in it.
+fun packageRoot (dir : Maybe String) : Maybe String ! { Fs | e } =
+  match dir with
+  | None -> None
+  | Just d -> if exists (Path.join d "Idyll.toml") then Just d else (match Path.parent d with | Just up -> if up == d then None else packageRoot (Just up) | None -> None)
+
+-- The package at `root`, as the file at `path` sees it: its name, the
+-- file's module path, and every other module, read.
+fun contextOf (root : String) (path : String) : Maybe PackageContext ! { Fs | e } =
+  let src = Path.join root "src" in
+  let own = D.modulePathIn path in
+  let name = M.unwrapOr "Main" (D.manifestField "name" (readToStringOr "" (Path.join root "Idyll.toml"))) in
+  let others =
+    V.concatMap
+      (\rel ->
+        let p = D.modulePathIn (Path.join src rel) in
+        if p == own then []
+        else (match readToString (Path.join src rel) with | Ok t -> [(p, t)] | Err _ -> []))
+      (D.idlFiles src [])
+  in
+  Just (PackageContext { name, own, others })
 
 -- A query's answer, or `fallback` if it has none (an input never set).
 fun answered fallback act = match toResult act with | Ok x -> x | Err _ -> fallback
+
+-- The package a file is a module of, if the editor said where it is.
+fun packageIn db file = answered None (\() -> sessionPackage db file)
 
 fun diagnosticsOf db file = answered [] (\() -> sessionProblems db file)
 
@@ -33,7 +73,7 @@ fun treeOf db file = answered (fst (parseIdyll "")) (\() -> fst (sessionParsed d
 -- What the term at a place is: its type, as the checker found it.
 fun hoverAt db file at =
   answered None (\() ->
-    match typeAt (sessionSource db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at with
+    match typeAtIn (sessionSource db file) (packageIn db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at with
     | Just (place, ty) -> Just (place, "```idyll\n${ty}\n```")
     | None -> None)
 
@@ -41,25 +81,25 @@ fun hoverAt db file at =
 -- its equation or its binder.
 fun definitionAt db file at =
   answered [] (\() ->
-    match namedAt (sessionSource db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at with
+    match namedAtIn (sessionSource db file) (packageIn db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at with
     | Just (d, _) -> [(file, d)]
     | None -> [])
 
 -- Every place the name at a place is named.
 fun referencesAt db file at =
   answered [] (\() ->
-    match namedAt (sessionSource db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at with
+    match namedAtIn (sessionSource db file) (packageIn db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at with
     | Just (_, places) -> V.map (\p -> (file, p)) places
     | None -> [])
 
 -- What a name being written may be: the program's own names and the
 -- prelude's, each with its type.
 fun completionAt db file at =
-  answered [] (\() -> completionsIn (sessionSource db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at)
+  answered [] (\() -> completionsInPackage (sessionSource db file) (packageIn db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at)
 
 -- The file's own declarations, for an outline.
 fun symbolsOf db file =
-  answered [] (\() -> symbolsIn (sessionSource db file) (sessionPrelude db 0) (\u -> sessionStd db 0))
+  answered [] (\() -> symbolsInPackage (sessionSource db file) (packageIn db file) (sessionPrelude db 0) (\u -> sessionStd db 0))
 
 -- The file set out; as it is, if it cannot be.
 fun formatOf db file = answered (answered "" (\() -> sessionSource db file)) (\() -> sessionFormatted db file)
@@ -174,3 +214,19 @@ fun listed (field : String) (reply : Maybe Json) : [Json] =
 
 @test fun aTypeErrorIsPublished () =
   assertEq (M.map (\n -> n > 0) (published (told [opening "file:///a.idl" "x : Bool\nx = 1\n"] serveServer))) (Just True) "what the checker said"
+
+-- A package on disk, its root module using another: checked alone, `Helper`
+-- is no module; checked in its package, as the server checks a file the
+-- editor opens, it is, and an error is where it is in the root's text.
+@test fun aFileIsCheckedInItsPackage () =
+  let dir = "target/lsp-package" in
+  let a = createDirAll (dir ++ "/src") in
+  let b = writeString (dir ++ "/Idyll.toml", "[package]\nname = \"lspcheck\"\nversion = \"0.1.0\"\n") in
+  let c = writeString (dir ++ "/src/Helper.idl", "@pub\ndouble : Int -> Int\ndouble n = n + n\n") in
+  let uri = "file://" ++ dir ++ "/src/Main.idl" in
+  let fine = told [opening uri "use Helper (double)\n\nx : Int\nx = double 2\n"] serveServer in
+  let wrong = told [opening uri "use Helper (double)\n\nx : Bool\nx = double 2\n"] serveServer in
+  let d = assertEq (published fine) (Just 0) "Helper is a module of the package" in
+  let e = assertEq (firstAt wrong) (Just (J.jInt 3, J.jInt 4)) "where it is in Main.idl" in
+  let hovered = told [opening uri "use Helper (double)\n\nx : Int\nx = double 2\n", hovering 1 uri 3 4] serveServer in
+  assertEq (M.andThen (J.path ["result", "contents", "value"]) (V.get hovered 1)) (Just (J.jString "```idyll\nInt -> Int\n```")) "Helper's double, on hover"

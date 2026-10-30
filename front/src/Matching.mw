@@ -45,18 +45,19 @@ use Idyll.Grade (Grade)
 use Idyll.Grade as G
 use Idyll.Tc (Tc, Meta, CtorInfo)
 use Idyll.Tc as T
-use Idyll.Eval (force, apply, eval, quote, toPoly, splitComp)
+use Idyll.Eval (force, apply, eval, quote, toPoly, splitComp, renormalise)
 use Idyll.Unify (unify)
 use Idyll.Usage (Usage)
 use Idyll.Usage as U
 use Idyll.Ctx (Ctx, Info)
 use Idyll.Ctx as X
-use Idyll.Elab (check, infer, insert, freshMeta, closeEffects, leaveKey, leaveBinder, lam, gradeFits, fitsOrWaits, joinUsage, defaultGrade, mentions, keyOf, effectsOf, hirOf, isLinear)
+use Idyll.Elab (check, infer, insert, freshMeta, closeEffects, leaveKey, leaveBinder, lam, gradeFits, fitsOrWaits, joinUsage, defaultGrade, mentions, keyOf, effectsOf, hirOf, isLinear, inferredGrade, settleGrade)
 use Idyll.Hir (Ident)
 use Idyll.Hir as H
 use Idyll.Rename
 use Idyll.Sequences (seqPatternCtors)
 use Std.Collections.Vector as V
+use Std.String as S
 use Std.Collections.HashMap as Hm
 use Std.Maybe as M
 use Std.Maybe.Maybe.*
@@ -216,7 +217,7 @@ fun isCtor (tc : Tc s) (c : Int) : Bool ! { St s | e } = M.isSome (T.ctorInfo tc
       in
       let notBool = boolPattern and not (unify tc ctx.lvl sTy (Value.LitTy Builtin.Bool)) in
       if notBool then
-        let w = T.error tc "Mismatch" in
+        let w = T.errorOf tc "Mismatch" [Core.LitTy Builtin.Bool, quote tc ctx.lvl sTy] [] in
         let w2 = abandon tc goal in
         (Core.Error, Value.Error, U.unknown ())
       else
@@ -232,12 +233,33 @@ fun isCtor (tc : Tc s) (c : Int) : Bool ! { St s | e } = M.isSome (T.ctorInfo tc
          | None ->
              let key = T.freshKey tc in
              -- a value with nothing inside is looked at once, which is all
-             -- a match does with it
-             let grade = if fieldless tc sTy then Just (gradeValue G.one) else None in
+             -- a match does with it; one with fields, where a binder that
+             -- says nothing may be used as often as wanted, has the
+             -- tightest grade its fields' uses allow, as a parameter that
+             -- says none does: `case k () of (x, rest) -> ..` resumes `k`
+             -- once. (In a linear module, or of a linear type, the fields
+             -- have the default grade.)
+             let none = fieldless tc sTy in
+             let inferred = not none and defaultGrade tc == G.any and not (isLinear tc sTy) in
+             let (grade, meta) =
+               if none then (Just (gradeValue G.one), None)
+               else if inferred then
+                 (match inferredGrade tc ctx "the matched value" with
+                  | (Core.Meta m, v) -> (Just v, Just m)
+                  | (_, v) -> (Just v, None))
+               else (None, None)
+             in
              let ctx2 = X.bindKeyed ctx key "_" sTy grade in
              let (core, usage) = runMatch tc ctx2 clauses (problems ctx.lvl) goal [ctx.lvl] False in
              let (n, rest) = U.take usage (Just key) in
-             (Core.Let "_" sC core, goal, U.add rest (U.scale sU n)))
+             let n2 =
+               match meta with
+               | Just m ->
+                   let w = settleGrade tc m (if U.isUnknown rest then None else Just n) False in
+                   renormalise tc n
+               | None -> n
+             in
+             (Core.Let "_" sC core, goal, U.add rest (U.scale sU n2)))
 
 fun runMatch (tc : Tc s) (ctx : Ctx) (clauses : [HirClause]) (problems : [Problem]) (goal : Value) (args : [Int]) (failed : Bool) : (Core, Usage) ! { St s | e } =
   let hir = hirOf tc in
@@ -259,13 +281,13 @@ fun runMatch (tc : Tc s) (ctx : Ctx) (clauses : [HirClause]) (problems : [Proble
     let w = abandon tc goal in
     (core, U.unknown ())
   else
-    let w = if V.isEmpty (getRef m.missing) then () else T.error tc "MissingCases" in
+    let w = if V.isEmpty (getRef m.missing) then () else T.errorOf tc "MissingCases" [] (getRef m.missing) in
     let w2 =
       V.foldl
         (\acc i ->
           match V.get clauses i with
           | Just c ->
-              if not (V.getOr True (getRef m.used) i) and not (isImpossible hir (rhsOf hir c)) and plausible tc ctx m c then T.error tc "UnreachableClause"
+              if not (V.getOr True (getRef m.used) i) and not (isImpossible hir (rhsOf hir c)) and plausible tc ctx m c then T.errorOf tc "UnreachableClause" [] []
               else ()
           | None -> ())
         ()
@@ -273,12 +295,34 @@ fun runMatch (tc : Tc s) (ctx : Ctx) (clauses : [HirClause]) (problems : [Proble
     in
     (core, usage)
 
+-- A case no clause covers, as the patterns that would match it: each
+-- argument as far as the splits have made it out (`_` where they have not),
+-- as the Rust checker's `describe` says it.
+fun describe (tc : Tc s) (ctx : Ctx) (args : [Int]) : String ! { St s | e } =
+  let nested = V.len args > 1 in
+  S.join " " (V.map (\l -> shownPattern tc (X.value ctx l) nested) args)
+
+fun shownPattern (tc : Tc s) (v : Value) (nested : Bool) : String ! { St s | e } =
+  match force tc v with
+  | Value.Opaque c name sp ->
+      (match T.ctorInfo tc c with
+       | Just (CtorInfo.CtorInfo _ _ _ params _) ->
+           let args = V.concatMap (\e -> match e with | Elim.App a -> [shownPattern tc a True] | _ -> []) (V.drop sp params) in
+           if V.isEmpty args then name
+           else
+             let shown = if S.startsWith ":" name and V.len args == 2 then "${V.getOr "" args 0} ${name} ${V.getOr "" args 1}" else name ++ " " ++ S.join " " args in
+             if nested then "(" ++ shown ++ ")" else shown
+       | None -> "_")
+  | Value.Lit l -> C.literalShown l
+  | _ -> "_"
+
 -- --- the tree ---------------------------------------------------------------------
 
 fun tree (tc : Tc s) (m : Matcher s) (ctx : Ctx) (problems : [Problem]) (goal : Value) : (Core, Usage) ! { St s | e } =
   match V.head problems with
   | None ->
-      let w = setRef m.missing (V.pushBack (getRef m.missing) "case") in
+      let case = describe tc ctx (getRef m.args) in
+      let w = if V.elem case (getRef m.missing) then () else setRef m.missing (V.pushBack (getRef m.missing) case) in
       nothing ()
   | Just first ->
       (match first with
@@ -362,7 +406,7 @@ fun intro (tc : Tc s) (m : Matcher s) (ctx : Ctx) (problems : [Problem]) (goal0 
                       | Just q -> Problem.Problem c i (V.drop pending 1) (V.pushBack cs (q, Target.Slot lvl)) bs ds
                       | None ->
                           if icit == Icit.Explicit then
-                            let w4 = T.error tc "MisplacedImplicitPattern" in
+                            let w4 = T.errorOf tc "MisplacedImplicitPattern" [] [] in
                             let w5 = fail m in
                             Problem.Problem c i (V.drop pending 1) (V.pushBack cs (implicitInner hir pat, Target.Slot lvl)) bs ds
                           else p)
@@ -375,7 +419,7 @@ fun intro (tc : Tc s) (m : Matcher s) (ctx : Ctx) (problems : [Problem]) (goal0 
       let usage = if failedNow m then U.unknown () else usage0 in
       -- what the equations do is what calling the function does
       let u1 = closeEffects tc ctx2 usage effects in
-      let u2 = leaveKey tc ctx2 (Just key) grade u1 False in
+      let u2 = leaveKey tc ctx2 (Just key) hint grade u1 False in
       (lam tc ctx hint grade dom body, u2)
   -- not known to be a function yet: made one
   | Value.Flex _ _ ->
@@ -435,7 +479,7 @@ fun simplify (tc : Tc s) (ctx : Ctx) (p : Problem) : (Step, Problem) ! { St s | 
             | HirPatternAs x q -> again (V.append [(q, target)] rest) (V.pushBack bindings (identOf hir x, target)) dots
             | HirPatternDot e -> again rest bindings (V.pushBack dots (e, target))
             | HirPatternLit (Literal.Str _) ->
-                let w = T.error tc "StringPattern" in
+                let w = T.errorOf tc "StringPattern" [] [] in
                 (Step.Failed, p)
             | HirPatternLit written ->
                 let ty = targetType ctx target in
@@ -444,7 +488,7 @@ fun simplify (tc : Tc s) (ctx : Ctx) (p : Problem) : (Step, Problem) ! { St s | 
                 let lit = match force tc ty with | Value.LitTy b if L.readsAs written b -> L.readNumber tc written b | _ -> written in
                 let want = Value.LitTy (C.literalBuiltin lit) in
                 if not (unify tc ctx.lvl ty want) then
-                  let w = T.error tc "Mismatch" in
+                  let w = T.errorOf tc "Mismatch" [quote tc ctx.lvl ty, Core.LitTy (C.literalBuiltin lit)] [] in
                   (Step.Failed, p)
                 else
                   (match lit with
@@ -469,7 +513,7 @@ fun simplify (tc : Tc s) (ctx : Ctx) (p : Problem) : (Step, Problem) ! { St s | 
             -- (an implicit pattern meets an implicit binder in `intro`: one
             -- here is where no implicit argument is)
             | HirPatternImplicit _ _ ->
-                let w = T.error tc "MisplacedImplicitPattern" in
+                let w = T.errorOf tc "MisplacedImplicitPattern" [] [] in
                 (Step.Failed, p)
             | _ -> (Step.Failed, p)))
 
@@ -478,7 +522,7 @@ fun seqStep (tc : Tc s) (ctx : Ctx) (p : Problem) (target : Target) (rest : [(Hi
   match seqPatternCtors tc ctx ty with
   | Just (nil, cons) -> conStep tc ctx p (if V.isEmpty args then nil else cons) args target rest
   | None ->
-      let w = match force tc ty with | Value.Error -> () | _ -> T.error tc "NotASequence" in
+      let w = match force tc ty with | Value.Error -> () | forced -> T.errorOf tc "NotASequence" [quote tc ctx.lvl forced] [] in
       (Step.Failed, p)
 
 -- A constructor pattern, `cu args`, against what it is matched with.
@@ -490,15 +534,15 @@ fun conStep (tc : Tc s) (ctx : Ctx) (p : Problem) (cu : Int) (args : [HirPattern
                    | None ->
                        let w = T.error tc "NotAConstructor" in
                        (Step.Failed, p)
-                   | Just (CtorInfo.CtorInfo _ dt _ _ fields) ->
+                   | Just (CtorInfo.CtorInfo cname dt _ _ fields) ->
                        (match force tc (targetType ctx target) with
                         | Value.Error -> (Step.Failed, p)
-                        | Value.Opaque d _ _ ->
+                        | Value.Opaque d dn dsp ->
                             if d != dt then
-                              let w = T.error tc "NotAConstructorOf" in
+                              let w = T.errorOf tc "NotAConstructorOf" [quote tc ctx.lvl (Value.Opaque d dn dsp)] [cname] in
                               (Step.Failed, p)
                             else if V.len args != fields then
-                              let w = T.error tc "WrongFieldCount" in
+                              let w = T.errorOf tc "WrongFieldCount" [] [cname, show fields, show (V.len args)] in
                               (Step.Failed, p)
                             else
                               (match force tc (targetValue ctx target) with
@@ -510,8 +554,8 @@ fun conStep (tc : Tc s) (ctx : Ctx) (p : Problem) (cu : Int) (args : [HirPattern
                                      again (V.append (V.zip args fs) rest)
                                | Value.Rigid k _ [] -> (Step.Splits k How.ByCon, p)
                                | v -> (cannotSplit tc v, p))
-                        | _ ->
-                            let w = T.error tc "NotAConstructorOf" in
+                        | other ->
+                            let w = T.errorOf tc "NotAConstructorOf" [quote tc ctx.lvl other] [cname] in
                             (Step.Failed, p)))
 
 -- Whether a clause no case reached at least makes sense, as far as its
@@ -532,17 +576,17 @@ fun plausible (tc : Tc s) (ctx : Ctx) (m : Matcher s) (clause : HirClause) : Boo
                  else
                    (match T.ctorInfo tc u with
                     | None ->
-                        let w = T.error tc "NotAConstructor" in
+                        let w = T.errorOf tc "NotAConstructor" [] [H.textOf (identOf hir c)] in
                         False
                     | Just (CtorInfo.CtorInfo _ dt _ _ _) ->
                         (match force tc ty with
-                         | Value.Opaque d _ _ ->
+                         | Value.Opaque d dn dsp ->
                              if d == dt then True
                              else
-                               let w = T.error tc "NotAConstructorOf" in
+                               let w = T.errorOf tc "NotAConstructorOf" [quote tc ctx.lvl (Value.Opaque d dn dsp)] [H.textOf (identOf hir c)] in
                                False
-                         | _ ->
-                             let w = T.error tc "NotAConstructorOf" in
+                         | other ->
+                             let w = T.errorOf tc "NotAConstructorOf" [quote tc ctx.lvl other] [H.textOf (identOf hir c)] in
                              False))
              | _ -> True))
     True
@@ -607,7 +651,7 @@ fun leaf (tc : Tc s) (m : Matcher s) (ctx : Ctx) (p : Problem) (rest : [Problem]
            (match emptySplit tc m ctx with
             | Just found -> found
             | None ->
-                let w2 = T.error tc "NotImpossible" in
+                let w2 = T.errorOf tc "NotImpossible" [] [] in
                 let w3 = fail m in
                 nothing ())
        | (_, rhs) ->
@@ -724,14 +768,14 @@ fun split (tc : Tc s) (m : Matcher s) (ctx : Ctx) (problems : [Problem]) (goal :
        | Value.Opaque d _ _ ->
            (match Hm.lookup d (getRef tc.datas) with
             | Just ctors -> splitData tc m ctx problems goal k scrutinee used ctors
-            | None -> notData tc m)
+            | None -> notData tc m ctx (X.typeAt ctx k))
        | Value.Error ->
            let w = fail m in
            nothing ()
-       | _ -> notData tc m)
+       | _ -> notData tc m ctx (X.typeAt ctx k))
 
-fun notData (tc : Tc s) (m : Matcher s) : (Core, Usage) ! { St s | e } =
-  let w = T.error tc "NotADataType" in
+fun notData (tc : Tc s) (m : Matcher s) (ctx : Ctx) (ty : Value) : (Core, Usage) ! { St s | e } =
+  let w = T.errorOf tc "NotADataType" [quote tc ctx.lvl (force tc ty)] [] in
   let w2 = fail m in
   nothing ()
 
@@ -769,10 +813,10 @@ fun splitData (tc : Tc s) (m : Matcher s) (ctx : Ctx) (problems : [Problem]) (go
                    V.foldl
                      (\uu dl ->
                        match dl with
-                       | (lvl, key, _, grade) ->
+                       | (lvl, key, hint, grade) ->
                            (match force tc (X.typeAt ctx3 lvl) with
                             | Value.Type _ -> snd (U.take uu (Just key))
-                            | _ -> leaveField tc ctx3 key grade uu))
+                            | _ -> leaveField tc ctx3 key hint grade uu))
                      u
                      (V.reverse delta)
                  in
@@ -787,12 +831,12 @@ fun splitData (tc : Tc s) (m : Matcher s) (ctx : Ctx) (problems : [Problem]) (go
   if forced then (Core.Runtime Note.Forced cased, total) else (cased, U.add used total)
 
 -- Leaving the variable a constructor's argument became.
-fun leaveField (tc : Tc s) (ctx : Ctx) (key : Int) (allowed : Value) (usage : Usage) : Usage ! { St s | e } =
+fun leaveField (tc : Tc s) (ctx : Ctx) (key : Int) (name : String) (allowed : Value) (usage : Usage) : Usage ! { St s | e } =
   let (used, rest) = U.take usage (Just key) in
   if U.isUnknown rest then rest
-  else if fitsOrWaits tc ctx used allowed True then rest
+  else if fitsOrWaits tc ctx name used allowed True then rest
   else
-    let w = T.error tc "FieldUsage" in
+    let w = T.errorOf tc "FieldUsage" [quote tc ctx.lvl (Va.polyValue used), quote tc ctx.lvl allowed] [name, ""] in
     rest
 
 -- How often a slot may be used, if known; otherwise as an unannotated

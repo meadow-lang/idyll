@@ -301,15 +301,15 @@ fn only_an_operation_marked_many_is_resumed_more_than_once() {
         "2 : Int"
     );
     // the mark is part of what a compiled package says of its operations
-    let out = accepts("effect Choose where\n  @many flip : () -> Bool\n  pick : () -> Int\n\n");
+    let out = accepts("effect Choose where\n  @many flip : () -> Bool\n  pickOne : () -> Int\n\n");
     let ops = &out.checked.as_ref().expect("checked").ops;
     let many: Vec<(&str, bool)> = {
         let mut v: Vec<(&str, bool)> =
-            ops.values().map(|o| (o.name.as_str(), o.many)).filter(|(n, _)| ["flip", "pick"].contains(n)).collect();
+            ops.values().map(|o| (o.name.as_str(), o.many)).filter(|(n, _)| ["flip", "pickOne"].contains(n)).collect();
         v.sort();
         v
     };
-    assert_eq!(many, [("flip", true), ("pick", false)]);
+    assert_eq!(many, [("flip", true), ("pickOne", false)]);
 }
 
 #[test]
@@ -635,12 +635,35 @@ fn a_row_variable_made_inside_a_lambda_meets_one_made_outside() {
     // and a resumption handed to a function polymorphic in its row: that
     // row's variable, made in the clause, is pruned of the clause's binders
     let search = "effect Search where\n  @many choose : Int -> Int -> Int\n\n\
-                  each : (lo : [] Int) -> (hi : [] Int) -> (k : [] (Int -> List a ! {Div | r})) -> List a ! {Div | r}\n\
+                  each : (lo : [] Int) -> (hi : [] Int) -> (k : [] (Int -> List a ! {Div | e})) -> List a ! {Div | e}\n\
                   each lo hi k = if hi < lo then Nil else Std.Collections.List.append (k lo) (each (lo + 1) hi k)\n\n\
-                  all : (body : () -> a ! {Search, Div | r}) -> List a ! {Div | r}\n\
+                  all : (body : () -> a ! {Search, Div | e}) -> List a ! {Div | e}\n\
                   all body = handle body () with\n  return x -> x :: Nil\n  choose lo hi k -> each lo hi k\n\n\
                   all (\\() -> let a = choose 1 2 in let b = choose a 2 in (a, b))";
     assert_eq!(accepts(search).evaluation, Some(Evaluation::Value("(1, 1) :: (1, 2) :: (2, 2) :: Nil".into())));
     // which also lets an argument's type be found from how it is used
     assert_eq!(ty("(\\f -> f 1) (\\n -> True)"), "Bool");
+}
+
+/// A match on what a resumption answers resumes it once, however many
+/// fields the pattern takes apart: the value matched has the tightest grade
+/// its fields' uses allow, not the default `[]`, which made `case k () of
+/// (x, said) -> ..` "resume more than once".
+#[test]
+fn matching_a_resumptions_answer_resumes_it_once() {
+    let src = "effect Tell where\n  tell : Int -> ()\n\n\
+               told : {a : Type} -> (body : (u : ()) -> a ! {Tell | e}) -> (a, List Int) ! e\n\
+               told body = handle body () with\n  return x -> (x, Nil)\n  tell n k -> case k () of\n    (x, said) -> (x, n :: said)\n\n\
+               told (\\u -> let a = tell 1 in tell 2)";
+    assert_eq!(accepts(src).evaluation, Some(Evaluation::Value("((), 1 :: 2 :: Nil)".into())));
+    // a field used twice still may be, the value matched taken as often
+    assert_eq!(value("pair : () -> (Int, Int)\npair u = (2, 3)\n\ncase pair () of\n  (x, y) -> x + x + y"), "7 : Int");
+    // and resuming inside a pattern whose fields are used twice is refused
+    rejects(
+        "effect Tell where\n  tell : Int -> ()\n\n\
+         twice : (body : (u : ()) -> (Int, Int) ! {Tell | e}) -> (Int, Int) ! e\n\
+         twice body = handle body () with\n  return x -> x\n  tell n k -> case k () of\n    (x, y) -> (x + x, y)\n\n\
+         twice (\\u -> let a = tell 1 in (5, 6))",
+        &["tell is resumed more than once: this clause may resume tell more than once, and Tell declares it to be resumed at most once"],
+    );
 }

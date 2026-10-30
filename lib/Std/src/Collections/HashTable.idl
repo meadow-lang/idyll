@@ -1,0 +1,292 @@
+-- A hash table written in place, as Meadow's `Std.Collections.HashTable`,
+-- made linear as `Std.St` is:
+--
+--   use Std.Collections.HashTable as HT
+--
+--   counts : (words : [] Vector String) -> Vector (String, Int) []
+--   counts words = HT.entries (V.foldl (\(t : HT.HashTable String Int) (w : [] String) -> HT.insertWith (\(a : [] Int) (b : [] Int) -> a + b) w 1 t) (HT.new ()) words)
+--
+-- Where `Std.Collections.HashMap` is a value (every insert answers a new map
+-- and leaves the old one as it was), this is a place: `insert` writes into
+-- it. That is the whole difference, and it is the difference between
+-- copying a path of the trie per insert and writing one slot. Meadow's
+-- table belongs to the `runSt` it was made in; here a table is linear
+-- instead, as `St`'s cells and arrays are: each operation takes the one
+-- there is and gives it back, a read beside what it read, boxed (`case
+-- HT.lookup k t of (b, t2) -> let [found] = b in ..`), and `entries`,
+-- `keys`, `values` or `done` end it. A table is linear by its type, since
+-- it holds a mutable array: the module need not say `@linear` for that.
+--
+-- Open addressing with linear probing, in one array of slots, which doubles
+-- when three quarters of it are in use. A deleted entry leaves a tombstone
+-- a probe steps over, and tombstones count towards the three quarters, so a
+-- table filled and emptied over and over is rebuilt rather than probed to
+-- its end. Every slot keeps its key's hash, so a probe compares hashes
+-- before keys, and growing hashes nothing again.
+--
+-- Keys may be anything with a `Hash`, as for `HashMap`.
+
+use Std.Hash (Hash, hash)
+use Std.Num.Bits (bitAnd)
+use Std.Collections.MArray as M
+use Std.Collections.MArray (MArray)
+use Std.Collections.Vector (Vector)
+use Std.Collections.Vector as V
+
+-- A slot: never used; used and then deleted, which a probe steps over; or
+-- an entry, with its key's hash.
+@pub
+data Slot (k : Type) (v : Type) = Empty | Tomb | Full Int k v
+
+-- The slots, how many hold an entry, and how many hold a tombstone.
+@pub
+data HashTable (k : Type) (v : Type) = Table (MArray (Slot k v)) Int Int
+
+initialCapacity : Int
+initialCapacity = 16
+
+-- A new, empty table.
+@pub
+new : {k v : Type} -> (u : ()) -> HashTable k v
+new u = withCapacity initialCapacity
+
+-- A table with room for `n` entries before it first grows.
+@pub
+withCapacity : {k v : Type} -> (n : [] Int) -> HashTable k v
+withCapacity n = HashTable.Table (M.new (capacityFor n) Slot.Empty) 0 0
+
+-- The smallest power of two that holds `n` entries under three quarters
+-- full.
+capacityFor : (n : [] Int) -> Int
+capacityFor n = capacityUp initialCapacity (n * 4 / 3 + 1)
+
+@terminating
+capacityUp : (c : [] Int) -> (want : [] Int) -> Int
+capacityUp c want = if c >= want then c else capacityUp (c * 2) want
+
+-- How many entries, and the table back.
+@pub
+size : {k v : Type} -> HashTable k v -> (Int [], HashTable k v)
+size (HashTable.Table slots n tombs) = ([n], HashTable.Table slots n tombs)
+
+@pub
+isEmpty : {k v : Type} -> HashTable k v -> (Bool [], HashTable k v)
+isEmpty (HashTable.Table slots n tombs) = ([n == 0], HashTable.Table slots n tombs)
+
+-- ---------------------------------------------------------------------------
+-- Probing
+-- ---------------------------------------------------------------------------
+
+-- The slots' mask (their count, less one), and the slots back.
+maskOf : {k v : Type} -> MArray (Slot k v) -> (Int [], MArray (Slot k v))
+maskOf slots = case M.length slots of
+  (bn, s2) -> let [n] = bn in ([n - 1], s2)
+
+-- The slot holding `key`, whose hash is `h`, from the `i`th probe on; or -1
+-- if the probe reaches an empty slot first, which means there is none.
+@terminating
+find : {k v : Type} -> {auto hk : Hash k} -> MArray (Slot k v) -> (mask : [] Int) -> (h : [] Int) -> (key : [] k) -> (i : [] Int) -> (Int [], MArray (Slot k v))
+find slots mask h key i =
+  let idx = bitAnd (h + i) mask in
+  case M.read slots idx of
+    (b, s2) -> let [slot] = b in case slot of
+      Slot.Empty -> ([0 - 1], s2)
+      Slot.Tomb -> find s2 mask h key (i + 1)
+      Slot.Full h2 k2 v -> if h2 == h then (if k2 == key then ([idx], s2) else find s2 mask h key (i + 1)) else find s2 mask h key (i + 1)
+
+-- Where `key` is, and `True`; or where it would go, and `False`: the first
+-- tombstone the probe passed, or else the empty slot that ended it.
+@terminating
+place : {k v : Type} -> {auto hk : Hash k} -> MArray (Slot k v) -> (mask : [] Int) -> (h : [] Int) -> (key : [] k) -> (i : [] Int) -> (free : [] Int) -> ((Int, Bool) [], MArray (Slot k v))
+place slots mask h key i free =
+  let idx = bitAnd (h + i) mask in
+  case M.read slots idx of
+    (b, s2) -> let [slot] = b in case slot of
+      Slot.Empty -> ([(if free >= 0 then free else idx, False)], s2)
+      Slot.Tomb -> place s2 mask h key (i + 1) (if free >= 0 then free else idx)
+      Slot.Full h2 k2 v -> if h2 == h then (if k2 == key then ([(idx, True)], s2) else place s2 mask h key (i + 1) free) else place s2 mask h key (i + 1) free
+
+-- Where `key` is in `slots`, or -1.
+located : {k v : Type} -> {auto hk : Hash k} -> MArray (Slot k v) -> (key : [] k) -> (Int [], MArray (Slot k v))
+located slots key = case maskOf slots of
+  (bm, s2) -> let [mask] = bm in find s2 mask (hash key) key 0
+
+-- ---------------------------------------------------------------------------
+-- Reading
+-- ---------------------------------------------------------------------------
+
+-- What `key` holds, if anything, and the table back.
+@pub
+lookup : {k v : Type} -> {auto hk : Hash k} -> (key : [] k) -> HashTable k v -> (Maybe v [], HashTable k v)
+lookup key (HashTable.Table slots n tombs) = case located slots key of
+  (bi, s2) -> let [idx] = bi in
+    if idx < 0 then ([Nothing], HashTable.Table s2 n tombs)
+    else case M.read s2 idx of
+      (b, s3) -> let [slot] = b in case slot of
+        Slot.Full h2 k2 v -> ([Just v], HashTable.Table s3 n tombs)
+        Slot.Empty -> ([Nothing], HashTable.Table s3 n tombs)
+        Slot.Tomb -> ([Nothing], HashTable.Table s3 n tombs)
+
+@pub
+member : {k v : Type} -> {auto hk : Hash k} -> (key : [] k) -> HashTable k v -> (Bool [], HashTable k v)
+member key t = case lookup key t of
+  (b, t2) -> let [found] = b in case found of
+    Just v -> ([True], t2)
+    Nothing -> ([False], t2)
+
+@pub
+getOr : {k v : Type} -> {auto hk : Hash k} -> (default : [] v) -> (key : [] k) -> HashTable k v -> (v [], HashTable k v)
+getOr default key t = case lookup key t of
+  (b, t2) -> let [found] = b in case found of
+    Just v -> ([v], t2)
+    Nothing -> ([default], t2)
+
+-- ---------------------------------------------------------------------------
+-- Writing
+-- ---------------------------------------------------------------------------
+
+-- `value` put at `key`, in place of what was there.
+@pub
+insert : {k v : Type} -> {auto hk : Hash k} -> (key : [] k) -> (value : [] v) -> HashTable k v -> HashTable k v
+insert key value t = insertWith (\(new : [] v) (old : [] v) -> new) key value t
+
+-- `value` put at `key`; or, if `key` already holds `old`, `f value old`.
+-- One probe either way, which is what makes counting cheap: `insertWith
+-- (\a b -> a + b) w 1 t` is a lookup and a write in one.
+@pub
+insertWith : {k v : Type} -> {auto hk : Hash k} -> (f : [] ((new : [] v) -> (old : [] v) -> v)) -> (key : [] k) -> (value : [] v) -> HashTable k v -> HashTable k v
+insertWith f key value (HashTable.Table slots n tombs) =
+  let h = hash key in
+  case maskOf slots of
+    (bm, s1) -> let [mask] = bm in case place s1 mask h key 0 (0 - 1) of
+      (bp, s2) -> let [p] = bp in case p of
+        (idx, True) -> case M.read s2 idx of
+          (b, s3) -> let [slot] = b in case slot of
+            Slot.Full h2 k2 old -> HashTable.Table (M.write s3 idx (Slot.Full h key (f value old))) n tombs
+            Slot.Empty -> HashTable.Table s3 n tombs
+            Slot.Tomb -> HashTable.Table s3 n tombs
+        (idx, False) -> case M.read s2 idx of
+          (b, s3) -> let [slot] = b in
+            let wasTomb = (case slot of
+              Slot.Tomb -> True
+              Slot.Empty -> False
+              Slot.Full h2 k2 v -> False) in
+            grow (HashTable.Table (M.write s3 idx (Slot.Full h key value)) (n + 1) (if wasTomb then tombs - 1 else tombs))
+
+-- `f` of what `key` holds, if it holds anything.
+@pub
+adjust : {k v : Type} -> {auto hk : Hash k} -> (key : [] k) -> (f : [] ((old : [] v) -> v)) -> HashTable k v -> HashTable k v
+adjust key f (HashTable.Table slots n tombs) = case located slots key of
+  (bi, s2) -> let [idx] = bi in
+    if idx < 0 then HashTable.Table s2 n tombs
+    else case M.read s2 idx of
+      (b, s3) -> let [slot] = b in case slot of
+        Slot.Full h k2 old -> HashTable.Table (M.write s3 idx (Slot.Full h k2 (f old))) n tombs
+        Slot.Empty -> HashTable.Table s3 n tombs
+        Slot.Tomb -> HashTable.Table s3 n tombs
+
+-- `key` taken out, if it is there.
+@pub
+delete : {k v : Type} -> {auto hk : Hash k} -> (key : [] k) -> HashTable k v -> HashTable k v
+delete key (HashTable.Table slots n tombs) = case located slots key of
+  (bi, s2) -> let [idx] = bi in
+    if idx < 0 then HashTable.Table s2 n tombs
+    else HashTable.Table (M.write s2 idx Slot.Tomb) (n - 1) (tombs + 1)
+
+-- Everything taken out, the room kept.
+@pub
+clear : {k v : Type} -> HashTable k v -> HashTable k v
+clear (HashTable.Table slots n tombs) = case M.length slots of
+  (bc, s2) -> let [cap] = bc in HashTable.Table (emptied s2 0 cap) 0 0
+
+@terminating
+emptied : {k v : Type} -> MArray (Slot k v) -> (i : [] Int) -> (cap : [] Int) -> MArray (Slot k v)
+emptied slots i cap = if i >= cap then slots else emptied (M.write slots i Slot.Empty) (i + 1) cap
+
+-- The table rebuilt once three quarters of its slots are entries or
+-- tombstones: twice the size if it is the entries that fill it, the same
+-- size, without the tombstones, if it is not.
+grow : {k v : Type} -> HashTable k v -> HashTable k v
+grow (HashTable.Table slots n tombs) = case M.length slots of
+  (bc, s2) -> let [cap] = bc in
+    if (n + tombs) * 4 < cap * 3 then HashTable.Table s2 n tombs
+    else
+      let newCap = if n * 2 >= cap then cap * 2 else cap in
+      HashTable.Table (moved s2 (M.new newCap Slot.Empty) (newCap - 1) 0 cap) n 0
+
+-- Every entry of `old` from `i` on put in `fresh`, `old` done with.
+@terminating
+moved : {k v : Type} -> MArray (Slot k v) -> MArray (Slot k v) -> (mask : [] Int) -> (i : [] Int) -> (cap : [] Int) -> MArray (Slot k v)
+moved old fresh mask i cap =
+  if i >= cap then (let ignored = M.freeze old in fresh)
+  else case M.read old i of
+    (b, o2) -> let [slot] = b in case slot of
+      Slot.Full h key value -> moved o2 (reinsert fresh mask h key value 0) mask (i + 1) cap
+      Slot.Empty -> moved o2 fresh mask (i + 1) cap
+      Slot.Tomb -> moved o2 fresh mask (i + 1) cap
+
+-- Into a table with no tombstones and room to spare, so the probe ends at
+-- an empty slot.
+@terminating
+reinsert : {k v : Type} -> MArray (Slot k v) -> (mask : [] Int) -> (h : [] Int) -> (key : [] k) -> (value : [] v) -> (i : [] Int) -> MArray (Slot k v)
+reinsert slots mask h key value i =
+  let idx = bitAnd (h + i) mask in
+  case M.read slots idx of
+    (b, s2) -> let [slot] = b in case slot of
+      Slot.Empty -> M.write s2 idx (Slot.Full h key value)
+      Slot.Tomb -> reinsert s2 mask h key value (i + 1)
+      Slot.Full h2 k2 v2 -> reinsert s2 mask h key value (i + 1)
+
+-- ---------------------------------------------------------------------------
+-- Whole tables
+-- ---------------------------------------------------------------------------
+
+-- A fold over every entry, as `f acc key value`, in slot order, which is no
+-- order anyone should rely on; the table done with.
+@pub
+foldl : {k v a : Type} -> (f : [] ((acc : [] a) -> (key : [] k) -> (value : [] v) -> a)) -> (acc : [] a) -> HashTable k v -> a []
+foldl f acc (HashTable.Table slots n tombs) = case M.length slots of
+  (bc, s2) -> let [cap] = bc in foldSlots f acc s2 0 cap
+
+@terminating
+foldSlots : {k v a : Type} -> (f : [] ((acc : [] a) -> (key : [] k) -> (value : [] v) -> a)) -> (acc : [] a) -> MArray (Slot k v) -> (i : [] Int) -> (cap : [] Int) -> a []
+foldSlots f acc slots i cap =
+  if i >= cap then (let ignored = M.freeze slots in [acc])
+  else case M.read slots i of
+    (b, s2) -> let [slot] = b in case slot of
+      Slot.Full h key value -> foldSlots f (f acc key value) s2 (i + 1) cap
+      Slot.Empty -> foldSlots f acc s2 (i + 1) cap
+      Slot.Tomb -> foldSlots f acc s2 (i + 1) cap
+
+-- Every entry, the table done with.
+@pub
+entries : {k v : Type} -> HashTable k v -> Vector (k, v) []
+entries t = foldl (\(acc : [] Vector (k, v)) (key : [] k) (value : [] v) -> V.pushBack acc (key, value)) V.empty t
+
+@pub
+keys : {k v : Type} -> HashTable k v -> Vector k []
+keys t = foldl (\(acc : [] Vector k) (key : [] k) (value : [] v) -> V.pushBack acc key) V.empty t
+
+@pub
+values : {k v : Type} -> HashTable k v -> Vector v []
+values t = foldl (\(acc : [] Vector v) (key : [] k) (value : [] v) -> V.pushBack acc value) V.empty t
+
+-- The table, done with, and nothing read from it.
+@pub
+done : {k v : Type} -> HashTable k v -> ()
+done (HashTable.Table slots n tombs) = let ignored = M.freeze slots in ()
+
+-- A table of every pair of `pairs`: a key given twice holds the later
+-- value.
+@pub
+fromVec : {k v : Type} -> {auto hk : Hash k} -> (pairs : [] Vector (k, v)) -> HashTable k v
+fromVec pairs = insertedFrom pairs 0 (withCapacity (V.len pairs))
+
+-- Every pair of `pairs` from `i` on, put in `t`. (Not `V.foldl`: what that
+-- carries along may be shared, and a table may not.)
+@terminating
+insertedFrom : {k v : Type} -> {auto hk : Hash k} -> (pairs : [] Vector (k, v)) -> (i : [] Int) -> HashTable k v -> HashTable k v
+insertedFrom pairs i t = case V.get pairs i of
+  Nothing -> t
+  Just p -> case p of
+    (key, value) -> insertedFrom pairs (i + 1) (insert key value t)

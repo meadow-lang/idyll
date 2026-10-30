@@ -299,142 +299,142 @@ def idyll:Prelude/escaped (c_137: char; k_138: ptr) =
               idyll:Prelude/backslashed(92; k_138)))), μ̃ u_153: unit.
         idyll:Prelude/backslashed(34; k_138))))
 
-def idyll:Std/Char.code (c_156: char; k_157: ptr) =
-  prim charCode(c_156; k_157)
+def idyll:Std/Collections.Array.map <'a_163 = d_a_162, 'b_165 = d_b_164; e_161: Effect> (d_a_162: desc, d_b_164: desc, f_166: ptr, xs_167: ptr; k_168: ptr) =
+  <[] | μ̃ v_177: ptr.
+    idyll:Std/Collections.Array.mapFrom(d_a_162, d_b_164, f_166, xs_167, 0, v_177; k_168)>
 
-def idyll:Std/Char.between (lo_161: i64, hi_162: i64, n_163: i64; k_164: ptr) =
-  prim add(n_163, 1; μ̃ v_169: i64.
-    prim lt(lo_161, v_169; μ̃ v__165: bool.
-      prim if(v__165; μ̃ u_167: unit.
-        <false | k_164>, μ̃ u_168: unit.
-        prim add(hi_162, 1; μ̃ v_166: i64.
-          prim lt(n_163, v_166; k_164)))))
+def idyll:Std/Collections.Array.foldl <'a_187 = d_a_186, 'b_189 = d_b_188; e_185: Effect> (d_a_186: desc, d_b_188: desc, f_190: ptr, z_191: 'b_189, xs_192: ptr; k_193: ptr) =
+  idyll:Std/Collections.Array.foldlFrom(d_a_186, d_b_188, f_190, z_191, xs_192, 0; k_193)
 
-def idyll:Std/Char.isDigit (c_171: char; k_172: ptr) =
-  idyll:Std/Char.code(c_171; μ̃ v_173: i64.
-    idyll:Std/Char.between(48, 57, v_173; k_172))
+def idyll:Std/Collections.Array.findIndex <'a_208 = d_a_207; e_206: Effect> (d_a_207: desc, keep_209: ptr, xs_210: ptr; k_211: ptr) =
+  idyll:Std/Collections.Array.findFrom(d_a_207, keep_209, xs_210, 0; k_211)
 
-def idyll:Std/Char.isSpace (c_175: char; k_176: ptr) =
-  idyll:Std/Char.code(c_175; μ̃ n_177: i64.
-    prim eq(n_177, 32; μ̃ v__178: bool.
-      prim if(v__178; μ̃ u_179: unit.
-        idyll:Std/Char.between(9, 13, n_177; k_176), μ̃ u_180: unit.
-        <true | k_176>)))
-
-def idyll:Std/Char.hexDigitToInt (c_182: char; k_183: ptr) =
-  idyll:Std/Char.code(c_182; μ̃ n_184: i64.
-    idyll:Std/Char.isDigit(c_182; μ̃ v__185: bool.
-      prim if(v__185; μ̃ u_195: unit.
-        idyll:Std/Char.between(97, 102, n_184; μ̃ v__186: bool.
-          prim if(v__186; μ̃ u_192: unit.
-            idyll:Std/Char.between(65, 70, n_184; μ̃ v__187: bool.
-              prim if(v__187; μ̃ u_189: unit.
-                <idyll:Prelude/Maybe.Nothing | k_183>, μ̃ u_190: unit.
-                prim sub(n_184, 55; μ̃ v_188: i64.
-                  <idyll:Prelude/Maybe.Just(v_188) | k_183>))), μ̃ u_193: unit.
-            prim sub(n_184, 87; μ̃ v_191: i64.
-              <idyll:Prelude/Maybe.Just(v_191) | k_183>))), μ̃ u_196: unit.
-        prim sub(n_184, 48; μ̃ v_194: i64.
-          <idyll:Prelude/Maybe.Just(v_194) | k_183>))))
-
-def idyll:Std/String.byteLength (s_198: str; k_199: ptr) =
-  prim stringByteLength(s_198; k_199)
-
-def idyll:Std/String.isEmpty (s_201: str; k_202: ptr) =
-  idyll:Std/String.byteLength(s_201; μ̃ v_203: i64.
-    prim eq(v_203, 0; k_202))
-
-def idyll:Std/String.slice (s_207: str, from_208: i64, to_209: i64; k_210: ptr) =
-  prim stringSlice(s_207, from_208, to_209; k_210)
-
-def idyll:Std/String.take (s_213: str, n_214: i64; k_215: ptr) =
-  idyll:Std/String.slice(s_213, 0, n_214; k_215)
-
-def idyll:Std/String.equal (a_218: str, b_219: str; k_220: ptr) =
-  prim stringCompare(a_218, b_219; μ̃ v_221: i64.
-    prim eq(v_221, 0; k_220))
-
-def idyll:Std/String.endsWith (suffix_224: str, s_225: str; k_226: ptr) =
-  idyll:Std/String.byteLength(suffix_224; μ̃ n_227: i64.
-    idyll:Std/String.byteLength(s_225; μ̃ m_228: i64.
-      prim lt(m_228, n_227; μ̃ v__229: bool.
-        prim if(v__229; μ̃ u_232: unit.
-          prim sub(m_228, n_227; μ̃ v_231: i64.
-            idyll:Std/String.slice(s_225, v_231, m_228; μ̃ v_230: str.
-              idyll:Std/String.equal(v_230, suffix_224; k_226))), μ̃ u_233: unit.
-          <false | k_226>))))
-
-def idyll:Std/String.split (sep_236: str, s_237: str; k_238: ptr) =
-  idyll:Std/String.isEmpty(sep_236; μ̃ v__239: bool.
-    prim if(v__239; μ̃ u_244: unit.
-      idyll:Std/String.cutFrom(s_237, sep_236, 0; k_238), μ̃ u_245: unit.
-      <idyll:Prelude/List.Nil | μ̃ v_243: ptr.
-        <idyll:Prelude/List."::"(s_237, v_243) | k_238>>))
-
-def idyll:Std/String.isSpaceByte (c_247: i64; k_248: ptr) =
-  prim eq(c_247, 32; μ̃ v__249: bool.
-    prim if(v__249; μ̃ u_256: unit.
-      prim eq(c_247, 9; μ̃ v__250: bool.
-        prim if(v__250; μ̃ u_254: unit.
-          prim eq(c_247, 10; μ̃ v__251: bool.
-            prim if(v__251; μ̃ u_252: unit.
-              prim eq(c_247, 13; k_248), μ̃ u_253: unit.
-              <true | k_248>)), μ̃ u_255: unit.
-          <true | k_248>)), μ̃ u_257: unit.
-      <true | k_248>))
-
-def idyll:Std/String.trimEnd (s_259: str; k_260: ptr) =
-  idyll:Std/String.byteLength(s_259; μ̃ v_264: i64.
-    idyll:Std/String.endOfText(s_259, v_264; μ̃ v_261: i64.
-      idyll:Std/String.slice(s_259, 0, v_261; k_260)))
-
-def idyll:Std/String.lines (s_266: str; k_267: ptr) =
-  idyll:Std/String.isEmpty(s_266; μ̃ v__268: bool.
-    prim if(v__268; μ̃ u_276: unit.
-      idyll:Std/String.endsWith("\n", s_266; μ̃ v__270: bool.
-        <μ j_271.
-          prim if(v__270; μ̃ u_274: unit.
-            <s_266 | j_271>, μ̃ u_275: unit.
-            idyll:Std/String.byteLength(s_266; μ̃ v_273: i64.
-              prim sub(v_273, 1; μ̃ v_272: i64.
-                idyll:Std/String.take(s_266, v_272; j_271)))) | μ̃ v_269: str.
-          idyll:Std/String.split("\n", v_269; k_267)>), μ̃ u_277: unit.
-      <idyll:Prelude/List.Nil | k_267>))
-
-def idyll:Std/String.fromInt (n_279: i64; k_280: ptr) =
-  idyll:Prelude/showInt(n_279; k_280)
-
-def idyll:Std/String.charLength (s_282: str; k_283: ptr) =
-  prim stringToChars(s_282; μ̃ v_284: ptr.
-    prim arrayLen(v_284; k_283))
-
-def idyll:Std/Collections.Array.map <'a_293 = d_a_292, 'b_295 = d_b_294; e_291: Effect> (d_a_292: desc, d_b_294: desc, f_296: ptr, xs_297: ptr; k_298: ptr) =
-  <[] | μ̃ v_307: ptr.
-    idyll:Std/Collections.Array.mapFrom(d_a_292, d_b_294, f_296, xs_297, 0, v_307; k_298)>
-
-def idyll:Std/Collections.Array.foldl <'a_317 = d_a_316, 'b_319 = d_b_318; e_315: Effect> (d_a_316: desc, d_b_318: desc, f_320: ptr, z_321: 'b_319, xs_322: ptr; k_323: ptr) =
-  idyll:Std/Collections.Array.foldlFrom(d_a_316, d_b_318, f_320, z_321, xs_322, 0; k_323)
-
-def idyll:Std/Collections.Array.findIndex <'a_338 = d_a_337; e_336: Effect> (d_a_337: desc, keep_339: ptr, xs_340: ptr; k_341: ptr) =
-  idyll:Std/Collections.Array.findFrom(d_a_337, keep_339, xs_340, 0; k_341)
-
-def idyll:Std/Collections.Array.find <'a_353 = d_a_352; e_351: Effect> (d_a_352: desc, keep_354: ptr, xs_355: ptr; k_356: ptr) =
-  idyll:Std/Collections.Array.findIndex(d_a_352, keep_354, xs_355; μ̃ v__357: ptr.
-    <v__357 | case {
+def idyll:Std/Collections.Array.find <'a_223 = d_a_222; e_221: Effect> (d_a_222: desc, keep_224: ptr, xs_225: ptr; k_226: ptr) =
+  idyll:Std/Collections.Array.findIndex(d_a_222, keep_224, xs_225; μ̃ v__227: ptr.
+    <v__227 | case {
       idyll:Prelude/Maybe.Nothing =>
-        <idyll:Prelude/Maybe.Nothing | k_356>;
-      idyll:Prelude/Maybe.Just(i_358: i64) =>
-        prim arrayGet(xs_355, i_358; μ̃ v_359: 'a_353.
-          <idyll:Prelude/Maybe.Just(v_359) | k_356>)
+        <idyll:Prelude/Maybe.Nothing | k_226>;
+      idyll:Prelude/Maybe.Just(i_228: i64) =>
+        prim arrayGet(xs_225, i_228; μ̃ v_229: 'a_223.
+          <idyll:Prelude/Maybe.Just(v_229) | k_226>)
     }>)
 
-def idyll:Std/Collections.Array.any <'a_366 = d_a_365; e_364: Effect> (d_a_365: desc, keep_367: ptr, xs_368: ptr; k_369: ptr) =
-  idyll:Std/Collections.Array.findIndex(d_a_365, keep_367, xs_368; μ̃ v_373: ptr.
-    idyll:Std/Maybe.isJust(desc(i64), v_373; k_369))
+def idyll:Std/Collections.Array.any <'a_236 = d_a_235; e_234: Effect> (d_a_235: desc, keep_237: ptr, xs_238: ptr; k_239: ptr) =
+  idyll:Std/Collections.Array.findIndex(d_a_235, keep_237, xs_238; μ̃ v_243: ptr.
+    idyll:Std/Maybe.isJust(desc(i64), v_243; k_239))
 
-def idyll:Std/Collections.Array.range (lo_376: i64, hi_377: i64; k_378: ptr) =
-  <[] | μ̃ v_382: ptr.
-    idyll:Std/Collections.Array.rangeFrom(lo_376, hi_377, v_382; k_378)>
+def idyll:Std/Collections.Array.range (lo_246: i64, hi_247: i64; k_248: ptr) =
+  <[] | μ̃ v_252: ptr.
+    idyll:Std/Collections.Array.rangeFrom(lo_246, hi_247, v_252; k_248)>
+
+def idyll:Std/Char.code (c_254: char; k_255: ptr) =
+  prim charCode(c_254; k_255)
+
+def idyll:Std/Char.between (lo_259: i64, hi_260: i64, n_261: i64; k_262: ptr) =
+  prim add(n_261, 1; μ̃ v_267: i64.
+    prim lt(lo_259, v_267; μ̃ v__263: bool.
+      prim if(v__263; μ̃ u_265: unit.
+        <false | k_262>, μ̃ u_266: unit.
+        prim add(hi_260, 1; μ̃ v_264: i64.
+          prim lt(n_261, v_264; k_262)))))
+
+def idyll:Std/Char.isDigit (c_269: char; k_270: ptr) =
+  idyll:Std/Char.code(c_269; μ̃ v_271: i64.
+    idyll:Std/Char.between(48, 57, v_271; k_270))
+
+def idyll:Std/Char.isSpace (c_273: char; k_274: ptr) =
+  idyll:Std/Char.code(c_273; μ̃ n_275: i64.
+    prim eq(n_275, 32; μ̃ v__276: bool.
+      prim if(v__276; μ̃ u_277: unit.
+        idyll:Std/Char.between(9, 13, n_275; k_274), μ̃ u_278: unit.
+        <true | k_274>)))
+
+def idyll:Std/Char.hexDigitToInt (c_280: char; k_281: ptr) =
+  idyll:Std/Char.code(c_280; μ̃ n_282: i64.
+    idyll:Std/Char.isDigit(c_280; μ̃ v__283: bool.
+      prim if(v__283; μ̃ u_293: unit.
+        idyll:Std/Char.between(97, 102, n_282; μ̃ v__284: bool.
+          prim if(v__284; μ̃ u_290: unit.
+            idyll:Std/Char.between(65, 70, n_282; μ̃ v__285: bool.
+              prim if(v__285; μ̃ u_287: unit.
+                <idyll:Prelude/Maybe.Nothing | k_281>, μ̃ u_288: unit.
+                prim sub(n_282, 55; μ̃ v_286: i64.
+                  <idyll:Prelude/Maybe.Just(v_286) | k_281>))), μ̃ u_291: unit.
+            prim sub(n_282, 87; μ̃ v_289: i64.
+              <idyll:Prelude/Maybe.Just(v_289) | k_281>))), μ̃ u_294: unit.
+        prim sub(n_282, 48; μ̃ v_292: i64.
+          <idyll:Prelude/Maybe.Just(v_292) | k_281>))))
+
+def idyll:Std/String.byteLength (s_296: str; k_297: ptr) =
+  prim stringByteLength(s_296; k_297)
+
+def idyll:Std/String.isEmpty (s_299: str; k_300: ptr) =
+  idyll:Std/String.byteLength(s_299; μ̃ v_301: i64.
+    prim eq(v_301, 0; k_300))
+
+def idyll:Std/String.slice (s_305: str, from_306: i64, to_307: i64; k_308: ptr) =
+  prim stringSlice(s_305, from_306, to_307; k_308)
+
+def idyll:Std/String.take (s_311: str, n_312: i64; k_313: ptr) =
+  idyll:Std/String.slice(s_311, 0, n_312; k_313)
+
+def idyll:Std/String.equal (a_316: str, b_317: str; k_318: ptr) =
+  prim stringCompare(a_316, b_317; μ̃ v_319: i64.
+    prim eq(v_319, 0; k_318))
+
+def idyll:Std/String.endsWith (suffix_322: str, s_323: str; k_324: ptr) =
+  idyll:Std/String.byteLength(suffix_322; μ̃ n_325: i64.
+    idyll:Std/String.byteLength(s_323; μ̃ m_326: i64.
+      prim lt(m_326, n_325; μ̃ v__327: bool.
+        prim if(v__327; μ̃ u_330: unit.
+          prim sub(m_326, n_325; μ̃ v_329: i64.
+            idyll:Std/String.slice(s_323, v_329, m_326; μ̃ v_328: str.
+              idyll:Std/String.equal(v_328, suffix_322; k_324))), μ̃ u_331: unit.
+          <false | k_324>))))
+
+def idyll:Std/String.split (sep_334: str, s_335: str; k_336: ptr) =
+  idyll:Std/String.isEmpty(sep_334; μ̃ v__337: bool.
+    prim if(v__337; μ̃ u_342: unit.
+      idyll:Std/String.cutFrom(s_335, sep_334, 0; k_336), μ̃ u_343: unit.
+      <idyll:Prelude/List.Nil | μ̃ v_341: ptr.
+        <idyll:Prelude/List."::"(s_335, v_341) | k_336>>))
+
+def idyll:Std/String.isSpaceByte (c_345: i64; k_346: ptr) =
+  prim eq(c_345, 32; μ̃ v__347: bool.
+    prim if(v__347; μ̃ u_354: unit.
+      prim eq(c_345, 9; μ̃ v__348: bool.
+        prim if(v__348; μ̃ u_352: unit.
+          prim eq(c_345, 10; μ̃ v__349: bool.
+            prim if(v__349; μ̃ u_350: unit.
+              prim eq(c_345, 13; k_346), μ̃ u_351: unit.
+              <true | k_346>)), μ̃ u_353: unit.
+          <true | k_346>)), μ̃ u_355: unit.
+      <true | k_346>))
+
+def idyll:Std/String.trimEnd (s_357: str; k_358: ptr) =
+  idyll:Std/String.byteLength(s_357; μ̃ v_362: i64.
+    idyll:Std/String.endOfText(s_357, v_362; μ̃ v_359: i64.
+      idyll:Std/String.slice(s_357, 0, v_359; k_358)))
+
+def idyll:Std/String.lines (s_364: str; k_365: ptr) =
+  idyll:Std/String.isEmpty(s_364; μ̃ v__366: bool.
+    prim if(v__366; μ̃ u_374: unit.
+      idyll:Std/String.endsWith("\n", s_364; μ̃ v__368: bool.
+        <μ j_369.
+          prim if(v__368; μ̃ u_372: unit.
+            <s_364 | j_369>, μ̃ u_373: unit.
+            idyll:Std/String.byteLength(s_364; μ̃ v_371: i64.
+              prim sub(v_371, 1; μ̃ v_370: i64.
+                idyll:Std/String.take(s_364, v_370; j_369)))) | μ̃ v_367: str.
+          idyll:Std/String.split("\n", v_367; k_365)>), μ̃ u_375: unit.
+      <idyll:Prelude/List.Nil | k_365>))
+
+def idyll:Std/String.fromInt (n_377: i64; k_378: ptr) =
+  idyll:Prelude/showInt(n_377; k_378)
+
+def idyll:Std/String.charLength (s_380: str; k_381: ptr) =
+  prim stringToChars(s_380; μ̃ v_382: ptr.
+    prim arrayLen(v_382; k_381))
 
 def idyll:Std/Collections.Vector.equalBy <'a_389 = d_a_388> (d_a_388: desc, eq_390: ptr, l_391: ptr, r_392: ptr; k_393: ptr) =
   idyll:Std/Collections.Vector.len(d_a_388, l_391; μ̃ v_408: i64.
@@ -2137,117 +2137,117 @@ def idyll:Prelude/negativeDigits (fuel_3090: ptr, n_3091: i64; k_3092: ptr) =
               idyll:Prelude/digitString(v_3100; k_3092)))))
   }>
 
-def idyll:Std/String.concatAll (x_3104: ptr; k_3105: ptr) =
-  <x_3104 | case {
-    idyll:Prelude/List.Nil =>
-      <"" | k_3105>;
-    idyll:Prelude/List."::"(s_3106: str, rest_3107: ptr) =>
-      idyll:Std/String.concatAll(rest_3107; μ̃ v_3108: str.
-        prim concatStrings([s_3106, v_3108]; k_3105))
-  }>
-
-def idyll:Std/String.join (sep_3109: str, x_3110: ptr; k_3111: ptr) =
-  <x_3110 | case {
-    idyll:Prelude/List.Nil =>
-      <"" | k_3111>;
-    idyll:Prelude/List."::"(s_3112: str, rest_3113: ptr) =>
-      idyll:Std/String.joined(sep_3109, rest_3113; μ̃ v_3114: str.
-        prim concatStrings([s_3112, v_3114]; k_3111))
-  }>
-
-def idyll:Std/String.joined (sep_3117: str, x_3118: ptr; k_3119: ptr) =
-  <x_3118 | case {
-    idyll:Prelude/List.Nil =>
-      <"" | k_3119>;
-    idyll:Prelude/List."::"(s_3120: str, rest_3121: ptr) =>
-      idyll:Std/String.joined(sep_3117, rest_3121; μ̃ v_3123: str.
-        prim concatStrings([s_3120, v_3123]; μ̃ v_3122: str.
-          prim concatStrings([sep_3117, v_3122]; k_3119)))
-  }>
-
-def idyll:Std/String.repeat (s_3124: str, n_3125: i64; k_3126: ptr) =
-  prim lt(n_3125, 1; μ̃ v__3127: bool.
-    prim if(v__3127; μ̃ u_3130: unit.
-      prim sub(n_3125, 1; μ̃ v_3129: i64.
-        idyll:Std/String.repeat(s_3124, v_3129; μ̃ v_3128: str.
-          prim concatStrings([s_3124, v_3128]; k_3126))), μ̃ u_3131: unit.
-      <"" | k_3126>))
-
-def idyll:Std/String.cutFrom (s_3132: str, sep_3133: str, i_3134: i64; k_3135: ptr) =
-  prim stringIndexOf(s_3132, sep_3133, i_3134; μ̃ k_3136: i64.
-    prim lt(k_3136, 0; μ̃ v__3137: bool.
-      prim if(v__3137; μ̃ u_3145: unit.
-        idyll:Std/String.slice(s_3132, i_3134, k_3136; μ̃ v_3138: str.
-          idyll:Std/String.byteLength(sep_3133; μ̃ v_3141: i64.
-            prim add(k_3136, v_3141; μ̃ v_3140: i64.
-              idyll:Std/String.cutFrom(s_3132, sep_3133, v_3140; μ̃ v_3139: ptr.
-                <idyll:Prelude/List."::"(v_3138, v_3139) | k_3135>)))), μ̃ u_3146: unit.
-        idyll:Std/String.byteLength(s_3132; μ̃ v_3144: i64.
-          idyll:Std/String.slice(s_3132, i_3134, v_3144; μ̃ v_3142: str.
-            <idyll:Prelude/List.Nil | μ̃ v_3143: ptr.
-              <idyll:Prelude/List."::"(v_3142, v_3143) | k_3135>>)))))
-
-def idyll:Std/String.endOfText (s_3147: str, i_3148: i64; k_3149: ptr) =
-  prim lt(i_3148, 1; μ̃ v__3150: bool.
-    prim if(v__3150; μ̃ u_3157: unit.
-      prim sub(i_3148, 1; μ̃ v_3156: i64.
-        idyll:Main/"#stringByteAt"(s_3147, v_3156; μ̃ v_3155: i64.
-          idyll:Std/String.isSpaceByte(v_3155; μ̃ v__3151: bool.
-            prim if(v__3151; μ̃ u_3153: unit.
-              <i_3148 | k_3149>, μ̃ u_3154: unit.
-              prim sub(i_3148, 1; μ̃ v_3152: i64.
-                idyll:Std/String.endOfText(s_3147, v_3152; k_3149)))))), μ̃ u_3158: unit.
-      <0 | k_3149>))
-
-def idyll:Std/Maybe.isJust <'a_3160 = d_a_3159> (d_a_3159: desc, m_3161: ptr; k_3162: ptr) =
-  <m_3161 | case {
+def idyll:Std/Maybe.isJust <'a_3105 = d_a_3104> (d_a_3104: desc, m_3106: ptr; k_3107: ptr) =
+  <m_3106 | case {
     idyll:Prelude/Maybe.Nothing =>
-      <false | k_3162>;
-    idyll:Prelude/Maybe.Just(x_3163: 'a_3160) =>
-      <true | k_3162>
+      <false | k_3107>;
+    idyll:Prelude/Maybe.Just(x_3108: 'a_3105) =>
+      <true | k_3107>
   }>
 
-def idyll:Std/Collections.Array.mapFrom <'a_3166 = d_a_3165, 'b_3168 = d_b_3167; e_3164: Effect> (d_a_3165: desc, d_b_3167: desc, f_3169: ptr, xs_3170: ptr, i_3171: i64, acc_3172: ptr; k_3173: ptr) =
-  prim arrayLen(xs_3170; μ̃ v_3181: i64.
-    prim lt(i_3171, v_3181; μ̃ v__3174: bool.
-      prim if(v__3174; μ̃ u_3179: unit.
-        <acc_3172 | k_3173>, μ̃ u_3180: unit.
-        prim add(i_3171, 1; μ̃ v_3175: i64.
-          prim arrayGet(xs_3170, i_3171; μ̃ v_3178: 'a_3166.
-            <f_3169 | apply(v_3178; μ̃ v_3177: 'b_3168.
-              prim arrayPush(acc_3172, v_3177; μ̃ v_3176: ptr.
-                idyll:Std/Collections.Array.mapFrom(d_a_3165, d_b_3167, f_3169, xs_3170, v_3175, v_3176; k_3173)))>)))))
+def idyll:Std/Collections.Array.mapFrom <'a_3111 = d_a_3110, 'b_3113 = d_b_3112; e_3109: Effect> (d_a_3110: desc, d_b_3112: desc, f_3114: ptr, xs_3115: ptr, i_3116: i64, acc_3117: ptr; k_3118: ptr) =
+  prim arrayLen(xs_3115; μ̃ v_3126: i64.
+    prim lt(i_3116, v_3126; μ̃ v__3119: bool.
+      prim if(v__3119; μ̃ u_3124: unit.
+        <acc_3117 | k_3118>, μ̃ u_3125: unit.
+        prim add(i_3116, 1; μ̃ v_3120: i64.
+          prim arrayGet(xs_3115, i_3116; μ̃ v_3123: 'a_3111.
+            <f_3114 | apply(v_3123; μ̃ v_3122: 'b_3113.
+              prim arrayPush(acc_3117, v_3122; μ̃ v_3121: ptr.
+                idyll:Std/Collections.Array.mapFrom(d_a_3110, d_b_3112, f_3114, xs_3115, v_3120, v_3121; k_3118)))>)))))
 
-def idyll:Std/Collections.Array.foldlFrom <'a_3184 = d_a_3183, 'b_3186 = d_b_3185; e_3182: Effect> (d_a_3183: desc, d_b_3185: desc, f_3187: ptr, z_3188: 'b_3186, xs_3189: ptr, i_3190: i64; k_3191: ptr) =
-  prim arrayLen(xs_3189; μ̃ v_3199: i64.
-    prim lt(i_3190, v_3199; μ̃ v__3192: bool.
-      prim if(v__3192; μ̃ u_3197: unit.
-        <z_3188 | k_3191>, μ̃ u_3198: unit.
-        <f_3187 | apply(z_3188; μ̃ g_3195: ptr.
-          prim arrayGet(xs_3189, i_3190; μ̃ v_3196: 'a_3184.
-            <g_3195 | apply(v_3196; μ̃ v_3193: 'b_3186.
-              prim add(i_3190, 1; μ̃ v_3194: i64.
-                idyll:Std/Collections.Array.foldlFrom(d_a_3183, d_b_3185, f_3187, v_3193, xs_3189, v_3194; k_3191)))>))>)))
+def idyll:Std/Collections.Array.foldlFrom <'a_3129 = d_a_3128, 'b_3131 = d_b_3130; e_3127: Effect> (d_a_3128: desc, d_b_3130: desc, f_3132: ptr, z_3133: 'b_3131, xs_3134: ptr, i_3135: i64; k_3136: ptr) =
+  prim arrayLen(xs_3134; μ̃ v_3144: i64.
+    prim lt(i_3135, v_3144; μ̃ v__3137: bool.
+      prim if(v__3137; μ̃ u_3142: unit.
+        <z_3133 | k_3136>, μ̃ u_3143: unit.
+        <f_3132 | apply(z_3133; μ̃ g_3140: ptr.
+          prim arrayGet(xs_3134, i_3135; μ̃ v_3141: 'a_3129.
+            <g_3140 | apply(v_3141; μ̃ v_3138: 'b_3131.
+              prim add(i_3135, 1; μ̃ v_3139: i64.
+                idyll:Std/Collections.Array.foldlFrom(d_a_3128, d_b_3130, f_3132, v_3138, xs_3134, v_3139; k_3136)))>))>)))
 
-def idyll:Std/Collections.Array.findFrom <'a_3202 = d_a_3201; e_3200: Effect> (d_a_3201: desc, keep_3203: ptr, xs_3204: ptr, i_3205: i64; k_3206: ptr) =
-  prim arrayLen(xs_3204; μ̃ v_3215: i64.
-    prim lt(i_3205, v_3215; μ̃ v__3207: bool.
-      prim if(v__3207; μ̃ u_3213: unit.
-        <idyll:Prelude/Maybe.Nothing | k_3206>, μ̃ u_3214: unit.
-        prim arrayGet(xs_3204, i_3205; μ̃ v_3212: 'a_3202.
-          <keep_3203 | apply(v_3212; μ̃ v__3208: bool.
-            prim if(v__3208; μ̃ u_3210: unit.
-              prim add(i_3205, 1; μ̃ v_3209: i64.
-                idyll:Std/Collections.Array.findFrom(d_a_3201, keep_3203, xs_3204, v_3209; k_3206)), μ̃ u_3211: unit.
-              <idyll:Prelude/Maybe.Just(i_3205) | k_3206>))>))))
+def idyll:Std/Collections.Array.findFrom <'a_3147 = d_a_3146; e_3145: Effect> (d_a_3146: desc, keep_3148: ptr, xs_3149: ptr, i_3150: i64; k_3151: ptr) =
+  prim arrayLen(xs_3149; μ̃ v_3160: i64.
+    prim lt(i_3150, v_3160; μ̃ v__3152: bool.
+      prim if(v__3152; μ̃ u_3158: unit.
+        <idyll:Prelude/Maybe.Nothing | k_3151>, μ̃ u_3159: unit.
+        prim arrayGet(xs_3149, i_3150; μ̃ v_3157: 'a_3147.
+          <keep_3148 | apply(v_3157; μ̃ v__3153: bool.
+            prim if(v__3153; μ̃ u_3155: unit.
+              prim add(i_3150, 1; μ̃ v_3154: i64.
+                idyll:Std/Collections.Array.findFrom(d_a_3146, keep_3148, xs_3149, v_3154; k_3151)), μ̃ u_3156: unit.
+              <idyll:Prelude/Maybe.Just(i_3150) | k_3151>))>))))
 
-def idyll:Std/Collections.Array.rangeFrom (i_3216: i64, hi_3217: i64, acc_3218: ptr; k_3219: ptr) =
-  prim lt(i_3216, hi_3217; μ̃ v__3220: bool.
-    prim if(v__3220; μ̃ u_3223: unit.
-      <acc_3218 | k_3219>, μ̃ u_3224: unit.
-      prim add(i_3216, 1; μ̃ v_3221: i64.
-        prim arrayPush(acc_3218, i_3216; μ̃ v_3222: ptr.
-          idyll:Std/Collections.Array.rangeFrom(v_3221, hi_3217, v_3222; k_3219)))))
+def idyll:Std/Collections.Array.rangeFrom (i_3161: i64, hi_3162: i64, acc_3163: ptr; k_3164: ptr) =
+  prim lt(i_3161, hi_3162; μ̃ v__3165: bool.
+    prim if(v__3165; μ̃ u_3168: unit.
+      <acc_3163 | k_3164>, μ̃ u_3169: unit.
+      prim add(i_3161, 1; μ̃ v_3166: i64.
+        prim arrayPush(acc_3163, i_3161; μ̃ v_3167: ptr.
+          idyll:Std/Collections.Array.rangeFrom(v_3166, hi_3162, v_3167; k_3164)))))
+
+def idyll:Std/String.concatAll (x_3170: ptr; k_3171: ptr) =
+  <x_3170 | case {
+    idyll:Prelude/List.Nil =>
+      <"" | k_3171>;
+    idyll:Prelude/List."::"(s_3172: str, rest_3173: ptr) =>
+      idyll:Std/String.concatAll(rest_3173; μ̃ v_3174: str.
+        prim concatStrings([s_3172, v_3174]; k_3171))
+  }>
+
+def idyll:Std/String.join (sep_3175: str, x_3176: ptr; k_3177: ptr) =
+  <x_3176 | case {
+    idyll:Prelude/List.Nil =>
+      <"" | k_3177>;
+    idyll:Prelude/List."::"(s_3178: str, rest_3179: ptr) =>
+      idyll:Std/String.joined(sep_3175, rest_3179; μ̃ v_3180: str.
+        prim concatStrings([s_3178, v_3180]; k_3177))
+  }>
+
+def idyll:Std/String.joined (sep_3183: str, x_3184: ptr; k_3185: ptr) =
+  <x_3184 | case {
+    idyll:Prelude/List.Nil =>
+      <"" | k_3185>;
+    idyll:Prelude/List."::"(s_3186: str, rest_3187: ptr) =>
+      idyll:Std/String.joined(sep_3183, rest_3187; μ̃ v_3189: str.
+        prim concatStrings([s_3186, v_3189]; μ̃ v_3188: str.
+          prim concatStrings([sep_3183, v_3188]; k_3185)))
+  }>
+
+def idyll:Std/String.repeat (s_3190: str, n_3191: i64; k_3192: ptr) =
+  prim lt(n_3191, 1; μ̃ v__3193: bool.
+    prim if(v__3193; μ̃ u_3196: unit.
+      prim sub(n_3191, 1; μ̃ v_3195: i64.
+        idyll:Std/String.repeat(s_3190, v_3195; μ̃ v_3194: str.
+          prim concatStrings([s_3190, v_3194]; k_3192))), μ̃ u_3197: unit.
+      <"" | k_3192>))
+
+def idyll:Std/String.cutFrom (s_3198: str, sep_3199: str, i_3200: i64; k_3201: ptr) =
+  prim stringIndexOf(s_3198, sep_3199, i_3200; μ̃ k_3202: i64.
+    prim lt(k_3202, 0; μ̃ v__3203: bool.
+      prim if(v__3203; μ̃ u_3211: unit.
+        idyll:Std/String.slice(s_3198, i_3200, k_3202; μ̃ v_3204: str.
+          idyll:Std/String.byteLength(sep_3199; μ̃ v_3207: i64.
+            prim add(k_3202, v_3207; μ̃ v_3206: i64.
+              idyll:Std/String.cutFrom(s_3198, sep_3199, v_3206; μ̃ v_3205: ptr.
+                <idyll:Prelude/List."::"(v_3204, v_3205) | k_3201>)))), μ̃ u_3212: unit.
+        idyll:Std/String.byteLength(s_3198; μ̃ v_3210: i64.
+          idyll:Std/String.slice(s_3198, i_3200, v_3210; μ̃ v_3208: str.
+            <idyll:Prelude/List.Nil | μ̃ v_3209: ptr.
+              <idyll:Prelude/List."::"(v_3208, v_3209) | k_3201>>)))))
+
+def idyll:Std/String.endOfText (s_3213: str, i_3214: i64; k_3215: ptr) =
+  prim lt(i_3214, 1; μ̃ v__3216: bool.
+    prim if(v__3216; μ̃ u_3223: unit.
+      prim sub(i_3214, 1; μ̃ v_3222: i64.
+        idyll:Main/"#stringByteAt"(s_3213, v_3222; μ̃ v_3221: i64.
+          idyll:Std/String.isSpaceByte(v_3221; μ̃ v__3217: bool.
+            prim if(v__3217; μ̃ u_3219: unit.
+              <i_3214 | k_3215>, μ̃ u_3220: unit.
+              prim sub(i_3214, 1; μ̃ v_3218: i64.
+                idyll:Std/String.endOfText(s_3213, v_3218; k_3215)))))), μ̃ u_3224: unit.
+      <0 | k_3215>))
 
 def idyll:Std/Tuple.fst <'a_3226 = d_a_3225, 'b_3228 = d_b_3227> (d_a_3225: desc, d_b_3227: desc, p_3229: ptr; k_3230: ptr) =
   <p_3229 | case {

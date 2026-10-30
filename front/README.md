@@ -27,7 +27,8 @@ does, how it is checked, and why it is built the way it is.
 | Cut | `Lower.mw`, `Typer.mw`, `Prune.mw`, `CutAst.mw`, `Emit.mw` | done: the same Cut as `idyllic-cut` on every program that lowers (212) |
 | The formatter | `Syntax.mw` (a `format!`), `Format.mw` | done: `Idyll fmt`; every program comes out as the same program, and formatting it again changes nothing |
 | The language server | `Session.mw` (a `database!`), `Server.mw` (an `lsp!`) | begun: `Idyll lsp` publishes what is wrong with each open file where it is, says a term's type on hover, colours a file and sets it out |
-| The REPL | `Prompt.mw` (a `repl!`), over the same session | begun: `Idyll repl` keeps the declarations entered, runs expressions on the CEK machine, and says each answer and type as the Rust REPL does |
+| The REPL | `Prompt.mw` (a `repl!`), over the same session | begun: `Idyll repl` keeps the declarations entered, runs expressions on Glade (the CEK machine where Meadow cannot be run), and says each answer and type as the Rust REPL does; it finds by type, searches for proofs, and fills goals in tactic mode |
+| Tools for agents | `Agent.mw` (an `mcp!`), `Harness.mw`, over the same session | done: `Idyll agent` serves checking, goals, types, search, proof search and tactics over the Model Context Protocol |
 
 "Every program" means 1082 programs: the test corpora in
 `compiler/idyllic/tests/corpus/`, the prelude, every `.idl` file in the
@@ -919,7 +920,8 @@ turns the program's answer into text as the REPL shows it: a `def` per
 data type in the answer's type, `#show ..` and `#atom ..` for when it is a
 field, one per array type, the prelude's `showInt` for integers, and
 `#escape` for strings, and for a character the same escape between single
-quotes. A native the runtime has no primitive for (`arrayToList`, the
+quotes. (A program that runs its `main` shows no answer, so `showInt` is
+kept for it only where it uses it, as the Rust lowering does.) A native the runtime has no primitive for (`arrayToList`, the
 mutable arrays) becomes a `def` of the program's own, built of the array
 primitives it does have. A mutable array is the runtime's own, written in
 place (`stNewArray`, `stSetArray`, `stFreeze`, ...), not Cut's persistent
@@ -978,9 +980,23 @@ It answers from a session of the compiler's queries, a `database!`
 (`Session.mw`). Each open file's text is an input, and what is worked out
 from it is a query: its tree, what is wrong with it, and how it is set out.
 After an edit, a query is worked out again only if something it read
-changed. A file is checked as a lone program after the prelude, against Std
-if it names Std. Std is compiled once a session, from the copy this program
-holds (`Driver.stdModules`).
+changed. A file is checked in its package, if it is a module of one, else
+as a lone program after the prelude, against Std if it names Std. Std is
+compiled once a session, from the copy this program holds
+(`Driver.stdModules`), its modules each after those it imports.
+
+When the editor opens a file, the server (`lsp!`'s `opened`) looks for an
+`Idyll.toml` in the directories above it. If one is there, it reads the
+package's other modules into the session (its `package` input). What is
+wrong with the file (`Session.problemsIn`) is then what is wrong with it
+in its package. The package is checked whole, its modules in the order of
+their imports, each parsed after as many newlines as the modules before
+it have bytes. So every module has places of its own in one source map, as
+the Rust compiler's files do, and the open module's diagnostics are those
+in its places, shifted back to its text. Hover, definitions, references,
+completion and the outline work the same way (`Session.preparedFor` gives
+the renamed package and the module's base): the place asked about is moved
+up by the base, and each answer back down.
 
 A query may perform nothing but asking other queries, so that its answer
 can be kept. That is why the renamer, the checker and the lowering keep
@@ -1006,6 +1022,17 @@ So far the server:
 - colours a file from its tree;
 - formats a file as `Idyll fmt` does.
 
+What is wrong is said as the Rust checker says it, for the kinds ported
+so far (`Messages.mw`): where the checker reports an error, it keeps what
+the error's words are made of (`Tc.errorOf`: a `Report` of its kind, the
+types it names as Core, and its names), beside the kind the dumps
+compare. Once the module is checked, `Messages.diagnosticsIn` pairs each
+error with its report and says it with the Rust checker's headline and
+label, a mismatch's types with what was solved since put in (as
+`solved_in` does). `Idyll messages` prints them, and the differential
+`the_messages_agree` holds them to the Rust checker's. An error of a kind
+not ported yet is said by its kind (`said`).
+
 The checker keeps the node it is checking (`Tc.at`, set around each node by
 `Elab.elaborate`) and each error with it (`Tc.placed`), beside the kinds
 the differential tests compare. The renamer does the same around the names
@@ -1027,8 +1054,8 @@ what the Rust REPL does (`pipeline::Session`):
 - an entry that ends in a signature waits for its equations.
 
 Tab completes names as the server does, Ctrl-F finds what has been
-declared, and `:type`, `:reset`, `:declarations` and `:goals` are its
-commands.
+declared, and `:type`, `:reset`, `:declarations`, `:goals`, `:prove`,
+`:tactic`, `:by`, `:qed` and `:abandon` are its commands.
 
 A goal, `?name`, is a term of its own from the lexer on (`Lex`'s `Goal`,
 `Syntax`'s `GoalA`, `Surface`'s and `Hir`'s `Goal`):
@@ -1039,6 +1066,60 @@ A goal, `?name`, is a term of its own from the lexer on (`Lex`'s `Goal`,
   "goal ?name : T" (its kind `Goal` among the dump's errors);
 - reaching one stops the program, saying so on standard error, with exit
   status 1: the CEK machine's `Control.Goal`, and `Lower.goalReached`.
+
+The prompt finds by name or by type (`Find.mw`, the `repl!`'s `search`),
+and looks for proofs (`Prove.mw`): `:prove T` builds candidate terms of
+`T` from its shape, and the checker keeps those it takes; `:prove ?name`
+does the same for a goal, its variables in scope, each candidate tried in
+the goal's place.
+
+Tactic mode (`Tactic.mw`) fills a goal a step at a time: `:tactic ?name`
+begins, `:by TACTIC` takes a step, `:qed` keeps what was built in the
+declarations, and `:abandon` drops it. A proof is the program's source,
+what has been built so far in the goal's place, and the goals left (the
+session's `proving` input). Each tactic writes source for the goal worked
+on, which may hold goals of its own:
+- `intro x`, `intros`: `(\x -> ?g1)`, as many as the goal's type takes;
+- `exact e`, `refine e`: `(e)`;
+- `apply f`: `(f ?g1 .. ?gn)`, the fewest arguments that check;
+- `cases x`: a case on a variable of a data type, a goal for each
+  constructor, laid out two columns in from the goal's line
+  (`Session.goalFacts` gives each variable's constructors);
+- `induction x`: the same as `cases`, a recursive call on a field being
+  the inductive hypothesis, which the checker sees is structural;
+- `rewrite e`: a case on a proof of an equality, whose `Refl` refines the
+  goal (`e` named by a `let` first if it is no variable, and checked once
+  to find its constructor);
+- `search`: the first term proof search finds;
+- `undo`.
+
+The program is then checked again, and the step is taken only if nothing
+is wrong; the new goals are what the checker says they are, type and
+context, as for any goal. So the tactics need no theory of their own: a
+step the checker does not take is not taken. One check before a step and
+one after give all a step needs (`Session.checkup`: what is wrong, the
+goals in order and how each is said, and the facts of the goal worked on).
+
+The prompt runs an expression on Glade, as a program runs: the program,
+the declarations so far and the entry, is lowered to Cut (`Session.cutIn`,
+linked with Std where it names it) and handed to `meadow cut`, and what it
+prints is split from its answer. Where Meadow cannot be run, or
+`IDYLL_REPL_CEK` is set, the CEK machine runs it instead.
+
+`Idyll agent` (`Agent.mw`, an `mcp!`) serves the same things to agents,
+over the Model Context Protocol on standard input and output. Its tools
+(`Harness.mw`), each answered as JSON:
+- `check`: a file's diagnostics, each with its severity and place, and
+  how many goals are left;
+- `goals`: each goal with its type, its place, and the variables in scope;
+- `typeAt`: the type of the term at a line and column;
+- `search`: the finder, by name or by type;
+- `prove`: proof search on a goal, or for a type written out;
+- `tactic` and `fill`: a step of tactic mode on a goal, or a term in its
+  place, answered with the program and the goals it made; written to the
+  file only when asked (`write`), so that an agent may try a step first.
+
+A tool reads its file each time, so the agent may edit it between calls.
 
 ## Dependencies
 

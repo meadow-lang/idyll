@@ -146,7 +146,9 @@ fn expected(prelude: &idyllic_ast::Program, src: &str) -> Option<(String, Option
     let outcome = idyll_eval::evaluate_in(&checked, FUEL, &mut world)?;
     let (printed, _) = world.into_streams();
     match outcome {
-        Ok(o) => Some((printed, o.answer, 0)),
+        // a program that runs its `main` shows no answer, as `idyllic`
+        // runs it and the Cut's entry has it (`answer none`)
+        Ok(o) => Some((printed, if checked.ran_main { None } else { o.answer }, 0)),
         Err(EvalError::Exited(code)) => Some((printed, None, code)),
         Err(_) => None,
     }

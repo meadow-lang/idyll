@@ -15,8 +15,10 @@ use Lingua.Repl (Reply, Hit, hitName)
 use Lingua.Diagnostic (Diagnostic, renderAll, whereAt, isError)
 use Lingua.Lang (Meta)
 use Idyll.Session
+use Idyll.Messages (diagnosticsIn)
 use Idyll.Find as Find
 use Idyll.Prove as Prove
+use Idyll.Tactic as Tactic
 use Idyll.Syntax (parseIdyll)
 use Idyll.Scc (sccModule)
 use Idyll.Check (checkedAgainst)
@@ -25,6 +27,9 @@ use Idyll.Hir (Literal)
 use Idyll.Cek as Cek
 use Idyll.World as W
 use Std.St (runSt)
+use Std.Process (run, getEnv, currentPid)
+use Std.Fs (writeString)
+use Std.Path as Path
 use Std.St as St
 use Std.Exn (toResult)
 use Std.Collections.Vector as V
@@ -76,24 +81,70 @@ fun ran (program : String) (earlier : Int) prelude std =
   | Ok (m, deps, renaming) ->
       if not (V.isEmpty renaming) then (drawn program earlier renaming, False)
       else
-        runSt (\() ->
-          let c = checkedAgainst (sccModule m) False deps in
-          -- (a warning -- a goal, a hole filled in -- is said, and stops
-          -- nothing)
-          let said = placedDiagnostics (St.getRef c.tc.placed) in
-          if V.any isError said then (drawn program earlier said, False)
-          else
-            let warned = if V.isEmpty said then "" else drawn program earlier said in
-            match c.bodyType with
-            | None ->
-                -- declarations: each new one, with its type
-                let own = V.filter (\d -> match d with | (u, name, _) -> u >= m.first and written name and not (V.elem name before)) (St.getRef c.tc.declared) in
-                (warned ++ S.join "\n" (V.map (\d -> match d with | (_, name, ty) -> "${name} : ${C.shown m.linearBody ty}") own), True)
-            | Just ty ->
-                let p = Cek.programOf c in
-                (match p.body with
-                 | None -> (warned ++ ": ${C.shown m.linearBody ty}", False)
-                 | Just term -> (warned ++ valueOf p term (C.shown m.linearBody ty), False)))
+        -- checked; an expression, which checks, is then run on Glade, as a
+        -- program runs, and on the CEK machine where Meadow cannot be run
+        let (said, extends, expression) =
+          runSt (\() ->
+            let c = checkedAgainst (sccModule m) False deps in
+            -- (a warning -- a goal, a hole filled in -- is said, and stops
+            -- nothing)
+            let said = diagnosticsIn c.tc m.linearBody in
+            if V.any isError said then (drawn program earlier said, False, None)
+            else
+              let warned = if V.isEmpty said then "" else drawn program earlier said in
+              match c.bodyType with
+              | None ->
+                  -- declarations: each new one, with its type
+                  let own = V.filter (\d -> match d with | (u, name, _) -> u >= m.first and written name and not (V.elem name before)) (St.getRef c.tc.declared) in
+                  (warned ++ S.join "\n" (V.map (\d -> match d with | (_, name, ty) -> "${name} : ${C.shown m.linearBody ty}") own), True, None)
+              | Just ty -> (warned, False, Just (C.shown m.linearBody ty)))
+        in
+        match expression with
+        | None -> (said, extends)
+        | Just ty ->
+            match onGlade program prelude std ty with
+            | Just shown -> (said ++ shown, False)
+            | None -> (said ++ onCek m deps ty, False)
+
+-- What running a program's expression on the CEK machine says.
+fun onCek m deps (ty : String) =
+  runSt (\() ->
+    let c = checkedAgainst (sccModule m) False deps in
+    let p = Cek.programOf c in
+    match p.body with
+    | None -> ": ${ty}"
+    | Just term -> valueOf p term ty)
+
+-- What running an entry's program on Glade says, as `meadow cut` runs its
+-- Cut: what it printed, then its answer and type (the type alone, for a
+-- function, which has no answer to show); or nothing, if it could not be
+-- lowered or Meadow could not be run. `IDYLL_REPL_CEK` set keeps every
+-- entry on the CEK machine.
+fun onGlade (program : String) prelude std (ty : String) =
+  if M.isSome (getEnv "IDYLL_REPL_CEK") then None
+  else
+    let cut = cutIn program prelude std in
+    if S.startsWith "(" cut then None
+    else
+      let file = Path.join (M.unwrapOr "." (M.orElse (getEnv "TMP") (getEnv "TMPDIR"))) "idyll-repl-${show (currentPid ())}.cut" in
+      match writeString (file, cut) with
+      | Err _ -> None
+      | Ok _ ->
+          match run "meadow" ["cut", file] with
+          | Err _ -> None
+          | Ok (code, out, err) ->
+              let out = S.join "\n" (S.split "\r\n" out) in
+              if code != 0 then Just (out ++ err ++ (if code == 1 then "" else "(exit ${show code})"))
+              else if S.contains "\nanswer str" cut then
+                (let cut = lastNewline out (S.byteLength out - 1) in
+                 let printed = S.slice out 0 (cut + 1) in
+                 let answer = S.slice out (cut + 1) (S.byteLength out) in
+                 Just "${printed}${answer} : ${ty}")
+              else Just "${out}: ${ty}"
+
+-- Where the last newline of `text` up to `i` is, or -1.
+fun lastNewline (text : String) (i : Int) : Int =
+  if i < 0 then 0 - 1 else if toInt (stringByteAt text i) == 10 then i else lastNewline text (i - 1)
 
 -- What running a program's expression says: what it printed, then its
 -- value and type (only the type, for a value with nothing to show).
@@ -187,8 +238,48 @@ def promptCommands =
     ("reset", "", "forget every declaration entered", \db rest -> (let u = setSessionEarlier db 0 "" in Reply.Said "")),
     ("declarations", "", "the declarations entered so far, as source", \db rest -> Reply.Said (S.trimEnd (earlierIn db))),
     ("goals", "", "the goals (?name) left in what has been declared, each with its type", goalsSoFar),
-    ("prove", "TYPE", "look for a term of a type, or for the goal ?name: proof search", provedEntry)
+    ("prove", "TYPE", "look for a term of a type, or for the goal ?name: proof search", provedEntry),
+    ("tactic", "?NAME", "prove the goal ?name a step at a time, each step a `:by`", beganProof),
+    ("by", "TACTIC", "a step of the proof under way: intro, intros, exact, refine, apply, cases, induction, rewrite, search, undo", steppedProof),
+    ("qed", "", "keep the proof under way: the declarations, the goal filled", keptProof),
+    ("abandon", "", "drop the proof under way", \db rest -> (let u = setSessionProving db 0 None in Reply.Said "(abandoned)"))
   ]
+
+-- The proof under way in tactic mode, if one is.
+fun provingIn db = answered None (\() -> sessionProving db 0)
+
+fun preludeIn db = answered (Err []) (\() -> sessionPrelude db 0)
+
+-- `:tactic ?name`: a proof of that goal begun, and the goal said.
+fun beganProof db rest =
+  match Tactic.begin (earlierIn db) (S.trim rest) (preludeIn db) (\u -> stdIn db) with
+  | Err why -> Reply.Said why
+  | Ok p ->
+      let u = setSessionProving db 0 (Just p) in
+      Reply.Said (Tactic.shown p (preludeIn db) (\u -> stdIn db))
+
+-- `:by TACTIC`: the step taken, and the goal now worked on said; or why it
+-- cannot be.
+fun steppedProof db rest =
+  match provingIn db with
+  | None -> Reply.Said "no proof under way: `:tactic ?name` begins one"
+  | Just p ->
+          let catalog = answered [] (\() -> sessionCatalog db 0) in
+      match Tactic.step p rest (preludeIn db) (\u -> stdIn db) catalog with
+      | Err why -> Reply.Said why
+      | Ok p2 ->
+          let u = setSessionProving db 0 (Just p2) in
+          Reply.Said (Tactic.shown p2 (preludeIn db) (\u -> stdIn db))
+
+-- `:qed`: the declarations, with what the proof built in the goal's place;
+-- goals it left are goals still.
+fun keptProof db rest =
+  match provingIn db with
+  | None -> Reply.Said "no proof under way"
+  | Just p ->
+      let u = setSessionEarlier db 0 p.source in
+      let v = setSessionProving db 0 None in
+      Reply.Said (if V.isEmpty p.goals then "(proved)" else "(kept, with goals left: ${S.join ", " (V.map (\g -> "?" ++ g) p.goals)})")
 
 -- `:prove T`: terms of `T` the checker accepts, after what has been
 -- declared.
@@ -220,7 +311,7 @@ fun typeOfEntry db rest =
       else
         runSt (\() ->
           let c = checkedAgainst (sccModule m) False deps in
-          let wrong = V.filter isError (placedDiagnostics (St.getRef c.tc.placed)) in
+          let wrong = V.filter isError (diagnosticsIn c.tc m.linearBody) in
           if not (V.isEmpty wrong) then Reply.Said (drawn program (S.byteLength before) wrong)
           else
             match c.bodyType with
@@ -268,6 +359,62 @@ fun enteredAll (entries : [String]) =
 
 fun okOf r = match r with | Ok x -> Just x | Err _ -> None
 
+-- What each command, `(name, rest)`, says in turn, after `declared`.
+fun commandsSaid (declared : String) (commands : [(String, String)]) =
+  let db = batchSession () in
+  let w = setSessionSource db 0 declared in
+  let said = entered db 0 in
+  let run = \c -> match c with | (name, rest) -> (match V.find (\pc -> match pc with | (n, _, _, _) -> n == name) promptCommands with
+    | Just (_, _, _, act) -> (match act db rest with | Reply.Said s -> s | _ -> "")
+    | None -> "") in
+  (V.map run commands, earlierIn db)
+
+@test fun aGoalIsProvedAStepAtATime () =
+  let (said, after) =
+    commandsSaid
+      "data N = Z | S N\n\nplus : N -> N -> N\nplus m n = ?todo"
+      [("tactic", "?todo"), ("by", "cases m"), ("by", "exact n"), ("by", "exact N.S (plus m1 n)"), ("qed", "")]
+  in
+  let a = assertEq (V.getOr "" said 0) "?todo : N\n  m : N\n  n : N" "the goal, and what is in scope" in
+  let b = assertEq (V.getOr "" said 1) "?todo1 : N\n  m : N\n  n : N\n(and 1 goal more)" "a goal for each constructor" in
+  let c = assertEq (V.getOr "" said 4) "(proved)" "nothing left" in
+  assertEq (S.contains "N.S m1 -> (N.S (plus m1 n))" after) True "the proof, in the declarations"
+
+@test fun aStepTheCheckerRefusesIsNotTaken () =
+  let (said, after) =
+    commandsSaid
+      "pick : (b : Bool) -> (x : Int) -> Int\npick b x = ?p"
+      [("tactic", "?p"), ("by", "exact b"), ("by", "intro y"), ("by", "exact x"), ("qed", "")]
+  in
+  -- (a step taken says the goal worked on next; one refused, why)
+  let a = assertEq (S.startsWith "?" (V.getOr "" said 1)) False "a Bool is no Int" in
+  let b = assertEq (V.getOr "" said 2) "?p is not a function of that many arguments" "an Int is no function" in
+  assertEq (V.getOr "" said 4) "(proved)" "x was"
+
+@test fun introNamesWhatTheGoalTakes () =
+  let (said, after) =
+    commandsSaid
+      "twice : (f : Int -> Int) -> Int -> Int\ntwice = ?t"
+      [("tactic", "?t"), ("by", "intros"), ("by", "exact f (f x)"), ("by", "undo"), ("by", "apply f"), ("by", "apply f"), ("by", "exact x"), ("qed", "")]
+  in
+  let a = assertEq (V.getOr "" said 1) "?t1 : Int\n  f : Int -> Int\n  x : Int" "f, then x for the arrow with no name" in
+  assertEq (S.contains "(\\f -> \\x -> (f (f (x))))" after) True "built by apply, after undo"
+
 @test fun anEntryThatIsWrongIsForgotten () =
   let said = enteredAll ["x : Int\nx = True", "x"] in
   assertEq (V.map (\s -> S.isEmpty s) said) [False, False] "both say something"
+
+@test fun stdCompilesInTheSession () =
+  -- (its modules each after those they import: `Hash` uses `Num.Bits`'s
+  -- instances, and comes before it by name)
+  let db = batchSession () in
+  assertEq (match stdIn db with | Ok _ -> "ok" | Err why -> why) "ok" "Std"
+
+@test fun rewriteMatchesAProofOfAnEquality () =
+  let (said, after) =
+    commandsSaid
+      "data Same : {a : Type} -> a -> a -> Type where\n  Refl : {a : Type} -> {x : a} -> Same x x\n\nback : {a : Type} -> {x y : a} -> Same x y -> Same y x\nback p = ?g\n\nagain : {a : Type} -> {x y : a} -> Same x y -> Same y x\nagain p = ?h"
+      [("tactic", "?g"), ("by", "rewrite p"), ("by", "exact Same.Refl"), ("qed", ""), ("tactic", "?h"), ("by", "rewrite back (back p)"), ("by", "exact Same.Refl"), ("qed", "")]
+  in
+  let a = assertEq (V.getOr "" said 3) "(proved)" "a variable: a case on it" in
+  assertEq (V.getOr "" said 7) "(proved)" "a term: named, then a case on it"

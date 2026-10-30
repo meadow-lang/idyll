@@ -22,12 +22,12 @@ triangle n =
 
 -- `k` resumed with each of `lo` to `hi`, and every answer they found:
 -- whatever else `k` does, `each` does too (`r`).
-each : (lo : [] Int) -> (hi : [] Int) -> (k : [] (Int -> List a ! {Div | r})) -> List a ! {Div | r}
+each : (lo : [] Int) -> (hi : [] Int) -> (k : [] (Int -> List a ! {Div | e})) -> List a ! {Div | e}
 each lo hi k = if hi < lo then Nil else Std.Collections.List.append (k lo) (each (lo + 1) hi k)
 
 -- Every answer the search can find; what else the search does is left to
 -- a handler outside this one.
-all : (body : () -> a ! {Search, Div | r}) -> List a ! {Div | r}
+all : (body : () -> a ! {Search, Div | e}) -> List a ! {Div | e}
 all body = handle body () with
   return x -> x :: Nil
   choose lo hi k -> each lo hi k

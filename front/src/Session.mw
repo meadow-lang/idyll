@@ -12,7 +12,7 @@
 
 use Lingua (database!)
 use Lingua.Green (Green)
-use Lingua.Diagnostic (Diagnostic, errorAt, warningAt)
+use Lingua.Diagnostic (Diagnostic, errorAt, warningAt, isError, whereAt, withLabel)
 use Lingua.Lang (Meta, spanMeta)
 use Idyll.Syntax (Idyll, parseIdyll)
 use Idyll.Surface (SurfaceProgram)
@@ -22,12 +22,17 @@ use Idyll.Rename as Rename
 use Idyll.Scc (sccModule)
 use Idyll.Check (checkedAgainst, checkedWanting)
 use Idyll.Elab (goalNamed)
+use Idyll.Tc (Tc, CtorInfo, ctorInfo)
+use Std.Collections.HashMap as Hm
 use Idyll.Core as C
 use Idyll.Core (Core)
 use Idyll.Compiled (compiledOf)
 use Idyll.Interface (Compiled)
 use Idyll.Driver as D
 use Idyll.Format as Fmt
+use Idyll.Lower as Lo
+use Idyll.Parts as Parts
+use Idyll.Messages (diagnosticsIn, placedDiagnostics, said)
 use Std.St (runSt)
 use Std.St as St
 use Std.Collections.Vector as V
@@ -40,17 +45,40 @@ database! {
     | input source (file : Int) : String
     -- the declarations a prompt has been given so far (`Prompt`)
     | input earlier (unit : Int) : String
+    -- the proof under way in tactic mode, if one is (`Tactic`)
+    | input proving (unit : Int) : Maybe Proof
+    -- the package a file is a module of, if it is one (`Server`'s `opened`)
+    | input package (file : Int) : Maybe PackageContext
     | query parsed (file : Int) : (Green Idyll, [(Int, String)]) = parseIdyll (querySource file)
     | query prelude (unit : Int) : Result [Diagnostic] SurfaceProgram = Surface.parsed D.prelude
     | query std (unit : Int) : Result String (PackageNames, Compiled) = stdOf (queryPrelude 0)
     | query problems (file : Int) : [Diagnostic] =
-        problemsOf (querySource file) (queryPrelude 0) (\u -> queryStd 0)
+        problemsIn (querySource file) (queryPackage file) (queryPrelude 0) (\u -> queryStd 0)
     | query formatted (file : Int) : String = formattedOf (querySource file)
     -- what the prompt's declarations and the prelude declare, each its name,
     -- its type and its type shown: what the finder searches, kept until a
     -- declaration is entered
     | query catalog (unit : Int) : [(String, Core, String)] = catalogOf (queryEarlier 0) (queryPrelude 0) (\u -> queryStd 0)
 }
+
+-- A proof under way in tactic mode (`Tactic`): the declarations, with
+-- what has been built so far in the goal's place; the goals left, the one
+-- worked on first; how the checker says that one (its type and context);
+-- and each proof before a step, the last first, for `undo`.
+@derive(PartialEq)
+@pub record Proof = {
+  source : String,
+  goals : [String],
+  said : String,
+  before : [(String, [String], String)]
+}
+
+-- What renaming found wrong, at the name it was resolving: its headline,
+-- and the label on a line after it, if it has one.
+fun problemAt (at : Meta) (why : String) : Diagnostic =
+  match S.indexOf "\n" why with
+  | Just i -> withLabel at (S.drop why (i + 1)) (errorAt at (S.slice why 0 i))
+  | None -> errorAt at why
 
 -- --- what the queries do ----------------------------------------------------------
 
@@ -72,7 +100,26 @@ fun prepared (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std
       let vis = Rename.mentionsVisibility (Rename.programOf prog) in
       (match Rename.renamePackageWith "Main" [([], prog)] pre (V.map (\d -> match d with | (n, ns, _) -> (n, ns)) deps) [] first True vis with
        | (m, _, _) ->
-           Ok (m, V.map (\d -> match d with | (_, _, cp) -> cp) deps, V.map (\p -> match p with | (at, why) -> errorAt at why) m.problemsAt))
+           Ok (m, V.map (\d -> match d with | (_, _, cp) -> cp) deps, V.map (\p -> match p with | (at, why) -> problemAt at why) m.problemsAt))
+
+-- A program lowered to Cut, as `meadow cut` reads it: linked with Std
+-- compiled, if it names Std; or why there is none, in parentheses, as the
+-- Cut dumps say it (`(error)`, `(not lowered: ..)`).
+@pub fun cutIn (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : String ! e =
+  match (Surface.parsed text, prelude) with
+  | (Ok prog, Ok pre) ->
+      let deps =
+        if not (S.contains "Std" text) then []
+        else (match std () with | Ok (names, c) -> [("Std", names, c)] | Err _ -> [])
+      in
+      let first = V.foldl (\acc d -> match d with | (_, _, (c : Compiled)) -> if c.high > acc then c.high else acc) 0 deps in
+      let vis = Rename.mentionsVisibility (Rename.programOf prog) in
+      (match Rename.renamePackageWith "Main" [([], prog)] pre (V.map (\d -> match d with | (n, ns, _) -> (n, ns)) deps) [] first True vis with
+       | (m, own, problems) ->
+           if not (V.isEmpty problems) then "(error)"
+           else if V.isEmpty deps then Lo.cutText (sccModule m) "Main"
+           else Lo.cutTextLinked (sccModule m) own "Main" False (V.map (\d -> match d with | (_, _, cp) -> cp) deps))
+  | _ -> "(error)"
 
 -- What is wrong with a program: what its syntax says, or what renaming it
 -- says, or what checking it does, each where it was found.
@@ -85,20 +132,25 @@ fun prepared (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std
         runSt (\() ->
           let c = checkedAgainst (sccModule m) False deps in
           V.append
-            (placedOnce (St.getRef c.tc.placed))
+            (diagnosticsIn c.tc m.linearBody)
             (V.map (\k -> warningAt nowhere "this compiler cannot check this yet: ${k}") (distinct (St.getRef c.tc.unsupported))))
 
 -- The type of the innermost term of `text` at byte `at`, and where that
 -- term is: the program checked again, keeping it (`Check.checkedWanting`).
 @pub fun typeAt (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (at : Int) : Maybe (Meta, String) ! e =
-  match prepared text prelude std with
+  typeAtIn text None prelude std at
+
+-- The same, of a file in its package, if it is in one.
+@pub fun typeAtIn (text : String) (package : Maybe PackageContext) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (at : Int) : Maybe (Meta, String) ! e =
+  let (ready, base) = preparedFor text package prelude std in
+  match ready with
   | Ok (m, deps, renaming) ->
       if not (V.isEmpty renaming) then None
       else
         runSt (\() ->
-          let c = checkedWanting (sccModule m) False deps at in
+          let c = checkedWanting (sccModule m) False deps (at + base) in
           match St.getRef c.tc.found with
-          | Just (place, ty) -> Just (place, C.shown m.linearBody ty)
+          | Just (place, ty) -> Just (metaBack place base, C.shown m.linearBody ty)
           | None -> None)
   | Err _ -> None
 
@@ -111,6 +163,156 @@ fun prepared (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std
         let c = checkedAgainst (sccModule m) False deps in
         goalNamed c.tc name)
   | Err _ -> None
+
+-- The package a file the editor opened is a module of (`Server`'s
+-- `opened`): its name, the file's module path, and the package's other
+-- modules, each its path and text as they were read.
+@derive(PartialEq)
+@pub record PackageContext = {
+  name : String,
+  own : [String],
+  others : [([String], String)]
+}
+
+-- What is wrong with a file: checked as a module of its package, if it is
+-- one, with the package's other modules; else as a lone program.
+@pub fun problemsIn (text : String) (package : Maybe PackageContext) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : [Diagnostic] ! e =
+  match package with
+  | None -> problemsOf text prelude std
+  | Just pc ->
+      let (ready, base) = preparedFor text package prelude std in
+      let mine = \(d : Diagnostic) -> match whereAt d with | Meta.Meta a b -> (a >= base and a <= base + S.byteLength text) or (a == 0 and b == 0) in
+      let back = \(ds : [Diagnostic]) -> V.map (\d -> shiftedBack d base) (V.filter mine ds) in
+      match ready with
+      | Err ds -> back ds
+      | Ok (m, deps, renaming) ->
+          if not (V.isEmpty renaming) then back renaming
+          else
+            back (runSt (\() ->
+              let c = checkedAgainst (sccModule m) False deps in
+              diagnosticsIn c.tc m.linearBody))
+
+-- A file ready to check, as `prepared` makes a lone program ready: as a
+-- module of its package, if it is one, and where its places start in the
+-- package's places. The package is renamed whole: each module, in the
+-- order of its imports, parsed after as many newlines as the modules
+-- before it have bytes, so that each has places of its own in one source
+-- map, as the Rust compiler's files do. A file in no package, or whose
+-- package has another module that does not parse, is a lone program, its
+-- places from 0.
+@pub fun preparedFor (text : String) (package : Maybe PackageContext) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : (Result [Diagnostic] (Rename.Renamed, [Compiled], [Diagnostic]), Int) ! e =
+  match package with
+  | None -> (prepared text prelude std, 0)
+  | Just pc -> M.unwrapOr (prepared text prelude std, 0) (packagePrepared text pc prelude std)
+
+fun packagePrepared (text : String) (pc : PackageContext) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : Maybe (Result [Diagnostic] (Rename.Renamed, [Compiled], [Diagnostic]), Int) ! e =
+  let modules = V.pushBack (V.filter (\m -> fst m != pc.own) pc.others) (pc.own, text) in
+  let paths = V.map (\m -> S.join "." (fst m)) modules in
+  let parted = V.concatMap Parts.partModules (Parts.parts pc.name paths (V.map snd modules)) in
+  let order = V.append (V.filter (\i -> V.getOr "" paths i == "") parted) (V.filter (\i -> V.getOr "" paths i != "") parted) in
+  let ordered = V.concatMap (\i -> match V.get modules i with | Just m -> [m] | None -> []) order in
+  let bases = V.foldl (\acc m -> V.pushBack acc (M.unwrapOr 0 (V.last acc) + S.byteLength (snd m) + 1)) [0] ordered in
+  let ownAt = M.unwrapOr 0 (V.find (\i -> M.map fst (V.get ordered i) == Just pc.own) (V.range 0 (V.len ordered))) in
+  let base = V.getOr 0 bases ownAt in
+  let parsedAll = V.map (\i -> match V.get ordered i with | Just (p, t) -> (p, Surface.parsed (S.repeat "\n" (V.getOr 0 bases i) ++ t)) | None -> ([], Err [])) (V.range 0 (V.len ordered)) in
+  match V.find (\x -> fst x == pc.own) parsedAll with
+  | Just (_, Err ds) -> Just (Err ds, base)
+  | _ ->
+      if V.any (\x -> match snd x with | Err _ -> True | Ok _ -> False) parsedAll then None
+      else
+        match prelude with
+        | Err _ -> None
+        | Ok pre ->
+            let progs = V.concatMap (\x -> match snd x with | Ok p -> [(fst x, p)] | Err _ -> []) parsedAll in
+            let deps = if pc.name == "Std" or not (V.any (\m -> S.contains "Std" (snd m)) modules) then [] else (match std () with | Ok (names, c) -> [("Std", names, c)] | Err _ -> []) in
+            let first = V.foldl (\acc d -> match d with | (_, _, (c : Compiled)) -> if c.high > acc then c.high else acc) 0 deps in
+            let vis = V.any (\x -> Rename.mentionsVisibility (Rename.programOf (snd x))) progs in
+            (match Rename.renamePackageWith pc.name progs pre (V.map (\d -> match d with | (n, ns, _) -> (n, ns)) deps) [] first True vis with
+             | (m, _, _) ->
+                 Just (Ok (m, V.map (\d -> match d with | (_, _, cp) -> cp) deps, V.map (\p -> match p with | (at, why) -> problemAt at why) m.problemsAt), base))
+
+-- A diagnostic `by` bytes further back.
+fun shiftedBack (d : Diagnostic) (by : Int) : Diagnostic =
+  match d with
+  | Diagnostic.Diagnostic s m w ls ns -> Diagnostic.Diagnostic s m (metaBack w by) (V.map (\l -> (metaBack (fst l) by, snd l)) ls) ns
+
+fun metaBack (m : Meta) (by : Int) : Meta =
+  match m with
+  | Meta.Meta a b -> if a >= by then Meta.Meta (a - by) (b - by) else Meta.Meta 0 0
+
+-- What tactic mode (`Tactic`) needs of the goal `?name`: the type wanted
+-- there; its definition's variables, each its name and type; and, for each
+-- of those whose type is a data type, its constructors, each as a pattern
+-- names it (`Maybe.Just`, or `::`) with how many fields it takes.
+@pub record GoalFacts = {
+  want : Core,
+  locals : [(String, Core)],
+  splits : [(String, [(String, Int)])]
+}
+
+@pub fun goalFacts (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (name : String) : Maybe GoalFacts ! e =
+  match prepared text prelude std with
+  | Ok (m, deps, _) ->
+      runSt (\() ->
+        let c = checkedAgainst (sccModule m) False deps in
+        match goalNamed c.tc name with
+        | None -> None
+        | Just (want, locals) ->
+            let splits = V.concatMap (\l -> match l with | (x, t) -> M.unwrapOr [] (M.map (\cs -> [(x, cs)]) (constructorsOf c.tc t))) locals in
+            Just (GoalFacts { want, locals, splits }))
+  | Err _ -> None
+
+-- What one check of a program says, for tactic mode, which would otherwise
+-- check it once for each: what is wrong with it; its goals in the order
+-- the checker meets them, each its name and how it is said (its type and
+-- context); and what is known of the goal `focus`, if there is one.
+@pub record Checkup = {
+  wrong : [Diagnostic],
+  goals : [(String, String)],
+  focused : Maybe GoalFacts
+}
+
+@pub fun checkup (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (focus : String) : Checkup ! e =
+  match prepared text prelude std with
+  | Err ds -> Checkup { wrong = ds, goals = [], focused = None }
+  | Ok (m, deps, renaming) ->
+      runSt (\() ->
+        let c = checkedAgainst (sccModule m) False deps in
+        let placed = St.getRef c.tc.placed in
+        let goals = V.concatMap (\p -> match p with | (_, said) -> if S.startsWith "goal ?" said then [goalEntry (S.drop said 5)] else []) placed in
+        let focused =
+          M.map
+            (\g -> match g with
+              | (want, locals) ->
+                  GoalFacts { want, locals, splits = V.concatMap (\l -> match l with | (x, t) -> M.unwrapOr [] (M.map (\cs -> [(x, cs)]) (constructorsOf c.tc t))) locals })
+            (goalNamed c.tc focus)
+        in
+        Checkup { wrong = V.append renaming (V.filter isError (diagnosticsIn c.tc m.linearBody)), goals, focused })
+
+-- A goal as the checker says it, `?name : T` and its context, with its name.
+fun goalEntry (said : String) : (String, String) =
+  (S.drop (M.unwrapOr said (M.map (\at -> S.slice said 0 at) (S.indexOf " :" said))) 1, said)
+
+-- The constructors of the data type `t` is, if it is one: each as a
+-- pattern names it, and its fields.
+fun constructorsOf (tc : Tc s) (t : Core) : Maybe [(String, Int)] ! { St s | e } =
+  match headOf t with
+  | Core.Opaque d dname ->
+      M.map
+        (\cs ->
+          V.concatMap
+            (\u ->
+              match ctorInfo tc u with
+              | Just (CtorInfo.CtorInfo name _ _ _ fields) -> [(if name == "::" then name else "${dname}.${name}", fields)]
+              | None -> [])
+            cs)
+        (Hm.lookup d (St.getRef tc.datas))
+  | _ -> None
+
+fun headOf (t : Core) : Core =
+  match t with
+  | Core.App f _ -> headOf f
+  | _ -> t
 
 -- The goals, `?name`, left in a program: each said with its type.
 @pub fun goalsIn (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : [String] ! e =
@@ -136,7 +338,12 @@ fun prepared (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std
 -- What the program and the prelude declare: each name, the unique it is
 -- named by, and its type, shown; with the program's own first unique.
 @pub fun declaredIn (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : ([(Int, String, String)], Int) ! e =
-  match prepared text prelude std with
+  declaredInPackage text None prelude std
+
+-- The same, of a file in its package, if it is in one: what every module
+-- of the package declares.
+@pub fun declaredInPackage (text : String) (package : Maybe PackageContext) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : ([(Int, String, String)], Int) ! e =
+  match fst (preparedFor text package prelude std) with
   -- (checked though renaming found something wrong: a program being
   -- written always has something wrong with it)
   | Ok (m, deps, _) ->
@@ -156,24 +363,40 @@ fun ownOccurrences (m : Rename.Renamed) : [(Int, Meta)] =
 -- named (the definition among them): of the program's own names, each
 -- defined where it is first bound, its equation or its binder.
 @pub fun namedAt (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (at : Int) : Maybe (Meta, [Meta]) ! e =
-  match prepared text prelude std with
+  namedAtIn text None prelude std at
+
+-- The same, of a file in its package, if it is in one: of the places in
+-- this file (a name another module defines has its definition there).
+@pub fun namedAtIn (text : String) (package : Maybe PackageContext) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (at : Int) : Maybe (Meta, [Meta]) ! e =
+  let (ready, base) = preparedFor text package prelude std in
+  match ready with
   | Ok (m, _, _) ->
-      let own = ownOccurrences m in
-      let holding = V.filter (\o -> contains (snd o) at) own in
+      let own = V.filter (\o -> inFile (snd o) base text) (ownOccurrences m) in
+      let holding = V.filter (\o -> contains (snd o) (at + base)) own in
       (match V.foldl (\best o -> match best with | Just b -> (if width (snd o) < width (snd b) then Just o else best) | None -> Just o) None holding with
        | Just (u, _) ->
-           let places = sortedPlaces (V.concatMap (\o -> if fst o == u then [snd o] else []) own) in
+           let places = V.map (\p -> metaBack p base) (sortedPlaces (V.concatMap (\o -> if fst o == u then [snd o] else []) own)) in
            M.map (\d -> (d, places)) (V.head places)
        | None -> None)
   | Err _ -> None
 
+-- Whether a place of a package is in the file whose places start at `base`.
+fun inFile (m : Meta) (base : Int) (text : String) : Bool =
+  match m with | Meta.Meta a _ -> a >= base and a <= base + S.byteLength text
+
 -- The program's own declarations, for an editor's outline: each name, what
 -- kind of thing it is, and where it is first bound.
 @pub fun symbolsIn (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : [(String, String, Meta)] ! e =
-  match prepared text prelude std with
+  symbolsInPackage text None prelude std
+
+-- The same, of a file in its package, if it is in one: its own
+-- declarations, not its package's other modules'.
+@pub fun symbolsInPackage (text : String) (package : Maybe PackageContext) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : [(String, String, Meta)] ! e =
+  let (ready, base) = preparedFor text package prelude std in
+  match ready with
   | Ok (m, deps, renaming) ->
-      let own = ownOccurrences m in
-      let declared = (match declaredIn text prelude std with | (ds, _) -> ds) in
+      let own = V.concatMap (\o -> if inFile (snd o) base text then [(fst o, metaBack (snd o) base)] else []) (ownOccurrences m) in
+      let declared = (match declaredInPackage text package prelude std with | (ds, _) -> ds) in
       V.concatMap
         (\d ->
           match d with
@@ -195,10 +418,15 @@ fun kindOf (ty : String) : String =
 -- written seldom parses yet, so if the program does not, it is checked
 -- without that line; and failing that, the prelude's alone.
 @pub fun completionsIn (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (at : Int) : [(String, String)] ! e =
+  completionsInPackage text None prelude std at
+
+-- The same, of a file in its package, if it is in one: the names of the
+-- package's other modules among them.
+@pub fun completionsInPackage (text : String) (package : Maybe PackageContext) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (at : Int) : [(String, String)] ! e =
   let declared =
-    match declaredIn text prelude std with
+    match declaredInPackage text package prelude std with
     | ([], _) ->
-        (match declaredIn (withoutLineAt text at) prelude std with
+        (match declaredInPackage (withoutLineAt text at) package prelude std with
          | ([], _) -> declaredIn "" prelude std
          | d -> d)
     | d -> d
@@ -251,7 +479,14 @@ fun sortedPlaces (ps : [Meta]) : [Meta] =
       in
       match parsed with
       | Err e -> Err e
-      | Ok mods -> compiledPackage pre "Std" mods []
+      | Ok mods ->
+          -- each after the modules it imports, so that a module's instances
+          -- are there for the searches of those that use it (as a package
+          -- read from its directory is ordered); the root still first
+          let paths = V.map fst D.stdModules in
+          let parted = V.concatMap Parts.partModules (Parts.parts "Std" paths (V.map snd D.stdModules)) in
+          let order = V.append (V.filter (\i -> V.getOr "" paths i == "") parted) (V.filter (\i -> V.getOr "" paths i != "") parted) in
+          compiledPackage pre "Std" (V.concatMap (\i -> match V.get mods i with | Just m -> [m] | None -> []) order) []
 
 -- A package compiled whole, after the prelude, against the compiled
 -- packages it depends on: the names it gives, and its interface.
@@ -273,50 +508,5 @@ fun sortedPlaces (ps : [Meta]) : [Meta] =
 @pub fun formattedOf (text : String) : String = match Fmt.formatted text with | Ok out -> out | Err _ -> text
 
 fun nowhere = spanMeta 0 0
-
--- The checker's errors, each once where it was found, said in words.
-@pub fun placedDiagnostics (placed : [(Meta, String)]) : [Diagnostic] = placedOnce placed
-
-fun placedOnce (placed : [(Meta, String)]) : [Diagnostic] =
-  V.map
-    (\p ->
-      match p with
-      -- a goal, and a hole filled in, are warnings: what is around them
-      -- can still be worked on
-      | (at, kind) -> if S.startsWith "goal ?" kind then warningAt at kind else if kind == "HoleSolved" then warningAt at (said kind) else errorAt at (said kind))
-    (V.foldl (\acc p -> if V.elem p acc then acc else V.pushBack acc p) [] placed)
-
--- An error's kind, said in words: the commonest in a sentence, the rest by
--- the name the Rust checker gives the kind, its words apart
--- (`NotAConstructorOf`, "not a constructor of").
-fun said (kind : String) : String =
-  match V.find (\p -> fst p == kind) errorWords with
-  | Just (_, words) -> words
-  | None -> wordsOf kind
-
-def errorWords : [(String, String)] =
-  [
-    ("Mismatch", "this has a type other than the one wanted"),
-    ("UnknownVariable", "nothing of this name is in scope"),
-    ("NotAFunction", "this is applied, but it is not a function"),
-    ("UsageMismatch", "this is used other than as its grade allows"),
-    ("UnsolvedMeta", "what this is could not be worked out"),
-    ("MissingCases", "these patterns do not cover every case"),
-    ("UnreachableClause", "this clause can never be reached"),
-    ("AmbiguousName", "this name has more than one meaning here"),
-    ("MayNotTerminate", "this may not terminate"),
-    ("UnhandledEffects", "this performs effects nothing here handles")
-  ]
-
--- `NotAConstructorOf` as "not a constructor of".
-fun wordsOf (name : String) : String =
-  let n = S.byteLength name in
-  let step =
-    \acc i ->
-      let c = S.slice name i (i + 1) in
-      let lower = S.toLower c in
-      if i > 0 and c != lower then acc ++ " " ++ lower else acc ++ lower
-  in
-  V.foldl step "" (V.range 0 n)
 
 fun distinct (xs : [String]) : [String] = V.foldl (\acc x -> if V.elem x acc then acc else V.pushBack acc x) [] xs
