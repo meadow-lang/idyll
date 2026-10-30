@@ -917,8 +917,6 @@ accepted when what it does fits within what resuming was found to.
   For that, front/'s renamer, checker and lowering keep their state in `St`
   cells, since a query may perform nothing but asking other queries. Still
   to come:
-  - hover, definitions and completion in a file's package (what is wrong
-    with it already is: below);
   - completion of the names in scope where the cursor is (locals, a
     module's after its alias), not only the program's top level;
   - hover, definitions and completion kept in the session, rather than
@@ -1467,9 +1465,12 @@ do yet `(unsupported)`, and the tests count those apart.
   package is checked whole, each module parsed after as many newlines as
   the modules before it have bytes, so that each has places of its own in
   one source map, as the Rust compiler's files do, and the open module's
-  diagnostics are shifted back to its text. Still to come: a package's
-  path and git dependencies there (Std is linked), and hover, definitions
-  and completion in the package too.
+  diagnostics are shifted back to its text. Hover, definitions,
+  references, completion and the outline are answered in the package too
+  (`Session.preparedFor`), each place moved by the module's base and back.
+  Still to come: a package's path and git dependencies there (Std is
+  linked), and a definition in another module of the package, which is in
+  another file.
 
 *Done when:* `front/` compiles the corpus and the tutorial to Cut that Glade
 and Silo run with the answers the CEK machine gives. Done 2026-10-21, and

@@ -993,7 +993,10 @@ in its package. The package is checked whole, its modules in the order of
 their imports, each parsed after as many newlines as the modules before
 it have bytes. So every module has places of its own in one source map, as
 the Rust compiler's files do, and the open module's diagnostics are those
-in its places, shifted back to its text.
+in its places, shifted back to its text. Hover, definitions, references,
+completion and the outline work the same way (`Session.preparedFor` gives
+the renamed package and the module's base): the place asked about is moved
+up by the base, and each answer back down.
 
 A query may perform nothing but asking other queries, so that its answer
 can be kept. That is why the renamer, the checker and the lowering keep

@@ -63,6 +63,9 @@ fun contextOf (root : String) (path : String) : Maybe PackageContext ! { Fs | e 
 -- A query's answer, or `fallback` if it has none (an input never set).
 fun answered fallback act = match toResult act with | Ok x -> x | Err _ -> fallback
 
+-- The package a file is a module of, if the editor said where it is.
+fun packageIn db file = answered None (\() -> sessionPackage db file)
+
 fun diagnosticsOf db file = answered [] (\() -> sessionProblems db file)
 
 fun treeOf db file = answered (fst (parseIdyll "")) (\() -> fst (sessionParsed db file))
@@ -70,7 +73,7 @@ fun treeOf db file = answered (fst (parseIdyll "")) (\() -> fst (sessionParsed d
 -- What the term at a place is: its type, as the checker found it.
 fun hoverAt db file at =
   answered None (\() ->
-    match typeAt (sessionSource db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at with
+    match typeAtIn (sessionSource db file) (packageIn db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at with
     | Just (place, ty) -> Just (place, "```idyll\n${ty}\n```")
     | None -> None)
 
@@ -78,25 +81,25 @@ fun hoverAt db file at =
 -- its equation or its binder.
 fun definitionAt db file at =
   answered [] (\() ->
-    match namedAt (sessionSource db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at with
+    match namedAtIn (sessionSource db file) (packageIn db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at with
     | Just (d, _) -> [(file, d)]
     | None -> [])
 
 -- Every place the name at a place is named.
 fun referencesAt db file at =
   answered [] (\() ->
-    match namedAt (sessionSource db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at with
+    match namedAtIn (sessionSource db file) (packageIn db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at with
     | Just (_, places) -> V.map (\p -> (file, p)) places
     | None -> [])
 
 -- What a name being written may be: the program's own names and the
 -- prelude's, each with its type.
 fun completionAt db file at =
-  answered [] (\() -> completionsIn (sessionSource db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at)
+  answered [] (\() -> completionsInPackage (sessionSource db file) (packageIn db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at)
 
 -- The file's own declarations, for an outline.
 fun symbolsOf db file =
-  answered [] (\() -> symbolsIn (sessionSource db file) (sessionPrelude db 0) (\u -> sessionStd db 0))
+  answered [] (\() -> symbolsInPackage (sessionSource db file) (packageIn db file) (sessionPrelude db 0) (\u -> sessionStd db 0))
 
 -- The file set out; as it is, if it cannot be.
 fun formatOf db file = answered (answered "" (\() -> sessionSource db file)) (\() -> sessionFormatted db file)
@@ -224,4 +227,6 @@ fun listed (field : String) (reply : Maybe Json) : [Json] =
   let fine = told [opening uri "use Helper (double)\n\nx : Int\nx = double 2\n"] serveServer in
   let wrong = told [opening uri "use Helper (double)\n\nx : Bool\nx = double 2\n"] serveServer in
   let d = assertEq (published fine) (Just 0) "Helper is a module of the package" in
-  assertEq (firstAt wrong) (Just (J.jInt 3, J.jInt 4)) "where it is in Main.idl"
+  let e = assertEq (firstAt wrong) (Just (J.jInt 3, J.jInt 4)) "where it is in Main.idl" in
+  let hovered = told [opening uri "use Helper (double)\n\nx : Int\nx = double 2\n", hovering 1 uri 3 4] serveServer in
+  assertEq (M.andThen (J.path ["result", "contents", "value"]) (V.get hovered 1)) (Just (J.jString "```idyll\nInt -> Int\n```")) "Helper's double, on hover"
