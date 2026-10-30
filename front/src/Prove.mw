@@ -1,0 +1,279 @@
+-- Proof search: a term of a type, found for you. The prompt's `:prove`,
+-- and a query starting with `?` in its finder; `idyll-driver/src/prove.rs`
+-- for the Rust REPL.
+--
+-- A type is a proposition and a term of it a proof, so asking for a term of
+-- `{a : Type} -> Maybe a -> a -> a` is asking for a proof of it. The search
+-- is the plain kind Agda's `auto` began as: it builds candidate terms from
+-- the goal's shape, smallest first, and the checker decides which of them
+-- are terms of the goal. Every answer shown has been checked, with grades
+-- and dependent types and all; the search only proposes.
+--
+-- What it proposes, for a goal of a function type: a name whose type is the
+-- goal, and a lambda for each argument with a term of the result under it.
+-- For any other goal: a variable in scope of its type, a literal of a
+-- builtin type, a constant, and a function or constructor whose result is
+-- the goal, applied to terms found for its arguments in turn, to a depth of
+-- three. What a name's type has to be, it learns from the type's shape
+-- (`Find`). It does not split cases.
+
+use Lingua.Lang (Meta)
+use Idyll.Find (Ty, Sig, sigOf, sigTy, sigArgs, sigResult, renamed, declBase, unifyWith, resolved, spelling)
+use Idyll.Find as F
+use Idyll.Session (preparedProgram, written, goalIn, problemsOf)
+use Lingua.Diagnostic (isError)
+use Idyll.Rename as Rename
+use Idyll.Scc (sccModule)
+use Idyll.Check (checkedAgainst)
+use Idyll.Core (Core)
+use Std.St (runSt)
+use Std.St as St
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as Hm
+use Std.String as S
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+use Std.Result.Result.*
+
+-- How deep a term may be nested: `f (g (h x))` is three.
+def depthLimit = 3
+
+-- How many candidates are made before the checker sees any.
+def budget = 600
+
+-- How many terms are tried for each argument of a function.
+def perArgument = 4
+
+-- Terms of `goal` (an Idyll type, as written), after the declarations
+-- `earlier`, with `catalog` what can head a term: the smallest first, at
+-- most `limit` of them; or why the goal is not a type.
+@pub fun proved (earlier : String) (goal : String) (catalog : [(String, Core, String)]) prelude std (limit : Int) =
+  let g = S.trim goal in
+  -- (Std asked for once, and given on as what it was)
+  let stdNow = std () in
+  let std = \u -> stdNow in
+  if S.isEmpty g then Err "prove what? `:prove` takes a type"
+  else
+    match goalType earlier g prelude std with
+    | Err why -> Err why
+    | Ok ty ->
+        let heads = V.concatMap (\d -> match d with | (name, t, _) -> if written name then [(spelling name, sigOf t)] else []) catalog in
+        let candidates = byDepth heads (sigTy (sigOf ty)) [] 0 0 [] in
+        Ok (V.take (verifiedAll earlier g candidates prelude std limit []) limit)
+
+-- Terms for the goal `?name` of `earlier`, with the variables of its
+-- definition in scope: each tried in the goal's place, and kept if the
+-- program then has nothing wrong with it; at most `limit` of them.
+@pub fun provedAt (earlier : String) (name : String) (catalog : [(String, Core, String)]) prelude std (limit : Int) =
+  let stdNow = std () in
+  let std = \u -> stdNow in
+  match goalIn earlier prelude std name with
+  | None -> Err "no goal ?${name} in what has been declared"
+  | Just (ty, context) ->
+      let heads = V.concatMap (\d -> match d with | (n, t, _) -> if written n then [(spelling n, sigOf t)] else []) catalog in
+      let locals = V.map (\c -> (fst c, sigTy (sigOf (snd c)))) context in
+      let candidates = byDepth heads (sigTy (sigOf ty)) locals 0 0 [] in
+      Ok (filled earlier name candidates prelude std limit 0 [])
+
+-- How many candidates are tried in a goal's place, each a whole check.
+def tries = 40
+
+-- The candidates that, put in the goal's place, leave nothing wrong.
+fun filled (earlier : String) (name : String) (candidates : [String]) prelude std (limit : Int) (tried : Int) (found : [String]) : [String] =
+  match V.head candidates with
+  | None -> found
+  | Just c ->
+      if V.len found >= limit or tried >= tries then found
+      else
+        let program = inPlace earlier ("?" ++ name) 0 ("(" ++ c ++ ")") in
+        let wrong = V.filter isError (problemsOf program prelude std) in
+        filled earlier name (V.drop candidates 1) prelude std limit (tried + 1) (if V.isEmpty wrong then V.pushBack found c else found)
+
+-- `text` with the goal `goal` (a whole word) given `filler` in its place.
+fun inPlace (text : String) (goal : String) (from : Int) (filler : String) : String =
+  match S.indexOfFrom goal text from with
+  | None -> text
+  | Just at ->
+      let after = at + S.byteLength goal in
+      let next = if after < S.byteLength text then toInt (stringByteAt text after) else 0 - 1 in
+      let wordy = (next >= 48 and next <= 57) or (next >= 65 and next <= 90) or (next >= 97 and next <= 122) or next == 95 or next == 39 in
+      if wordy then inPlace text goal after filler
+      else S.slice text 0 at ++ filler ++ S.slice text after (S.byteLength text)
+
+-- The candidates, a depth at a time, smallest first within one, each once.
+fun byDepth heads (goal : Ty) (locals : [(String, Ty)]) (depth : Int) (made : Int) (sofar : [String]) : [String] =
+  if depth > depthLimit or made >= budget then sofar
+  else
+    match terms heads goal locals depth made with
+    | (these, made2) ->
+        let sorted = V.foldl (\acc t -> V.concat [V.filter (\x -> S.byteLength x <= S.byteLength t) acc, [t], V.filter (\x -> S.byteLength x > S.byteLength t) acc]) [] these in
+        byDepth heads goal locals (depth + 1) made2 (V.foldl (\acc t -> if V.elem t acc then acc else V.pushBack acc t) sofar sorted)
+
+-- The goal, as the checker reads it: `__goal : goal`, declared after
+-- `earlier`; or what is wrong with it.
+fun goalType (earlier : String) (goal : String) prelude std =
+  -- (its body a goal, which is no error, where a hole would be one)
+  let source = "${earlier}__goal : ${goal}\n__goal = ?proof\n" in
+  let from = S.byteLength earlier in
+  let to = from + S.byteLength "__goal : " + S.byteLength goal in
+  match preparedProgram source prelude std with
+  | Err ds -> Err "the goal is not a type"
+  | Ok (m, deps, _) ->
+      runSt (\() ->
+        let c = checkedAgainst (sccModule m) False deps in
+        let wrong = V.filter (\p -> match p with | (Meta.Meta a _, said) -> a >= from and a < to and wrongKind said) (St.getRef c.tc.placed) in
+        if not (V.isEmpty wrong) then Err (S.join "; " (V.map snd wrong))
+        else
+          match V.find (\d -> match d with | (_, name, _) -> name == "__goal") (St.getRef c.tc.declared) with
+          | Just (_, _, ty) -> Ok ty
+          | None -> Err "the goal is not a type")
+
+fun wrongKind (said : String) : Bool = not (S.startsWith "goal ?" said) and said != "HoleSolved"
+
+-- Which candidates the checker takes as terms of `goal`, in order, `limit`
+-- at most: a batch at a time.
+fun verifiedAll (earlier : String) (goal : String) (candidates : [String]) prelude std (limit : Int) (sofar : [String]) : [String] =
+  if V.isEmpty candidates or V.len sofar >= limit then sofar
+  else verifiedAll earlier goal (V.drop candidates 64) prelude std limit (V.append sofar (verified earlier goal (V.take candidates 64) prelude std))
+
+-- Which of `candidates` the checker takes as terms of `goal`: all checked
+-- at once, each a definition of its own. An error that is in none of them,
+-- or one that kept them from being checked, could be any of them's: each is
+-- then asked about alone.
+fun verified (earlier : String) (goal : String) (candidates : [String]) prelude std : [String] =
+  let pieces = V.map (\i -> "__proof${show i} : ${goal}\n__proof${show i} = ${V.getOr "" candidates i}\n\n") (V.range 0 (V.len candidates)) in
+  let ranges = rangesOf (S.byteLength earlier) pieces 0 [] in
+  let source = earlier ++ S.join "" pieces in
+  let alone = \u -> if V.len candidates == 1 then [] else V.concatMap (\c -> verified earlier goal [c] prelude std) candidates in
+  match preparedProgram source prelude std with
+  | Err _ -> alone ()
+  | Ok (m, deps, renaming) ->
+      let placedIn = \(at : Meta) -> V.find (\i -> match (at, V.getOr (0, 0) ranges i) with | (Meta.Meta a _, (lo, hi)) -> a >= lo and a < hi) (V.range 0 (V.len ranges)) in
+      let renamingWrong = V.map (\p -> fst p) m.problemsAt in
+      let (failed, everyPlaced, declaredAll) =
+        runSt (\() ->
+          let c = checkedAgainst (sccModule m) False deps in
+          let wrong = V.append renamingWrong (V.concatMap (\p -> match p with | (at, said) -> if wrongKind said then [at] else []) (St.getRef c.tc.placed)) in
+          let names = V.map (\d -> match d with | (_, n, _) -> n) (St.getRef c.tc.declared) in
+          (
+            V.concatMap (\at -> M.unwrapOr [] (M.map (\i -> [i]) (placedIn at))) wrong,
+            V.all (\at -> M.isSome (placedIn at)) wrong,
+            V.all (\i -> V.elem "__proof${show i}" names) (V.range 0 (V.len candidates))
+          ))
+      in
+      if not declaredAll or not everyPlaced then alone ()
+      else V.concatMap (\i -> if V.elem i failed then [] else [V.getOr "" candidates i]) (V.range 0 (V.len candidates))
+
+-- Each piece's bytes, from `at`.
+fun rangesOf (at : Int) (pieces : [String]) (i : Int) (out : [(Int, Int)]) : [(Int, Int)] =
+  match V.get pieces i with
+  | Just p -> rangesOf (at + S.byteLength p) pieces (i + 1) (V.pushBack out (at, at + S.byteLength p))
+  | None -> out
+
+-- A name's type, its variables made the name's own: flexible, and apart
+-- from the goal's.
+fun instance (sig : Sig) : Sig = Sig.Sig (V.map (\a -> renamed a declBase) (sigArgs sig)) (renamed (sigResult sig) declBase)
+
+fun fits (a : Ty) (b : Ty) : Bool = M.isSome (unifyWith True Hm.empty a b)
+
+fun isFun (t : Ty) : Bool = match t with | Ty.Fun _ _ -> True | _ -> False
+
+-- Terms of `goal` with `locals` in scope, nested at most `depth` deep; and
+-- how many candidates have been made, counting these.
+fun terms heads (goal : Ty) (locals : [(String, Ty)]) (depth : Int) (made : Int) : ([String], Int) =
+  if made >= budget then ([], made)
+  else
+    -- what is in scope with the goal's type, a function's or not
+    let fromLocals = V.concatMap (\l -> if fits (snd l) goal then [fst l] else []) (V.reverse locals) in
+    let fromHeads =
+      V.concatMap
+        (\h -> match h with | (name, sig) -> if (isFun goal or V.isEmpty (sigArgs sig)) and fits (sigTy (instance sig)) goal then [name] else [])
+        heads
+    in
+    let named = V.append fromLocals fromHeads in
+    let (shaped, made1) =
+      match goal with
+      -- a lambda for each argument
+      | Ty.Fun args result ->
+          let names = V.map (\i -> freshName (V.len locals + i)) (V.range 0 (V.len args)) in
+          let inner = V.append locals (V.zip names args) in
+          let (bodies, m2) = terms heads result inner depth made in
+          let suffix = " " ++ S.join " " names in
+          let lams =
+            V.concatMap
+              (\body ->
+                -- `\x -> f x` is `f`, which is there already
+                let eta = S.endsWith suffix body and V.elem (S.take body (S.byteLength body - S.byteLength suffix)) named in
+                if eta then [] else ["\\" ++ S.join " " names ++ " -> " ++ body])
+              bodies
+          in
+          (lams, m2)
+      | Ty.Con name [] -> (literals name, made)
+      | _ -> ([], made)
+    in
+    let (applied, made2) =
+      if depth > 0 and not (isFun goal) then
+        let callable =
+          V.append
+            (V.concatMap (\l -> match snd l with | Ty.Fun args r -> [(fst l, Sig.Sig args r)] | _ -> []) (V.reverse locals))
+            (V.filter (\h -> not (V.isEmpty (sigArgs (snd h)))) heads)
+        in
+        V.foldl
+          (\acc h ->
+            match acc with
+            | (out, m) ->
+                if m >= budget then acc
+                else
+                  (match h with
+                   | (name, sig0) ->
+                       let sig = instance sig0 in
+                       (match unifyWith True Hm.empty (sigResult sig) goal with
+                        | None -> acc
+                        | Just s ->
+                            (match argumentTerms heads s (sigArgs sig) locals (depth - 1) m [] with
+                             | (Just each, m3) -> (V.append out (V.map (\args -> applyTo name args) (product each 8)), m3)
+                             | (None, m3) -> (out, m3)))))
+          ([], made1)
+          callable
+      else ([], made1)
+    in
+    let out = V.concat [named, shaped, applied] in
+    (out, made2 + V.len out)
+
+-- Terms for each argument in turn, a few each; `None` if one has none.
+fun argumentTerms heads s (args : [Ty]) (locals : [(String, Ty)]) (depth : Int) (made : Int) (each : [[String]]) : (Maybe [[String]], Int) =
+  match V.head args with
+  | None -> (Just each, made)
+  | Just a ->
+      (match terms heads (loosen (resolved s a)) locals depth made with
+       | (found, m) ->
+           if V.isEmpty found then (None, m)
+           else argumentTerms heads s (V.drop args 1) locals depth m (V.pushBack each (V.take found perArgument)))
+
+-- A type's variables that are still a name's own: anything at all will do
+-- for them, as far as the search can tell; the checker decides.
+fun loosen (t : Ty) : Ty =
+  match t with
+  | Ty.Var v -> if v >= declBase then Ty.Any else t
+  | Ty.Con n args -> Ty.Con n (V.map loosen args)
+  | Ty.Fun args r -> Ty.Fun (V.map loosen args) (loosen r)
+  | other -> other
+
+-- Literals of a builtin type, the simplest first.
+fun literals (ty : String) : [String] =
+  if ty == "Int" then ["0", "1"]
+  else if ty == "Bool" then ["True", "False"]
+  else if ty == "String" then ["\"\""]
+  else if ty == "()" then ["()"]
+  else []
+
+-- `x`, `y`, `z`, then `x3`, ...
+fun freshName (i : Int) : String = if i == 0 then "x" else if i == 1 then "y" else if i == 2 then "z" else "x${show i}"
+
+-- `f a (g b)`.
+fun applyTo (head : String) (args : [String]) : String =
+  V.foldl (\acc a -> if S.contains " " a and not (S.startsWith "(" a and S.endsWith ")" a) then acc ++ " (" ++ a ++ ")" else acc ++ " " ++ a) head args
+
+-- Every way of taking one from each, the first `limit` of them.
+fun product (each : [[String]]) (limit : Int) : [[String]] =
+  V.foldl (\out options -> V.take (V.concatMap (\prefix -> V.map (\o -> V.pushBack prefix o) options) out) limit) [[]] each

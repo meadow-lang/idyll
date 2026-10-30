@@ -21,7 +21,9 @@ use Idyll.Rename (PackageNames)
 use Idyll.Rename as Rename
 use Idyll.Scc (sccModule)
 use Idyll.Check (checkedAgainst, checkedWanting)
+use Idyll.Elab (goalNamed)
 use Idyll.Core as C
+use Idyll.Core (Core)
 use Idyll.Compiled (compiledOf)
 use Idyll.Interface (Compiled)
 use Idyll.Driver as D
@@ -44,6 +46,10 @@ database! {
     | query problems (file : Int) : [Diagnostic] =
         problemsOf (querySource file) (queryPrelude 0) (\u -> queryStd 0)
     | query formatted (file : Int) : String = formattedOf (querySource file)
+    -- what the prompt's declarations and the prelude declare, each its name,
+    -- its type and its type shown: what the finder searches, kept until a
+    -- declaration is entered
+    | query catalog (unit : Int) : [(String, Core, String)] = catalogOf (queryEarlier 0) (queryPrelude 0) (\u -> queryStd 0)
 }
 
 -- --- what the queries do ----------------------------------------------------------
@@ -96,6 +102,16 @@ fun prepared (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std
           | None -> None)
   | Err _ -> None
 
+-- The goal `?name` of a program, as the checker found it: the type wanted
+-- there, and its definition's variables, each its name and type.
+@pub fun goalIn (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (name : String) : Maybe (Core, [(String, Core)]) ! e =
+  match prepared text prelude std with
+  | Ok (m, deps, _) ->
+      runSt (\() ->
+        let c = checkedAgainst (sccModule m) False deps in
+        goalNamed c.tc name)
+  | Err _ -> None
+
 -- The goals, `?name`, left in a program: each said with its type.
 @pub fun goalsIn (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : [String] ! e =
   match prepared text prelude std with
@@ -103,6 +119,18 @@ fun prepared (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std
       runSt (\() ->
         let c = checkedAgainst (sccModule m) False deps in
         V.concatMap (\p -> match p with | (_, said) -> if S.startsWith "goal ?" said then [S.drop said 5] else []) (St.getRef c.tc.placed))
+  | Err _ -> []
+
+-- What a program and the prelude declare, each its name, its type, and its
+-- type shown: what the finder searches.
+@pub fun catalogOf (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : [(String, Core, String)] ! e =
+  match prepared text prelude std with
+  | Ok (m, deps, _) ->
+      runSt (\() ->
+        let c = checkedAgainst (sccModule m) False deps in
+        V.concatMap
+          (\d -> match d with | (_, name, ty) -> if written name then [(name, ty, C.shown m.linearBody ty)] else [])
+          (St.getRef c.tc.declared))
   | Err _ -> []
 
 -- What the program and the prelude declare: each name, the unique it is

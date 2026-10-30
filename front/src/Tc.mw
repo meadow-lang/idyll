@@ -48,8 +48,9 @@ use Std.Maybe.Maybe.*
 @pub data HoleAt = HoleAt Int Value Value
 
 -- A goal, `?name`: where it is, its name, and the type wanted there, at a
--- context's length.
-@pub data GoalAt = GoalAt Lang.Meta String Int Value
+-- context's length; and the variables of the definition it is in, each its
+-- name, its level and its type.
+@pub data GoalAt = GoalAt Lang.Meta String Int Value [(String, Int, Value)]
 
 -- A question kept for later: at a context's length, a term of type
 -- `actual` where `expected` was wanted, which neither unified nor failed
@@ -128,6 +129,9 @@ use Std.Maybe.Maybe.*
   linear : StRef s Bool,
   -- how many `let`s deep the checker is: none is the top level
   lets : StRef s Int,
+  -- the level at which the top-level definition being checked starts: what
+  -- a goal in it lists of its context is what is bound from there
+  localFrom : StRef s Int,
   -- what the program uses that this checker cannot check yet; a program
   -- with anything here is not compared
   unsupported : StRef s [String],
@@ -255,6 +259,7 @@ use Std.Maybe.Maybe.*
     postponed = newRef [],
     linear = newRef False,
     lets = newRef 0,
+    localFrom = newRef 0,
     unsupported = newRef [],
     effects = newRef Hm.empty,
     ops = newRef Hm.empty,
@@ -326,6 +331,7 @@ use Std.Maybe.Maybe.*
     postponed = newRef (getRef tc.postponed),
     linear = newRef (getRef tc.linear),
     lets = newRef (getRef tc.lets),
+    localFrom = newRef (getRef tc.localFrom),
     unsupported = newRef (getRef tc.unsupported),
     effects = newRef (getRef tc.effects),
     ops = newRef (getRef tc.ops),
