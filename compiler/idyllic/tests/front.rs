@@ -151,14 +151,17 @@ fn the_types_agree() {
 }
 
 /// The headlines of the checker's errors that front/ says as this
-/// compiler does, its kinds ported a few at a time (front/'s `Messages`).
+/// compiler does, its kinds ported a few at a time (front/'s `Messages`),
+/// each as a pattern: `*` stands for what a headline names (a name, a
+/// type, a number), and the rest must be as written.
 const PORTED: &[&str] = &[
     "type mismatch",
     "this is not a function",
     "unsolved metavariable",
     "the patterns do not cover every case",
     "unreachable",
-    "more than one hint gives a",
+    "more than one hint gives a *",
+    "nothing in scope gives *",
     "cannot tell what to look for",
     "no auto argument is taken here",
     "no implicit argument is taken here",
@@ -166,10 +169,38 @@ const PORTED: &[&str] = &[
     "found hole",
     "usage mismatch",
     "a linear value used more than once",
-    // `{name} may not terminate`, `nothing in scope gives a T`
-    " may not terminate",
-    "nothing in scope gives ",
+    "* may not terminate",
+    "* is not a constructor",
+    "* is not a constructor of this type",
+    "* has * fields, not *",
+    "this cannot be matched on",
+    "this is not a box",
+    "a sequence literal needs a sequence type",
+    "* is resumed more than once",
+    "a type-level grade needs a function type to check it against",
+    "the recursive binding * needs a type signature",
+    "* does not fit in an *",
 ];
+
+/// Whether `headline` is of the shape `pattern`, each `*` in it any text.
+fn shaped(headline: &str, pattern: &str) -> bool {
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if parts.len() == 1 {
+        return headline == pattern;
+    }
+    let (first, last) = (parts[0], parts[parts.len() - 1]);
+    if !headline.starts_with(first) || !headline.ends_with(last) || headline.len() < first.len() + last.len() {
+        return false;
+    }
+    let mut rest = &headline[first.len()..headline.len() - last.len()];
+    for part in &parts[1..parts.len() - 1] {
+        match rest.find(part) {
+            Some(i) => rest = &rest[i + part.len()..],
+            None => return false,
+        }
+    }
+    true
+}
 
 /// Each error the checker found, said in words, by both: its headline and
 /// its label, for the kinds front/ says as this compiler does (`PORTED`).
@@ -196,7 +227,7 @@ fn ported_lines(dump: &str) -> String {
     }
     let headline = |l: &str| l.split(": ").next().unwrap_or("").to_string();
     let mut lines: Vec<&str> =
-        dump.lines().filter(|l| PORTED.iter().any(|p| if p.starts_with(' ') { headline(l).ends_with(p) } else if p.ends_with(' ') || p.ends_with(" a") { headline(l).starts_with(p) } else { headline(l) == *p })).collect();
+        dump.lines().filter(|l| PORTED.iter().any(|p| shaped(&headline(l), p))).collect();
     lines.sort_unstable();
     lines.dedup();
     // (each side's metavariables numbered by first appearance)

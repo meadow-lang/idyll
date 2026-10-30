@@ -46,7 +46,7 @@ fun defaultSeq (tc : Tc s) : Maybe (Int, Int) ! { St s | e } = Hm.lookup (getRef
 @pub fun checkSeq (tc : Tc s) (ctx : Ctx) (t : HirExpr) (expected : Value) : (Core, Usage) ! { St s | e } =
   match seqCtors tc expected with
   | None ->
-      let w = T.error tc "NotASequence" in
+      let w = T.errorOf tc "NotASequence" [quote tc ctx.lvl expected] [] in
       (Core.Error, U.unknown ())
   | Just ctors ->
       let (core0, actual0, usage) = buildSeq tc ctx t ctors (Just expected) in

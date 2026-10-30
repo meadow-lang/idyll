@@ -55,7 +55,7 @@ fun defaultOf (lit : Literal) : Builtin =
   match (lit, b) with
   | (Literal.Int n, Builtin.Number w) if not (C.isFloatType w) ->
       let k = N.wrap w n in
-      let u = if k != n then T.error tc "NumberTooLarge" else () in
+      let u = if k != n then T.errorOf tc "NumberTooLarge" [] [show n, w] else () in
       Literal.Word w k
   | (Literal.Float x, Builtin.Number "Float32") -> Literal.Float32 (toFloat32 x)
   | _ -> lit

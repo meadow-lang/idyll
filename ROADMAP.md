@@ -1358,7 +1358,11 @@ do yet `(unsupported)`, and the tests count those apart.
   mismatches, applying what is no function, unsolved metavariables and
   holes, found holes, missing and unreachable cases, what may not
   terminate, the instance searches (none, more than one, unknown), given
-  implicit and auto arguments, and usage and linear usage. The rest still
+  implicit and auto arguments, usage and linear usage, what is no
+  constructor (of the type matched, or with that many fields), what cannot
+  be matched on or unboxed, sequences of no sequence type, resuming too
+  often, recursive bindings with no signature, type-level grades with
+  nothing to check them, and numbers too large for their type. The rest still
   say their kind; the renamer's errors, and an error's place (front/
   places one at the node being checked when it is found), are still to
   compare.

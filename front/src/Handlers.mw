@@ -247,8 +247,8 @@ fun opClause (tc : Tc s) (ctx : Ctx) (clauses : [Clause]) (op : Int) (args : [Va
                   if many or unknown then ()
                   else
                     (match Va.asConstant (toPoly tc (force tc kGrade)) with
-                     | Just g -> if G.fits g (M.unwrapOr G.any (G.range G.zero G.one)) then () else T.error tc "ResumesTooOften"
-                     | None -> T.error tc "ResumesTooOften")
+                     | Just g -> if G.fits g (M.unwrapOr G.any (G.range G.zero G.one)) then () else T.errorOf tc "ResumesTooOften" [] [opName, effName]
+                     | None -> T.errorOf tc "ResumesTooOften" [] [opName, effName])
                 in
                 let u2 = V.foldl (\u xb -> match xb with | (x, _, _, grade) -> leaveBinder tc innerX x grade u False) u1 xBinders in
                 let withK = lam tc innerX (H.textOf k) kGrade kTy cBody in

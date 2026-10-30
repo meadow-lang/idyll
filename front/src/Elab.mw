@@ -977,7 +977,7 @@ fun checkGroupIn (tc : Tc s) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, May
           (\(b : BindOf) ->
             match b.ty with
             | None ->
-                let w = T.error tc "RecursiveBindingNeedsSignature" in
+                let w = T.errorOf tc "RecursiveBindingNeedsSignature" [] [H.textOf b.name] in
                 Value.Error
             | Just sig ->
                 let w = setRef tc.inferSpine (parameters h b.rhs) in
@@ -1704,7 +1704,7 @@ fun inferLam (tc : Tc s) (ctx : Ctx) (x : Ident) (ann : Maybe HirGrade) (tyAnn :
     | Just ta -> snd (checkType tc ctx ta)
     | None -> freshValue tc ctx ("the type of the binder " ++ name)
   in
-  let w = if M.isSome (M.andThen (\g -> hirGradeInType h g) ann) then T.error tc "UncheckedInTypeGrade" else () in
+  let w = if M.isSome (M.andThen (\g -> hirGradeInType h g) ann) then T.errorOf tc "UncheckedInTypeGrade" [] [name] else () in
   let (gs, its) = binderGrades tc ctx ann (defaultGrade tc) in
   -- a parameter of a definition with no signature, which says no grade:
   -- its uses will. (Not any lambda's: one whose type is inferred may then be
@@ -1925,7 +1925,7 @@ fun unbox (tc : Tc s) (ctx : Ctx) (x : Ident) (boxed : HirExpr) : Maybe (Ctx, Va
            let value = eval tc ctx.env unboxed in
            Just (X.define ctx x a value, grade, unboxed, bU)
        | None ->
-           let w = T.error tc "NotABox" in
+           let w = T.errorOf tc "NotABox" [quote tc ctx.lvl bTy] [] in
            None)
 
 -- --- the end of a module -------------------------------------------------------------

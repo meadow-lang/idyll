@@ -91,6 +91,20 @@ fun worded (sols : [Maybe Core]) (linear : Bool) (at : Meta) (r : Report) : Diag
          else withLabel at "${word 0} has grade ${ty 1}, but is used ${times linear (V.getOr Core.Error types 0)}" (errorAt at "usage mismatch"))
       else if kind == "LinearUsage" then
         withLabel at "${word 0} is of type ${ty 1}, which is linear, but is used ${times linear (V.getOr Core.Error types 0)}" (errorAt at "a linear value used more than once")
+      else if kind == "NotAConstructor" then withLabel at "only a constructor can be matched on" (errorAt at "${word 0} is not a constructor")
+      else if kind == "NotAConstructorOf" then withLabel at "what is being matched has type ${ty 0}" (errorAt at "${word 0} is not a constructor of this type")
+      else if kind == "WrongFieldCount" then withLabel at "one pattern for each field" (errorAt at "${word 0} has ${word 1} fields, not ${word 2}")
+      else if kind == "NotADataType" then withLabel at "it has type ${ty 0}, which is not a data type" (errorAt at "this cannot be matched on")
+      else if kind == "NotABox" then withLabel at "it has type ${ty 0}, so it cannot be unboxed" (errorAt at "this is not a box")
+      else if kind == "NotASequence" then withLabel at "the type wanted here is ${ty 0}, which #[..] cannot build" (errorAt at "a sequence literal needs a sequence type")
+      else if kind == "ResumesTooOften" then
+        withNote "to let a handler resume it more than once, declare it `@many ${word 0} : ..` in `effect ${word 1}`"
+          (withLabel at "this clause may resume ${word 0} more than once, and ${word 1} declares it to be resumed at most once" (errorAt at "${word 0} is resumed more than once"))
+      else if kind == "UncheckedInTypeGrade" then
+        withLabel at "the type of this function is inferred, so nothing holds it to ${word 0}'s second grade" (errorAt at "a type-level grade needs a function type to check it against")
+      else if kind == "RecursiveBindingNeedsSignature" then
+        withLabel at "its type cannot be inferred from a recursive definition" (errorAt at "the recursive binding ${word 0} needs a type signature")
+      else if kind == "NumberTooLarge" then withLabel at "an ${word 1} is from ${rangeOf (word 1)}" (errorAt at "${word 0} does not fit in an ${word 1}")
       else if kind == "UnsolvedMeta" then withNote "add a type annotation to pin it down" (withLabel at "could not infer ${word 0}" (errorAt at "unsolved metavariable"))
       else if kind == "MissingCases" then withLabel at "missing: ${S.join ", " words}" (errorAt at "the patterns do not cover every case")
       else if kind == "UnreachableClause" then withLabel at "the cases before this one cover everything it matches" (warningAt at "unreachable")
@@ -98,6 +112,20 @@ fun worded (sols : [Maybe Core]) (linear : Bool) (at : Meta) (r : Report) : Diag
         withNote "say so in its type, as in ${word 0} : .. -> .. ! Div"
           (withLabel at "no argument gets smaller on every round of its recursion, so it has the effect Div" (errorAt at "${word 0} may not terminate"))
       else errorAt at (said kind)
+
+-- What a sized integer type holds, as the Rust checker's `number_range`
+-- says it.
+fun rangeOf (ty : String) : String =
+  match V.find (\r -> fst r == ty) ranges with
+  | Just (_, r) -> r
+  | None -> "what it holds"
+
+def ranges : [(String, String)] =
+  [
+    ("Int8", "-128 to 127"), ("Int16", "-32768 to 32767"), ("Int32", "-2147483648 to 2147483647"),
+    ("Int64", "-9223372036854775808 to 9223372036854775807"),
+    ("UInt8", "0 to 255"), ("UInt16", "0 to 65535"), ("UInt32", "0 to 4294967295"), ("UInt64", "0 to 18446744073709551615")
+  ]
 
 -- How often a grade says something is used, in words, as the Rust
 -- checker's `times` says it.
