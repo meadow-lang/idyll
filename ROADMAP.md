@@ -1347,9 +1347,21 @@ do yet `(unsupported)`, and the tests count those apart.
   and the passes work out which it was from the tree's typed nodes.
 - [x] Syntax errors as Lingua `Diagnostic`s at the nodes they are about,
   drawn with Nettle (`Idyll errors`).
-- [ ] Error messages compared with the Rust compiler's, not only whether
+- [~] Error messages compared with the Rust compiler's, not only whether
   there is one; the renamer's and the checker's at nodes too (HIR and Core
-  would carry where they came from).
+  would carry where they came from). Begun (2026-10-30): front/'s checker
+  keeps what an error's words are made of (`Tc.errorOf`, a `Report`: its
+  kind, its types as Core, its names), and `Messages` says it as the Rust
+  checker does once checking is done, a mismatch's metavariables solved
+  as `solved_in` solves them. `the_messages_agree` holds each headline and
+  label to the Rust checker's, over the corpus, for the kinds ported:
+  mismatches, applying what is no function, unsolved metavariables and
+  holes, found holes, missing and unreachable cases, what may not
+  terminate, the instance searches (none, more than one, unknown), given
+  implicit and auto arguments, and usage and linear usage. The rest still
+  say their kind; the renamer's errors, and an error's place (front/
+  places one at the node being checked when it is found), are still to
+  compare.
 - [x] **Renaming** (`Rename`: `resolve`, a `pass!` from `Surface` to `Hir`,
   a `lang!`, under a driver for packages and `use`s), for a module after the prelude:
   every program agrees with `idyllic-rename`, binder for binder (the test

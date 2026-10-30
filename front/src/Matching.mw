@@ -57,6 +57,7 @@ use Idyll.Hir as H
 use Idyll.Rename
 use Idyll.Sequences (seqPatternCtors)
 use Std.Collections.Vector as V
+use Std.String as S
 use Std.Collections.HashMap as Hm
 use Std.Maybe as M
 use Std.Maybe.Maybe.*
@@ -216,7 +217,7 @@ fun isCtor (tc : Tc s) (c : Int) : Bool ! { St s | e } = M.isSome (T.ctorInfo tc
       in
       let notBool = boolPattern and not (unify tc ctx.lvl sTy (Value.LitTy Builtin.Bool)) in
       if notBool then
-        let w = T.error tc "Mismatch" in
+        let w = T.errorOf tc "Mismatch" [Core.LitTy Builtin.Bool, quote tc ctx.lvl sTy] [] in
         let w2 = abandon tc goal in
         (Core.Error, Value.Error, U.unknown ())
       else
@@ -280,13 +281,13 @@ fun runMatch (tc : Tc s) (ctx : Ctx) (clauses : [HirClause]) (problems : [Proble
     let w = abandon tc goal in
     (core, U.unknown ())
   else
-    let w = if V.isEmpty (getRef m.missing) then () else T.error tc "MissingCases" in
+    let w = if V.isEmpty (getRef m.missing) then () else T.errorOf tc "MissingCases" [] (getRef m.missing) in
     let w2 =
       V.foldl
         (\acc i ->
           match V.get clauses i with
           | Just c ->
-              if not (V.getOr True (getRef m.used) i) and not (isImpossible hir (rhsOf hir c)) and plausible tc ctx m c then T.error tc "UnreachableClause"
+              if not (V.getOr True (getRef m.used) i) and not (isImpossible hir (rhsOf hir c)) and plausible tc ctx m c then T.errorOf tc "UnreachableClause" [] []
               else ()
           | None -> ())
         ()
@@ -294,12 +295,34 @@ fun runMatch (tc : Tc s) (ctx : Ctx) (clauses : [HirClause]) (problems : [Proble
     in
     (core, usage)
 
+-- A case no clause covers, as the patterns that would match it: each
+-- argument as far as the splits have made it out (`_` where they have not),
+-- as the Rust checker's `describe` says it.
+fun describe (tc : Tc s) (ctx : Ctx) (args : [Int]) : String ! { St s | e } =
+  let nested = V.len args > 1 in
+  S.join " " (V.map (\l -> shownPattern tc (X.value ctx l) nested) args)
+
+fun shownPattern (tc : Tc s) (v : Value) (nested : Bool) : String ! { St s | e } =
+  match force tc v with
+  | Value.Opaque c name sp ->
+      (match T.ctorInfo tc c with
+       | Just (CtorInfo.CtorInfo _ _ _ params _) ->
+           let args = V.concatMap (\e -> match e with | Elim.App a -> [shownPattern tc a True] | _ -> []) (V.drop sp params) in
+           if V.isEmpty args then name
+           else
+             let shown = if S.startsWith ":" name and V.len args == 2 then "${V.getOr "" args 0} ${name} ${V.getOr "" args 1}" else name ++ " " ++ S.join " " args in
+             if nested then "(" ++ shown ++ ")" else shown
+       | None -> "_")
+  | Value.Lit l -> C.literalShown l
+  | _ -> "_"
+
 -- --- the tree ---------------------------------------------------------------------
 
 fun tree (tc : Tc s) (m : Matcher s) (ctx : Ctx) (problems : [Problem]) (goal : Value) : (Core, Usage) ! { St s | e } =
   match V.head problems with
   | None ->
-      let w = setRef m.missing (V.pushBack (getRef m.missing) "case") in
+      let case = describe tc ctx (getRef m.args) in
+      let w = if V.elem case (getRef m.missing) then () else setRef m.missing (V.pushBack (getRef m.missing) case) in
       nothing ()
   | Just first ->
       (match first with
@@ -396,7 +419,7 @@ fun intro (tc : Tc s) (m : Matcher s) (ctx : Ctx) (problems : [Problem]) (goal0 
       let usage = if failedNow m then U.unknown () else usage0 in
       -- what the equations do is what calling the function does
       let u1 = closeEffects tc ctx2 usage effects in
-      let u2 = leaveKey tc ctx2 (Just key) grade u1 False in
+      let u2 = leaveKey tc ctx2 (Just key) hint grade u1 False in
       (lam tc ctx hint grade dom body, u2)
   -- not known to be a function yet: made one
   | Value.Flex _ _ ->
@@ -465,7 +488,7 @@ fun simplify (tc : Tc s) (ctx : Ctx) (p : Problem) : (Step, Problem) ! { St s | 
                 let lit = match force tc ty with | Value.LitTy b if L.readsAs written b -> L.readNumber tc written b | _ -> written in
                 let want = Value.LitTy (C.literalBuiltin lit) in
                 if not (unify tc ctx.lvl ty want) then
-                  let w = T.error tc "Mismatch" in
+                  let w = T.errorOf tc "Mismatch" [quote tc ctx.lvl ty, Core.LitTy (C.literalBuiltin lit)] [] in
                   (Step.Failed, p)
                 else
                   (match lit with
@@ -790,10 +813,10 @@ fun splitData (tc : Tc s) (m : Matcher s) (ctx : Ctx) (problems : [Problem]) (go
                    V.foldl
                      (\uu dl ->
                        match dl with
-                       | (lvl, key, _, grade) ->
+                       | (lvl, key, hint, grade) ->
                            (match force tc (X.typeAt ctx3 lvl) with
                             | Value.Type _ -> snd (U.take uu (Just key))
-                            | _ -> leaveField tc ctx3 key grade uu))
+                            | _ -> leaveField tc ctx3 key hint grade uu))
                      u
                      (V.reverse delta)
                  in
@@ -808,12 +831,12 @@ fun splitData (tc : Tc s) (m : Matcher s) (ctx : Ctx) (problems : [Problem]) (go
   if forced then (Core.Runtime Note.Forced cased, total) else (cased, U.add used total)
 
 -- Leaving the variable a constructor's argument became.
-fun leaveField (tc : Tc s) (ctx : Ctx) (key : Int) (allowed : Value) (usage : Usage) : Usage ! { St s | e } =
+fun leaveField (tc : Tc s) (ctx : Ctx) (key : Int) (name : String) (allowed : Value) (usage : Usage) : Usage ! { St s | e } =
   let (used, rest) = U.take usage (Just key) in
   if U.isUnknown rest then rest
-  else if fitsOrWaits tc ctx used allowed True then rest
+  else if fitsOrWaits tc ctx name used allowed True then rest
   else
-    let w = T.error tc "FieldUsage" in
+    let w = T.errorOf tc "FieldUsage" [quote tc ctx.lvl (Va.polyValue used), quote tc ctx.lvl allowed] [name, ""] in
     rest
 
 -- How often a slot may be used, if known; otherwise as an unannotated

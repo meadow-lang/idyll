@@ -32,6 +32,7 @@ use Idyll.Driver as D
 use Idyll.Format as Fmt
 use Idyll.Lower as Lo
 use Idyll.Parts as Parts
+use Idyll.Messages (diagnosticsIn, placedDiagnostics, said)
 use Std.St (runSt)
 use Std.St as St
 use Std.Collections.Vector as V
@@ -124,7 +125,7 @@ fun prepared (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std
         runSt (\() ->
           let c = checkedAgainst (sccModule m) False deps in
           V.append
-            (placedOnce (St.getRef c.tc.placed))
+            (diagnosticsIn c.tc m.linearBody)
             (V.map (\k -> warningAt nowhere "this compiler cannot check this yet: ${k}") (distinct (St.getRef c.tc.unsupported))))
 
 -- The type of the innermost term of `text` at byte `at`, and where that
@@ -182,7 +183,7 @@ fun prepared (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std
           else
             back (runSt (\() ->
               let c = checkedAgainst (sccModule m) False deps in
-              placedDiagnostics (St.getRef c.tc.placed)))
+              diagnosticsIn c.tc m.linearBody))
 
 -- A file ready to check, as `prepared` makes a lone program ready: as a
 -- module of its package, if it is one, and where its places start in the
@@ -279,7 +280,7 @@ fun metaBack (m : Meta) (by : Int) : Meta =
                   GoalFacts { want, locals, splits = V.concatMap (\l -> match l with | (x, t) -> M.unwrapOr [] (M.map (\cs -> [(x, cs)]) (constructorsOf c.tc t))) locals })
             (goalNamed c.tc focus)
         in
-        Checkup { wrong = V.append renaming (V.filter isError (placedDiagnostics placed)), goals, focused })
+        Checkup { wrong = V.append renaming (V.filter isError (diagnosticsIn c.tc m.linearBody)), goals, focused })
 
 -- A goal as the checker says it, `?name : T` and its context, with its name.
 fun goalEntry (said : String) : (String, String) =
@@ -500,50 +501,5 @@ fun sortedPlaces (ps : [Meta]) : [Meta] =
 @pub fun formattedOf (text : String) : String = match Fmt.formatted text with | Ok out -> out | Err _ -> text
 
 fun nowhere = spanMeta 0 0
-
--- The checker's errors, each once where it was found, said in words.
-@pub fun placedDiagnostics (placed : [(Meta, String)]) : [Diagnostic] = placedOnce placed
-
-fun placedOnce (placed : [(Meta, String)]) : [Diagnostic] =
-  V.map
-    (\p ->
-      match p with
-      -- a goal, and a hole filled in, are warnings: what is around them
-      -- can still be worked on
-      | (at, kind) -> if S.startsWith "goal ?" kind then warningAt at kind else if kind == "HoleSolved" then warningAt at (said kind) else errorAt at (said kind))
-    (V.foldl (\acc p -> if V.elem p acc then acc else V.pushBack acc p) [] placed)
-
--- An error's kind, said in words: the commonest in a sentence, the rest by
--- the name the Rust checker gives the kind, its words apart
--- (`NotAConstructorOf`, "not a constructor of").
-fun said (kind : String) : String =
-  match V.find (\p -> fst p == kind) errorWords with
-  | Just (_, words) -> words
-  | None -> wordsOf kind
-
-def errorWords : [(String, String)] =
-  [
-    ("Mismatch", "this has a type other than the one wanted"),
-    ("UnknownVariable", "nothing of this name is in scope"),
-    ("NotAFunction", "this is applied, but it is not a function"),
-    ("UsageMismatch", "this is used other than as its grade allows"),
-    ("UnsolvedMeta", "what this is could not be worked out"),
-    ("MissingCases", "these patterns do not cover every case"),
-    ("UnreachableClause", "this clause can never be reached"),
-    ("AmbiguousName", "this name has more than one meaning here"),
-    ("MayNotTerminate", "this may not terminate"),
-    ("UnhandledEffects", "this performs effects nothing here handles")
-  ]
-
--- `NotAConstructorOf` as "not a constructor of".
-fun wordsOf (name : String) : String =
-  let n = S.byteLength name in
-  let step =
-    \acc i ->
-      let c = S.slice name i (i + 1) in
-      let lower = S.toLower c in
-      if i > 0 and c != lower then acc ++ " " ++ lower else acc ++ lower
-  in
-  V.foldl step "" (V.range 0 n)
 
 fun distinct (xs : [String]) : [String] = V.foldl (\acc x -> if V.elem x acc then acc else V.pushBack acc x) [] xs

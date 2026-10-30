@@ -271,7 +271,7 @@ fun rowPart (tc : Tc s) (ctx : Ctx) (t : HirExpr) : (Core, Bool) ! { St s | e } 
            (match fty with
             | Value.Error -> (c, False)
             | _ ->
-                let w = T.error tc "Mismatch" in
+                let w = T.errorOf tc "Mismatch" [Core.LitTy Builtin.Effect, quote tc ctx.lvl ty] [] in
                 (Core.Error, False)))
 
 -- Whether a function type's codomain mentions its argument.
@@ -298,7 +298,7 @@ fun rowPart (tc : Tc s) (ctx : Ctx) (t : HirExpr) : (Core, Bool) ! { St s | e } 
       (match level with
        | Just lv -> (core, eval tc ctx.env core, lv, usage)
        | None ->
-           let w = T.error tc "Mismatch" in
+           let w = T.errorOf tc "Mismatch" [Core.Type 0, quote tc ctx.lvl ty] [] in
            (Core.Error, Value.Error, 0, U.unknown ()))
 
 fun checkGrade (tc : Tc s) (ctx : Ctx) (t : HirExpr) : (Core, Value) ! { St s | e } =
@@ -421,14 +421,14 @@ fun gradeFitsAt (tc : Tc s) (lvl : Int) (used0 : Poly) (allowed0 : Value) : Bool
 -- Leaving a binder: the uses of what is charged to `key` must fit its
 -- grade. `()` may be used less than its grade says: there is nothing to
 -- lose by dropping one.
-@pub(pkg) fun leaveKey (tc : Tc s) (ctx : Ctx) (key : Maybe Int) (allowed : Value) (usage : Usage) (inType : Bool) : Usage ! { St s | e } =
+@pub(pkg) fun leaveKey (tc : Tc s) (ctx : Ctx) (key : Maybe Int) (name : String) (allowed : Value) (usage : Usage) (inType : Bool) : Usage ! { St s | e } =
   let (used, rest) = U.take usage key in
   let ty = match key with | Just k -> X.typeOfKey ctx k | None -> None in
   -- a value of a linear type is used at most once, whatever its binder's
   -- grade
   let linear =
     match ty with
-    | Just t -> not inType and not (U.isUnknown rest) and linearUsage tc ctx t used
+    | Just t -> not inType and not (U.isUnknown rest) and linearUsage tc ctx name t used
     | None -> False
   in
   if linear then rest
@@ -443,16 +443,16 @@ fun gradeFitsAt (tc : Tc s) (lvl : Int) (used0 : Poly) (allowed0 : Value) : Bool
     | None -> ()
   in
   if U.isUnknown rest then rest
-  else if fitsOrWaits tc ctx used allowed False then rest
+  else if fitsOrWaits tc ctx name used allowed False then rest
   else
     let unitFits = isUnit and gradeFits tc ctx used (Va.polyValue (Va.polyJoin (toPoly tc allowed) (Va.polyZero ()))) in
     if unitFits then rest
     else
-      let w = T.error tc "UsageMismatch" in
+      let w = T.errorOf tc "UsageMismatch" [quote tc ctx.lvl (Va.polyValue used), quote tc ctx.lvl allowed] [name, if inType then "in type" else ""] in
       rest
 
 @pub(pkg) fun leaveBinder (tc : Tc s) (ctx : Ctx) (x : Ident) (allowed : Value) (usage : Usage) (inType : Bool) : Usage ! { St s | e } =
-  leaveKey tc ctx (keyOf x) allowed usage inType
+  leaveKey tc ctx (keyOf x) (H.textOf x) allowed usage inType
 
 -- --- linear types -------------------------------------------------------------------
 --
@@ -546,11 +546,11 @@ fun sharesFrom (tc : Tc s) (a : Int) (ty : Value) (l : Int) : Bool ! { St s | e 
 
 -- A variable of a linear type `ty`, used as `used` says: at most once, or
 -- the error is reported (`True`), or waits on a grade being worked out.
-@pub(pkg) fun linearUsage (tc : Tc s) (ctx : Ctx) (ty : Value) (used : Poly) : Bool ! { St s | e } =
+@pub(pkg) fun linearUsage (tc : Tc s) (ctx : Ctx) (name : String) (ty : Value) (used : Poly) : Bool ! { St s | e } =
   if not (isLinear tc ty) then False
-  else if fitsOrWaits tc ctx used (Va.polyValue (Va.polyConstant (atMostOnce ()))) False then False
+  else if fitsOrWaits tc ctx name used (Va.polyValue (Va.polyConstant (atMostOnce ()))) False then False
   else
-    let w = T.error tc "LinearUsage" in
+    let w = T.errorOf tc "LinearUsage" [quote tc ctx.lvl (Va.polyValue used), quote tc ctx.lvl ty] [name] in
     True
 
 -- The variables a `let` bound, from level `from` of `ctx` on, used in its
@@ -565,7 +565,7 @@ fun linearLets (tc : Tc s) (ctx : Ctx) (from : Int) (usage : Usage) (pending : [
             let bound = V.any (\p -> match p with | Pending.NonRec (Just u) _ -> u == key | _ -> False) pending in
             if bound then
               let (used, _) = U.take usage (Just key) in
-              let w = linearUsage tc ctx (X.typeAt ctx l) used in
+              let w = linearUsage tc ctx (X.nameAt ctx l) (X.typeAt ctx l) used in
               acc
             else acc
         | None -> acc)
@@ -600,7 +600,7 @@ fun linearLets (tc : Tc s) (ctx : Ctx) (from : Int) (usage : Usage) (pending : [
                   let (n, rest) = U.take usage unique in
                   let w1 =
                     match mx with
-                    | Just x -> (match X.lookup ctx x with | Just (_, ty, _) -> linearUsage tc ctx ty n | None -> False)
+                    | Just x -> (match X.lookup ctx x with | Just (_, ty, _) -> linearUsage tc ctx (H.textOf x) ty n | None -> False)
                     | None -> False
                   in
                   U.add rest (U.scale rhs n)
@@ -713,14 +713,14 @@ fun unsettled (tc : Tc s) (g : Value) : Maybe Int ! { St s | e } =
 -- Whether `used` fits `allowed`, as `gradeFits` says; or, if `allowed`
 -- mentions a grade still being worked out (a field's, of a parameter that
 -- says none), true for now, the question kept for when it is settled.
-@pub(pkg) fun fitsOrWaits (tc : Tc s) (ctx : Ctx) (used : Poly) (allowed : Value) (field : Bool) : Bool ! { St s | e } = fitsOrWaitsAt tc ctx.lvl used allowed field
+@pub(pkg) fun fitsOrWaits (tc : Tc s) (ctx : Ctx) (name : String) (used : Poly) (allowed : Value) (field : Bool) : Bool ! { St s | e } = fitsOrWaitsAt tc ctx.lvl name used allowed field
 
-fun fitsOrWaitsAt (tc : Tc s) (lvl : Int) (used : Poly) (allowed : Value) (field : Bool) : Bool ! { St s | e } =
+fun fitsOrWaitsAt (tc : Tc s) (lvl : Int) (name : String) (used : Poly) (allowed : Value) (field : Bool) : Bool ! { St s | e } =
   let waits = match waitsOn tc (toPoly tc allowed) with | Just m -> Just m | None -> waitsOn tc used in
   match waits with
   | Just m ->
       let waits = Hm.getOr [] m (getRef tc.inferred) in
-      let w = setRef tc.inferred (Hm.insert m (V.pushBack waits (Waiting.Waiting lvl used allowed field)) (getRef tc.inferred)) in
+      let w = setRef tc.inferred (Hm.insert m (V.pushBack waits (Waiting.Waiting lvl used allowed field name)) (getRef tc.inferred)) in
       True
   | None -> gradeFitsAt tc lvl used allowed
 
@@ -744,7 +744,7 @@ fun fitsOrWaitsAt (tc : Tc s) (lvl : Int) (used : Poly) (allowed : Value) (field
             and V.all
               (\w ->
                 match w with
-                | Waiting.Waiting _ wu wa _ ->
+                | Waiting.Waiting _ wu wa _ _ ->
                     (match (gradeUnder tc wu m c, gradeUnder tc (toPoly tc wa) m c) with
                      | (Just a, Just b) -> G.fits a b
                      | _ -> False))
@@ -797,9 +797,9 @@ fun settleAs (tc : Tc s) (m : Int) (g : Grade) : () ! { St s | e } =
       V.foldl
         (\u wt ->
           match wt with
-          | Waiting.Waiting wlvl wu wa field ->
-              if fitsOrWaitsAt tc wlvl wu wa field then ()
-              else T.error tc (if field then "FieldUsage" else "UsageMismatch"))
+          | Waiting.Waiting wlvl wu wa field wname ->
+              if fitsOrWaitsAt tc wlvl wname wu wa field then ()
+              else T.errorOf tc (if field then "FieldUsage" else "UsageMismatch") [quote tc wlvl (Va.polyValue wu), quote tc wlvl wa] [wname, ""])
         ()
         waiting
 
@@ -1018,7 +1018,7 @@ fun checkGroupIn (tc : Tc s) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, May
                   let u = H.uniqueOf (nameOf b) in
                   if V.elem u (getRef tc.terminating) then ()
                   else if declaresDiv tc ctxRec.lvl ty (arity core) then ()
-                  else T.error tc "MayNotTerminate")
+                  else T.errorOf tc "MayNotTerminate" [] [H.textOf (nameOf b)])
             ()
             (V.zip (V.zip bs sigs) checked)
       in
@@ -1151,7 +1151,7 @@ fun postpone (tc : Tc s) (lvl : Int) (actual : Value) (expected : Value) : Bool 
   if last then
     let left = getRef tc.postponed in
     let w2 = setRef tc.postponed [] in
-    V.foldl (\acc p -> T.error tc "Mismatch") () left
+    V.foldl (\acc p -> match p with | Postponed.Postponed l a x -> T.errorOf tc "Mismatch" [quote tc l x, quote tc l a] []) () left
   else ()
 
 fun retryRound (tc : Tc s) =
@@ -1273,7 +1273,8 @@ fun elaborateAt (tc : Tc s) (cx : Cx s) (t : HirExpr) : (Core, Value, Usage) ! {
 -- it, at that type, its instance searched for (`literals.rs`).
 fun literalThrough (tc : Tc s) (ctx : Ctx) (lit : Literal) (ty : Value) : Core ! { St s | e } =
   let method = match lit with | Literal.Float _ -> "fromFloat" | _ -> "fromInt" in
-  let mismatch = \u -> let w = T.error tc "Mismatch" in Core.Error in
+  let read = match lit with | Literal.Float _ -> Builtin.Number "Float" | _ -> Builtin.Int in
+  let mismatch = \u -> let w = T.errorOf tc "Mismatch" [quote tc ctx.lvl ty, Core.LitTy read] [] in Core.Error in
   match M.andThen (\u -> X.lookup ctx (H.Ident [u] method)) (Hm.lookup method (getRef tc.numberLits)) with
   | None -> mismatch ()
   | Just (f0, fty0, _) ->
@@ -1336,6 +1337,10 @@ fun byInference (again : Cx s -> (Core, Value, Usage) ! { St s | e }) : Cx s -> 
 fun fallback (cx : Cx s) (again : Cx s -> (Core, Value, Usage) ! { St s | e }) (expected : Value) : (Core, Value, Usage) ! { St s | e } =
   let tc = cx.tc in
   let ctx = cx.ctx in
+  -- inferred, as `infer` would: the spine it takes is the one waiting for
+  -- it (none, after a signature), not one a term inferred before it left
+  let w0 = setRef tc.spineHere (getRef tc.inferSpine) in
+  let w1 = setRef tc.inferSpine 0 in
   let (core0, actual0, usage) = again { cx | goal = None } in
   let (core, actual) =
     match force tc expected with
@@ -1346,7 +1351,7 @@ fun fallback (cx : Cx s) (again : Cx s -> (Core, Value, Usage) ! { St s | e }) (
   else if postpone tc ctx.lvl actual expected then (core, expected, usage)
   else
     -- an ill-typed term is never evaluated
-    let w = T.error tc "Mismatch" in
+    let w = T.errorOf tc "Mismatch" [quote tc ctx.lvl expected, quote tc ctx.lvl actual] [] in
     (Core.Error, expected, usage)
 
 -- A check's answer, the type its goal.
@@ -1787,7 +1792,7 @@ fun inferImplicitApp (tc : Tc s) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core
   | Value.Pi _ Icit.Implicit _ _ _ _ -> applyTo tc ctx fC fTy fU a
   | Value.Error -> failed ()
   | _ ->
-      let w = T.error tc "NoImplicitArgument" in
+      let w = T.errorOf tc "NoImplicitArgument" [quote tc ctx.lvl fTy] [] in
       failed ()
 
 -- `f @{d}`, the implicit arguments before `d`'s worked out.
@@ -1801,7 +1806,7 @@ fun inferAutoApp (tc : Tc s) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Va
   | Value.Pi _ Icit.Auto _ _ _ _ -> applyTo tc ctx fC fTy fU a
   | Value.Error -> failed ()
   | _ ->
-      let w = T.error tc "NoAutoArgument" in
+      let w = T.errorOf tc "NoAutoArgument" [quote tc ctx.lvl fTy] [] in
       failed ()
 
 fun inferApp (tc : Tc s) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value, Usage) ! { St s | e } =
@@ -1891,7 +1896,7 @@ fun inferApp (tc : Tc s) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value,
            let usage = U.add (U.add fU (U.scale aU charged)) (U.performs effects) in
            (Core.App fC (argument tc grade aC), result, usage)
        | None ->
-           let w = T.error tc "NotAFunction" in
+           let w = T.errorOf tc "NotAFunction" [quote tc ctx.lvl fTy] [] in
            failed ())
 
 -- `let [x] = boxed in ..`: the box elaborated, and `x` defined as its
@@ -1978,8 +1983,8 @@ fun closeMeta (tc : Tc s) (m : Int) (n : Int) =
       match h with
       | HoleAt.HoleAt l v ty ->
           (match force tc v with
-           | Value.Flex _ _ -> T.error tc "HoleUnsolved"
-           | _ -> T.error tc "HoleSolved"))
+           | Value.Flex _ _ -> T.errorOf tc "HoleUnsolved" [quote tc l ty] []
+           | forced -> T.errorOf tc "HoleSolved" [quote tc l ty, quote tc l forced] []))
     ()
     holes
 
@@ -1988,7 +1993,7 @@ fun closeMeta (tc : Tc s) (m : Int) (n : Int) =
   V.foldl
     (\acc entry ->
       match entry with
-      | Meta.Unsolved (MetaInfo.MetaInfo _ (Origin.Inferred _) _) -> T.error tc "UnsolvedMeta"
+      | Meta.Unsolved (MetaInfo.MetaInfo _ (Origin.Inferred desc) _) -> T.errorOf tc "UnsolvedMeta" [] [desc]
       | _ -> ())
     ()
     (getRef tc.metas)

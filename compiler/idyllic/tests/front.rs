@@ -150,6 +150,93 @@ fn the_types_agree() {
     );
 }
 
+/// The headlines of the checker's errors that front/ says as this
+/// compiler does, its kinds ported a few at a time (front/'s `Messages`).
+const PORTED: &[&str] = &[
+    "type mismatch",
+    "this is not a function",
+    "unsolved metavariable",
+    "the patterns do not cover every case",
+    "unreachable",
+    "more than one hint gives a",
+    "cannot tell what to look for",
+    "no auto argument is taken here",
+    "no implicit argument is taken here",
+    "unsolved hole",
+    "found hole",
+    "usage mismatch",
+    "a linear value used more than once",
+    // `{name} may not terminate`, `nothing in scope gives a T`
+    " may not terminate",
+    "nothing in scope gives ",
+];
+
+/// Each error the checker found, said in words, by both: its headline and
+/// its label, for the kinds front/ says as this compiler does (`PORTED`).
+/// Each distinct line once, as front/ keeps one error of a kind at a node
+/// where this compiler may keep one for each part of it.
+#[test]
+fn the_messages_agree() {
+    let source = idyllic::pipeline::PRELUDE;
+    let prelude = program(source).expect("the prelude parses");
+    let std_dir = repo().join("lib/Std/src");
+    let std_dir = std_dir.to_string_lossy();
+    agree_with(
+        &["messages", "--prelude", "_prelude.txt", "--std", &std_dir],
+        &[("_prelude.txt", source)],
+        |src| messages(&prelude, src),
+        ported_lines,
+    );
+}
+
+/// A message dump's lines of the kinds ported, each once, sorted.
+fn ported_lines(dump: &str) -> String {
+    if dump.starts_with('(') {
+        return dump.to_string();
+    }
+    let headline = |l: &str| l.split(": ").next().unwrap_or("").to_string();
+    let mut lines: Vec<&str> =
+        dump.lines().filter(|l| PORTED.iter().any(|p| if p.starts_with(' ') { headline(l).ends_with(p) } else if p.ends_with(' ') || p.ends_with(" a") { headline(l).starts_with(p) } else { headline(l) == *p })).collect();
+    lines.sort_unstable();
+    lines.dedup();
+    // (each side's metavariables numbered by first appearance)
+    renumbered_by(&lines.join("\n"), '?')
+}
+
+/// A program's errors, said in words: each diagnostic's headline and label,
+/// a line each; `(error)` if it does not parse or rename.
+fn messages(prelude: &idyllic_ast::Program, src: &str) -> String {
+    let Some(p) = program(src) else { return "(error)".to_string() };
+    let std = idyllic::stdlib::compiled();
+    let uses_std = src.contains("Std");
+    let result = if uses_std {
+        let modules = [idyllic_rename::ModuleSource { path: Vec::new(), program: &p }];
+        let first = std.uniques.end.max(idyllic_builtins::FIRST_USER_UNIQUE);
+        idyllic_rename::rename_package("Main", &modules, prelude, &[("Std", &std.names)], first, false)
+    } else {
+        idyllic_rename::rename_module(&p, prelude)
+    };
+    if !result.errors.is_empty() {
+        return "(error)".to_string();
+    }
+    let spans = result.spans.clone();
+    let module = idyllic_scc::scc_module(result.module);
+    let deps: Vec<&idyllic_typecheck::packages::CompiledPackage> = if uses_std { vec![&*std] } else { Vec::new() };
+    let checked = idyllic_typecheck::check_module(&module, spans.len(), false, &deps);
+    checked
+        .errors
+        .iter()
+        .map(|e| {
+            let d = e.to_diagnostic(&spans);
+            match d.labels.first() {
+                Some(l) => format!("{}: {}", d.message, l.message),
+                None => d.message.clone(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// The standard library, checked as the package it is, by both: each of
 /// its declarations' types, and its errors (none).
 /// A compiled package as front/'s `compiled` writes one: a line for each

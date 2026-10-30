@@ -1022,6 +1022,17 @@ So far the server:
 - colours a file from its tree;
 - formats a file as `Idyll fmt` does.
 
+What is wrong is said as the Rust checker says it, for the kinds ported
+so far (`Messages.mw`): where the checker reports an error, it keeps what
+the error's words are made of (`Tc.errorOf`: a `Report` of its kind, the
+types it names as Core, and its names), beside the kind the dumps
+compare. Once the module is checked, `Messages.diagnosticsIn` pairs each
+error with its report and says it with the Rust checker's headline and
+label, a mismatch's types with what was solved since put in (as
+`solved_in` does). `Idyll messages` prints them, and the differential
+`the_messages_agree` holds them to the Rust checker's. An error of a kind
+not ported yet is said by its kind (`said`).
+
 The checker keeps the node it is checking (`Tc.at`, set around each node by
 `Elab.elaborate`) and each error with it (`Tc.placed`), beside the kinds
 the differential tests compare. The renamer does the same around the names

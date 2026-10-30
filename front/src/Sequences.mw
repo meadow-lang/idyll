@@ -53,7 +53,7 @@ fun defaultSeq (tc : Tc s) : Maybe (Int, Int) ! { St s | e } = Hm.lookup (getRef
       let (core, actual) = insert tc ctx core0 actual0 in
       if subtype tc ctx.lvl actual expected then (core, usage)
       else
-        let w = T.error tc "Mismatch" in
+        let w = T.errorOf tc "Mismatch" [quote tc ctx.lvl expected, quote tc ctx.lvl actual] [] in
         (Core.Error, usage)
 
 -- A literal with nothing to say what it is: a `List`.

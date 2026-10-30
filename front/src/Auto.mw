@@ -72,7 +72,7 @@ fun errorCount (tc : Tc s) : Int ! { St s | e } = V.len (getRef tc.errors)
     match search tc ctx wanted 0 with
     | Ok found -> found
     | Err why ->
-        let w = T.error tc why in
+        let w = T.errorOf tc why [quote tc ctx.lvl wanted] [] in
         Core.Error
 
 -- A metavariable standing for an auto argument still to be found.
@@ -142,10 +142,10 @@ fun searchAutos (tc : Tc s) (last : Bool) (mid : Bool) : Bool ! { St s | e } =
                 (match search tc ctx wanted 0 with
                  | Ok f -> f
                  | Err why ->
-                     let w3 = T.error tc why in
+                     let w3 = T.errorOf tc why [quote tc ctx.lvl wanted] [] in
                      Core.Error)
               else
-                let w3 = T.error tc "UnknownInstance" in
+                let w3 = T.errorOf tc "UnknownInstance" [quote tc ctx.lvl wanted] [] in
                 Core.Error
             in
             let w4 = choose tc m ctx found in

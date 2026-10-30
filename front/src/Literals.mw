@@ -18,7 +18,7 @@ use Idyll.Core as C
 use Idyll.Value (Value)
 use Idyll.Tc (Tc, Meta, MetaInfo, Origin)
 use Idyll.Tc as T
-use Idyll.Eval (force, eval, blocked)
+use Idyll.Eval (force, eval, blocked, quote)
 use Idyll.Unify (unify)
 use Idyll.Ctx (Ctx)
 use Idyll.Num as N
@@ -111,7 +111,7 @@ fun isBareMeta (tc : Tc s) (ty : Value) : Bool ! { St s | e } =
               | _ ->
                   if unify tc ctx.lvl t (Value.LitTy (defaultOf lit)) then Core.Lit lit
                   else
-                    let w3 = T.error tc "Mismatch" in
+                    let w3 = T.errorOf tc "Mismatch" [quote tc ctx.lvl t, Core.LitTy (defaultOf lit)] [] in
                     Core.Error
             in
             let value = eval tc ctx.env core in

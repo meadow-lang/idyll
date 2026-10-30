@@ -178,7 +178,7 @@ fun handleEffect (tc : Tc s) (ctx : Ctx) (body : HirExpr) (clauses : [Clause]) (
                         let u2 = leaveBinder tc inner x one usage False in
                         (lam tc ctx (H.textOf x) one bodyTy cBody, u2)
                     | None ->
-                        let w = if subtype tc ctx.lvl bodyTy result then () else T.error tc "Mismatch" in
+                        let w = if subtype tc ctx.lvl bodyTy result then () else T.errorOf tc "Mismatch" [quote tc ctx.lvl result, quote tc ctx.lvl bodyTy] [] in
                         (lam tc ctx "x" one bodyTy (Core.Var 0 "x"), U.none ())
                   in
                   -- `op x k -> ..`, for each operation in turn

@@ -15,6 +15,7 @@ use Lingua.Repl (Reply, Hit, hitName)
 use Lingua.Diagnostic (Diagnostic, renderAll, whereAt, isError)
 use Lingua.Lang (Meta)
 use Idyll.Session
+use Idyll.Messages (diagnosticsIn)
 use Idyll.Find as Find
 use Idyll.Prove as Prove
 use Idyll.Tactic as Tactic
@@ -87,7 +88,7 @@ fun ran (program : String) (earlier : Int) prelude std =
             let c = checkedAgainst (sccModule m) False deps in
             -- (a warning -- a goal, a hole filled in -- is said, and stops
             -- nothing)
-            let said = placedDiagnostics (St.getRef c.tc.placed) in
+            let said = diagnosticsIn c.tc m.linearBody in
             if V.any isError said then (drawn program earlier said, False, None)
             else
               let warned = if V.isEmpty said then "" else drawn program earlier said in
@@ -310,7 +311,7 @@ fun typeOfEntry db rest =
       else
         runSt (\() ->
           let c = checkedAgainst (sccModule m) False deps in
-          let wrong = V.filter isError (placedDiagnostics (St.getRef c.tc.placed)) in
+          let wrong = V.filter isError (diagnosticsIn c.tc m.linearBody) in
           if not (V.isEmpty wrong) then Reply.Said (drawn program (S.byteLength before) wrong)
           else
             match c.bodyType with
