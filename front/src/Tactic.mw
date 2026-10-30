@@ -20,9 +20,12 @@
 -- When no goal is left, the source is the program with the goal filled:
 -- `:qed` keeps it.
 
-use Idyll.Session (goalFacts, goalsIn, problemsOf, GoalFacts, Proof)
+use Idyll.Session (checkup, problemsOf, GoalFacts, Proof, Checkup)
 use Idyll.Prove as Prove
 use Idyll.Core (Core)
+use Idyll.Surface (SurfaceProgram)
+use Idyll.Rename (PackageNames)
+use Idyll.Interface (Compiled)
 use Idyll.Hir (Icit)
 use Lingua.Diagnostic (Diagnostic, isError, renderAll)
 use Std.Collections.Vector as V
@@ -32,35 +35,41 @@ use Std.Maybe.Maybe.*
 use Std.Result.Result.*
 
 -- A proof of the goal `?name` of `source`, begun.
-@pub fun begin (source : String) (name : String) prelude std : Result String Proof =
+@pub fun begin (source : String) (name : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : Result String Proof ! e =
   let n = if S.startsWith "?" name then S.drop name 1 else name in
-  match goalFacts source prelude std n with
+  let up = checkup source prelude std n in
+  match up.focused with
   | None -> Err "no goal ?${n} in what has been declared"
-  | Just _ -> Ok (Proof { source, goals = [n], before = [] })
+  | Just _ -> Ok (Proof { source, goals = [n], said = saidOf up n, before = [] })
+
+-- How a checkup says the goal `name`.
+fun saidOf (up : Checkup) (name : String) : String = M.unwrapOr ("?" ++ name) (M.map snd (V.find (\g -> fst g == name) up.goals))
 
 -- The proof after `tactic`, or why it cannot be taken; `catalog` is what
 -- `search` may build terms from.
-@pub fun step (p : Proof) (tactic : String) prelude std (catalog : [(String, Core, String)]) : Result String Proof =
+@pub fun step (p : Proof) (tactic : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (catalog : [(String, Core, String)]) : Result String Proof ! e =
   let words = V.filter (\w -> not (S.isEmpty w)) (S.split " " (S.trim tactic)) in
   let name = M.unwrapOr "" (V.head words) in
   let args = V.drop words 1 in
   if name == "undo" then
     (match V.head p.before with
-     | Just (source, goals) -> Ok (Proof { source, goals, before = V.drop p.before 1 })
+     | Just (source, goals, said) -> Ok (Proof { source, goals, said, before = V.drop p.before 1 })
      | None -> Err "nothing to undo")
   else
     match V.head p.goals with
     | None -> Err "no goals left: `:qed` keeps the proof"
     | Just focus ->
-        match goalFacts p.source prelude std focus with
+        -- (one check of the program before the step, one after it)
+        let up = checkup p.source prelude std focus in
+        match up.focused with
         | None -> Err "the goal ?${focus} is not in the program any more"
         | Just facts ->
             match filler p focus facts name args (S.join " " args) prelude std catalog with
             | Err why -> Err why
-            | Ok text -> placed p focus text prelude std
+            | Ok text -> placed p up focus text prelude std
 
 -- What `tactic` puts in the place of `?focus`, as source; or why nothing.
-fun filler (p : Proof) (focus : String) (facts : GoalFacts) (tactic : String) (args : [String]) (rest : String) prelude std catalog : Result String String =
+fun filler (p : Proof) (focus : String) (facts : GoalFacts) (tactic : String) (args : [String]) (rest : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (catalog : [(String, Core, String)]) : Result String String ! e =
   if tactic == "intro" then
     (let names = if V.isEmpty args then V.take (binders facts.want) 1 else args in
      if V.len names > V.len (binders facts.want) then Err "?${focus} is not a function of that many arguments"
@@ -102,7 +111,7 @@ fun lambdas (names : [String]) (body : String) : String =
   "(" ++ V.foldr (\x acc -> "\\" ++ x ++ " -> " ++ acc) ("?" ++ body) names ++ ")"
 
 -- `f` applied to `n` new goals, or to more, up to six, until it checks.
-fun applied (p : Proof) (focus : String) (f : String) (n : Int) prelude std : Result String String =
+fun applied (p : Proof) (focus : String) (f : String) (n : Int) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : Result String String ! e =
   if n > 6 then Err "`${f}` gives ?${focus} with no number of arguments up to six"
   else
     let text = "(" ++ f ++ V.foldl (\acc i -> acc ++ " ?" ++ fresh p.source focus i) "" (V.range 1 (n + 1)) ++ ")" in
@@ -155,25 +164,23 @@ fun fresh (source : String) (focus : String) (i : Int) : String =
 fun filledWith (source : String) (focus : String) (text : String) : String = Prove.inPlace source ("?" ++ focus) 0 text
 
 -- What is wrong with the program, `text` in the place of `?focus`.
-fun wrongWith (p : Proof) (focus : String) (text : String) prelude std : [Diagnostic] =
+fun wrongWith (p : Proof) (focus : String) (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : [Diagnostic] ! e =
   V.filter isError (problemsOf (filledWith p.source focus text) prelude std)
 
 -- The proof with `text` in the place of `?focus`, if the checker takes
--- it: the goals in `text` worked on before the others left.
-fun placed (p : Proof) (focus : String) (text : String) prelude std : Result String Proof =
+-- it: the goals in `text` worked on before the others left. `up` is what
+-- the check before the step said.
+fun placed (p : Proof) (up : Checkup) (focus : String) (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : Result String Proof ! e =
   let source = filledWith p.source focus text in
-  let wrong = V.filter isError (problemsOf source prelude std) in
-  if not (V.isEmpty wrong) then Err (renderAll "proof" source wrong)
+  let after = checkup source prelude std "" in
+  if not (V.isEmpty after.wrong) then Err (renderAll "proof" source after.wrong)
   else
-    let had = goalNames p.source prelude std in
-    let now = goalNames source prelude std in
+    let had = V.map fst up.goals in
+    let now = V.map fst after.goals in
     let made = V.filter (\g -> not (V.elem g had)) now in
     let rest = V.filter (\g -> g != focus and V.elem g now) p.goals in
-    Ok (Proof { source, goals = V.append made rest, before = V.append [(p.source, p.goals)] p.before })
-
--- The names of a program's goals, in the order the checker meets them.
-fun goalNames (source : String) prelude std : [String] =
-  V.map (\g -> S.drop (M.unwrapOr g (M.map (\at -> S.slice g 0 at) (S.indexOf " :" g))) 1) (goalsIn source prelude std)
+    let goals = V.append made rest in
+    Ok (Proof { source, goals, said = M.unwrapOr "" (M.map (\g -> saidOf after g) (V.head goals)), before = V.append [(p.source, p.goals, p.said)] p.before })
 
 -- The goal worked on, with its type and what is in scope, and how many
 -- others are left.
@@ -181,6 +188,5 @@ fun goalNames (source : String) prelude std : [String] =
   match V.head p.goals with
   | None -> "no goals left: `:qed` keeps the proof"
   | Just focus ->
-      let said = V.find (\g -> S.startsWith ("?" ++ focus ++ " :") g) (goalsIn p.source prelude std) in
       let others = V.len p.goals - 1 in
-      M.unwrapOr ("?" ++ focus) said ++ (if others == 0 then "" else if others == 1 then "\n(and 1 goal more)" else "\n(and ${show others} goals more)")
+      p.said ++ (if others == 0 then "" else if others == 1 then "\n(and 1 goal more)" else "\n(and ${show others} goals more)")

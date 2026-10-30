@@ -12,7 +12,7 @@
 
 use Lingua (database!)
 use Lingua.Green (Green)
-use Lingua.Diagnostic (Diagnostic, errorAt, warningAt)
+use Lingua.Diagnostic (Diagnostic, errorAt, warningAt, isError)
 use Lingua.Lang (Meta, spanMeta)
 use Idyll.Syntax (Idyll, parseIdyll)
 use Idyll.Surface (SurfaceProgram)
@@ -30,6 +30,8 @@ use Idyll.Compiled (compiledOf)
 use Idyll.Interface (Compiled)
 use Idyll.Driver as D
 use Idyll.Format as Fmt
+use Idyll.Lower as Lo
+use Idyll.Parts as Parts
 use Std.St (runSt)
 use Std.St as St
 use Std.Collections.Vector as V
@@ -58,13 +60,14 @@ database! {
 
 -- A proof under way in tactic mode (`Tactic`): the declarations, with
 -- what has been built so far in the goal's place; the goals left, the one
--- worked on first; and each source and goals before a step, the last
--- first, for `undo`.
+-- worked on first; how the checker says that one (its type and context);
+-- and each proof before a step, the last first, for `undo`.
 @derive(PartialEq)
 @pub record Proof = {
   source : String,
   goals : [String],
-  before : [(String, [String])]
+  said : String,
+  before : [(String, [String], String)]
 }
 
 -- --- what the queries do ----------------------------------------------------------
@@ -88,6 +91,25 @@ fun prepared (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std
       (match Rename.renamePackageWith "Main" [([], prog)] pre (V.map (\d -> match d with | (n, ns, _) -> (n, ns)) deps) [] first True vis with
        | (m, _, _) ->
            Ok (m, V.map (\d -> match d with | (_, _, cp) -> cp) deps, V.map (\p -> match p with | (at, why) -> errorAt at why) m.problemsAt))
+
+-- A program lowered to Cut, as `meadow cut` reads it: linked with Std
+-- compiled, if it names Std; or why there is none, in parentheses, as the
+-- Cut dumps say it (`(error)`, `(not lowered: ..)`).
+@pub fun cutIn (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : String ! e =
+  match (Surface.parsed text, prelude) with
+  | (Ok prog, Ok pre) ->
+      let deps =
+        if not (S.contains "Std" text) then []
+        else (match std () with | Ok (names, c) -> [("Std", names, c)] | Err _ -> [])
+      in
+      let first = V.foldl (\acc d -> match d with | (_, _, (c : Compiled)) -> if c.high > acc then c.high else acc) 0 deps in
+      let vis = Rename.mentionsVisibility (Rename.programOf prog) in
+      (match Rename.renamePackageWith "Main" [([], prog)] pre (V.map (\d -> match d with | (n, ns, _) -> (n, ns)) deps) [] first True vis with
+       | (m, own, problems) ->
+           if not (V.isEmpty problems) then "(error)"
+           else if V.isEmpty deps then Lo.cutText (sccModule m) "Main"
+           else Lo.cutTextLinked (sccModule m) own "Main" False (V.map (\d -> match d with | (_, _, cp) -> cp) deps))
+  | _ -> "(error)"
 
 -- What is wrong with a program: what its syntax says, or what renaming it
 -- says, or what checking it does, each where it was found.
@@ -148,6 +170,37 @@ fun prepared (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std
             let splits = V.concatMap (\l -> match l with | (x, t) -> M.unwrapOr [] (M.map (\cs -> [(x, cs)]) (constructorsOf c.tc t))) locals in
             Just (GoalFacts { want, locals, splits }))
   | Err _ -> None
+
+-- What one check of a program says, for tactic mode, which would otherwise
+-- check it once for each: what is wrong with it; its goals in the order
+-- the checker meets them, each its name and how it is said (its type and
+-- context); and what is known of the goal `focus`, if there is one.
+@pub record Checkup = {
+  wrong : [Diagnostic],
+  goals : [(String, String)],
+  focused : Maybe GoalFacts
+}
+
+@pub fun checkup (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (focus : String) : Checkup ! e =
+  match prepared text prelude std with
+  | Err ds -> Checkup { wrong = ds, goals = [], focused = None }
+  | Ok (m, deps, renaming) ->
+      runSt (\() ->
+        let c = checkedAgainst (sccModule m) False deps in
+        let placed = St.getRef c.tc.placed in
+        let goals = V.concatMap (\p -> match p with | (_, said) -> if S.startsWith "goal ?" said then [goalEntry (S.drop said 5)] else []) placed in
+        let focused =
+          M.map
+            (\g -> match g with
+              | (want, locals) ->
+                  GoalFacts { want, locals, splits = V.concatMap (\l -> match l with | (x, t) -> M.unwrapOr [] (M.map (\cs -> [(x, cs)]) (constructorsOf c.tc t))) locals })
+            (goalNamed c.tc focus)
+        in
+        Checkup { wrong = V.append renaming (V.filter isError (placedDiagnostics placed)), goals, focused })
+
+-- A goal as the checker says it, `?name : T` and its context, with its name.
+fun goalEntry (said : String) : (String, String) =
+  (S.drop (M.unwrapOr said (M.map (\at -> S.slice said 0 at) (S.indexOf " :" said))) 1, said)
 
 -- The constructors of the data type `t` is, if it is one: each as a
 -- pattern names it, and its fields.
@@ -309,7 +362,14 @@ fun sortedPlaces (ps : [Meta]) : [Meta] =
       in
       match parsed with
       | Err e -> Err e
-      | Ok mods -> compiledPackage pre "Std" mods []
+      | Ok mods ->
+          -- each after the modules it imports, so that a module's instances
+          -- are there for the searches of those that use it (as a package
+          -- read from its directory is ordered); the root still first
+          let paths = V.map fst D.stdModules in
+          let parted = V.concatMap Parts.partModules (Parts.parts "Std" paths (V.map snd D.stdModules)) in
+          let order = V.append (V.filter (\i -> V.getOr "" paths i == "") parted) (V.filter (\i -> V.getOr "" paths i != "") parted) in
+          compiledPackage pre "Std" (V.concatMap (\i -> match V.get mods i with | Just m -> [m] | None -> []) order) []
 
 -- A package compiled whole, after the prelude, against the compiled
 -- packages it depends on: the names it gives, and its interface.
