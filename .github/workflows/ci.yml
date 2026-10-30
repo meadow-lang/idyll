@@ -33,15 +33,6 @@ concurrency:
 permissions:
   contents: read
 
-# Meadow's tracing cycle collector panics now and then on the nightly
-# 2026-10-29 (`trace.rs:1155`, a slice one short), which fails a
-# differential at random. It is fixed on Meadow's master (5fb642f); until
-# a nightly has it, front/ is built with the trial-deletion collector
-# instead. Take this out once `meadowup install nightly` gives a build
-# from after 5fb642f.
-env:
-  MEADOW_CYCLES: trial
-
 jobs:
   front:
     name: front/ (its own tests)
