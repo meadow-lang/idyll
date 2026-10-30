@@ -43,6 +43,7 @@ const LOGO: &str = r"    ____    __      ____
 const COMMANDS: &[(&str, &str)] = &[
     (":t <expr>", "type-check without running (:type)"),
     (":module", "list what is defined so far (:browse)"),
+    (":goals", "the goals (?name) left in what is defined so far, each with its type and what is in scope"),
     (":find <query>", "search by name, or by a type like  Int -> String"),
     (":prove <type>", "look for a term of a type: proof search"),
     (":ir [stages] <code>", "what a block is at each stage of the compiler; :ir alone, the last entry"),
@@ -57,7 +58,7 @@ const COMMANDS: &[(&str, &str)] = &[
 
 /// Every command's name, for completion.
 const COMMAND_NAMES: &[&str] = &[
-    ":t", ":type", ":module", ":browse", ":find", ":prove", ":ir", ":time", ":reset",
+    ":t", ":type", ":module", ":browse", ":goals", ":find", ":prove", ":ir", ":time", ":reset",
     ":tour", ":next", ":back", ":try", ":help", ":quit",
 ];
 
@@ -419,6 +420,7 @@ impl Repl {
             (":t" | ":type", []) => println!("{}", self.paint.dim("(:t takes an expression to check)")),
             (":t" | ":type", _) => self.enter(rest, true, false),
             (":module" | ":browse", _) => self.module(),
+            (":goals", _) => self.goals(),
             (":time", []) => {
                 self.timing = !self.timing;
                 let now = if self.timing { "on" } else { "off" };
@@ -541,6 +543,23 @@ impl Repl {
         }
         for (name, ty) in &checked.decls {
             println!("{name} : {ty}");
+        }
+    }
+
+    /// `:goals`: the goals, `?name`, left in what is defined so far, each
+    /// with its type and the variables in scope where it is.
+    fn goals(&self) {
+        let checked = pipeline::check(self.session.source(), &Options { live: false, ..self.opts });
+        let goals: Vec<_> = checked.diagnostics.iter().filter(|d| d.message.starts_with("goal ?")).collect();
+        if goals.is_empty() {
+            println!("{}", self.paint.dim("(no goals)"));
+            return;
+        }
+        for d in goals {
+            println!("{}", d.labels.first().map_or(d.message.clone(), |l| l.message.clone()));
+            for line in d.help.iter().flat_map(|h| h.lines()) {
+                println!("{}", self.paint.dim(line));
+            }
         }
     }
 

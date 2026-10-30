@@ -1779,6 +1779,7 @@ where
                 .map_with(|(r, fields), e| Spanned::new(Term::Update(Box::new(r), fields), span_of(e.span()))),
             just(Token::Type).map_with(|_, e| Spanned::new(Term::Type, span_of(e.span()))),
             just(Token::Underscore).map_with(|_, e| Spanned::new(Term::Hole, span_of(e.span()))),
+            select! { Token::Goal(n) => n }.map_with(|n, e| Spanned::new(Term::Goal(n), span_of(e.span()))),
             just(Token::Infinity).map_with(|_, e| Spanned::new(Term::Inf, span_of(e.span()))),
             literal().map_with(|l, e| Spanned::new(Term::Lit(l), span_of(e.span()))),
             any_ident.map(|i| {

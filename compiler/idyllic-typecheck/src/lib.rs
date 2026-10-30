@@ -278,6 +278,17 @@ pub enum MetaEntry {
 
 /// A hole, remembered so it can be reported *after* checking, by which time
 /// unification may have worked out what belongs in it.
+/// A goal, `?name`: where it is, the type wanted there, and the variables
+/// of the definition it is in (each its name, type, grade and level).
+#[derive(Clone, Debug)]
+struct GoalInfo {
+    node: NodeId,
+    name: String,
+    lvl: Lvl,
+    ty: VTy,
+    context: Vec<(String, VTy, Option<Rc<Value>>, Lvl)>,
+}
+
 #[derive(Clone, Debug)]
 struct HoleInfo {
     lvl: Lvl,
@@ -341,6 +352,9 @@ pub enum TypeErrorKind {
     HoleSolved { ty: Rc<Core>, solution: Rc<Core> },
     /// an explicit `_` that nothing determined
     HoleUnsolved(Rc<Core>),
+    /// a goal, `?name`, left for later: its type, and the variables of the
+    /// definition it is in, each its name, type and grade (a warning)
+    Goal { name: String, ty: Rc<Core>, context: Vec<(String, Rc<Core>, Option<Rc<Core>>)> },
     /// a variable used a different number of times than its grade allows;
     /// `in_type` when it is a function type's uses of its own binder
     UsageMismatch { name: String, used: Rc<Core>, allowed: Rc<Core>, in_type: bool },
@@ -637,6 +651,21 @@ impl TypeError {
             }
             TypeErrorKind::HoleUnsolved(ty) => Diagnostic::error("unsolved hole")
                 .label(here, format!("_ : {ty}, and nothing determines it")),
+            TypeErrorKind::Goal { name, ty, context } => {
+                let d = Diagnostic::warning(format!("goal ?{name}")).label(here, format!("?{name} : {ty}"));
+                if context.is_empty() {
+                    d
+                } else {
+                    let lines: Vec<String> = context
+                        .iter()
+                        .map(|(x, t, g)| match g {
+                            Some(g) => format!("  {x} : {t}  (grade {g})"),
+                            None => format!("  {x} : {t}"),
+                        })
+                        .collect();
+                    d.help(format!("in scope:\n{}", lines.join("\n")))
+                }
+            }
             TypeErrorKind::FieldUsage { name, used, allowed, whole } => {
                 let (whole, example) = match whole {
                     Some(w) => (w.clone(), w.clone()),
@@ -1118,6 +1147,11 @@ pub struct Checker {
     node_types: Vec<Option<Rc<Core>>>,
     errors: Vec<TypeError>,
     holes: Vec<HoleInfo>,
+    /// the goals, `?name`, to report at the end
+    goals: Vec<GoalInfo>,
+    /// the level at which the top-level definition being checked starts:
+    /// what a goal in it lists of its context is what is bound from there
+    local_from: Lvl,
     rec_defs: Vec<RecDef>,
     /// every declared constructor, by the unique of its name
     ctors: HashMap<usize, CtorInfo>,
@@ -1422,6 +1456,8 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
         node_types: vec![None; node_count],
         errors: Vec::new(),
         holes: Vec::new(),
+        goals: Vec::new(),
+        local_from: 0,
         rec_defs: Vec::new(),
         ctors: HashMap::new(),
         datas: HashMap::new(),
@@ -1598,6 +1634,7 @@ pub fn check_module(m: &hir::Module, node_count: usize, entry: bool, deps: &[&pa
     // instances of traits: where they live, and that no two overlap
     tc.check_instances(&ctx, m);
     tc.report_holes();
+    tc.report_goals();
     tc.retry_postponed(true);
     tc.close_opened();
     tc.close_rows();
@@ -1895,6 +1932,24 @@ impl Checker {
     fn new_meta(&mut self, node: NodeId, origin: MetaOrigin, ty: Option<MetaTy>) -> MetaVar {
         self.metas.push(MetaEntry::Unsolved(MetaInfo { node, origin, ty }));
         self.metas.len() - 1
+    }
+
+    /// Report every goal, `?name`, with its type and context: a warning, so
+    /// what is around it can still be worked on.
+    fn report_goals(&mut self) {
+        for g in std::mem::take(&mut self.goals) {
+            let ty = self.quote(g.lvl, g.ty);
+            let context = g
+                .context
+                .into_iter()
+                .map(|(x, t, grade, lvl)| {
+                    let t = self.quote(lvl, t);
+                    let grade = grade.map(|v| self.quote(lvl, v));
+                    (x, t, grade)
+                })
+                .collect();
+            self.error(g.node, TypeErrorKind::Goal { name: g.name, ty, context });
+        }
     }
 
     /// Report every `_` in the source.  Run at the very end, so a hole that

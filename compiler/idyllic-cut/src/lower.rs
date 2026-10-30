@@ -420,6 +420,37 @@ impl Lower<'_> {
         Statement::Handle(Box::new(Handle { clauses: vec![clause], ret, body_cont: b, body, cont: k }))
     }
 
+    /// A goal, `?name`, reached: the program stops, as one that gives up
+    /// does (see [`Lower::abort_handler`]): it says so on standard error,
+    /// and exits with status 1.
+    fn goal_reached(&mut self, name: &str) -> Statement {
+        let said = format!("reached the goal ?{name}");
+        let prelude_op = |l: &Self, op: &str| {
+            l.ops.iter().find(|(u, o)| o.name == op && l.symbols.get(u).is_some_and(|(p, _)| p == "Prelude")).map(|(u, o)| (*u, o.effect))
+        };
+        let (Some((put_err, console)), Some((exit, process))) = (prelude_op(self, "putErr"), prelude_op(self, "exit")) else {
+            return Statement::Error(said);
+        };
+        for (op, effect) in [(put_err, console), (exit, process)] {
+            self.performed.insert(op);
+            self.effects.insert(effect);
+        }
+        let (Some(put_err_s), Some(exit_s)) = (self.symbol(put_err), self.symbol(exit)) else {
+            return Statement::Error(said);
+        };
+        let (u, w) = (self.name("u"), self.name("u"));
+        let then_exit = Statement::Perform(
+            exit_s,
+            vec![Producer::Int(1)],
+            Consumer::MuTilde(Binder { name: w, rep: Rep::Unit }, Box::new(Statement::Error(said.clone()))),
+        );
+        Statement::Perform(
+            put_err_s,
+            vec![Producer::Str(format!("{said}\n"))],
+            Consumer::MuTilde(Binder { name: u, rep: Rep::Unit }, Box::new(then_exit)),
+        )
+    }
+
     fn name(&mut self, hint: &str) -> String {
         self.fresh += 1;
         let clean: String = hint.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
@@ -714,6 +745,7 @@ impl Lower<'_> {
         match &**c {
             Core::Var(..) | Core::Lit(_) | Core::Prim(_) | Core::Opaque(..) | Core::App(..) => self.application(env, c, k),
             Core::Runtime(Note::Erased, _) => Statement::Cut(Producer::Unit, k),
+            Core::Runtime(Note::Goal(name), _) => self.goal_reached(name),
             Core::Runtime(Note::Forced, inner) => match &**inner {
                 Core::Case(_, alts) => match alts.first() {
                     // the one alternative its type allows, nothing looked at

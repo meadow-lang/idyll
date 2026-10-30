@@ -77,6 +77,9 @@ use Std.String as S
   | @regex("[A-Z][A-Za-z0-9_']*(\\.[A-Z][A-Za-z0-9_']*)*\\.[_a-z][A-Za-z0-9_']*") QualLower String
   | @regex("[A-Z][A-Za-z0-9_']*") UpperIdent String
   | @regex("[_a-z][A-Za-z0-9_']*") LowerIdent String
+  -- a named hole, `?name`: a goal left for later (longer than the `?` an
+  -- operator would take, so it wins)
+  | @regex("\\?[_a-z][A-Za-z0-9_']*") Goal String
   | @regex(":[!$%&*+./<=>?@|\\\\~:^`\\-]+") ConOpIdent String
   | @regex("[!$%&*+./<=>?@|\\\\~:^`\\-]+") OpIdent String
   -- The pieces of a string with holes, `"a ${x} b"`, each as written: the

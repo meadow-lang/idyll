@@ -78,6 +78,10 @@ pub enum Term {
     Ann(Box<LTerm>, Box<LTerm>),
     /// An explicit hole, `_`: elaborates to a fresh metavariable.
     Hole,
+    /// A named hole, `?name`: a goal left for later. Checked as anything
+    /// would be there, reported with its type and context, and stops the
+    /// program if it is reached.
+    Goal(String),
     /// Square brackets, `[e]`.  As a term this is promotion.  Juxtaposed to
     /// a *type* it is Granule's postfix modality instead: `a [r]` is an `a`
     /// that may be used `r` times.  Types and terms share a grammar here, so

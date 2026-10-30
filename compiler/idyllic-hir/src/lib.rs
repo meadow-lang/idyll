@@ -63,6 +63,8 @@ pub enum TermKind {
     Ann(Box<Term>, Box<Term>),
     /// `_`: becomes a fresh metavariable during type checking.
     Hole,
+    /// `?name`: a goal left for later (see `idyllic_ast::Term::Goal`).
+    Goal(String),
     /// `[e]`: promotion, or — applied to a type — a modality's grade.
     BoxIntro(Box<Term>),
     /// The infinite grade, `∞`.

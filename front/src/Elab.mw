@@ -33,7 +33,7 @@ use Idyll.Value (Value, Elim, Env, Closure, Row, Poly)
 use Idyll.Value as Va
 use Idyll.Grade (Grade)
 use Idyll.Grade as G
-use Idyll.Tc (Tc, Meta, MetaInfo, MetaTy, Origin, HoleAt, Postponed, Waiting)
+use Idyll.Tc (Tc, Meta, MetaInfo, MetaTy, Origin, HoleAt, GoalAt, Postponed, Waiting)
 use Idyll.Tc as T
 use Idyll.Eval (force, apply, eval, quote, row, rowParts, toPoly, splitComp, comp, renormalise, blocked)
 use Idyll.Unify (subtype, unify, sibling, effectsFit, shownRow, rowHasError, rowKind, sortOf)
@@ -196,6 +196,12 @@ fun freshValue (tc : Tc s) (ctx : Ctx) (desc : String) : Value ! { St s | e } = 
   X.declareConstant ctx x ty
 
 -- `_`: a metavariable for its value, remembered to be reported at the end.
+-- A goal, `?name`, wanted to be a `ty`: kept, to be reported; in its place
+-- a term that is no value, which stops the program if it is reached.
+fun elabGoal (tc : Tc s) (ctx : Ctx) (name : String) (ty : Value) : Core ! { St s | e } =
+  let w = setRef tc.goals (V.pushBack (getRef tc.goals) (GoalAt.GoalAt (getRef tc.at) name ctx.lvl ty)) in
+  Core.Runtime (Note.Goal name) Core.Error
+
 fun elabHole (tc : Tc s) (ctx : Ctx) (ty : Value) : Core ! { St s | e } =
   let c = freshMetaWith tc ctx Origin.Hole (Just ty) in
   let v = eval tc ctx.env c in
@@ -1416,6 +1422,18 @@ pass! {
              let ty = freshValue c.tc c.ctx "the type of this hole" in
              (elabHole c.tc c.ctx ty, ty, U.none ()))
            (\(c : Cx s) g -> (elabHole c.tc c.ctx g, g, U.none ())))
+    -- a goal is whatever was wanted where it is, as a hole is
+    | Goal { name } ->
+        (let again = \(c : Cx s) -> elabExpr src out c node in
+         mode
+           cx
+           again
+           (\(c : Cx s) ->
+             let ty = freshValue c.tc c.ctx "the type of this goal" in
+             (elabGoal c.tc c.ctx name ty, ty, U.unknown ()))
+           -- (what it will use is not known yet: nothing is held to its
+           -- grade over it)
+           (\(c : Cx s) g -> (elabGoal c.tc c.ctx name g, g, U.unknown ())))
     -- promotion: to provide `e` `grade` times, what `e` uses is used that
     -- often; with nothing to say how often, the grade is to be found
     | Box { raw expr } ->
@@ -1917,6 +1935,18 @@ fun closeMeta (tc : Tc s) (m : Int) (n : Int) =
       | _ -> ())
     ()
     (V.range 0 (V.len (getRef tc.metas)))
+
+-- Every goal, `?name`, reported with the type wanted where it is: a
+-- warning, so what is around it can still be worked on.
+@pub fun reportGoals (tc : Tc s) =
+  let goals = getRef tc.goals in
+  let w = setRef tc.goals [] in
+  V.foldl
+    (\acc g ->
+      match g with
+      | GoalAt.GoalAt at name l ty -> T.goal tc at "goal ?${name} : ${C.shown False (quote tc l ty)}")
+    ()
+    goals
 
 -- Every `_`, reported: filled in or not.
 @pub fun reportHoles (tc : Tc s) =

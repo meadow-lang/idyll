@@ -47,6 +47,10 @@ use Std.Maybe.Maybe.*
 -- spine, and its type.
 @pub data HoleAt = HoleAt Int Value Value
 
+-- A goal, `?name`: where it is, its name, and the type wanted there, at a
+-- context's length.
+@pub data GoalAt = GoalAt Lang.Meta String Int Value
+
 -- A question kept for later: at a context's length, a term of type
 -- `actual` where `expected` was wanted, which neither unified nor failed
 -- for good, one being stuck on a metavariable applied to something.
@@ -117,6 +121,7 @@ use Std.Maybe.Maybe.*
   want : StRef s Int,
   found : StRef s (Maybe (Lang.Meta, Core)),
   holes : StRef s [HoleAt],
+  goals : StRef s [GoalAt],
   postponed : StRef s [Postponed],
   -- whether the definition being checked is in a linear module, where an
   -- unannotated binder is used once
@@ -246,6 +251,7 @@ use Std.Maybe.Maybe.*
     want = newRef (0 - 1),
     found = newRef None,
     holes = newRef [],
+    goals = newRef [],
     postponed = newRef [],
     linear = newRef False,
     lets = newRef 0,
@@ -316,6 +322,7 @@ use Std.Maybe.Maybe.*
     want = newRef (getRef tc.want),
     found = newRef (getRef tc.found),
     holes = newRef (getRef tc.holes),
+    goals = newRef (getRef tc.goals),
     postponed = newRef (getRef tc.postponed),
     linear = newRef (getRef tc.linear),
     lets = newRef (getRef tc.lets),
@@ -382,6 +389,7 @@ use Std.Maybe.Maybe.*
   let w11b = setRef tc.at (getRef saved.at) in
   let w11c = setRef tc.found (getRef saved.found) in
   let w12 = setRef tc.holes (getRef saved.holes) in
+  let w12a = setRef tc.goals (getRef saved.goals) in
   let w13 = setRef tc.postponed (getRef saved.postponed) in
   let w14 = setRef tc.linear (getRef saved.linear) in
   let w15 = setRef tc.lets (getRef saved.lets) in
@@ -435,6 +443,12 @@ use Std.Maybe.Maybe.*
         (match getRef tc.found with
          | Just (Lang.Meta.Meta a0 b0, _) -> if a >= a0 and b <= b0 then setRef tc.found (Just (at, ty)) else ()
          | None -> setRef tc.found (Just (at, ty)))
+
+-- A goal reported: a warning, said where it is, its kind `Goal` among
+-- the errors the dumps compare.
+@pub fun goal (tc : Tc s) (at : Lang.Meta) (said : String) =
+  let w = setRef tc.placed (V.pushBack (getRef tc.placed) (at, said)) in
+  setRef tc.errors (V.pushBack (getRef tc.errors) "Goal")
 
 -- Something this checker cannot check yet.
 @pub fun cannot (tc : Tc s) (what : String) = setRef tc.unsupported (V.pushBack (getRef tc.unsupported) what)

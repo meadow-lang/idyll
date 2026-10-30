@@ -139,6 +139,10 @@ pub enum Note {
     /// alternative (or none) is taken without evaluating the scrutinee, its
     /// variables all erased.
     Forced,
+    /// A goal left for later, `?name`, in place of a term of its type: the
+    /// term under it is no value (`Core::Error`, which the checker takes for
+    /// anything); reaching it at run time stops the program, saying so.
+    Goal(String),
 }
 
 impl Core {

@@ -68,6 +68,7 @@ use Std.Maybe.Maybe.*
   Note + Erased {}
   Note + Binds { grade : Maybe Grade, ty : Maybe Term }
   Note + Forced {}
+  Note + Goal { name : String }
 }
 
 -- --- writing a checked module -------------------------------------------------------
@@ -103,6 +104,7 @@ use Std.Maybe.Maybe.*
         | Note.Erased -> newElaboratedNoteErased out m
         | Note.Binds g ty -> newElaboratedNoteBinds out m g (M.map go ty)
         | Note.Forced -> newElaboratedNoteForced out m
+        | Note.Goal n -> newElaboratedNoteGoal out m n
       in
       newElaboratedTermRuntime out m n (go a)
   | Core.Comp a r -> newElaboratedTermComp out m (go a) (go r)
@@ -163,3 +165,4 @@ use Std.Maybe.Maybe.*
   | ElaboratedNoteErased -> Note.Erased
   | ElaboratedNoteBinds g ty -> Note.Binds g (M.map (\t -> coreOf a t) ty)
   | ElaboratedNoteForced -> Note.Forced
+  | ElaboratedNoteGoal n -> Note.Goal n

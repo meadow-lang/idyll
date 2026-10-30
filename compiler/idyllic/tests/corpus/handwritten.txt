@@ -1106,3 +1106,27 @@ doubles : () -> () ! Test
 doubles u = assertEq (double 21) 42 "forty-two"
 
 double 4
+%%%
+-- a named hole: a goal left for later, a warning with its type, and a program that never reaches it runs
+double : Int -> Int
+double n = ?twice
+
+1 + 2
+%%%
+-- a goal reached stops the program, saying so on standard error, with exit status 1
+pick : (b : Bool) -> (x : Int) -> Int
+pick b x = if b then x else ?other
+
+pick False 3
+%%%
+-- a goal takes the type wanted where it is, inferred where nothing is wanted
+both : (a : Int) -> (b : Bool) -> String
+both a b = let c = a + 1 in ?here
+
+(both 1 True, ?anything)
+%%%
+-- a goal is not a pattern
+f : Int -> Int
+f ?x = 1
+
+f 2

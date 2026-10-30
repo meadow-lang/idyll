@@ -1450,6 +1450,7 @@ impl Renamer {
         match &t.node {
             A::Type => self.node(sp, H::Type),
             A::Hole => self.node(sp, H::Hole),
+            A::Goal(n) => self.node(sp, H::Goal(n.clone())),
             A::Inf => self.node(sp, H::Inf),
             A::Lit(l) => self.node(sp, H::Lit(l.clone())),
             // `otherwise` is `True`, unless it has been defined to be
@@ -2096,7 +2097,7 @@ fn free_variables(t: &LTerm, bound: &mut Vec<String>, known: &dyn Fn(&str) -> bo
                 out.push(x.clone());
             }
         }
-        A::Type | A::Lit(_) | A::Hole | A::Inf | A::Resolved(..) | A::Search | A::Equations(_) => {}
+        A::Type | A::Lit(_) | A::Hole | A::Goal(_) | A::Inf | A::Resolved(..) | A::Search | A::Equations(_) => {}
         A::Pi(x, _, g, dom, cod) => {
             grades(g, bound, out);
             free_variables(dom, bound, known, out);

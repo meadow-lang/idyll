@@ -1027,7 +1027,18 @@ what the Rust REPL does (`pipeline::Session`):
 - an entry that ends in a signature waits for its equations.
 
 Tab completes names as the server does, Ctrl-F finds what has been
-declared, and `:type`, `:reset` and `:declarations` are its commands.
+declared, and `:type`, `:reset`, `:declarations` and `:goals` are its
+commands.
+
+A goal, `?name`, is a term of its own from the lexer on (`Lex`'s `Goal`,
+`Syntax`'s `GoalA`, `Surface`'s and `Hir`'s `Goal`):
+- `Elab` checks it as whatever is wanted where it is, its usage unknown,
+  and elaborates it to `Core.Runtime (Note.Goal name) Core.Error`, as the
+  Rust checker does;
+- it is kept in `Tc.goals`, and reported at the end as a warning,
+  "goal ?name : T" (its kind `Goal` among the dump's errors);
+- reaching one stops the program, saying so on standard error, with exit
+  status 1: the CEK machine's `Control.Goal`, and `Lower.goalReached`.
 
 ## Dependencies
 

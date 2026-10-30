@@ -155,7 +155,9 @@ pub fn examples(markdown: &str) -> Vec<Example> {
         } else if in_source && !line.contains('│') {
             ex.source.push('\n');
             ex.source.push_str(line);
-        } else if ex.diags.is_empty() && is_definition_report(line) {
+        } else if (ex.diags.is_empty() || !line.starts_with(' ')) && is_definition_report(line) {
+            // (after a warning too, at the margin: an entry that declares
+            // something with a goal in it, say)
             ex.decls.push(line.to_string());
         } else if !in_source && ex.diags.is_empty() && ex.decls.is_empty() && ex.ty.is_none() {
             // after the blank line that ends the entry, and before its

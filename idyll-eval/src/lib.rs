@@ -298,6 +298,8 @@ enum Control {
     Perform(usize, Vec<Rc<Value>>),
     /// A resumption, given a value: its frames go back on.
     Resume(Rc<Vec<Frame>>, Rc<Value>),
+    /// A goal, `?name`, reached: the program stops, saying so.
+    Goal(String),
 }
 
 /// Why evaluation stopped without an answer.
@@ -413,6 +415,12 @@ impl Program<'_> {
                     kont.extend(frames.iter().cloned());
                     Control::Return(value)
                 }
+                // as a program that gives up does: said on standard error,
+                // then exit status 1
+                Control::Goal(name) => {
+                    let _ = world.perform("putErr", &[Arg::Str(format!("reached the goal ?{name}\n").into())]);
+                    return Err(EvalError::Exited(1));
+                }
             };
         }
     }
@@ -478,6 +486,7 @@ impl Program<'_> {
             },
             // never looked at, so never computed
             Core::Runtime(Note::Erased, _) => value(Value::Erased),
+            Core::Runtime(Note::Goal(name), _) => Ok(Control::Goal(name.clone())),
             // a match its type decides: the one alternative, all erased
             Core::Runtime(Note::Forced, inner) => match &**inner {
                 Core::Case(_, alts) => match alts.first() {

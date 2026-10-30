@@ -12,7 +12,7 @@
 
 use Lingua (repl!)
 use Lingua.Repl (Reply)
-use Lingua.Diagnostic (Diagnostic, renderAll, whereAt)
+use Lingua.Diagnostic (Diagnostic, renderAll, whereAt, isError)
 use Lingua.Lang (Meta)
 use Idyll.Session
 use Idyll.Syntax (parseIdyll)
@@ -75,19 +75,22 @@ fun ran (program : String) (earlier : Int) prelude std =
       else
         runSt (\() ->
           let c = checkedAgainst (sccModule m) False deps in
-          let wrong = placedDiagnostics (St.getRef c.tc.placed) in
-          if not (V.isEmpty wrong) then (drawn program earlier wrong, False)
+          -- (a warning -- a goal, a hole filled in -- is said, and stops
+          -- nothing)
+          let said = placedDiagnostics (St.getRef c.tc.placed) in
+          if V.any isError said then (drawn program earlier said, False)
           else
+            let warned = if V.isEmpty said then "" else drawn program earlier said in
             match c.bodyType with
             | None ->
                 -- declarations: each new one, with its type
                 let own = V.filter (\d -> match d with | (u, name, _) -> u >= m.first and written name and not (V.elem name before)) (St.getRef c.tc.declared) in
-                (S.join "\n" (V.map (\d -> match d with | (_, name, ty) -> "${name} : ${C.shown m.linearBody ty}") own), True)
+                (warned ++ S.join "\n" (V.map (\d -> match d with | (_, name, ty) -> "${name} : ${C.shown m.linearBody ty}") own), True)
             | Just ty ->
                 let p = Cek.programOf c in
                 (match p.body with
-                 | None -> (": ${C.shown m.linearBody ty}", False)
-                 | Just term -> (valueOf p term (C.shown m.linearBody ty), False)))
+                 | None -> (warned ++ ": ${C.shown m.linearBody ty}", False)
+                 | Just term -> (warned ++ valueOf p term (C.shown m.linearBody ty), False)))
 
 -- What running a program's expression says: what it printed, then its
 -- value and type (only the type, for a value with nothing to show).
@@ -168,8 +171,13 @@ def promptCommands =
   [
     ("type", "EXPR", "what an expression is, without running it", typeOfEntry),
     ("reset", "", "forget every declaration entered", \db rest -> (let u = setSessionEarlier db 0 "" in Reply.Said "")),
-    ("declarations", "", "the declarations entered so far, as source", \db rest -> Reply.Said (S.trimEnd (earlierIn db)))
+    ("declarations", "", "the declarations entered so far, as source", \db rest -> Reply.Said (S.trimEnd (earlierIn db))),
+    ("goals", "", "the goals (?name) left in what has been declared, each with its type", goalsSoFar)
   ]
+
+fun goalsSoFar db rest =
+  let goals = goalsIn (earlierIn db) (answered (Err []) (\() -> sessionPrelude db 0)) (\u -> stdIn db) in
+  Reply.Said (if V.isEmpty goals then "(no goals)" else S.join "\n" goals)
 
 fun typeOfEntry db rest =
   let before = earlierIn db in
@@ -181,7 +189,7 @@ fun typeOfEntry db rest =
       else
         runSt (\() ->
           let c = checkedAgainst (sccModule m) False deps in
-          let wrong = placedDiagnostics (St.getRef c.tc.placed) in
+          let wrong = V.filter isError (placedDiagnostics (St.getRef c.tc.placed)) in
           if not (V.isEmpty wrong) then Reply.Said (drawn program (S.byteLength before) wrong)
           else
             match c.bodyType with
@@ -205,6 +213,12 @@ fun enteredAll (entries : [String]) =
     (enteredAll ["double : Int -> Int\ndouble n = n + n", "double 21"])
     ["double : Int -> Int", "42 : Int"]
     "declared, then used"
+
+@test fun goalsAreListed () =
+  let db = batchSession () in
+  let w = setSessionSource db 0 "half : Int -> Int\nhalf n = ?todo" in
+  let said = entered db 0 in
+  assertEq (goalsIn (earlierIn db) (sessionPrelude db 0) (\u -> stdIn db)) ["?todo : Int"] "the goal, with its type"
 
 @test fun anEntryThatIsWrongIsForgotten () =
   let said = enteredAll ["x : Int\nx = True", "x"] in

@@ -198,7 +198,7 @@ fn scc_groups_with(groups: Vec<BindGroup>, hints: &HashSet<usize>, early: &HashS
 pub fn scc_term(t: Term) -> Term {
     use TermKind::*;
     let kind = match t.kind {
-        k @ (Type | Hole | Omitted | Inf | Lit(_) | Var(_) | SeqNil) => k,
+        k @ (Type | Hole | Goal(_) | Omitted | Inf | Lit(_) | Var(_) | SeqNil) => k,
         App(f, a) => App(Box::new(scc_term(*f)), Box::new(scc_term(*a))),
         ImplicitApp(f, a) => ImplicitApp(Box::new(scc_term(*f)), Box::new(scc_term(*a))),
         AutoApp(f, a) => AutoApp(Box::new(scc_term(*f)), Box::new(scc_term(*a))),
@@ -446,7 +446,7 @@ pub fn free_uniques(t: &Term) -> HashSet<usize> {
     fn go(t: &Term, out: &mut HashSet<usize>) {
         use TermKind::*;
         match &t.kind {
-            Type | Hole | Omitted | Inf | Lit(_) | SeqNil | Search => {}
+            Type | Hole | Goal(_) | Omitted | Inf | Lit(_) | SeqNil | Search => {}
             Var(i) => {
                 if let Some(u) = i.unique {
                     out.insert(u);

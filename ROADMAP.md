@@ -914,9 +914,22 @@ accepted when what it does fits within what resuming was found to.
   it (`idyll-<version>.vsix`). Still to come: finding the server without
   `idyll.server.path` (Meadow's extension searches its install
   directories), and a release that ships the `.vsix`.
-- [ ] **Named holes, for type-driven development** (Chris, 2026-10-16), as
-  Idris and Agda have them. `_` is a hole the checker fills in, as it does
-  today. `?name` is a goal left for later:
+- [~] **Named holes, for type-driven development** (Chris, 2026-10-16), as
+  Idris and Agda have them. Done, in both compilers (the differentials
+  agree on the corpus's goals):
+  - `?name` is a token and a term of its own;
+  - the checker elaborates a goal to `Runtime(Note::Goal(name), Error)`, so
+    to the checker it is anything, and its usage is unknown, so no grade
+    is held over it;
+  - each goal is a warning with its type and the variables of its
+    definition, each with its type and grade;
+  - reaching one at run time writes `reached the goal ?name` on standard
+    error and exits 1, on the CEK machine and through Cut alike;
+  - both REPLs have `:goals`, and front/'s server shows goals as warnings.
+
+  Still to come: proof search on a goal (`:prove ?name`), and tactic mode.
+  `_` is a hole the checker fills in, as it does today. `?name` is a goal
+  left for later:
   - it is reported with its type and its context: the variables in scope,
     each with its type and the grade still left of it;
   - it is a warning, not an error, so a program with goals in it still

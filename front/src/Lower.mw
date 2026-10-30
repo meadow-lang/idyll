@@ -641,6 +641,22 @@ fun letsMention (l : L s) (c : Tm) (n : Int) (u : Int) : Bool =
 -- `body`, its value to `b`, under a handler for the prelude's `Abort` that
 -- does what Idyll's world does: the message on standard error, then exit
 -- status 1.
+-- A goal, `?name`, reached: the program stops as one that gives up does
+-- (see `abortHandler`), saying so on standard error, then exit status 1.
+fun goalReached (l : L s) (goal : String) : CutStmt ! { St s | e } =
+  let said = "reached the goal ?${goal}" in
+  match (preludeOp l "putErr", preludeOp l "exit") with
+  | (Just (putErr, console), Just (exit, process)) ->
+      let w = V.foldl (\acc oe -> match oe with | (op, eff) -> (let x = note l.performed op in note l.effects eff)) () [(putErr, console), (exit, process)] in
+      (match (symbol l putErr, symbol l exit) with
+       | (Just putErrS, Just exitS) ->
+           let u = name l "u" in
+           let w2 = name l "u" in
+           let thenExit = sPerform l exitS [pInt l 1] (kMuT l (Binder.Binder w2 Rep.Unit) (sError l said)) in
+           sPerform l putErrS [pStr l (said ++ "\n")] (kMuT l (Binder.Binder u Rep.Unit) thenExit)
+       | _ -> sError l said)
+  | _ -> sError l said
+
 fun abortHandler (l : L s) (abort : Int) (b : String) (body : CutStmt) (r : Rep) (k : CutCons) : CutStmt ! { St s | e } =
   match (preludeOp l "putErr", preludeOp l "exit") with
   | (Just (putErr, console), Just (exit, process)) ->
@@ -919,6 +935,7 @@ fun term (l : L s) (env : LEnv) (c : Tm) (k : CutCons) : CutStmt ! { St s | e } 
   | ElaboratedTermRuntime n inner ->
       (match kindElaboratedNote a n with
        | ElaboratedNoteKind.Erased -> sCut l (pUnit l) k
+       | ElaboratedNoteKind.Goal -> goalReached l (elaboratedNoteGoalName a n)
        | ElaboratedNoteKind.Forced ->
            (match (a, inner) with
             | ElaboratedTermCase _ alts ->

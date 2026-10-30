@@ -45,6 +45,10 @@ pub enum Token {
     LowerIdent(String),
     #[regex(r"[!$%&*+./<=>?@|\\~:^`\-]+", crate::text, priority = 1)]
     OpIdent(String),
+    /// A named hole, `?name`: a goal left for later. Its name, without the
+    /// `?`. (Longer than the `?` an operator would take, so it wins.)
+    #[regex(r"\?[_a-z][A-Za-z0-9_']*", crate::goal)]
+    Goal(String),
     /// A `:`-headed operator is a constructor operator; the priority breaks
     /// the tie with `OpIdent` on inputs like `::`.
     #[regex(r":[!$%&*+./<=>?@|\\~:^`\-]+", crate::text, priority = 3)]
@@ -170,6 +174,7 @@ impl fmt::Display for Token {
             Error => write!(f, "<lex-error>"),
             Newline => write!(f, "<newline>"),
             UpperIdent(s) | LowerIdent(s) | QualUpper(s) | QualLower(s) | OpIdent(s) | ConOpIdent(s) => write!(f, "{s}"),
+            Goal(s) => write!(f, "?{s}"),
             Int(n) => write!(f, "{n}"),
             Float(x) => write!(f, "{}", f64::from_bits(*x)),
             Str(s) => write!(f, "{s:?}"),

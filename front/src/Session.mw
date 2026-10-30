@@ -96,6 +96,15 @@ fun prepared (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std
           | None -> None)
   | Err _ -> None
 
+-- The goals, `?name`, left in a program: each said with its type.
+@pub fun goalsIn (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : [String] ! e =
+  match prepared text prelude std with
+  | Ok (m, deps, _) ->
+      runSt (\() ->
+        let c = checkedAgainst (sccModule m) False deps in
+        V.concatMap (\p -> match p with | (_, said) -> if S.startsWith "goal ?" said then [S.drop said 5] else []) (St.getRef c.tc.placed))
+  | Err _ -> []
+
 -- What the program and the prelude declare: each name, the unique it is
 -- named by, and its type, shown; with the program's own first unique.
 @pub fun declaredIn (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : ([(Int, String, String)], Int) ! e =
@@ -241,7 +250,13 @@ fun nowhere = spanMeta 0 0
 @pub fun placedDiagnostics (placed : [(Meta, String)]) : [Diagnostic] = placedOnce placed
 
 fun placedOnce (placed : [(Meta, String)]) : [Diagnostic] =
-  V.map (\p -> match p with | (at, kind) -> errorAt at (said kind)) (V.foldl (\acc p -> if V.elem p acc then acc else V.pushBack acc p) [] placed)
+  V.map
+    (\p ->
+      match p with
+      -- a goal, and a hole filled in, are warnings: what is around them
+      -- can still be worked on
+      | (at, kind) -> if S.startsWith "goal ?" kind then warningAt at kind else if kind == "HoleSolved" then warningAt at (said kind) else errorAt at (said kind))
+    (V.foldl (\acc p -> if V.elem p acc then acc else V.pushBack acc p) [] placed)
 
 -- An error's kind, said in words: the commonest in a sentence, the rest by
 -- the name the Rust checker gives the kind, its words apart

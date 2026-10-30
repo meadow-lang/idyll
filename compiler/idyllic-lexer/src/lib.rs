@@ -210,6 +210,11 @@ pub(crate) fn text(lex: &mut Lex) -> String {
     lex.slice().to_string()
 }
 
+/// A named hole's name: what follows its `?`.
+pub(crate) fn goal(lex: &mut Lex) -> String {
+    lex.slice()[1..].to_string()
+}
+
 /// Read as arbitrary precision, so this cannot overflow (the parser says
 /// whether it fits an `Int`); the regex has already guaranteed every digit
 /// is valid for the radix.

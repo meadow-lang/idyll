@@ -115,6 +115,10 @@ use Std.Maybe.Maybe.*
   | Binds (Maybe Grade) (Maybe Core)
   -- a `case` its type forces, which looks at nothing
   | Forced
+  -- a goal, `?name`, in place of a term of its type: what is under it is
+  -- no value (`Core.Error`, which the checker takes for anything), and
+  -- reaching it at run time stops the program, saying so
+  | Goal String
 
 @derive(Reflect)
 @pub data Core

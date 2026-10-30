@@ -3689,6 +3689,29 @@ Error: unsolved hole
 
 Holes work in types too: `let x : _ = 5 in x` finds `_ = Int`.
 
+### Goals
+
+A hole the checker fills in is one thing; a part of the program you have
+not written yet is another. Write `?name` for that: a *goal*, as Idris and
+Agda have them. The checker tells you the type wanted there and what is
+in scope, each variable with its type and grade, as a warning, and the
+rest of the program still checks, so you can work around it:
+
+```
+> pick : (b : Bool) -> (x : Int) -> Int
+pick b x = if b then x else ?other
+
+Warning: goal ?other
+   │ ╰── ?other : Int
+pick : (b : Bool) -> (x : Int) -> Int
+> pick True 3
+3 : Int
+```
+
+What a goal will use is not known yet, so no variable is held to its grade
+over one. A program that reaches a goal stops there, saying `reached the goal
+?other` on standard error, with exit status 1.
+
 ## How programs run
 
 A program that checks is lowered to **Cut**, the intermediate language

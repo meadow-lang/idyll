@@ -24,7 +24,7 @@ use super::value::{vvar, Closure, Elim, Poly, VTy, Value};
 use super::positivity::{DataShape, Field};
 use super::matching::mentions;
 use super::literals;
-use super::{BinderInfo, Checker, CtorInfo, Ctx, HoleInfo, MetaEntry, MetaOrigin, MetaTy, RecDef, TypeErrorKind, Usage};
+use super::{BinderInfo, Checker, CtorInfo, Ctx, GoalInfo, HoleInfo, MetaEntry, MetaOrigin, MetaTy, RecDef, TypeErrorKind, Usage};
 use idyllic_ast::{Icit, Lit};
 use idyllic_builtins::{Builtin, Prim};
 use crate::grade::Grade;
@@ -101,6 +101,21 @@ impl Checker {
 
     /// Elaborate an explicit `_`: a meta for its value, remembered so it can
     /// be reported once unification has had a chance to fill it in.
+    /// A goal, `?name`, wanted to be a `ty`: noted, with the variables of the
+    /// definition it is in, to be reported; in its place a term that is no
+    /// value, which stops the program if it is reached.
+    fn elab_goal(&mut self, ctx: &Ctx, node: NodeId, name: &str, ty: VTy) -> Rc<Core> {
+        let from = self.local_from.min(ctx.lvl);
+        let context = ctx.binders[from..]
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| !b.name.starts_with('#') && b.name != "_")
+            .map(|(i, b)| (b.name.clone(), b.ty.clone(), b.grade.clone(), from + i))
+            .collect();
+        self.goals.push(GoalInfo { node, name: name.to_string(), lvl: ctx.lvl, ty, context });
+        Rc::new(Core::Runtime(Note::Goal(name.to_string()), Rc::new(Core::Error)))
+    }
+
     fn elab_hole(&mut self, ctx: &Ctx, node: NodeId, ty: VTy) -> Rc<Core> {
         let c = self.fresh_meta_with(ctx, node, MetaOrigin::Hole, Some(ty.clone()));
         let value = self.eval(&ctx.env, &c);
@@ -823,6 +838,10 @@ impl Checker {
     fn check_group_in(&mut self, ctx: &Ctx, group: &hir::BindGroup) -> (Ctx, Pending, LetWrap) {
         // (what of `rec_defs` this group makes, for its overloaded names)
         let mark = self.rec_defs.len();
+        // a top-level definition's own variables are what is bound from here
+        if self.lets == 0 {
+            self.local_from = ctx.lvl;
+        }
         match group {
             hir::BindGroup::NonRec(b) => {
                 let (rhs, ty, usage) = match &b.ty {
@@ -1173,6 +1192,11 @@ impl Checker {
                 let ty_c = self.fresh_meta(ctx, nid, "the type of this hole");
                 let ty = self.eval(&ctx.env, &ty_c);
                 (self.elab_hole(ctx, nid, ty.clone()), ty, Usage::none())
+            }
+            TermKind::Goal(name) => {
+                let ty_c = self.fresh_meta(ctx, nid, "the type of this goal");
+                let ty = self.eval(&ctx.env, &ty_c);
+                (self.elab_goal(ctx, nid, name, ty.clone()), ty, Usage::unknown())
             }
             TermKind::Var(x) => match self.meaning(nid, x) {
                 x => match (x.unique, ctx.lookup(&x)) {
@@ -1756,6 +1780,9 @@ impl Checker {
             // a hole is exactly what a metavariable is for: its type is
             // whatever was expected here, so nothing needs to be inferred
             (TermKind::Hole, _) => (self.elab_hole(ctx, nid, expected.clone()), Usage::none()),
+            // a goal is whatever was expected here, as a hole is; what it will
+            // use is not known yet, so nothing is held to its grade over it
+            (TermKind::Goal(name), _) => (self.elab_goal(ctx, nid, name, expected.clone()), Usage::unknown()),
             // what a search for something of the type expected finds
             (TermKind::Search, _) => (self.auto_argument(ctx, nid, expected.clone()), Usage::none()),
             (TermKind::LetBox(x, boxed, body), _) => match self.unbox(ctx, x, boxed) {

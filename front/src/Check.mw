@@ -24,7 +24,7 @@ use Idyll.Usage (Usage)
 use Idyll.Usage as U
 use Idyll.Ctx (Ctx, Entry, Binder, Info)
 use Idyll.Ctx as X
-use Idyll.Elab (Pending, effectsOf, enterGroups, infer, retryPostponed, closeOpened, closeRows, reportHoles, reportUnsolved, keyOf, wrapLets, install, checkLinearWants, linearTopLevel)
+use Idyll.Elab (Pending, effectsOf, enterGroups, infer, retryPostponed, closeOpened, closeRows, reportHoles, reportGoals, reportUnsolved, keyOf, wrapLets, install, checkLinearWants, linearTopLevel)
 use Idyll.Elaborated (ElaboratedProgram, newElaboratedBuilder, freezeElaborated, moduleRow)
 use Idyll.Tc (Meta)
 use Idyll.Auto as A
@@ -226,6 +226,7 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
   -- instances of traits: where they live, and that no two overlap
   let wi = A.checkInstances tc ctx m.first in
   let w2 = reportHoles tc in
+  let w2g = reportGoals tc in
   let w3 = retryPostponed tc True in
   let w4 = closeOpened tc in
   let w5 = closeRows tc in

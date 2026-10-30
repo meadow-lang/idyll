@@ -682,6 +682,7 @@ fun theRecordWith (r : Rn s) (wanted : [String]) : Maybe (String, [String]) ! { 
   Expr + Search {}
   Expr + Ann { expr : Expr, ty : Expr }
   Expr + Hole {}
+  Expr + Goal { name : String }
   Expr + Box { expr : Expr }
   Expr + Inf {}
   Expr + Range { lo : Expr, hi : Expr }
@@ -1939,6 +1940,7 @@ fun termText (a : HirArena) (t : HirExpr) : String =
   | HirExprSearch -> "search"
   | HirExprAnn x ty -> sx ["ann", go x, go ty]
   | HirExprHole -> "_"
+  | HirExprGoal n -> "?" ++ n
   | HirExprBox x -> sx ["box", go x]
   | HirExprInf -> "inf"
   | HirExprRange l h -> sx ["range", go l, go h]

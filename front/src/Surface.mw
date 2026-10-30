@@ -132,6 +132,8 @@ use Std.Result.Result.*
   Equation + Equation { params : [Pat], rhs : Rhs }
   Expr + Ann { expr : Expr, ty : Expr }
   Expr + Hole {}
+  -- `?name`, a goal left for later: its name
+  Expr + Goal { name : String }
   Expr + Box { expr : Expr }
   Expr + Inf {}
   Expr + Range { lo : Expr, hi : Expr }
@@ -482,6 +484,7 @@ pass! {
     | StrLit {} -> Expr.Lit { lit = Literal.Str (strLit node) }
     | CharLit {} -> Expr.Lit { lit = Literal.Char (charLit node) }
     | Hole {} -> Hole {}
+    | GoalA { raw name } -> Goal { name = S.drop (R.text name) 1 }
     | TypeA {} -> Type {}
     | InfA {} -> Inf {}
     | OpName { raw op } ->
@@ -1117,6 +1120,7 @@ pass! {
     | StrLit {} -> Pat.Lit { lit = Literal.Str (strLit node) }
     | CharLit {} -> Pat.Lit { lit = Literal.Char (charLit node) }
     | Hole {} -> Wild {}
+    | GoalA {} -> (let u = bad node "a goal is not a pattern" in Wild {})
     | TypeA {} -> (let u = bad node "not a pattern" in Wild {})
     | InfA {} -> (let u = bad node "not a pattern" in Wild {})
     | OpName {} -> (let u = bad node "not a pattern" in Wild {})
@@ -2497,6 +2501,7 @@ fun exprText (a : SurfaceArena) (e : SurfaceExpr) : String =
   | SurfaceExprRecordOf r args fs me -> sx (V.append ["recordof", nameIn a r, sx (V.map go args), nameIn a me] (V.map (fieldText a) fs))
   | SurfaceExprAnn x ty -> sx ["ann", go x, go ty]
   | SurfaceExprHole -> "_"
+  | SurfaceExprGoal n -> "?" ++ n
   | SurfaceExprBox x -> sx ["box", go x]
   | SurfaceExprInf -> "inf"
   | SurfaceExprRange l h -> sx ["range", go l, go h]

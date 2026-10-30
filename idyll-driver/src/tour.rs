@@ -540,6 +540,17 @@ double k = 2 * k"),
         examples: &[ok("identity _ 3"), rejected("let n : Int = _ in n", "unsolved hole")],
     },
     Step {
+        title: "Goals",
+        section: Section::Dependent,
+        text: &[
+            "Write `?name` for a goal you mean to come back to. The checker",
+            "says the type wanted there and what is in scope, as a warning,",
+            "and the rest of the program still checks and runs; reaching the",
+            "goal stops the program, saying so.",
+        ],
+        examples: &[ok("triple : Int -> Int\ntriple n = ?todo"), ok("1 + 2")],
+    },
+    Step {
         title: "Grades in types",
         section: Section::Dependent,
         text: &[

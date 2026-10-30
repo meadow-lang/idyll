@@ -88,6 +88,7 @@ use Std.Result.Result.*
   | QualLower String
   | UpperIdent String
   | LowerIdent String
+  | Goal String
   | ConOpIdent String
   | OpIdent String
   -- the pieces of a string with holes, as written (see `Lex`)
@@ -162,6 +163,7 @@ use Std.Result.Result.*
   | Raw.QualLower s -> Just (Token.QualLower s)
   | Raw.UpperIdent s -> Just (Token.UpperIdent s)
   | Raw.LowerIdent s -> Just (Token.LowerIdent s)
+  | Raw.Goal s -> Just (Token.Goal s)
   | Raw.ConOpIdent s -> Just (Token.ConOpIdent s)
   | Raw.OpIdent s -> Just (Token.OpIdent s)
   | Raw.InterpStart s -> Just (Token.InterpStart s)
@@ -223,6 +225,7 @@ use Std.Result.Result.*
   | Token.QualLower s -> s
   | Token.UpperIdent s -> s
   | Token.LowerIdent s -> s
+  | Token.Goal s -> s
   | Token.ConOpIdent s -> s
   | Token.OpIdent s -> s
   | Token.InterpStart s -> s

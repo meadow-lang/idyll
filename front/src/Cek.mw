@@ -87,7 +87,7 @@ use Std.Result.Result.*
 
 -- (`Mutate`: a cell's operation, which the machine's loop does, as it
 -- does the world's)
-data Control = Eval ElaboratedTerm Env | Return Value | Perform Int [Value] | Resume (List Frame) Value | Mutate String [Value]
+data Control = Eval ElaboratedTerm Env | Return Value | Perform Int [Value] | Resume (List Frame) Value | Mutate String [Value] | Goal String
 
 -- Why the machine stopped without an answer.
 @pub data Halt = OutOfFuel | Stuck String | Stopped String | Exited Int | TestFailed String
@@ -182,6 +182,11 @@ fun loop (p : Program) (w : World) (control : Control) (kont : List Frame) (step
           (match mutate n args with
            | Ok v -> Ok (Control.Return v, kont)
            | Err h -> Err h)
+      -- as a program that gives up does: said on standard error, then
+      -- exit status 1
+      | Control.Goal n ->
+          let u = W.perform w "putErr" [Arg.AStr "reached the goal ?${n}\n"] in
+          Err (Halt.Exited 1)
     in
     match (control, kont) with
     | (Control.Return v, [;]) -> Ok (v, steps + 1)
@@ -261,6 +266,7 @@ fun eval (p : Program) (term : ElaboratedTerm) (env : Env) (kont : List Frame) :
       (match kindElaboratedNote a note with
        -- never looked at, so never computed
        | ElaboratedNoteKind.Erased -> value Value.Erased kont
+       | ElaboratedNoteKind.Goal -> Ok (Control.Goal (elaboratedNoteGoalName a note), kont)
        -- a match its type decides: the one alternative, all erased
        | ElaboratedNoteKind.Forced ->
            (match (a, inner) with
