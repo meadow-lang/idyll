@@ -189,6 +189,11 @@ use Std.Maybe.Maybe.*
   -- the hints' names, as a type shows one a search found: this package's
   -- under their modules, a dependency's by its path there
   hintNames : StRef s (HashMap Int String),
+  -- how each thing an overloaded name may mean is written in full, and
+  -- where it is from: what a message about the name lists (`Check.meaningOf`)
+  meaningOf : StRef s (Int -> (Maybe String, Maybe String)),
+  -- the package a thing is from, as a message says it (`Check.homeOf`)
+  homeOf : StRef s (Int -> String),
   -- the metavariables standing for an auto argument still to be found, and
   -- what each was found to be, with the length of the context it was found
   -- in: written over the placeholder once the definition is checked
@@ -225,9 +230,10 @@ use Std.Maybe.Maybe.*
   patternChoice : StRef s (HashMap Int Int),
   -- which data types are linear, as far as worked out; and the type
   -- parameters given what may be a linear type, to check once it is known:
-  -- the length of the context, and what was given (see `Linear`)
+  -- the length of the context, what was given, the parameter, and where
+  -- (see `Linear`)
   linearDatas : StRef s (HashMap Int Bool),
-  linearWants : StRef s [(Int, Value)],
+  linearWants : StRef s [(Int, Value, String, Lang.Meta)],
   -- the prelude's `fromInt` and `fromFloat`, by name, which a literal at a
   -- type variable is read through; and how (`Elab.literalThrough`, given
   -- here as `elab` is)
@@ -289,6 +295,8 @@ use Std.Maybe.Maybe.*
     methods = newRef Hm.empty,
     instanceFields = newRef Hm.empty,
     hintNames = newRef Hm.empty,
+    meaningOf = newRef (\u -> (None, None)),
+    homeOf = newRef (\u -> "the prelude"),
     placeholders = newRef [],
     chosen = newRef Hm.empty,
     deferredAutos = newRef [],
@@ -362,6 +370,8 @@ use Std.Maybe.Maybe.*
     methods = newRef (getRef tc.methods),
     instanceFields = newRef (getRef tc.instanceFields),
     hintNames = newRef (getRef tc.hintNames),
+    meaningOf = newRef (getRef tc.meaningOf),
+    homeOf = newRef (getRef tc.homeOf),
     placeholders = newRef (getRef tc.placeholders),
     chosen = newRef (getRef tc.chosen),
     deferredAutos = newRef (getRef tc.deferredAutos),

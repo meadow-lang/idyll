@@ -161,7 +161,7 @@ fun underParams (params : [(Ident, Maybe HirExpr)]) (ks : [Core]) (ty : Core) (g
                        let w = setRef tc.large (Hm.insert (H.uniqueOf d.name) n (getRef tc.large)) in
                        (kC, indices)
                    | _ ->
-                       let w = T.error tc "DataKindNotType" in
+                       let w = T.errorOf tc "DataKindNotType" [quote tc (under.lvl + indices) last] [] in
                        (Core.Type 0, 0))
             in
             let ty = underParams d.params ks kind G.default Icit.Explicit in
@@ -250,7 +250,7 @@ fun writtenLevel (h : HirArena) (k : HirExpr) : Maybe Int =
 
 -- The constructors of a data type, and all their fields, for positivity:
 -- each with the size of the context it is in, and its type.
-fun declareCtors (tc : Tc s) (ctx : Ctx) (d : DataDecl) (ks : [Core]) (indices : Int) : (Ctx, [(Int, Value)]) ! { St s | e } =
+fun declareCtors (tc : Tc s) (ctx : Ctx) (d : DataDecl) (ks : [Core]) (indices : Int) : (Ctx, [(Int, Value, String)]) ! { St s | e } =
   -- the parameters again, now that the type itself is in scope
   let params = bindParams tc ctx d.params ks in
   let n = V.len d.params in
@@ -265,7 +265,7 @@ fun declareCtors (tc : Tc s) (ctx : Ctx) (d : DataDecl) (ks : [Core]) (indices :
                 else
                   let w = T.errorOf tc "IndexedNeedsSignatures" [] [H.textOf d.name] in
                   None
-            | CtorShape.Sig sig -> Just (ctorSig tc d params ctx.lvl sig indices)
+            | CtorShape.Sig sig -> Just (ctorSig tc d params ctx.lvl (H.textOf x) sig indices)
           in
           (match declared with
            | None -> (declareConstant tc c x Value.Error, fieldsSoFar)
@@ -275,7 +275,7 @@ fun declareCtors (tc : Tc s) (ctx : Ctx) (d : DataDecl) (ks : [Core]) (indices :
                let info = CtorInfo.CtorInfo (H.textOf x) (H.uniqueOf d.name) tag (n + implicit) fields in
                let w2 = setRef tc.ctors (Hm.insert (H.uniqueOf x) info (getRef tc.ctors)) in
                let w3 = setRef tc.opens (Hm.insert (H.uniqueOf x) (fieldOpens tc shape found fields) (getRef tc.opens)) in
-               (declareConstant tc c x ty, V.append fieldsSoFar found)))
+               (declareConstant tc c x ty, V.append fieldsSoFar (V.map (\f -> (fst f, snd f, H.textOf x)) found))))
     (ctx, [])
     (V.zip (V.range 0 (V.len d.ctors)) d.ctors)
 
@@ -290,14 +290,18 @@ fun declareSeq (tc : Tc s) (d : DataDecl) =
       -- an unknown name, which the renamer reported
       if n < 0 or c < 0 then ()
       else
-        let fits =
-          \u fields ->
+        -- what is wrong with `x` for its place, if anything
+        let unfit =
+          \x u fields what ->
+            let name = H.textOf x in
             match T.ctorInfo tc u with
-            | Just (CtorInfo.CtorInfo _ dt _ _ fs) -> dt == H.uniqueOf d.name and fs == fields
-            | None -> False
+            | Just (CtorInfo.CtorInfo _ dt _ _ fs) if dt == H.uniqueOf d.name ->
+                if fs == fields then None else Just "${name} is ${what}, so it has ${show fields} fields; ${name} has ${show fs}"
+            | _ -> Just "${name} is not a constructor of ${H.textOf d.name}"
         in
-        if fits n 0 and fits c 2 then setRef tc.seqs (Hm.insert (H.uniqueOf d.name) (n, c) (getRef tc.seqs))
-        else T.error tc "BadSeq"
+        match M.orElse (unfit cons c 2 "an element in front of a sequence") (unfit nil n 0 "the empty sequence") with
+        | None -> setRef tc.seqs (Hm.insert (H.uniqueOf d.name) (n, c) (getRef tc.seqs))
+        | Just why -> T.errorOf tc "BadSeq" [] [H.textOf d.name, why]
 
 -- Which of a constructor's `count` fields a type may read off a known
 -- instance: those that are types, and a trait's superclasses.
@@ -348,7 +352,7 @@ fun ctorFields (tc : Tc s) (d : DataDecl) (params : Ctx) (fields : [HirExpr]) : 
         match acc with
         | (es, u, fs) ->
             let (fC, fV, level, _) = inferType tc u f in
-            let w = if level > dataLevel tc d then T.error tc "LargeField" else () in
+            let w = if level > dataLevel tc d then T.errorOf tc "LargeField" [] [H.textOf d.name, show level] else () in
             (V.pushBack es fC, X.bind u None "_" fV, V.pushBack fs (u.lvl, fV)))
       ([], params, [])
       fields
@@ -368,7 +372,7 @@ fun ctorFields (tc : Tc s) (d : DataDecl) (params : Ctx) (fields : [HirExpr]) : 
 -- `C : ty`: the constructor's type under the parameters, checked to end in
 -- the type at its parameters and then at indices, and how many implicit
 -- arguments and fields it has.
-fun ctorSig (tc : Tc s) (d : DataDecl) (params : Ctx) (paramsAt : Int) (sig : HirExpr) (indices : Int) : (Core, Int, Int, [(Int, Value)]) ! { St s | e } =
+fun ctorSig (tc : Tc s) (d : DataDecl) (params : Ctx) (paramsAt : Int) (ctor : String) (sig : HirExpr) (indices : Int) : (Core, Int, Int, [(Int, Value)]) ! { St s | e } =
   let (sigC0, _) = checkType tc params sig in
   -- the fields it gives no grade are linear, as a list of fields is
   let sigC = linearFields (hirOf tc) sig sigC0 in
@@ -383,11 +387,11 @@ fun ctorSig (tc : Tc s) (d : DataDecl) (params : Ctx) (paramsAt : Int) (sig : Hi
         if u == H.uniqueOf d.name and V.len sp == n + indices and atParams sp then
           V.concatMap (\e -> match e with | Elim.App (Value.Rigid l _ []) -> [l] | _ -> []) (V.drop sp n)
         else
-          let w = T.error tc "CtorResult" in
+          let w = T.errorOf tc "CtorResult" [] [ctor, H.textOf d.name] in
           []
     | Value.Error -> []
     | _ ->
-        let w = T.error tc "CtorResult" in
+        let w = T.errorOf tc "CtorResult" [] [ctor, H.textOf d.name] in
         []
   in
   let implicit = V.len (V.takeWhile (\b -> match b with | (_, icit, _, _, _) -> icit == Icit.Implicit) binders) in
@@ -397,14 +401,14 @@ fun ctorSig (tc : Tc s) (d : DataDecl) (params : Ctx) (paramsAt : Int) (sig : Hi
       (V.take binders implicit)
   in
   let laterImplicit = V.any (\b -> match b with | (_, icit, _, _, _) -> icit == Icit.Implicit) (V.drop binders implicit) in
-  let w = if not erased or laterImplicit then T.error tc "CtorImplicit" else () in
+  let w = if not erased or laterImplicit then T.errorOf tc "CtorImplicit" [] [ctor] else () in
   let w2 =
     V.foldl
       (\acc b ->
         match b with
         | (lvl, icit, _, dom, types) ->
             (match sortOf tc types dom with
-             | Just level -> if level > dataLevel tc d and (icit == Icit.Explicit or not (V.elem lvl forced)) then T.error tc "LargeField" else ()
+             | Just level -> if level > dataLevel tc d and (icit == Icit.Explicit or not (V.elem lvl forced)) then T.errorOf tc "LargeField" [] [H.textOf d.name, show level] else ()
              | None -> ()))
       ()
       binders
@@ -555,7 +559,11 @@ fun native (name : String) : Maybe (Bool, Int) =
                  -- (a cell's operations end in `Mut`, and only they)
                  let mutation = V.elem (H.textOf x) ["newRef", "getRef", "setRef"] in
                  let fits = if isType then endsInUniverse sig else ar == arity and endsInEffects sig == mutation in
-                 let w = match sig with | Core.Error -> () | _ -> if fits then () else T.error tc "NativeSignature" in
+                 let why =
+                   if isType then "a native type's kind ends in Type, as in Type -> Type"
+                   else "it takes ${show arity} argument${if arity == 1 then "" else "s"} at run time, after any implicit ones, and ${if mutation then "ends in the effect Mut" else "has no effects"}"
+                 in
+                 let w = match sig with | Core.Error -> () | _ -> if fits then () else T.errorOf tc "NativeSignature" [] [H.textOf x, why] in
                  let u = H.uniqueOf x in
                  let w2 = setRef tc.natives (Hm.insert u True (getRef tc.natives)) in
                  let w4 = setRef tc.nativeNames (Hm.insert (H.textOf x) u (getRef tc.nativeNames)) in

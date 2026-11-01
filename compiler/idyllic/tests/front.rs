@@ -196,6 +196,37 @@ const PORTED: &[&str] = &[
     "* has indices, so its constructors need types",
     "* is not an operation's type",
     "there is no native called *",
+    "no `*` in scope *",
+    "ambiguous `*`",
+    "not in scope",
+    "binder annotation does not match the expected argument type",
+    "binder grade does not match the expected function type",
+    "grade is too large",
+    "empty grade range",
+    "equations with different numbers of arguments",
+    "too many patterns",
+    "cannot tell whether this pattern applies",
+    "dot pattern does not match",
+    "a data type's kind ends in Type",
+    "* does not build a *",
+    "unsupported implicit argument of *",
+    "field too large for its data type",
+    "effects belong to a function type",
+    "the type of the native * does not fit it",
+    "* is handled twice",
+    "a return clause names one thing",
+    "*'s clause names * things",
+    "which *?",
+    "* cannot be built with #[..]",
+    "main has the wrong type",
+    "a linear value boxed",
+    "a linear type for a type parameter that is shared",
+    "a linear value at the top level",
+    "an instance * cannot be here",
+    "this instance * overlaps another",
+    "universe too large",
+    "these effects may be resumed more than once",
+    "* is not strictly positive",
 ];
 
 /// Whether `headline` is of the shape `pattern`, each `*` in it any text.
@@ -219,7 +250,8 @@ fn shaped(headline: &str, pattern: &str) -> bool {
 }
 
 /// Each error the checker found, said in words, by both: its headline and
-/// its label, for the kinds front/ says as this compiler does (`PORTED`).
+/// its label, for the kinds front/ says as this compiler does (`PORTED`),
+/// and for an overloaded name, its candidates.
 /// Each distinct line once, as front/ keeps one error of a kind at a node
 /// where this compiler may keep one for each part of it.
 #[test]
@@ -251,8 +283,9 @@ fn ported_lines(dump: &str) -> String {
     renumbered_by(&lines.join("\n"), '?')
 }
 
-/// A program's errors, said in words: each diagnostic's headline and label,
-/// a line each; `(error)` if it does not parse or rename.
+/// A program's errors, said in words: each diagnostic's headline and label
+/// (and an overloaded name's candidates), a line each; `(error)` if it does
+/// not parse or rename.
 fn messages(prelude: &idyllic_ast::Program, src: &str) -> String {
     let Some(p) = program(src) else { return "(error)".to_string() };
     let std = idyllic::stdlib::compiled();
@@ -277,9 +310,15 @@ fn messages(prelude: &idyllic_ast::Program, src: &str) -> String {
         .iter()
         .map(|e| {
             let d = e.to_diagnostic(&spans);
-            match d.labels.first() {
+            let line = match d.labels.first() {
                 Some(l) => format!("{}: {}", d.message, l.message),
                 None => d.message.clone(),
+            };
+            // (a name's candidates are what its message is for)
+            if d.message.starts_with("no `") || d.message.starts_with("ambiguous `") {
+                format!("{line} | {}", d.help.join("\n").replace('\n', " | "))
+            } else {
+                line
             }
         })
         .collect::<Vec<_>>()

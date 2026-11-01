@@ -1364,16 +1364,13 @@ do yet `(unsupported)`, and the tests count those apart.
   often, recursive bindings with no signature, type-level grades with
   nothing to check them, numbers too large for their type, effects (not
   allowed, unhandled, in a type, in an argument a type depends on), and
-  handlers, natives and indexed data (44 kinds). Still to port: the
-  overloading errors (ambiguous names, names with no meaning that fits),
-  whose words name the type wanted and the candidates, and a few rarer
-  kinds (instances that overlap or are orphans, constructor results,
-  linear values at the top level or boxed, large fields). The
-  renamer's errors are compared too, each headline as the Rust renamer's
-  (a problem's text is its headline, and its label on a line after). The
-  rest of the checker's kinds still say their kind, and an error's place
-  (front/ places one at the node being checked when it is found) is still
-  to compare.
+  handlers, natives and indexed data, overloaded names (with the candidates
+  they list), and all the rest: every kind of the Rust checker's 76 but
+  `TestType` and `NoTestRunner`, which are `idyll test`'s, and front/ has
+  no such command yet. The renamer's errors are compared too, each headline as the Rust renamer's
+  (a problem's text is its headline, and its label on a line after). An
+  error's place (front/ places one at the node being checked when it is
+  found) is still to compare.
 - [x] **Renaming** (`Rename`: `resolve`, a `pass!` from `Surface` to `Hir`,
   a `lang!`, under a driver for packages and `use`s), for a module after the prelude:
   every program agrees with `idyllic-rename`, binder for binder (the test

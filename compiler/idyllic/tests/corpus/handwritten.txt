@@ -1174,3 +1174,296 @@ x
 %%%
 -- float literals with more digits than a machine integer holds, each the nearest float
 (0.000000000060771005063039659766, 0.00000000000000000000202226624879595063154, 123456789012345678901234567890.5)
+%%%
+use Maybe.*
+use Box.*
+
+data Box = Just Int | Empty
+
+unbox : Box -> Int
+unbox (Just n) = n
+unbox Empty = 0
+
+let f = \x -> case x of { Just n -> 1; _ -> 0 } in 2
+%%%
+use Maybe.*
+use Box.*
+
+data Box = Just Int | Empty
+
+unbox : Box -> Int
+unbox (Just n) = n
+unbox Empty = 0
+
+v = Just 7
+
+unbox v
+%%%
+use Maybe.*
+use Box.*
+
+data Box = Just Int | Empty
+
+unbox : Box -> Int
+unbox (Just n) = n
+unbox Empty = 0
+
+f : Bool -> Bool
+f b = b
+
+f (Just 1)
+%%%
+use Maybe.*
+use Box.*
+
+data Box = Just Int | Empty
+
+unbox : Box -> Int
+unbox (Just n) = n
+unbox Empty = 0
+
+g : Bool -> Int
+g (Just n) = n
+g _ = 0
+
+g True
+%%%
+use Maybe.*
+use Box.*
+
+data Box = Just Int | Empty
+
+unbox : Box -> Int
+unbox (Just n) = n
+unbox Empty = 0
+
+use Std.Collections.List (length)
+use Shape.*
+
+data Shape = Circle Int
+
+length : Shape -> Int
+length (Circle r) = r
+
+length (Just 5)
+%%%
+-- the checker's rarer errors, each said as both say it
+data Nat = Z | S Nat
+
+use Nat.*
+
+data Eq : Nat -> Nat -> Type where
+  Refl : Eq x x
+
+use Eq.*
+
+same : (n : [] Nat) -> (m : [0] Nat) -> (p : [0..1] Eq n m) -> Nat
+same n .Z Refl = n
+%%%
+data Nat = Z | S Nat
+
+use Nat.*
+
+data Vec : Nat -> Type -> Type where
+  Nil : Vec Z a
+  Cons : a -> Vec n a -> Vec (S n) a
+
+use Vec.*
+
+f : Nat -> Nat
+f n = f n
+
+g : Vec (f Z) Int -> Int
+g Nil = 0
+g (Cons x xs) = 1
+%%%
+data Nat = Z | S Nat
+
+use Nat.*
+
+data Is : Nat -> Type where
+  Mk : (n : Nat) -> Is n
+
+use Is.*
+
+f : Nat -> Nat
+f n = f n
+
+h : (n : [] Nat) -> Is (f n) -> Int
+h n (Mk Z) = 0
+h n (Mk m) = 1
+%%%
+data Nat = Z | S Nat
+
+use Nat.*
+
+f : (n : [0..1] Nat) -> Int
+f Z = 1
+f n m = 2
+%%%
+f : Int -> Int
+f 1 2 = 3
+%%%
+data Nat = Z | S Nat
+
+use Nat.*
+
+data T : Nat -> Type where
+  C : Nat -> Nat
+%%%
+data Nat = Z | S Nat
+
+use Nat.*
+
+data T (a : Type) : Nat -> Type where
+  C : T Int Z
+%%%
+data Nat = Z | S Nat
+
+use Nat.*
+
+data T : Nat -> Nat where
+%%%
+data Box : Type where
+  Box : {a : Type} -> a -> Box
+%%%
+data U = U Type
+%%%
+data T : Type where
+  C : Int -> {a : Type} -> T
+%%%
+xs : Int ! Div
+xs = xs
+%%%
+effect Ask where
+  ask : () -> Int
+
+handle ask () with
+  ask _ k -> k 1
+  ask _ k -> k 2
+%%%
+effect Ask where
+  ask : () -> Int
+
+handle ask () with
+  ask k -> k 1
+%%%
+effect Ask where
+  ask : () -> Int
+
+handle ask () with
+  return x y -> x
+  ask _ k -> k 1
+%%%
+effect Calc where
+  add2 : Int -> Int -> Int
+  neg : Int -> Int
+
+handle add2 1 2 with
+  add2 a k -> k a
+  neg n k -> k n
+%%%
+effect S a where
+  get : () -> a
+
+f : () -> Int ! {S Int, S Bool}
+f u = get ()
+
+handle f () with
+  get _ k -> k 1
+%%%
+@seq(nil = Cons, cons = Nil)
+data L a = Nil | Cons a (L a)
+
+use L.*
+
+Nil
+%%%
+@native
+arrayLen : {a : Type} -> Array a -> Int -> Int
+
+1
+%%%
+main : Int
+main = 3
+%%%
+effect Ask where
+  ask : () -> Int
+
+main () = printInt (ask ())
+%%%
+(\(x : [1] Int) -> x) : (x : [2] Int) -> Int
+%%%
+\(x : [2..1] Int) -> x
+%%%
+(\(x : Bool) -> 1) : Int -> Int
+%%%
+data Bad = Bad (Bad -> Int)
+%%%
+data Bad a = Bad (Bad (Bad a))
+%%%
+data Neg a = Neg (a -> Int)
+use Neg.*
+data Bad = Bad (Neg Bad)
+%%%
+data Bad = Bad (List (Bad -> Int))
+%%%
+trait Describe (a : Type) where
+  describe : a -> String
+
+instance Describe Int where
+  describe n = showInt n
+
+instance Describe Int where
+  describe n = ""
+
+1
+%%%
+trait Describe (a : Type) where
+  describe : a -> String
+
+instance Describe Int where
+  describe n = showInt n
+
+instance Describe a => Describe (List a) where
+  describe xs = "a list"
+
+instance Describe (List Int) where
+  describe xs = "ints"
+
+1
+%%%
+instance PartialEq Unit where
+  x == y = True
+
+1
+%%%
+use Std.Collections.Array
+
+instance PartialEq (Array Int) where
+  x == y = True
+
+1
+%%%
+id : {a : Type} -> a -> a
+id x = x
+
+id Type
+%%%
+effect Ask where
+  ask : () -> Int
+
+effect Choose where
+  @many flip : () -> Bool
+
+compose : {e : Effect} -> (f : Int -> Int ! e) -> (g : Int -> Int ! e) -> (n : Int) -> Int ! e
+compose f g n = f (g n)
+
+pick : Int -> Int ! Choose
+pick n = if flip () then n else 0
+
+addAsk : Int -> Int ! Ask
+addAsk n = n + ask ()
+
+both : Int -> Int ! {Ask, Choose}
+both n = compose pick addAsk n

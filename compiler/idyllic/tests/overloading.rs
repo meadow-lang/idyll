@@ -164,6 +164,17 @@ fn no_candidate_fitting_names_the_type_wanted() {
 }
 
 #[test]
+fn no_candidate_is_a_constructor_of_a_builtin_type() {
+    let e = said(&rejected(&format!("{BOX}g : Bool -> Int
+g (Just n) = n
+g _ = 0
+
+g True
+")));
+    assert!(e.starts_with("no `Just` in scope has the type needed here, `Bool`"), "{e}");
+}
+
+#[test]
 fn no_combination_fitting_is_one_error() {
     // each name fits alone -- either `length` takes *something*, either
     // `Just` makes *something* -- but no `length` takes what any `Just` makes

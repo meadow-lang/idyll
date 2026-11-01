@@ -558,7 +558,9 @@ fun specializeAt (methods : HashMap Int (Int, Int, Int)) (fields : HashMap Int [
             (match instanceOf tc ctx ty with
              | Just (t, head) ->
                  let w =
-                   if own u and not (own t) and not (match head with | Just hd -> own hd | None -> False) then T.error tc "OrphanInstance" else ()
+                   if own u and not (own t) and not (match head with | Just hd -> own hd | None -> False) then
+                     T.errorOf tc "OrphanInstance" [quote tc ctx.lvl ty] ["the trait, from ${(getRef tc.homeOf) t},"]
+                   else ()
                  in
                  [(u, t)]
              | None -> [])
@@ -572,14 +574,28 @@ fun specializeAt (methods : HashMap Int (Int, Int, Int)) (fields : HashMap Int [
           if not (own u) then ()
           else
             let clash =
-              V.any
-                (\j -> match V.get instances j with | Just (v, s) -> s == t and headsUnify tc ctx u v | None -> False)
+              V.concatMap
+                (\j -> match V.get instances j with | Just (v, s) -> if s == t and headsUnify tc ctx u v then [v] else [] | None -> [])
                 (V.range 0 i)
             in
-            if clash then T.error tc "OverlappingInstances" else ()
+            (match (V.head clash, X.lookup ctx (named u)) with
+             | (Just v, Just (_, ty, _)) -> T.errorOf tc "OverlappingInstances" [quote tc ctx.lvl ty] [hintName tc ctx own v]
+             | _ -> ())
       | None -> ())
     ()
     (V.range 0 (V.len instances))
+
+-- A hint, as a message names it: an instance with no name of its own by
+-- its type, and another package's with the package.
+fun hintName (tc : Tc s) (ctx : Ctx) (own : Int -> Bool) (u : Int) : String ! { St s | e } =
+  let name = M.unwrapOr "hint #${show u}" (Hm.lookup u (getRef tc.hintNames)) in
+  if S.startsWith "#instance" name or S.contains ".#instance" name then
+    match X.lookup ctx (named u) with
+    | Just (_, ty, _) -> "the instance ${C.shown (getRef tc.linear) (quote tc ctx.lvl ty)}"
+    | None -> "an instance"
+  else
+    let home = (getRef tc.homeOf) u in
+    if own u or not (S.startsWith "`" home) then name else "${name}, from ${home}"
 
 -- The trait an instance's type is of, past its implicit and auto binders,
 -- and the type constructor of what it is for (its first argument's head),

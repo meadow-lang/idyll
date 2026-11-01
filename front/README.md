@@ -163,8 +163,8 @@ cd idyll-eval && cargo test --release --test front -- --nocapture
 
 It prints, for each pass, how many programs there are and how many are an
 error to `front/`. A program that is an error must be an error on both sides,
-so an error counts as agreement only when both agree there is one. (The
-messages are not compared yet; that is on the roadmap.)
+so an error counts as agreement only when both agree there is one.
+`the_messages_agree` compares what each says about the error as well.
 
 `IDYLL_FRONT_SHOW=handwritten-0003,prelude` prints both sides' output for the
 programs named, which is how a difference is looked into.
@@ -1022,16 +1022,20 @@ So far the server:
 - colours a file from its tree;
 - formats a file as `Idyll fmt` does.
 
-What is wrong is said as the Rust checker says it, for the kinds ported
-so far (`Messages.mw`): where the checker reports an error, it keeps what
+What is wrong is said as the Rust checker says it (`Messages.mw`): where
+the checker reports an error, it keeps what
 the error's words are made of (`Tc.errorOf`: a `Report` of its kind, the
 types it names as Core, and its names), beside the kind the dumps
 compare. Once the module is checked, `Messages.diagnosticsIn` pairs each
 error with its report and says it with the Rust checker's headline and
 label, a mismatch's types with what was solved since put in (as
 `solved_in` does). `Idyll messages` prints them, and the differential
-`the_messages_agree` holds them to the Rust checker's. An error of a kind
-not ported yet is said by its kind (`said`).
+`the_messages_agree` holds them to the Rust checker's, every kind but the
+two `idyll test` reports, which front/ has no command for. An overloaded
+name's message lists its candidates in a note, and the differential
+compares those too: how each is written and where it is from are looked
+up only when a message wants them (`Check.meaningOf`, `Check.homeOf`), so
+that a program with nothing wrong pays nothing for them.
 
 The checker keeps the node it is checking (`Tc.at`, set around each node by
 `Elab.elaborate`) and each error with it (`Tc.placed`), beside the kinds
