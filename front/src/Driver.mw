@@ -17,9 +17,9 @@
 
 use Lingua (make!)
 use Lingua.Make (Given, Linking, Part, unitDir, unitSources, unitImports, linkRoot, linkUnits, linkOut, linkDir)
-use Lingua.Make (partDir, partSources, partImports, partUnitImports, partUnitPaths)
+use Lingua.Make (partDir, partSources, partImports, partUnitImports, partUnitPaths, resolverOf)
 use Lingua.Diagnostic (renderAll)
-use Lingua.Resolve (Dep, GitRef, reqOf)
+use Lingua.Resolve (Dep, GitRef, reqOf, resolve)
 use Idyll.Surface (SurfaceProgram)
 use Idyll.Surface as Surface
 use Idyll.Rename (renamePackageWith, PackageNames, Exported, namesExports)
@@ -199,21 +199,31 @@ fun filesOf (dir : String) : [String] ! { Fs | e } =
 -- package but Std has. Lingua's resolver fetches what is by git, takes the
 -- newest release a version allows, and keeps what it chose in `idyll.lock`.
 fun dependenciesOf (root : String) (dir : String) (manifest : String) : Result String [Dep] ! { Process | e } =
-  let lines = S.lines manifest in
-  let section = V.foldl (\acc l -> match acc with | (inDeps, found) -> (let t = S.trim l in if S.startsWith "[" t then (t == "[dependencies]", found) else if inDeps and S.contains "=" t then (inDeps, V.pushBack found t) else acc)) (False, []) lines in
-  let deps =
-    V.foldl
-      (\acc t ->
-        match (acc, dependencyOf t) with
-        | (Err why, _) -> Err why
-        | (_, Err why) -> Err why
-        | (Ok ds, Ok d) -> Ok (V.pushBack ds d))
-      (Ok [])
-      (snd section)
-  in
-  match deps with
+  match declaredIn manifest with
   | Err why -> Err why
   | Ok ds -> Ok (if manifestField "name" manifest == Just "Std" then ds else V.pushBack ds (Dep.Path (stdDir ())))
+
+-- What a manifest's `[dependencies]` say.
+fun declaredIn (manifest : String) : Result String [Dep] =
+  let lines = S.lines manifest in
+  let section = V.foldl (\acc l -> match acc with | (inDeps, found) -> (let t = S.trim l in if S.startsWith "[" t then (t == "[dependencies]", found) else if inDeps and S.contains "=" t then (inDeps, V.pushBack found t) else acc)) (False, []) lines in
+  V.foldl
+    (\acc t ->
+      match (acc, dependencyOf t) with
+      | (Err why, _) -> Err why
+      | (_, Err why) -> Err why
+      | (Ok ds, Ok d) -> Ok (V.pushBack ds d))
+    (Ok [])
+    (snd section)
+
+-- The directories of the packages a manifest at `dir` names, each found
+-- without reaching the network, by the lock file beside `root`: a repository
+-- never fetched has nothing to read, and a package is left without it.
+@pub fun dependencyDirs (root : String) (dir : String) (manifest : String) =
+  let r = resolverOf "~/.idyll/git" "IDYLL_HOME" "idyll.lock" root True False False [] in
+  V.concatMap
+    (\d -> match resolve r dir d with | Ok found -> [found] | Err _ -> [])
+    (match declaredIn manifest with | Ok ds -> ds | Err _ -> [])
 
 -- One line of a manifest's `[dependencies]`, as a dependency.
 fun dependencyOf (line : String) : Result String Dep =
@@ -295,13 +305,36 @@ fun baseAfter (deps : [Built]) : Int =
   let chunk = 1048576 in
   ((high + chunk - 1) / chunk) * chunk
 
+-- Past `baseAfter` what it is checked against, where a package names its
+-- things. Packages that do not depend on each other are compiled apart, and
+-- neither is told of the other, so this comes from its own name: two in one
+-- build must never share a unique, or what one defines is taken for what the
+-- other does.
+fun roomOf (name : String) : Int =
+  let room = 4294967296 in
+  room * V.foldl (\h i -> (h * 31 + toInt (stringByteAt name i)) % 1048573) 17 (V.range 0 (stringByteLength name))
+
+fun lowOf (b : Built) : Int = let c = builtCompiled b in c.low
+fun highOf (b : Built) : Int = let c = builtCompiled b in c.high
+
+-- The names of two of these packages whose things overlap, if any do: their
+-- rooms met, and a build must say so rather than mix them up.
+fun overlapping (packages : [Built]) : [String] =
+  let sorted = sortOn lowOf packages in
+  V.concatMap
+    (\i ->
+      match (V.get sorted i, V.get sorted (i + 1)) with
+      | (Just a, Just b) -> if highOf a > lowOf b then [builtName a, builtName b] else []
+      | _ -> [])
+    (V.range 0 (V.len sorted))
+
 
 -- Whether names given say how visible anything is.
 fun visibleIn (names : PackageNames) : Bool =
   V.any (\e -> match e with | Exported.Exported _ _ _ vis -> vis != Visibility.Private) (namesExports names)
 
 -- A package's name as its dependents' `use`s write it: without its version.
-fun plainName (name : String) : String = V.getOr name (S.split "@" name) 0
+@pub fun plainName (name : String) : String = V.getOr name (S.split "@" name) 0
 
 -- Check a part: its modules, against the compiled packages its package
 -- depends on and the compiled parts it imports. Its interface: what it
@@ -322,11 +355,14 @@ fun compileScc (x : Part Interface PartOut) : Result String PartOut ! { Fs | e }
     let mine = V.map fst (V.filter (\s -> S.endsWith ".idl" (fst s)) (partSources x)) in
     let unitPaths = partUnitPaths x in
     let index = V.foldl (\acc i -> if V.elem (V.getOr "" unitPaths i) mine and (acc < 0 or i < acc) then i else acc) (0 - 1) (V.range 0 (V.len unitPaths)) in
-    let first = baseAfter packages + slot * (if index < 0 then 0 else index) in
+    let first = baseAfter packages + roomOf (plainName name) + slot * (if index < 0 then 0 else index) in
+    let clash = overlapping packages in
     let root = V.any (\m -> fst m == "") own in
     -- whether the package says how visible things are: as far as this part
     -- and the parts it imports show
     let visibility = V.any (\m -> S.contains "@pub" (snd m)) own or V.any (\b -> visibleIn (builtNames b)) siblings in
+    if not (V.isEmpty clash) then Err "${S.join " and " clash} name their things in the same room: one needs another name"
+    else
     match (Surface.parsed prelude, parsedModules (rootFirst (dependencyFirst name own))) with
     | (Err _, _) -> Err "the prelude does not parse"
     | (_, Err why) -> Err why

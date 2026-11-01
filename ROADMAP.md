@@ -906,7 +906,9 @@ accepted when what it does fits within what resuming was found to.
   `database!` of front/'s queries (front/README.md, "The editor"), as the
   formatter is written with `format!`. `Idyll lsp`:
   - publishes what is wrong with each open file, the renamer's and the
-    checker's problems at the nodes they are about;
+    checker's problems at the nodes they are about, in its package and
+    against the packages that package depends on, by path or by a git
+    repository already fetched;
   - says a term's type on hover;
   - goes to a name's definition, and finds every place it is named;
   - completes names, the program's and the prelude's, with their types;

@@ -50,10 +50,14 @@ database! {
     -- the package a file is a module of, if it is one (`Server`'s `opened`)
     | input package (file : Int) : Maybe PackageContext
     | query parsed (file : Int) : (Green Idyll, [(Int, String)]) = parseIdyll (querySource file)
+    -- what a file's package depends on, compiled: kept until the package is
+    -- read again with other dependencies
+    | query dependencies (file : Int) : [Dependency] =
+        dependenciesCompiled (M.unwrapOr [] (M.map (\(pc : PackageContext) -> pc.needs) (queryPackage file))) (queryPrelude 0) (\u -> queryStd 0)
     | query prelude (unit : Int) : Result [Diagnostic] SurfaceProgram = Surface.parsed D.prelude
     | query std (unit : Int) : Result String (PackageNames, Compiled) = stdOf (queryPrelude 0)
     | query problems (file : Int) : [Diagnostic] =
-        problemsIn (querySource file) (queryPackage file) (queryPrelude 0) (\u -> queryStd 0)
+        problemsIn (querySource file) (M.map (\pc -> (pc, \u -> queryDependencies file)) (queryPackage file)) (queryPrelude 0) (\u -> queryStd 0)
     | query formatted (file : Int) : String = formattedOf (querySource file)
     -- what the prompt's declarations and the prelude declare, each its name,
     -- its type and its type shown: what the finder searches, kept until a
@@ -141,7 +145,7 @@ fun prepared (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std
   typeAtIn text None prelude std at
 
 -- The same, of a file in its package, if it is in one.
-@pub fun typeAtIn (text : String) (package : Maybe PackageContext) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (at : Int) : Maybe (Meta, String) ! e =
+@pub fun typeAtIn (text : String) (package : Maybe (PackageContext, () -> [Dependency] ! e)) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (at : Int) : Maybe (Meta, String) ! e =
   let (ready, base) = preparedFor text package prelude std in
   match ready with
   | Ok (m, deps, renaming) ->
@@ -165,21 +169,37 @@ fun prepared (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std
   | Err _ -> None
 
 -- The package a file the editor opened is a module of (`Server`'s
--- `opened`): its name, the file's module path, and the package's other
--- modules, each its path and text as they were read.
+-- `opened`): its name, the file's module path, the package's other modules,
+-- each its path and text as they were read, the names of the packages it
+-- depends on, and every package it reaches, each after those it depends on.
 @derive(PartialEq)
 @pub record PackageContext = {
   name : String,
   own : [String],
-  others : [([String], String)]
+  others : [([String], String)],
+  uses : [String],
+  needs : [Needed]
 }
+
+-- A package a file's package reaches: its name as `use`s write it, its
+-- modules as they were read, and the names of the packages it depends on.
+@derive(PartialEq)
+@pub record Needed = {
+  name : String,
+  modules : [([String], String)],
+  uses : [String]
+}
+
+-- A package compiled, for those that depend on it: its name, what it gives,
+-- and what it compiled to.
+@pub type Dependency = (String, PackageNames, Compiled)
 
 -- What is wrong with a file: checked as a module of its package, if it is
 -- one, with the package's other modules; else as a lone program.
-@pub fun problemsIn (text : String) (package : Maybe PackageContext) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : [Diagnostic] ! e =
+@pub fun problemsIn (text : String) (package : Maybe (PackageContext, () -> [Dependency] ! e)) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : [Diagnostic] ! e =
   match package with
   | None -> problemsOf text prelude std
-  | Just pc ->
+  | Just _ ->
       let (ready, base) = preparedFor text package prelude std in
       let mine = \(d : Diagnostic) -> match whereAt d with | Meta.Meta a b -> (a >= base and a <= base + S.byteLength text) or (a == 0 and b == 0) in
       let back = \(ds : [Diagnostic]) -> V.map (\d -> shiftedBack d base) (V.filter mine ds) in
@@ -200,17 +220,14 @@ fun prepared (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std
 -- map, as the Rust compiler's files do. A file in no package, or whose
 -- package has another module that does not parse, is a lone program, its
 -- places from 0.
-@pub fun preparedFor (text : String) (package : Maybe PackageContext) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : (Result [Diagnostic] (Rename.Renamed, [Compiled], [Diagnostic]), Int) ! e =
+@pub fun preparedFor (text : String) (package : Maybe (PackageContext, () -> [Dependency] ! e)) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : (Result [Diagnostic] (Rename.Renamed, [Compiled], [Diagnostic]), Int) ! e =
   match package with
   | None -> (prepared text prelude std, 0)
-  | Just pc -> M.unwrapOr (prepared text prelude std, 0) (packagePrepared text pc prelude std)
+  | Just (pc, built) -> M.unwrapOr (prepared text prelude std, 0) (packagePrepared text pc built prelude std)
 
-fun packagePrepared (text : String) (pc : PackageContext) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : Maybe (Result [Diagnostic] (Rename.Renamed, [Compiled], [Diagnostic]), Int) ! e =
+fun packagePrepared (text : String) (pc : PackageContext) (built : () -> [Dependency] ! e) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : Maybe (Result [Diagnostic] (Rename.Renamed, [Compiled], [Diagnostic]), Int) ! e =
   let modules = V.pushBack (V.filter (\m -> fst m != pc.own) pc.others) (pc.own, text) in
-  let paths = V.map (\m -> S.join "." (fst m)) modules in
-  let parted = V.concatMap Parts.partModules (Parts.parts pc.name paths (V.map snd modules)) in
-  let order = V.append (V.filter (\i -> V.getOr "" paths i == "") parted) (V.filter (\i -> V.getOr "" paths i != "") parted) in
-  let ordered = V.concatMap (\i -> match V.get modules i with | Just m -> [m] | None -> []) order in
+  let ordered = inImportOrder pc.name modules in
   let bases = V.foldl (\acc m -> V.pushBack acc (M.unwrapOr 0 (V.last acc) + S.byteLength (snd m) + 1)) [0] ordered in
   let ownAt = M.unwrapOr 0 (V.find (\i -> M.map fst (V.get ordered i) == Just pc.own) (V.range 0 (V.len ordered))) in
   let base = V.getOr 0 bases ownAt in
@@ -224,10 +241,13 @@ fun packagePrepared (text : String) (pc : PackageContext) (prelude : Result [Dia
         | Err _ -> None
         | Ok pre ->
             let progs = V.concatMap (\x -> match snd x with | Ok p -> [(fst x, p)] | Err _ -> []) parsedAll in
-            let deps = if pc.name == "Std" or not (V.any (\m -> S.contains "Std" (snd m)) modules) then [] else (match std () with | Ok (names, c) -> [("Std", names, c)] | Err _ -> []) in
-            let first = V.foldl (\acc d -> match d with | (_, _, (c : Compiled)) -> if c.high > acc then c.high else acc) 0 deps in
+            -- (Std compiled only if something here needs it)
+            let needsStd = pc.name != "Std" and (not (V.isEmpty pc.needs) or V.any (\m -> S.contains "Std" (snd m)) modules) in
+            let base0 = if needsStd then (match std () with | Ok (names, c) -> [("Std", names, c)] | Err _ -> []) else [] in
+            let deps = V.append base0 (if V.isEmpty pc.needs then [] else built ()) in
+            let direct = V.filter (\d -> match d with | (n, _, _) -> n == "Std" or V.elem n pc.uses) deps in
             let vis = V.any (\x -> Rename.mentionsVisibility (Rename.programOf (snd x))) progs in
-            (match Rename.renamePackageWith pc.name progs pre (V.map (\d -> match d with | (n, ns, _) -> (n, ns)) deps) [] first True vis with
+            (match Rename.renamePackageWith pc.name progs pre (V.map (\d -> match d with | (n, ns, _) -> (n, ns)) direct) [] (highest deps) True vis with
              | (m, _, _) ->
                  Just (Ok (m, V.map (\d -> match d with | (_, _, cp) -> cp) deps, V.map (\p -> match p with | (at, why) -> problemAt at why) m.problemsAt), base))
 
@@ -342,7 +362,7 @@ fun headOf (t : Core) : Core =
 
 -- The same, of a file in its package, if it is in one: what every module
 -- of the package declares.
-@pub fun declaredInPackage (text : String) (package : Maybe PackageContext) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : ([(Int, String, String)], Int) ! e =
+@pub fun declaredInPackage (text : String) (package : Maybe (PackageContext, () -> [Dependency] ! e)) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : ([(Int, String, String)], Int) ! e =
   match fst (preparedFor text package prelude std) with
   -- (checked though renaming found something wrong: a program being
   -- written always has something wrong with it)
@@ -367,7 +387,7 @@ fun ownOccurrences (m : Rename.Renamed) : [(Int, Meta)] =
 
 -- The same, of a file in its package, if it is in one: of the places in
 -- this file (a name another module defines has its definition there).
-@pub fun namedAtIn (text : String) (package : Maybe PackageContext) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (at : Int) : Maybe (Meta, [Meta]) ! e =
+@pub fun namedAtIn (text : String) (package : Maybe (PackageContext, () -> [Dependency] ! e)) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (at : Int) : Maybe (Meta, [Meta]) ! e =
   let (ready, base) = preparedFor text package prelude std in
   match ready with
   | Ok (m, _, _) ->
@@ -391,7 +411,7 @@ fun inFile (m : Meta) (base : Int) (text : String) : Bool =
 
 -- The same, of a file in its package, if it is in one: its own
 -- declarations, not its package's other modules'.
-@pub fun symbolsInPackage (text : String) (package : Maybe PackageContext) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : [(String, String, Meta)] ! e =
+@pub fun symbolsInPackage (text : String) (package : Maybe (PackageContext, () -> [Dependency] ! e)) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : [(String, String, Meta)] ! e =
   let (ready, base) = preparedFor text package prelude std in
   match ready with
   | Ok (m, deps, renaming) ->
@@ -422,7 +442,7 @@ fun kindOf (ty : String) : String =
 
 -- The same, of a file in its package, if it is in one: the names of the
 -- package's other modules among them.
-@pub fun completionsInPackage (text : String) (package : Maybe PackageContext) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (at : Int) : [(String, String)] ! e =
+@pub fun completionsInPackage (text : String) (package : Maybe (PackageContext, () -> [Dependency] ! e)) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (at : Int) : [(String, String)] ! e =
   let declared =
     match declaredInPackage text package prelude std with
     | ([], _) ->
@@ -480,27 +500,71 @@ fun sortedPlaces (ps : [Meta]) : [Meta] =
       match parsed with
       | Err e -> Err e
       | Ok mods ->
-          -- each after the modules it imports, so that a module's instances
-          -- are there for the searches of those that use it (as a package
-          -- read from its directory is ordered); the root still first
           let paths = V.map fst D.stdModules in
-          let parted = V.concatMap Parts.partModules (Parts.parts "Std" paths (V.map snd D.stdModules)) in
-          let order = V.append (V.filter (\i -> V.getOr "" paths i == "") parted) (V.filter (\i -> V.getOr "" paths i != "") parted) in
-          compiledPackage pre "Std" (V.concatMap (\i -> match V.get mods i with | Just m -> [m] | None -> []) order) []
+          compiledPackage pre "Std" (V.concatMap (\i -> match V.get mods i with | Just m -> [m] | None -> []) (importOrder "Std" paths (V.map snd D.stdModules))) []
+
+-- The modules of a package at `paths`, by index: each after the modules it
+-- imports, so that a module's instances are there for the searches of those
+-- that use it (as a package read from its directory is ordered); the root
+-- still first.
+fun importOrder (package : String) (paths : [String]) (texts : [String]) : [Int] =
+  let parted = V.concatMap Parts.partModules (Parts.parts package paths texts) in
+  V.append (V.filter (\i -> V.getOr "" paths i == "") parted) (V.filter (\i -> V.getOr "" paths i != "") parted)
+
+fun inImportOrder (package : String) (modules : [([String], String)]) : [([String], String)] =
+  V.concatMap
+    (\i -> match V.get modules i with | Just m -> [m] | None -> [])
+    (importOrder package (V.map (\m -> S.join "." (fst m)) modules) (V.map snd modules))
+
+-- The most names any of these packages has given: where one checked against
+-- them names its things from.
+fun highest (deps : [Dependency]) : Int =
+  V.foldl (\acc d -> match d with | (_, _, (c : Compiled)) -> if c.high > acc then c.high else acc) 0 deps
+
+-- The packages a file's package reaches, compiled in turn, each against Std
+-- and those before it: so no two share a unique, and one reached twice is
+-- compiled once. One that does not compile is left out, as Std is: what
+-- names it says so, where it does.
+@pub fun dependenciesCompiled (needed : [Needed]) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : [Dependency] ! e =
+  match prelude with
+  | Err _ -> []
+  | Ok pre ->
+      if V.isEmpty needed then []
+      else
+        let base = match std () with | Ok (names, c) -> [("Std", names, c)] | Err _ -> [] in
+        let done =
+          V.foldl
+            (\acc (n : Needed) ->
+              let mods = V.map (\m -> (fst m, Surface.parsed (snd m))) (inImportOrder n.name n.modules) in
+              let parsed = V.concatMap (\m -> match snd m with | Ok p -> [(fst m, p)] | Err _ -> []) mods in
+              if V.len parsed != V.len mods then acc
+              else
+                let direct = V.filter (\d -> match d with | (name, _, _) -> name == "Std" or V.elem name n.uses) acc in
+                match compiledAgainst pre n.name parsed direct acc (highest acc) with
+                | Ok (names, c) -> V.pushBack acc (n.name, names, c)
+                | Err _ -> acc)
+            base
+            needed
+        in
+        V.drop done (V.len base)
 
 -- A package compiled whole, after the prelude, against the compiled
 -- packages it depends on: the names it gives, and its interface.
-@pub fun compiledPackage prelude (name : String) (modules : [([String], SurfaceProgram)]) (deps : [(String, PackageNames, Compiled)]) : Result String (PackageNames, Compiled) =
+@pub fun compiledPackage prelude (name : String) (modules : [([String], SurfaceProgram)]) (deps : [Dependency]) : Result String (PackageNames, Compiled) =
+  compiledAgainst prelude name modules deps deps (highest deps)
+
+-- The same: its `use`s may name those of `direct`, it is checked against
+-- all `reached`, and it names its things from `first`.
+fun compiledAgainst prelude (name : String) (modules : [([String], SurfaceProgram)]) (direct : [Dependency]) (reached : [Dependency]) (first : Int) : Result String (PackageNames, Compiled) =
   let programs = V.map (\m -> Rename.programOf (snd m)) modules in
   let vis = V.any (\p -> Rename.mentionsVisibility p) programs in
-  let first = V.foldl (\acc d -> match d with | (_, _, (c : Compiled)) -> if c.high > acc then c.high else acc) 0 deps in
-  match Rename.renamePackageWith name modules prelude (V.map (\d -> match d with | (n, ns, _) -> (n, ns)) deps) [] first True vis with
+  match Rename.renamePackageWith name modules prelude (V.map (\d -> match d with | (n, ns, _) -> (n, ns)) direct) [] first True vis with
   | (m, names, problems) ->
       if not (V.isEmpty problems) then Err (S.join "; " problems)
       else
         let grouped = sccModule m in
         runSt (\() ->
-          let c = checkedAgainst grouped False (V.map (\d -> match d with | (_, _, cp) -> cp) deps) in
+          let c = checkedAgainst grouped False (V.map (\d -> match d with | (_, _, cp) -> cp) reached) in
           let errors = St.getRef c.tc.errors in
           if not (V.isEmpty errors) then Err (S.join ", " errors) else Ok (names, compiledOf c grouped names))
 
