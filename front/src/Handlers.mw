@@ -116,22 +116,17 @@ fun handleEffect (tc : Tc s) (ctx : Ctx) (body : HirExpr) (clauses : [Clause]) (
   match info with
   | EffectInfo.EffectInfo effName kinds ops ->
       let missing = V.filter (\op -> V.isEmpty (clausesFor clauses op)) ops in
-      let duplicated = V.any (\op -> V.len (clausesFor clauses op) > 1) ops in
-      let badParams =
-        V.any
-          (\c ->
-            let want = match opOf c with | None -> 1 | Just op -> (match opInfo tc (H.uniqueOf op) with | OpInfo.OpInfo _ _ _ _ arity _ -> arity + 1) in
-            V.len (paramsOf c) != want)
-          clauses
-      in
+      let duplicated = V.find (\op -> V.len (clausesFor clauses op) > 1) ops in
+      let want = \c -> match opOf c with | None -> 1 | Just op -> (match opInfo tc (H.uniqueOf op) with | OpInfo.OpInfo _ _ _ _ arity _ -> arity + 1) in
+      let badParams = V.find (\c -> V.len (paramsOf c) != want c) clauses in
       if not (V.isEmpty missing) then
         let w = T.errorOf tc "MissingOperations" [] (V.map (\op -> match opInfo tc op with | OpInfo.OpInfo name _ _ _ _ _ -> name) missing) in
         failed ()
-      else if duplicated then
-        let w = T.error tc "DuplicateOperation" in
+      else if M.isSome duplicated then
+        let w = match duplicated with | Just op -> (match opInfo tc op with | OpInfo.OpInfo name _ _ _ _ _ -> T.errorOf tc "DuplicateOperation" [] [name]) | None -> () in
         failed ()
-      else if badParams then
-        let w = T.error tc "ClauseParams" in
+      else if M.isSome badParams then
+        let w = match badParams with | Just c -> T.errorOf tc "ClauseParams" [] [M.unwrapOr "return" (M.map H.textOf (opOf c)), show (want c)] | None -> () in
         failed ()
       else
         -- what is handled: the effect, at the arguments the body has it at
@@ -155,7 +150,7 @@ fun handleEffect (tc : Tc s) (ctx : Ctx) (body : HirExpr) (clauses : [Clause]) (
              in
              (match args with
               | None ->
-                  let w = T.error tc "AmbiguousHandler" in
+                  let w = T.errorOf tc "AmbiguousHandler" [quote tc ctx.lvl theRow] [effName] in
                   failed ()
               | Just args ->
                   let handled = V.map fst ours in
@@ -198,7 +193,7 @@ fun handleEffect (tc : Tc s) (ctx : Ctx) (body : HirExpr) (clauses : [Clause]) (
                          -- (a clause may have made resuming more already: one
                          -- giving back a function that resumes and performs
                          -- the handled effect itself; claiming more is sound)
-                         let w = if unify tc ctx.lvl resumed total or effectsFit tc ctx.lvl total resumed then () else T.error tc "AmbiguousHandler" in
+                         let w = if unify tc ctx.lvl resumed total or effectsFit tc ctx.lvl total resumed then () else T.errorOf tc "AmbiguousHandler" [quote tc ctx.lvl total] [effName] in
                          let usage = U.add (U.add (U.add bodyU (U.withoutEffects retU)) (U.withoutEffects opsU)) (U.performs total) in
                          (Core.Handle bodyC retCore opsCore, result, usage))))
 

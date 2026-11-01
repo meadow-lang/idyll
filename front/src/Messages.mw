@@ -133,6 +133,51 @@ fun worded (sols : [Maybe Core]) (linear : Bool) (at : Meta) (r : Report) : Diag
       else if kind == "AmbiguousName" then
         withNote "${candidates (V.drop words 3)}\nsay which with a type annotation, or write it in full, as `${word 2}`"
           (withLabel at "which one is meant?" (errorAt at "ambiguous `${word 0}`: ${word 1} of the candidates in scope ${if V.isEmpty types then "fit here" else "fit `${ty 0}`"}"))
+      else if kind == "UnknownVariable" then
+        withNote "${word 0} is declared, but after this needs it: a data type's own constructor in its fields is one, and a `use` of its constructors hides any type of the same name, so bring in only those it does not clash with, as in `use T (A, B)`"
+          (withLabel at "unbound here" (errorAt at "not in scope: ${word 0}"))
+      else if kind == "BinderMismatch" then withLabel at "expected ${ty 0}, but the binder says ${ty 1}" (errorAt at "binder annotation does not match the expected argument type")
+      else if kind == "BinderGradeMismatch" then
+        withLabel at "${word 0} is written with grade ${ty 1}, but the type says ${ty 0}" (errorAt at "binder grade does not match the expected function type")
+      else if kind == "GradeTooLarge" then withLabel at "grades are counts that fit a machine word" (errorAt at "grade is too large")
+      else if kind == "EmptyRange" then withLabel at "${ty 0} is greater than ${ty 1}, so no number of uses lies between them" (errorAt at "empty grade range")
+      else if kind == "ClauseArity" then withLabel at "this one has ${word 1}, but the first has ${word 0}" (errorAt at "equations with different numbers of arguments")
+      else if kind == "TooManyPatterns" then withLabel at "what is left to match has type ${ty 0}, which is not a function" (errorAt at "too many patterns")
+      else if kind == "CannotSplit" then withLabel at "it is ${ty 0}, which is neither a variable nor a constructor" (errorAt at "this cannot be matched on")
+      else if kind == "IndexUnificationStuck" then
+        withLabel at "it needs ${ty 0} and ${ty 1} to be equal, and they are neither the same nor different" (errorAt at "cannot tell whether this pattern applies")
+      else if kind == "DotMismatch" then withLabel at "matching has worked out that this is ${ty 0}, not ${ty 1}" (errorAt at "dot pattern does not match")
+      else if kind == "DataKindNotType" then withLabel at "this is ${ty 0}" (errorAt at "a data type's kind ends in Type")
+      else if kind == "CtorResult" then
+        withLabel at "a constructor's type ends in ${word 1}, applied to its parameters and then its indices" (errorAt at "${word 0} does not build a ${word 1}")
+      else if kind == "CtorImplicit" then withLabel at "a constructor's implicit arguments come first, and are erased" (errorAt at "unsupported implicit argument of ${word 0}")
+      else if kind == "LargeField" then
+        withNote "a data type lives in Type, so its fields must be types in Type, unless its kind says it lives higher, as a record's or a trait's with a field that is a type does"
+          (withLabel at "this field's type lives in Type ${word 1}, but ${word 0} lives in Type" (errorAt at "field too large for its data type"))
+      else if kind == "EffectfulLetEscapes" then
+        withNote "give the whole a type annotation that does not mention it"
+          (withLabel at "the type of this depends on ${word 0}, whose definition has effects" (errorAt at "a type cannot depend on this"))
+      else if kind == "EffectOutsideArrow" then withLabel at "write this after an arrow, as in a -> b ! e" (errorAt at "effects belong to a function type")
+      else if kind == "NativeSignature" then withLabel at (word 1) (errorAt at "the type of the native ${word 0} does not fit it")
+      else if kind == "DuplicateOperation" then withLabel at "this clause can never be taken" (errorAt at "${word 0} is handled twice")
+      else if kind == "ClauseParams" then
+        (if word 1 == "1" then withLabel at "${word 0} x -> .., for the value it is given" (errorAt at "a return clause names one thing")
+         else
+           let args = clauseArgs (M.unwrapOr 1 (S.toInt (word 1)) - 1) in
+           withLabel at "${word 0} ${S.join " " args} k -> .., for its ${if V.len args == 1 then "argument" else "arguments"} and the resumption" (errorAt at "${word 0}'s clause names ${word 1} things"))
+      else if kind == "AmbiguousHandler" then withLabel at "the handled computation has the effects ${ty 0}" (errorAt at "which ${word 0}?")
+      else if kind == "BadSeq" then withLabel at (word 1) (errorAt at "${word 0} cannot be built with #[..]")
+      else if kind == "MainType" then
+        withNote "main takes () and gives (), with at most the effects the runtime handles: main : () -> () ! Eff"
+          (withLabel at "main is ${ty 0}" (errorAt at "main has the wrong type"))
+      else if kind == "LinearBox" then
+        withLabel at "this is of type ${ty 0}, which is linear, so it may not be boxed to be used more than once" (errorAt at "a linear value boxed")
+      else if kind == "LinearInstance" then
+        withNote "${ty 0} is changed in place, so it is never shared: it may be given only for a parameter whose values are used at most once"
+          (withLabel at "${ty 0} is linear, but this may hold a value of type ${word 0} more than once" (errorAt at "a linear type for a type parameter that is shared"))
+      else if kind == "LinearTopLevel" then
+        withNote "make it a function, so that each call makes one of its own"
+          (withLabel at "${word 0} is of type ${ty 0}, which is linear, and every use of a top-level definition shares it" (errorAt at "a linear value at the top level"))
       else if kind == "UnsolvedMeta" then withNote "add a type annotation to pin it down" (withLabel at "could not infer ${word 0}" (errorAt at "unsolved metavariable"))
       else if kind == "MissingCases" then withLabel at "missing: ${S.join ", " words}" (errorAt at "the patterns do not cover every case")
       else if kind == "UnreachableClause" then withLabel at "the cases before this one cover everything it matches" (warningAt at "unreachable")
@@ -140,6 +185,9 @@ fun worded (sols : [Maybe Core]) (linear : Bool) (at : Meta) (r : Report) : Diag
         withNote "say so in its type, as in ${word 0} : .. -> .. ! Div"
           (withLabel at "no argument gets smaller on every round of its recursion, so it has the effect Div" (errorAt at "${word 0} may not terminate"))
       else errorAt at (said kind)
+
+-- What a handler's clause calls an operation's `n` arguments, in a message.
+fun clauseArgs (n : Int) : [String] = V.map (\i -> V.getOr "x" ["x", "y", "z", "w"] (i % 4)) (V.range 0 n)
 
 -- The meanings an overloaded name was found to have, a line each.
 fun candidates (lines : [String]) : String = "candidates in scope:\n  " ++ S.join "\n  " lines

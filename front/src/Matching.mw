@@ -148,7 +148,7 @@ fun isCtor (tc : Tc s) (c : Int) : Bool ! { St s | e } = M.isSome (T.ctorInfo tc
         | Just c ->
             if explicitPatterns hir (patsOf hir c) == arity then [Problem.Problem c i (patsOf hir c) [] [] []]
             else
-              let w = T.error tc "ClauseArity" in
+              let w = T.errorOf tc "ClauseArity" [] [show arity, show (explicitPatterns hir (patsOf hir c))] in
               []
         | None -> [])
       (V.range 0 (V.len clauses))
@@ -428,17 +428,17 @@ fun intro (tc : Tc s) (m : Matcher s) (ctx : Ctx) (problems : [Problem]) (goal0 
       let codC = freshMeta tc ctxArg "the result type of this function" in
       let effects = freshMeta tc ctxArg "the effects of this function" in
       let pi = Value.Pi "x" Icit.Explicit (gradeValue G.default) (gradeValue G.defaultInType) dom (Closure.Closure ctx.env (Core.Comp codC effects)) in
-      if unify tc ctx.lvl goal pi then intro tc m ctx problems pi else tooManyPatterns tc m problems
+      if unify tc ctx.lvl goal pi then intro tc m ctx problems pi else tooManyPatterns tc m ctx problems goal
   | Value.Error ->
       let w = fail m in
       nothing ()
-  | _ -> tooManyPatterns tc m problems
+  | _ -> tooManyPatterns tc m ctx problems goal
 
-fun tooManyPatterns (tc : Tc s) (m : Matcher s) (problems : [Problem]) : (Core, Usage) ! { St s | e } =
+fun tooManyPatterns (tc : Tc s) (m : Matcher s) (ctx : Ctx) (problems : [Problem]) (goal : Value) : (Core, Usage) ! { St s | e } =
   let hir = hirOf tc in
   let next = match V.head problems with | Just (Problem.Problem _ _ pending _ _ _) -> V.head pending | _ -> None in
   let implicit = match M.map (\q -> (hir, q)) next with | Just (HirPatternImplicit _ _) -> True | _ -> False in
-  let w = T.error tc (if implicit then "MisplacedImplicitPattern" else "TooManyPatterns") in
+  let w = T.errorOf tc (if implicit then "MisplacedImplicitPattern" else "TooManyPatterns") [quote tc ctx.lvl goal] [] in
   let w2 = fail m in
   nothing ()
 
@@ -499,7 +499,7 @@ fun simplify (tc : Tc s) (ctx : Ctx) (p : Problem) : (Step, Problem) ! { St s | 
                         | Value.Rigid k _ [] ->
                             let how = match lit with | Literal.Bool _ -> How.ByCon | _ -> How.ByLit lit in
                             (Step.Splits k how, p)
-                        | v -> (cannotSplit tc v, p)))
+                        | v -> (cannotSplit tc ctx v, p)))
             | HirPatternCon c args ->
                 -- the renamer reported an unknown name already; a name with
                 -- several meanings is the one of the type matched against
@@ -546,14 +546,14 @@ fun conStep (tc : Tc s) (ctx : Ctx) (p : Problem) (cu : Int) (args : [HirPattern
                               (Step.Failed, p)
                             else
                               (match force tc (targetValue ctx target) with
-                               | Value.Opaque c2 _ sp ->
-                                   if not (isCtor tc c2) then (cannotSplit tc (Value.Opaque c2 "" sp), p)
+                               | Value.Opaque c2 shown sp ->
+                                   if not (isCtor tc c2) then (cannotSplit tc ctx (Value.Opaque c2 shown sp), p)
                                    else if c2 != cu then (Step.Fails, p)
                                    else
                                      let fs = fieldTargets tc ctx target cu sp in
                                      again (V.append (V.zip args fs) rest)
                                | Value.Rigid k _ [] -> (Step.Splits k How.ByCon, p)
-                               | v -> (cannotSplit tc v, p))
+                               | v -> (cannotSplit tc ctx v, p))
                         | other ->
                             let w = T.errorOf tc "NotAConstructorOf" [quote tc ctx.lvl other] [cname] in
                             (Step.Failed, p)))
@@ -592,8 +592,8 @@ fun plausible (tc : Tc s) (ctx : Ctx) (m : Matcher s) (clause : HirClause) : Boo
     True
     (V.zip (patsOf hir clause) (getRef m.argTypes))
 
-fun cannotSplit (tc : Tc s) (v : Value) : Step ! { St s | e } =
-  let w = match v with | Value.Error -> () | _ -> T.error tc "CannotSplit" in
+fun cannotSplit (tc : Tc s) (ctx : Ctx) (v : Value) : Step ! { St s | e } =
+  let w = match v with | Value.Error -> () | _ -> T.errorOf tc "CannotSplit" [quote tc ctx.lvl v] [] in
   Step.Failed
 
 -- What a constructor value's fields are matched as: the slots a split bound
@@ -679,7 +679,8 @@ fun leaf (tc : Tc s) (m : Matcher s) (ctx : Ctx) (p : Problem) (rest : [Problem]
                       | Just _ -> T.error tc "ImpureType"
                       | None ->
                           let given = eval tc inner.env eC in
-                          if unify tc inner.lvl (targetValue inner target) given then () else T.error tc "DotMismatch"))
+                          let expected = targetValue inner target in
+                          if unify tc inner.lvl expected given then () else T.errorOf tc "DotMismatch" [quote tc inner.lvl expected, quote tc inner.lvl given] []))
                ()
                dots
            in
@@ -799,7 +800,7 @@ fun splitData (tc : Tc s) (m : Matcher s) (ctx : Ctx) (problems : [Problem]) (go
             (match unified with
              | Unified.Absurd -> (alts, usage)
              | Unified.Stuck a b ->
-                 let w = T.error tc "IndexUnificationStuck" in
+                 let w = T.errorOf tc "IndexUnificationStuck" [quote tc (lvlOf inner) a, quote tc (lvlOf inner) b] [] in
                  let w2 = fail m in
                  (alts, usage)
              | Unified.Refined ctx2 sigma ->

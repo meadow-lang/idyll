@@ -228,9 +228,10 @@ use Std.Maybe.Maybe.*
   patternChoice : StRef s (HashMap Int Int),
   -- which data types are linear, as far as worked out; and the type
   -- parameters given what may be a linear type, to check once it is known:
-  -- the length of the context, and what was given (see `Linear`)
+  -- the length of the context, what was given, the parameter, and where
+  -- (see `Linear`)
   linearDatas : StRef s (HashMap Int Bool),
-  linearWants : StRef s [(Int, Value)],
+  linearWants : StRef s [(Int, Value, String, Lang.Meta)],
   -- the prelude's `fromInt` and `fromFloat`, by name, which a literal at a
   -- type variable is read through; and how (`Elab.literalThrough`, given
   -- here as `elab` is)

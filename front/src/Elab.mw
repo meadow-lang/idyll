@@ -530,7 +530,7 @@ fun sharesFrom (tc : Tc s) (a : Int) (ty : Value) (l : Int) : Bool ! { St s | e 
 -- type, the argument is to be no linear type, checked once it is known.
 @pub(pkg) fun noteLinearWant (tc : Tc s) (ctx : Ctx) (name : String) (dom : Value) (cod : Closure) (given : Value) : () ! { St s | e } =
   let isType = match force tc dom with | Value.Type _ -> True | _ -> False in
-  if isType and shares tc ctx.lvl name cod then setRef tc.linearWants (V.pushBack (getRef tc.linearWants) (ctx.lvl, given))
+  if isType and shares tc ctx.lvl name cod then setRef tc.linearWants (V.pushBack (getRef tc.linearWants) (ctx.lvl, given, name, getRef tc.at))
   else ()
 
 -- The type parameters given what may be linear types: each that is one is
@@ -538,11 +538,24 @@ fun sharesFrom (tc : Tc s) (a : Int) (ty : Value) (l : Int) : Bool ! { St s | e 
 @pub(pkg) fun checkLinearWants (tc : Tc s) : () ! { St s | e } =
   let wants = getRef tc.linearWants in
   let w = setRef tc.linearWants [] in
-  V.foldl (\acc want -> match want with | (_, given) -> if isLinear tc given then T.error tc "LinearInstance" else acc) () wants
+  let before = getRef tc.at in
+  let w2 =
+    V.foldl
+      (\acc want ->
+        match want with
+        | (lvl, given, param, at) ->
+            if isLinear tc given then
+              let w3 = setRef tc.at at in
+              T.errorOf tc "LinearInstance" [quote tc lvl given] [param]
+            else acc)
+      ()
+      wants
+  in
+  setRef tc.at before
 
 -- A value of type `ty` boxed: no linear type may be.
-@pub(pkg) fun linearBox (tc : Tc s) (ty : Value) : () ! { St s | e } =
-  if isLinear tc ty then T.error tc "LinearBox" else ()
+@pub(pkg) fun linearBox (tc : Tc s) (lvl : Int) (ty : Value) : () ! { St s | e } =
+  if isLinear tc ty then T.errorOf tc "LinearBox" [quote tc lvl ty] [] else ()
 
 -- A variable of a linear type `ty`, used as `used` says: at most once, or
 -- the error is reported (`True`), or waits on a grade being worked out.
@@ -584,7 +597,7 @@ fun linearLets (tc : Tc s) (ctx : Ctx) (from : Int) (usage : Usage) (pending : [
           match g with
           | (Just x, Pending.NonRec _ _) ->
               (match X.lookup ctx x with
-               | Just (_, ty, _) -> if isLinear tc ty then T.error tc "LinearTopLevel" else acc
+               | Just (_, ty, _) -> if isLinear tc ty then T.errorOf tc "LinearTopLevel" [quote tc ctx.lvl ty] [H.textOf x] else acc
                | None -> acc)
           | _ -> acc)
         ()
@@ -1463,13 +1476,13 @@ pass! {
              -- what goes in a box is a value: `[Nothing]` boxes a `Maybe
              -- ?a`, its implicit argument given, not a function of a type
              let (eC, eTy) = insert c.tc c.ctx eC0 eTy0 in
-             let w = linearBox c.tc eTy in
+             let w = linearBox c.tc c.ctx.lvl eTy in
              (Core.BoxIntro eC, Value.BoxTy grade eTy, U.scale usage (toPoly c.tc grade)))
            (\(c : Cx s) g ->
              match g with
              | Value.BoxTy grade a ->
                  (let (eC, usage) = check c.tc c.ctx expr a in
-                  let wLinear = linearBox c.tc a in
+                  let wLinear = linearBox c.tc c.ctx.lvl a in
                   let w =
                     if constant c.tc grade == Just G.zero then
                       (match effectsOf c.tc usage with
@@ -1548,7 +1561,7 @@ pass! {
            cx
            again
            (\(c : Cx s) ->
-             let w = T.error c.tc "EffectOutsideArrow" in
+             let w = T.errorOf c.tc "EffectOutsideArrow" [] [] in
              failed ())
            (byInference again))
     -- a row: effects and row variables
@@ -1606,7 +1619,7 @@ fun variable (tc : Tc s) (ctx : Ctx) (node : Int) (x0 : Ident) : (Core, Value, U
     match X.lookup ctx x with
     | Just (core, ty, key) -> (core, ty, U.var key)
     | None ->
-        let w = T.error tc "UnknownVariable" in
+        let w = T.errorOf tc "UnknownVariable" [] [H.textOf x] in
         failed ()
 
 -- Where a type is wanted, `()` is the unit type; where a grade is, a
@@ -1626,22 +1639,18 @@ fun literalAgainst (cx : Cx s) (again : Cx s -> (Core, Value, Usage) ! { St s | 
   | (Literal.Int n, Value.LitTy Builtin.Grade) ->
       if n >= 0 then (C.grade (G.exact n), g, U.none ())
       else
-        let w = T.error cx.tc "GradeTooLarge" in
+        let w = T.errorOf cx.tc "GradeTooLarge" [] [] in
         (Core.Error, g, U.unknown ())
   | _ -> fallback cx again g
 
 fun inferRange (tc : Tc s) (ctx : Ctx) (lo : HirExpr) (hi : HirExpr) : (Core, Value, Usage) ! { St s | e } =
   let (loC, loV) = checkGrade tc ctx lo in
   let (hiC, hiV) = checkGrade tc ctx hi in
-  let empty =
-    match (constant tc loV, constant tc hiV) with
-    | (Just a, Just b) -> M.isNone (G.range a b)
-    | _ -> False
-  in
-  if empty then
-    let w = T.error tc "EmptyRange" in
-    failed ()
-  else (Core.GradeRange loC hiC, gradeTy (), U.none ())
+  match (constant tc loV, constant tc hiV) with
+  | (Just a, Just b) if M.isNone (G.range a b) ->
+      let w = T.errorOf tc "EmptyRange" [C.grade a, C.grade b] [] in
+      failed ()
+  | _ -> (Core.GradeRange loC hiC, gradeTy (), U.none ())
 
 -- `(x : [r] a) -> b`: it lives in the larger of its parts' universes.
 fun inferPi (tc : Tc s) (ctx : Ctx) (mx : Maybe Ident) (icit : Icit) (ann : Maybe HirGrade) (dom : HirExpr) (cod : HirExpr) : (Core, Value, Usage) ! { St s | e } =
@@ -1733,7 +1742,7 @@ fun checkLam (tc : Tc s) (ctx : Ctx) (x : Ident) (ann : Maybe HirGrade) (tyAnn :
         let (_, annV) = checkType tc ctx ta in
         -- (one the expected type is stuck on a meta for is asked again once
         -- more is known)
-        if unify tc ctx.lvl annV dom then () else if postpone tc ctx.lvl annV dom then () else T.error tc "BinderMismatch"
+        if unify tc ctx.lvl annV dom then () else if postpone tc ctx.lvl annV dom then () else T.errorOf tc "BinderMismatch" [quote tc ctx.lvl dom, quote tc ctx.lvl annV] []
     | None -> ()
   in
   let allowed =
@@ -1747,7 +1756,7 @@ fun checkLam (tc : Tc s) (ctx : Ctx) (x : Ident) (ann : Maybe HirGrade) (tyAnn :
                 let (_, given) = checkGrade tc ctx term in
                 if unify tc ctx.lvl given wanted then acc
                 else
-                  let w2 = T.error tc "BinderGradeMismatch" in
+                  let w2 = T.errorOf tc "BinderGradeMismatch" [quote tc ctx.lvl wanted, quote tc ctx.lvl given] [H.textOf x] in
                   if isSubject then given else acc)
           piGrade
           written
@@ -1766,12 +1775,13 @@ fun inferLet (tc : Tc s) (ctx : Ctx) (groups : [HirGroup]) (body : HirExpr) : (C
   let (bodyC, ty, usage) = infer tc ctx2 body in
   -- the type may not mention what has a value only at run time
   let quoted = quote tc ctx2.lvl ty in
-  let escaped = V.any (\k -> X.infoAt ctx2 k == Just Info.Effectful and mentions quoted (ctx2.lvl - k - 1)) (V.range ctx.lvl ctx2.lvl) in
+  let escaped = V.find (\k -> X.infoAt ctx2 k == Just Info.Effectful and mentions quoted (ctx2.lvl - k - 1)) (V.range ctx.lvl ctx2.lvl) in
   let ty2 =
-    if escaped then
-      let w = T.error tc "EffectfulLetEscapes" in
-      Value.Error
-    else ty
+    match escaped with
+    | Just k ->
+        let w = T.errorOf tc "EffectfulLetEscapes" [] [X.nameAt ctx2 k] in
+        Value.Error
+    | None -> ty
   in
   let w = linearLets tc ctx2 ctx.lvl usage pending in
   (wrapLets bodyC wraps, ty2, leaveGroups usage pending)

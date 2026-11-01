@@ -473,7 +473,7 @@ fun checkMain (tc : Tc s) (ctx : Ctx) (main : Ident) (world : Value) : Bool ! { 
         | Value.Error -> True
         | _ -> False
       in
-      let w = if fits then () else T.error tc "MainType" in
+      let w = if fits then () else T.errorOf tc "MainType" [quote tc ctx.lvl ty] [] in
       fits
 
 -- --- the dump --------------------------------------------------------------------------
