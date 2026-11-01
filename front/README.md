@@ -92,10 +92,20 @@ data, `Reflect` so the build keeps it); a package's interface is its parts'
 made one (`Link.merged`), with every package it reaches. Each part names its
 things from a room of its own: its first module's place among the package's
 sources (Lingua's `partUnitPaths`, sorted), so no two parts compiled at once
-share a unique.
+share a unique. A package has a room too, for the same reason: packages that
+do not depend on each other are compiled apart, and neither is told of the
+other, so each names its things past all it reaches and at a place worked
+out from its own name (`Driver.roomOf`). If two rooms ever meet, the build
+stops and says so (`overlapping`) rather than mixing the two up.
 
-`front_builds_and_runs_a_package_with_a_dependency` and
+`front_builds_and_runs_a_package_with_a_dependency`,
+`front_keeps_packages_that_do_not_know_each_other_apart` and
 `front_runs_every_example_itself` hold it to that.
+
+A unit is built again when its sources or what it was compiled against
+changed, not when the compiler did (`make!` has no place to say which
+compiler a build is): after changing front/, delete a package's `target/`
+before trusting what it builds.
 
 `Idyll fmt files` sets files out in place (`--check` changes nothing, and
 fails if one is not set out). It is a `format!` (`Syntax.mw`, `Style`)
@@ -997,6 +1007,16 @@ in its places, shifted back to its text. Hover, definitions, references,
 completion and the outline work the same way (`Session.preparedFor` gives
 the renamed package and the module's base): the place asked about is moved
 up by the base, and each answer back down.
+
+The server also reads every package the file's package reaches, by the paths
+and the lock file a build goes by (`Driver.dependencyDirs`), each after those
+it depends on. It never reaches the network: a repository the cache does not
+hold is left out, and what names it says so. They are compiled once, in
+turn, each against Std and those before it (the `dependencies` query), so no
+two share a unique. The file's `use`s name only the packages its manifest
+does, and it is checked against all of them. Because the query reads only
+what was read at `opened`, an edit to a dependency is seen when the file is
+next opened.
 
 A query may perform nothing but asking other queries, so that its answer
 can be kept. That is why the renamer, the checker and the lowering keep

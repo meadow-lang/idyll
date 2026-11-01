@@ -607,6 +607,31 @@ fn front_builds_and_runs_a_package_with_a_dependency() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Two packages that do not depend on each other, compiled apart, with one
+/// that uses both: what each defines must stay its own. They once named their
+/// things from the same place, and `left + right` read `right` twice.
+#[test]
+fn front_keeps_packages_that_do_not_know_each_other_apart() {
+    let Ok(exe) = front() else {
+        eprintln!("no front/ to build with");
+        return;
+    };
+    let root = std::env::temp_dir().join(format!("idyll-front-siblings-{}", std::process::id()));
+    let (left, right, app) = (root.join("left"), root.join("right"), root.join("app"));
+    for d in [&left, &right, &app] {
+        std::fs::create_dir_all(d.join("src")).expect("a directory");
+    }
+    std::fs::write(left.join("Idyll.toml"), "[package]\nname = \"Left\"\nversion = \"0.1.0\"\n").unwrap();
+    std::fs::write(left.join("src/Lib.idl"), "@pub\nleft : Int\nleft = 1\n").unwrap();
+    std::fs::write(right.join("Idyll.toml"), "[package]\nname = \"Right\"\nversion = \"0.1.0\"\n").unwrap();
+    std::fs::write(right.join("src/Lib.idl"), "@pub\nright : Int\nright = 2\n").unwrap();
+    std::fs::write(app.join("Idyll.toml"), "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n[dependencies]\nLeft = { path = \"../left\" }\nRight = { path = \"../right\" }\n").unwrap();
+    std::fs::write(app.join("src/Main.idl"), "use Left (left)\nuse Right (right)\n\nmain : () -> () ! Eff\nmain () = putStrLn \"${left} and ${right}\"\n").unwrap();
+    let (said, ok) = front_tool(&exe, &app, &["run"]);
+    assert!(ok && said.contains("1 and 2\n"), "{said}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// `git` in `dir`, which must succeed.
 fn git(dir: &std::path::Path, args: &[&str]) {
     let out = std::process::Command::new("git")

@@ -45,26 +45,48 @@ fun packageRoot (dir : Maybe String) : Maybe String ! { Fs | e } =
   | Just d -> if exists (Path.join d "Idyll.toml") then Just d else (match Path.parent d with | Just up -> if up == d then None else packageRoot (Just up) | None -> None)
 
 -- The package at `root`, as the file at `path` sees it: its name, the
--- file's module path, and every other module, read.
+-- file's module path, every other module, read, and every package it
+-- reaches, read, by the same paths and lock file a build goes by.
 fun contextOf (root : String) (path : String) : Maybe PackageContext ! { Fs | e } =
-  let src = Path.join root "src" in
   let own = D.modulePathIn path in
-  let name = M.unwrapOr "Main" (D.manifestField "name" (readToStringOr "" (Path.join root "Idyll.toml"))) in
-  let others =
-    V.concatMap
-      (\rel ->
-        let p = D.modulePathIn (Path.join src rel) in
-        if p == own then []
-        else (match readToString (Path.join src rel) with | Ok t -> [(p, t)] | Err _ -> []))
-      (D.idlFiles src [])
-  in
-  Just (PackageContext { name, own, others })
+  let manifest = readToStringOr "" (Path.join root "Idyll.toml") in
+  let name = M.unwrapOr "Main" (D.manifestField "name" manifest) in
+  let others = V.filter (\m -> fst m != own) (modulesAt root) in
+  let dirs = D.dependencyDirs root root manifest in
+  let found = V.foldl (\acc d -> packagesFrom root [root] acc d) [] dirs in
+  Just (PackageContext { name, own, others, uses = namesIn dirs found, needs = V.map snd found })
+
+-- A package's modules, read.
+fun modulesAt (dir : String) : [([String], String)] ! { Fs | e } =
+  let src = Path.join dir "src" in
+  V.concatMap
+    (\rel ->
+      match readToString (Path.join src rel) with
+      | Ok t -> [(D.modulePathIn (Path.join src rel), t)]
+      | Err _ -> [])
+    (D.idlFiles src [])
+
+-- `done`, with the package at `dir` and what it reaches, each after those it
+-- depends on. (`from`, the packages on the way here: a circle is a build's
+-- to refuse, and must not stop the server.)
+fun packagesFrom (root : String) (from : [String]) (done : [(String, Needed)]) (dir : String) =
+  if V.any (\d -> fst d == dir) done or V.elem dir from then done
+  else
+    let manifest = readToStringOr "" (Path.join dir "Idyll.toml") in
+    let dirs = D.dependencyDirs root dir manifest in
+    let after = V.foldl (\acc d -> packagesFrom root (V.pushBack from dir) acc d) done dirs in
+    let name = D.plainName (D.nameOfManifest dir manifest) in
+    V.pushBack after (dir, Needed { name, modules = modulesAt dir, uses = namesIn dirs after })
+
+-- The names of the packages at `dirs`, among those found.
+fun namesIn (dirs : [String]) (found : [(String, Needed)]) : [String] =
+  V.map (\(n : Needed) -> n.name) (V.map snd (V.filter (\f -> V.elem (fst f) dirs) found))
 
 -- A query's answer, or `fallback` if it has none (an input never set).
 fun answered fallback act = match toResult act with | Ok x -> x | Err _ -> fallback
 
 -- The package a file is a module of, if the editor said where it is.
-fun packageIn db file = answered None (\() -> sessionPackage db file)
+fun packageIn db file = answered None (\() -> M.map (\pc -> (pc, \u -> sessionDependencies db file)) (sessionPackage db file))
 
 fun diagnosticsOf db file = answered [] (\() -> sessionProblems db file)
 
@@ -214,6 +236,28 @@ fun listed (field : String) (reply : Maybe Json) : [Json] =
 
 @test fun aTypeErrorIsPublished () =
   assertEq (M.map (\n -> n > 0) (published (told [opening "file:///a.idl" "x : Bool\nx = 1\n"] serveServer))) (Just True) "what the checker said"
+
+-- A package with path dependencies, one of them reached through another:
+-- each is compiled, and the file's `use`s name those it depends on directly.
+@test fun aFileIsCheckedAgainstItsDependencies () =
+  let dir = "target/lsp-deps" in
+  let a = createDirAll (dir ++ "/app/src") in
+  let b = createDirAll (dir ++ "/util/src") in
+  let c = createDirAll (dir ++ "/base/src") in
+  let d = writeString (dir ++ "/base/Idyll.toml", "[package]\nname = \"Base\"\nversion = \"0.1.0\"\n") in
+  let e = writeString (dir ++ "/base/src/Lib.idl", "@pub\none : Int\none = 1\n") in
+  let f = writeString (dir ++ "/util/Idyll.toml", "[package]\nname = \"Util\"\n\n[dependencies]\nBase = { path = \"../base\" }\n") in
+  let g = writeString (dir ++ "/util/src/Lib.idl", "use Base (one)\n\n@pub\nnext : Int -> Int\nnext n = n + one\n") in
+  let h = writeString (dir ++ "/app/Idyll.toml", "[package]\nname = \"app\"\n\n[dependencies]\nUtil = { path = \"../util\" }\n") in
+  let uri = "file://" ++ dir ++ "/app/src/Main.idl" in
+  let fine = told [opening uri "use Util (next)\n\nx : Int\nx = next 2\n"] serveServer in
+  let wrong = told [opening uri "use Util (next)\n\nx : Bool\nx = next 2\n"] serveServer in
+  let reached = told [opening uri "use Base (one)\n\nx : Int\nx = one\n"] serveServer in
+  let i = assertEq (published fine) (Just 0) "Util is a dependency of the package" in
+  let j = assertEq (firstAt wrong) (Just (J.jInt 3, J.jInt 4)) "where it is in Main.idl" in
+  let hovered = told [opening uri "use Util (next)\n\nx : Int\nx = next 2\n", hovering 1 uri 3 4] serveServer in
+  let k = assertEq (M.andThen (J.path ["result", "contents", "value"]) (V.get hovered 1)) (Just (J.jString "```idyll\n(_ : [1] Int) -> Int\n```")) "Util's next, on hover" in
+  assertEq (M.map (\n -> n > 0) (published reached)) (Just True) "Base is not one of its own dependencies"
 
 -- A package on disk, its root module using another: checked alone, `Helper`
 -- is no module; checked in its package, as the server checks a file the
