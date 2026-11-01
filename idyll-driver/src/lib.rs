@@ -19,6 +19,7 @@ pub mod clean;
 pub mod complete;
 pub mod find;
 pub mod finder;
+pub mod fmt;
 pub mod git;
 pub mod incremental;
 pub mod init;

@@ -122,10 +122,13 @@ after a block are around it, not in it. One blank line is kept where there
 were any, and a line that goes on with the one before keeps how far further
 in it was. A long signature is an entry a line, the colon three spaces in and
 each arrow two (`indent N(..)`, and `nogroup` so that a chain of arrows
-breaks as one). A program with errors is left as it is (`Format.formatted`).
+breaks as one). An attribute is a line of its own, and a sequence that does
+not fit is an item a line. A program with errors is left as it is
+(`Format.formatted`).
 `front_formats_every_program_as_the_same_program` formats every corpus
-program and checks two things: the Rust parser reads it as the same
-program, and formatting again changes nothing.
+program and checks three things: the Rust parser reads it as the same
+program, formatting again changes nothing, and the Rust driver's `idyll fmt`
+(`compiler/idyllic-format`, the same formatter by hand) sets it out alike.
 
 The same executable, given a pass and some files, writes what that pass
 made of each file, after a line `== <file>`:
