@@ -286,6 +286,11 @@ use Idyll.Layout (Token, foldToken)
     | CtorSig = name ":" group(ty)
     | Kind = ":" group(ty)
     | FieldDecl = name ":" group(ty)
+    -- an attribute is a line of its own
+    | AttrLine = "@" tight name tight args tight sep newline
+    -- a sequence on one line, or an item a line under what opens it
+    | SeqA = "#" tight "[" indent(cut first rest) cut "]"
+    | SeqRest = nogroup tight sep line item
     | Op = nogroup chain tail
     | Arrow = nogroup line "->" result eff
     | Constraint = nogroup line "=>" result eff

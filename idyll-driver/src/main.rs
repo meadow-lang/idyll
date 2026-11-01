@@ -156,6 +156,20 @@ enum Cmd {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Set `.idl` files out, in place.
+    Fmt {
+        /// Files or directories. A directory means every `.idl` under it, but
+        /// for what is built (`target`) and what is hidden.
+        #[arg(default_value = ".", value_name = "PATHS")]
+        paths: Vec<PathBuf>,
+        /// Change nothing: say which files are not set out, and fail if any
+        /// is not.
+        #[arg(long, conflicts_with = "stdout")]
+        check: bool,
+        /// Write the result to standard output, not back to the file.
+        #[arg(long)]
+        stdout: bool,
+    },
     /// Bring a package's dependencies forward to what their branches and tags
     /// now name, rewriting `idyll.lock`.
     ///
@@ -372,6 +386,19 @@ fn command() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some(Cmd::Fmt { paths, check, stdout }) => {
+            let out = idyll::fmt::run(&idyll::fmt::Options { paths, check, stdout, style: opts.style });
+            for (_, said) in &out.failed {
+                eprint!("{said}");
+            }
+            for file in &out.unformatted {
+                eprintln!("{}: not set out", file.display());
+            }
+            for file in &out.changed {
+                status::status("Formatted", file.display().to_string());
+            }
+            if out.ok() { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+        }
         Some(Cmd::Update { only, path, dry_run }) => {
             match idyll::update::run(&idyll::update::Options { dir: path, only, dry_run }) {
                 Ok(()) => ExitCode::SUCCESS,

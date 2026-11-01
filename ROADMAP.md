@@ -430,7 +430,7 @@ examples need strings to take apart first (`Std.Yield` is the generators).
   executable to be had, unless Silo was asked for), and an executable is
   rebuilt only when its package's fingerprint changes. Choosing and linking
   a runtime is Meadow's: Idyll hands `meadow cut` the program's Cut. Left:
-  Meadow's `test`, `fmt`, LSP and debugger. (`idyll-driver/tests/`)
+  Meadow's LSP and debugger, in the Rust driver. (`idyll-driver/tests/`)
 
 - [x] **The standard library**, `lib/Std/`, laid out as Meadow's `lib/Std` is: a
   package embedded in the compiler (`compiler/idyllic/src/stdlib.rs`),
@@ -900,8 +900,15 @@ accepted when what it does fits within what resuming was found to.
   program, and formatting it again changes nothing
   (`front_formats_every_program_as_the_same_program`). A long signature
   is broken as the principles above set it out (`format!`'s `indent N(..)`
-  and `nogroup`, which Lingua added for it). Still to come: `idyll fmt` in
-  the Rust driver.
+  and `nogroup`, which Lingua added for it). `idyll fmt [--check] [--stdout]
+  [paths]` is the same formatter in the Rust driver (`idyllic-format`: the
+  grammar as a lossless tree, the `format!` rules and what lays them out, and
+  Pretty's printer, each following what it is ported from): a directory is
+  every `.idl` under it, and the two set every corpus program out alike,
+  and `lib/` and `examples/` when run by hand. An attribute is a line of its
+  own, and a sequence fits on a line or is an item a line. Still to come: a
+  file's opening comment keeps its column, Lingua's fix for which comes with
+  the next Lingua pin.
 - [~] **The language server**, written with Lingua's `lsp!` over a
   `database!` of front/'s queries (front/README.md, "The editor"), as the
   formatter is written with `format!`. `Idyll lsp`:

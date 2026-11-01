@@ -65,6 +65,42 @@ fn unplaced(dump: &str) -> String {
     out
 }
 
+/// `idyllic_format::format`, on a stack that holds a program's nesting.
+fn on_a_stack(src: &str) -> Result<String, usize> {
+    let src = src.to_string();
+    let run = std::thread::Builder::new().stack_size(64 << 20).spawn(move || idyllic_format::format(&src).map_err(|e| e.len()));
+    run.expect("a thread").join().expect("the formatter does not panic")
+}
+
+/// This compiler's formatter sets every program out as the same program, and
+/// formatting it again changes nothing. (Whether it is how `Idyll fmt` sets
+/// it out is the next test's.)
+#[test]
+fn every_program_is_set_out_as_the_same_program() {
+    let mut differ = Vec::new();
+    let programs: Vec<(String, String)> = corpus().into_iter().filter(|(_, src)| parsed(src) != "(error)").collect();
+    for (name, src) in &programs {
+        match on_a_stack(src) {
+            Err(_) => differ.push(format!("{name}: not set out")),
+            Ok(once) => {
+                let (before, after) = (unplaced(&parsed(src)), unplaced(&parsed(&once)));
+                if before != after {
+                    differ.push(format!("{name}: read as another program, {}", first_difference(&before, &after)));
+                } else if on_a_stack(&once).as_ref() != Ok(&once) {
+                    differ.push(format!("{name}: set out again, it changes"));
+                }
+            }
+        }
+    }
+    assert!(
+        differ.is_empty(),
+        "{} of {} programs are not set out as the same program:\n{}",
+        differ.len(),
+        programs.len(),
+        differ.iter().take(20).cloned().collect::<Vec<_>>().join("\n")
+    );
+}
+
 /// `Idyll fmt` sets every program out as the same program: this compiler
 /// parses what it wrote as it parsed what was written (layout and all), and
 /// formatting it again changes nothing. Each program this compiler parses
@@ -101,6 +137,11 @@ fn front_formats_every_program_as_the_same_program() {
     let mut differ = Vec::new();
     let mut changed = 0;
     for (((name, src), once), twice) in programs.iter().zip(&once).zip(&twice) {
+        // this compiler's formatter is the same formatter
+        match on_a_stack(src) {
+            Ok(ours) if ours != *once => differ.push(format!("{name}: this compiler sets it out otherwise:\n{}", first_difference(&ours, once))),
+            _ => {}
+        }
         if once != src {
             changed += 1;
         }

@@ -2947,7 +2947,9 @@ REPL. A package that compiled with no diagnostics is kept, compiled, under
 `target/`; the next build reads it back instead of compiling it again, as
 long as nothing it was compiled from has changed (its sources, the
 packages it depends on, the compiler). Editing a dependency recompiles it
-and what depends on it, and nothing else. `idyll clean` removes `target/`.
+and what depends on it, and nothing else. `idyll clean` removes `target/`,
+and `idyll fmt` sets a package's sources out, in place (`--check` changes
+nothing and fails if one is not set out, which is what CI wants).
 
 ### Profiles: Glade and Silo
 
