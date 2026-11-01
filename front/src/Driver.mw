@@ -62,6 +62,7 @@ make! {
     | compilePart = compileScc
     | assemble = assembleUnit
     | link = linkProgram
+    | salt = compilerSalt
 }
 
 -- A package compiled, or one part of one: its name (a package's as its
@@ -191,6 +192,11 @@ fun filesOf (dir : String) : [String] ! { Fs | e } =
           else if S.endsWith ".idl" n then [S.join "/" (V.pushBack prefix n)]
           else [])
         names
+
+-- Which compiler this is, for what a build keeps: `make!` tells programs
+-- apart by the file running, and under `meadow run` that is `meadow`, whatever
+-- front/ now says. So it is the sources this program was built from.
+fun compilerSalt () : String = show (hash (prelude, stdModules, compilerSources))
 
 -- The packages a package depends on: each line of its `[dependencies]`,
 -- `Util = { path = "../util" }`, or by git, `Json = { git = "<url>",
@@ -486,6 +492,61 @@ fun parsedModules (modules : [(String, String)]) : Result String [([String], Sur
 -- The prelude, the Rust compiler's own (`compiler/idyllic/src/prelude.idl`).
 @pub def prelude = includeStr "../../compiler/idyllic/src/prelude.idl"
 
+-- This compiler's own modules (`compilerSalt`).
+def compilerSources : [String] =
+  [
+    includeStr "Agent.mw",
+    includeStr "Auto.mw",
+    includeStr "Cek.mw",
+    includeStr "Check.mw",
+    includeStr "Compiled.mw",
+    includeStr "Core.mw",
+    includeStr "Ctx.mw",
+    includeStr "CutAst.mw",
+    includeStr "Decl.mw",
+    includeStr "Driver.mw",
+    includeStr "Elab.mw",
+    includeStr "Elaborated.mw",
+    includeStr "Eval.mw",
+    includeStr "Find.mw",
+    includeStr "Format.mw",
+    includeStr "Grade.mw",
+    includeStr "Handlers.mw",
+    includeStr "Harness.mw",
+    includeStr "Hir.mw",
+    includeStr "Interface.mw",
+    includeStr "Layout.mw",
+    includeStr "Lex.mw",
+    includeStr "Link.mw",
+    includeStr "Literals.mw",
+    includeStr "Lower.mw",
+    includeStr "Main.mw",
+    includeStr "Matching.mw",
+    includeStr "Messages.mw",
+    includeStr "Num.mw",
+    includeStr "Overloads.mw",
+    includeStr "Parts.mw",
+    includeStr "Positivity.mw",
+    includeStr "Prompt.mw",
+    includeStr "Prove.mw",
+    includeStr "Prune.mw",
+    includeStr "Rename.mw",
+    includeStr "Scc.mw",
+    includeStr "Sequences.mw",
+    includeStr "Server.mw",
+    includeStr "Session.mw",
+    includeStr "Surface.mw",
+    includeStr "Syntax.mw",
+    includeStr "Tactic.mw",
+    includeStr "Tc.mw",
+    includeStr "Termination.mw",
+    includeStr "Typer.mw",
+    includeStr "Unify.mw",
+    includeStr "Usage.mw",
+    includeStr "Value.mw",
+    includeStr "World.mw"
+  ]
+
 -- Std's modules, as the Rust compiler embeds them (`stdlib::MODULES`).
 @pub def stdModules : [(String, String)] =
   [
@@ -544,3 +605,12 @@ fun parsedModules (modules : [(String, String)]) : Result String [([String], Sur
     ("Void", includeStr "../../lib/Std/src/Void.idl"),
     ("Yield", includeStr "../../lib/Std/src/Yield.idl")
   ]
+
+-- --- tests ---------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+-- A module left out of the salt would not rebuild what it changed.
+@test fun everyModuleIsInTheSalt () =
+  let modules = match readDir "src" with | Ok names -> V.filter (\n -> S.endsWith ".mw" n) names | Err _ -> [] in
+  assertEq (V.len compilerSources) (V.len modules) "a line of compilerSources for each module of src/"

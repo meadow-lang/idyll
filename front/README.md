@@ -102,10 +102,11 @@ stops and says so (`overlapping`) rather than mixing the two up.
 `front_keeps_packages_that_do_not_know_each_other_apart` and
 `front_runs_every_example_itself` hold it to that.
 
-A unit is built again when its sources or what it was compiled against
-changed, not when the compiler did (`make!` has no place to say which
-compiler a build is): after changing front/, delete a package's `target/`
-before trusting what it builds.
+A unit, and each of its parts, is built again when its sources or what it
+was compiled against changed, or when the compiler did: `make!`'s `salt`
+(`Driver.compilerSalt`) is a hash of the prelude, Std and front/'s own
+modules. `make!` can tell compilers apart by the file running, but under
+`meadow run` that is `meadow`, however front/ changes.
 
 `Idyll fmt files` sets files out in place (`--check` changes nothing, and
 fails if one is not set out). It is a `format!` (`Syntax.mw`, `Style`)

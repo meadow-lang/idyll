@@ -600,6 +600,14 @@ fn front_builds_and_runs_a_package_with_a_dependency() {
     std::fs::write(app.join("src/Main.idl"), "use Util (answer)\n\nmain : () -> () ! Eff\nmain () = putStrLn \"now ${answer}\"\n").unwrap();
     let (said, ok) = front_tool(&exe, &app, &["run"]);
     assert!(ok && said.contains("idyll: 1 compiled, 2 up to date") && said.contains("now 43\n"), "{said}");
+    // a type the package relies on changed, and not the package: it is
+    // checked again, and no longer fits
+    std::fs::write(app.join("src/Main.idl"), "use Util (answer)\n\nmain : () -> () ! Eff\nmain () = putStrLn \"now ${answer + 1}\"\n").unwrap();
+    let (said, ok) = front_tool(&exe, &app, &["run"]);
+    assert!(ok && said.contains("now 44\n"), "{said}");
+    std::fs::write(util.join("src/Lib.idl"), "@pub\nanswer : Bool\nanswer = True\n").unwrap();
+    let (said, ok) = front_tool(&exe, &app, &["run"]);
+    assert!(!ok && said.contains("does not check"), "{said}");
     // and a package that does not check says so, and runs nothing
     std::fs::write(app.join("src/Main.idl"), "main : () -> () ! Eff\nmain () = putStrLn 5\n").unwrap();
     let (said, ok) = front_tool(&exe, &app, &["run"]);
