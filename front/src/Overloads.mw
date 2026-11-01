@@ -16,25 +16,29 @@
 -- and the term is tried again against that type once the definition has
 -- been checked (`settle`). Then the placeholder is written over with what
 -- the term was elaborated to (`Auto.resolve`). None fitting, or several
--- still fitting at the end, is an error.
+-- still fitting at the end, is an error that lists them.
 --
 -- A constructor in a pattern is chosen by the type of what it is matched
 -- against (`patternCtor`).
 
 use Std.St (StRef, newRef, getRef, setRef)
 use Idyll.Core (Core)
+use Idyll.Core as C
+use Idyll.Hir (Ident)
 use Idyll.Value (Value)
 use Idyll.Tc (Tc, Meta, MetaInfo, Origin, CtorInfo)
 use Idyll.Tc as T
-use Idyll.Eval (force, eval)
+use Idyll.Eval (force, eval, quote)
 use Idyll.Usage (Usage)
 use Idyll.Usage as U
 use Idyll.Ctx (Ctx)
+use Idyll.Ctx as X
 use Idyll.Rename
 use Idyll.Elab (infer, check, freshMeta)
 use Idyll.Auto as A
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
+use Std.String as S
 use Std.Maybe as M
 use Std.Maybe.Maybe.*
 
@@ -82,7 +86,7 @@ fun elaborateAs (tc : Tc s) (ctx : Ctx) (t : HirExpr) (head : Int) (u : Int) (wa
   let fs = fitting tc ctx t head wanted in
   if V.len fs == 1 then elaborateAs tc ctx t head (V.getOr 0 fs 0) wanted
   else if V.isEmpty fs then
-    let w = T.error tc "NoMeaning" in
+    let w = noMeaning tc ctx head (match wanted with | Just g -> [quote tc ctx.lvl g] | None -> []) in
     (Core.Error, Value.Error, U.unknown ())
   else
     -- more than one: wait for the rest of the definition to say
@@ -116,7 +120,7 @@ fun elaborateAs (tc : Tc s) (ctx : Ctx) (t : HirExpr) (head : Int) (u : Int) (wa
               let w2 = A.choose tc m ctx core in
               True
             else if V.isEmpty fs then
-              let w2 = T.error tc "NoMeaning" in
+              let w2 = noMeaning tc ctx head (shownWanted tc ctx ty) in
               let w3 = giveUp tc m ctx ty in
               True
             else
@@ -133,8 +137,11 @@ fun elaborateAs (tc : Tc s) (ctx : Ctx) (t : HirExpr) (head : Int) (u : Int) (wa
     V.foldl
       (\acc d ->
         match d with
-        | (m, _, _, ctx, ty) ->
-            let w6 = T.error tc "AmbiguousName" in
+        | (m, head, t, ctx, ty) ->
+            let h = getRef tc.hir in
+            let x = hirExprVarIdent h head in
+            let fs = fitting tc ctx t head (Just ty) in
+            let w6 = saidAt tc head (ambiguous tc ctx (hirIdentText h x) (hirIdentUniques h x) fs (shownWanted tc ctx ty)) in
             giveUp tc m ctx ty)
       ()
       rest
@@ -150,9 +157,59 @@ fun giveUp (tc : Tc s) (m : Int) (ctx : Ctx) (ty : Value) : () ! { St s | e } =
   in
   A.choose tc m ctx Core.Error
 
+-- The type wanted where a name is used, to show: nothing, if nothing is
+-- known of it yet.
+fun shownWanted (tc : Tc s) (ctx : Ctx) (ty : Value) : [Core] ! { St s | e } =
+  match force tc ty with
+  | Value.Flex _ _ -> []
+  | _ -> [quote tc ctx.lvl ty]
+
+-- `report`, found at the name at `head`: a term put off is reported long
+-- after it was checked.
+fun saidAt (tc : Tc s) (head : Int) (report : () -> () ! { St s | e }) : () ! { St s | e } =
+  let before = getRef tc.at in
+  let w = setRef tc.at (metaHirExpr (getRef tc.hir) head) in
+  let w2 = report () in
+  setRef tc.at before
+
+-- Say that no meaning of the name at `head` fits.
+fun noMeaning (tc : Tc s) (ctx : Ctx) (head : Int) (wanted : [Core]) : () ! { St s | e } =
+  let h = getRef tc.hir in
+  let x = hirExprVarIdent h head in
+  saidAt tc head (\() -> noneFits tc ctx (hirIdentText h x) (hirIdentUniques h x) wanted)
+
+fun noneFits (tc : Tc s) (ctx : Ctx) (name : String) (us : [Int]) (wanted : [Core]) : () ! { St s | e } =
+  T.errorOf tc "NoMeaning" wanted (V.concat [[name], candidateLines tc ctx name us []])
+
+-- Say that the meanings `fs` of `name` all fit.
+fun ambiguous (tc : Tc s) (ctx : Ctx) (name : String) (us : [Int]) (fs : [Int]) (wanted : [Core]) : () -> () ! { St s | e } =
+  \() -> T.errorOf tc "AmbiguousName" wanted (V.concat [[name, show (V.len fs), example tc name fs], candidateLines tc ctx name us fs])
+
+-- Each meaning in `us` of `name`, as a line: how it is written, its type,
+-- and where it is from; those in `fs` marked.
+fun candidateLines (tc : Tc s) (ctx : Ctx) (name : String) (us : [Int]) (fs : [Int]) : [String] ! { St s | e } =
+  V.map
+    (\u ->
+      let ty = match X.lookup ctx (Ident.Ident [u] name) with | Just (_, t, _) -> C.shown (getRef tc.linear) (quote tc ctx.lvl t) | None -> "?" in
+      let (written, origin) = (getRef tc.meaningOf) u in
+      let from = match origin with | Just o -> ", from ${o}" | None -> "" in
+      let mark = if V.elem u fs then "  (fits)" else "" in
+      "${M.unwrapOr name written} : ${ty}${from}${mark}")
+    us
+
+-- One of the meanings in `fs`, written in full, to show how to say which is
+-- meant.
+fun example (tc : Tc s) (name : String) (fs : [Int]) : String ! { St s | e } =
+  let known = V.concatMap (\u -> match (getRef tc.meaningOf) u with | (Just w, Just o) -> [(w, o)] | _ -> []) fs in
+  match V.head known with
+  | Just (written, origin) ->
+      let from = if S.startsWith "`" origin then S.slice origin 1 (S.byteLength origin - 1) else origin in
+      if S.contains "." written or S.contains " " from then written else "${from}.${written}"
+  | None -> name
+
 -- The constructor a pattern means, for what it is matched against: of a
 -- name with several meanings, the one of the type `ty` has.
-@pub fun patternCtor (tc : Tc s) (pat : HirPattern) (c : HirIdent) (ty : Value) : Maybe Int ! { St s | e } =
+@pub fun patternCtor (tc : Tc s) (ctx : Ctx) (pat : HirPattern) (c : HirIdent) (ty : Value) : Maybe Int ! { St s | e } =
   match Hm.lookup pat (getRef tc.patternChoice) with
   | Just u -> Just u
   | None ->
@@ -163,6 +220,8 @@ fun giveUp (tc : Tc s) (m : Int) (ctx : Ctx) (ty : Value) : () ! { St s | e } =
           match force tc ty with
           | Value.Opaque d _ _ ->
               Just (V.filter (\u -> match T.ctorInfo tc u with | Just (CtorInfo.CtorInfo _ dt _ _ _) -> dt == d | None -> False) us)
+          -- (`Bool`'s `True` is a literal: a builtin type has no constructors)
+          | Value.LitTy _ -> Just []
           | Value.Error -> None
           | _ -> Just us
         in
@@ -174,7 +233,9 @@ fun giveUp (tc : Tc s) (m : Int) (ctx : Ctx) (ty : Value) : () ! { St s | e } =
               let w = setRef tc.patternChoice (Hm.insert pat u (getRef tc.patternChoice)) in
               Just u
             else
-              let w = T.error tc (if V.isEmpty fs then "NoMeaning" else "AmbiguousName") in
+              let name = hirIdentText (getRef tc.hir) c in
+              let wanted = [quote tc ctx.lvl (force tc ty)] in
+              let w = if V.isEmpty fs then noneFits tc ctx name us wanted else (ambiguous tc ctx name us fs wanted) () in
               None
 
 -- The constructor a pattern was found to mean, or the one it names.

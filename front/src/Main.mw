@@ -287,7 +287,12 @@ fun messagesIn prelude (std : Maybe (Rename.PackageNames, Compiled)) (text : Str
 
 fun messageLine (d : Diagnostic) : String =
   match d with
-  | Diagnostic.Diagnostic _ said _ labels _ -> said ++ (match V.head labels with | Just (_, l) -> ": " ++ l | None -> "")
+  | Diagnostic.Diagnostic _ said _ labels notes ->
+      let line = said ++ (match V.head labels with | Just (_, l) -> ": " ++ l | None -> "") in
+      -- (a name's candidates are what its message is for)
+      if S.startsWith "no `" said or S.startsWith "ambiguous `" said then
+        line ++ " | " ++ S.join " | " (S.split "\n" (S.join "\n" notes))
+      else line
 
 -- A program's Cut: checked against Std compiled, if it names Std, and
 -- linked with it.

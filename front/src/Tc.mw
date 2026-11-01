@@ -189,6 +189,9 @@ use Std.Maybe.Maybe.*
   -- the hints' names, as a type shows one a search found: this package's
   -- under their modules, a dependency's by its path there
   hintNames : StRef s (HashMap Int String),
+  -- how each thing an overloaded name may mean is written in full, and
+  -- where it is from: what a message about the name lists (`Check.meaningOf`)
+  meaningOf : StRef s (Int -> (Maybe String, Maybe String)),
   -- the metavariables standing for an auto argument still to be found, and
   -- what each was found to be, with the length of the context it was found
   -- in: written over the placeholder once the definition is checked
@@ -289,6 +292,7 @@ use Std.Maybe.Maybe.*
     methods = newRef Hm.empty,
     instanceFields = newRef Hm.empty,
     hintNames = newRef Hm.empty,
+    meaningOf = newRef (\u -> (None, None)),
     placeholders = newRef [],
     chosen = newRef Hm.empty,
     deferredAutos = newRef [],
@@ -362,6 +366,7 @@ use Std.Maybe.Maybe.*
     methods = newRef (getRef tc.methods),
     instanceFields = newRef (getRef tc.instanceFields),
     hintNames = newRef (getRef tc.hintNames),
+    meaningOf = newRef (getRef tc.meaningOf),
     placeholders = newRef (getRef tc.placeholders),
     chosen = newRef (getRef tc.chosen),
     deferredAutos = newRef (getRef tc.deferredAutos),

@@ -503,7 +503,7 @@ fun simplify (tc : Tc s) (ctx : Ctx) (p : Problem) : (Step, Problem) ! { St s | 
             | HirPatternCon c args ->
                 -- the renamer reported an unknown name already; a name with
                 -- several meanings is the one of the type matched against
-                (match O.patternCtor tc pat c (targetType ctx target) with
+                (match O.patternCtor tc ctx pat c (targetType ctx target) with
                  | Just cu -> conStep tc ctx p cu args target rest
                  | None -> (Step.Failed, p))
             -- `#[p, q]`: taken apart with the constructors of what it is
@@ -571,7 +571,7 @@ fun plausible (tc : Tc s) (ctx : Ctx) (m : Matcher s) (clause : HirClause) : Boo
         | (pat, ty) ->
             (match (hir, peel hir pat) with
              | HirPatternCon c _ ->
-                 let u = M.unwrapOr (0 - 1) (O.patternCtor tc (peel hir pat) c ty) in
+                 let u = M.unwrapOr (0 - 1) (O.patternCtor tc ctx (peel hir pat) c ty) in
                  if u < 0 then False
                  else
                    (match T.ctorInfo tc u with

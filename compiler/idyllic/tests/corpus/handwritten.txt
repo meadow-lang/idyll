@@ -1174,3 +1174,75 @@ x
 %%%
 -- float literals with more digits than a machine integer holds, each the nearest float
 (0.000000000060771005063039659766, 0.00000000000000000000202226624879595063154, 123456789012345678901234567890.5)
+%%%
+use Maybe.*
+use Box.*
+
+data Box = Just Int | Empty
+
+unbox : Box -> Int
+unbox (Just n) = n
+unbox Empty = 0
+
+let f = \x -> case x of { Just n -> 1; _ -> 0 } in 2
+%%%
+use Maybe.*
+use Box.*
+
+data Box = Just Int | Empty
+
+unbox : Box -> Int
+unbox (Just n) = n
+unbox Empty = 0
+
+v = Just 7
+
+unbox v
+%%%
+use Maybe.*
+use Box.*
+
+data Box = Just Int | Empty
+
+unbox : Box -> Int
+unbox (Just n) = n
+unbox Empty = 0
+
+f : Bool -> Bool
+f b = b
+
+f (Just 1)
+%%%
+use Maybe.*
+use Box.*
+
+data Box = Just Int | Empty
+
+unbox : Box -> Int
+unbox (Just n) = n
+unbox Empty = 0
+
+g : Bool -> Int
+g (Just n) = n
+g _ = 0
+
+g True
+%%%
+use Maybe.*
+use Box.*
+
+data Box = Just Int | Empty
+
+unbox : Box -> Int
+unbox (Just n) = n
+unbox Empty = 0
+
+use Std.Collections.List (length)
+use Shape.*
+
+data Shape = Circle Int
+
+length : Shape -> Int
+length (Circle r) = r
+
+length (Just 5)

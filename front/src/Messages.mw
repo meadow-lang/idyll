@@ -127,6 +127,12 @@ fun worded (sols : [Maybe Core]) (linear : Bool) (at : Meta) (r : Report) : Diag
       else if kind == "OpSignature" then withLabel at "an operation takes arguments and gives a result, as in a -> b; use () for none" (errorAt at "${word 0} is not an operation's type")
       else if kind == "UnknownNative" then
         withLabel at "@native declares something every back end implements, and this is not one of them" (errorAt at "there is no native called ${word 0}")
+      else if kind == "NoMeaning" then
+        withNote (candidates (V.drop words 1))
+          (withLabel at "used here" (errorAt at (if V.isEmpty types then "no `${word 0}` in scope fits here" else "no `${word 0}` in scope has the type needed here, `${ty 0}`")))
+      else if kind == "AmbiguousName" then
+        withNote "${candidates (V.drop words 3)}\nsay which with a type annotation, or write it in full, as `${word 2}`"
+          (withLabel at "which one is meant?" (errorAt at "ambiguous `${word 0}`: ${word 1} of the candidates in scope ${if V.isEmpty types then "fit here" else "fit `${ty 0}`"}"))
       else if kind == "UnsolvedMeta" then withNote "add a type annotation to pin it down" (withLabel at "could not infer ${word 0}" (errorAt at "unsolved metavariable"))
       else if kind == "MissingCases" then withLabel at "missing: ${S.join ", " words}" (errorAt at "the patterns do not cover every case")
       else if kind == "UnreachableClause" then withLabel at "the cases before this one cover everything it matches" (warningAt at "unreachable")
@@ -134,6 +140,9 @@ fun worded (sols : [Maybe Core]) (linear : Bool) (at : Meta) (r : Report) : Diag
         withNote "say so in its type, as in ${word 0} : .. -> .. ! Div"
           (withLabel at "no argument gets smaller on every round of its recursion, so it has the effect Div" (errorAt at "${word 0} may not terminate"))
       else errorAt at (said kind)
+
+-- The meanings an overloaded name was found to have, a line each.
+fun candidates (lines : [String]) : String = "candidates in scope:\n  " ++ S.join "\n  " lines
 
 -- What a sized integer type holds, as the Rust checker's `number_range`
 -- says it.

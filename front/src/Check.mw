@@ -173,6 +173,7 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
   in
   -- what the packages it depends on give
   let ctx0 = importAll tc (initial tc) deps in
+  let wm = setRef tc.meaningOf (meaningOf m deps) in
   -- native types first, which the data types and effects may mention; and
   -- native operations last, as their types may mention those
   let ctx1 = declareNatives tc ctx0 natives True in
@@ -352,13 +353,12 @@ fun symbolsOf (m : Renamed) : HashMap Int (String, String) =
   -- `x`, written as `path` from inside the module of `owner`'s
   let under = \acc x owner path -> Hm.insert (uniqueOf h x) (packageOf m (uniqueOf h x), qualified m (uniqueOf h owner) path) acc in
   let add = \acc x path -> under acc x x path in
-  let ctorName = \c -> match (h, c) with | HirCtorFields n _ -> n | HirCtorSig n _ -> n in
   -- (a constructor, or an operation, is in the module its type is in)
   let withDatas =
     V.foldl
       (\acc d ->
         let dn = hirDataName h d in
-        V.foldl (\a c -> under a (ctorName c) dn (text dn ++ "." ++ text (ctorName c))) (add acc dn (text dn)) (hirDataCtors h d))
+        V.foldl (\a c -> under a (ctorName h c) dn (text dn ++ "." ++ text (ctorName h c))) (add acc dn (text dn)) (hirDataCtors h d))
       Hm.empty
       (hirModuleDatas h root)
   in
@@ -371,6 +371,62 @@ fun symbolsOf (m : Renamed) : HashMap Int (String, String) =
       (hirModuleEffects h root)
   in
   V.foldl (\acc b -> add acc (hirBindName h b) (text (hirBindName h b))) withEffects (V.concatMap (bindsOf h) (hirModuleGroups h root))
+
+fun ctorName h c = match (h, c) with | HirCtorFields n _ -> n | HirCtorSig n _ -> n
+
+-- How a thing an overloaded name may mean is written in full, and where it
+-- is from: a constructor under its type (`Maybe.Just`), and anything of
+-- another module or package with that module's name (`name_meanings`).
+-- Looked up when a message wants it, which is seldom.
+fun meaningOf (m : Renamed) (deps : [Compiled]) (u : Int) : (Maybe String, Maybe String) =
+  let inDeps =
+    V.concatMap
+      (\(p : Compiled) -> V.concatMap (\s -> match s with | Symbol.Symbol v package path -> if v == u then [meaningInDep m p u package path] else []) p.symbols)
+      deps
+  in
+  match V.head inDeps with
+  | Just found -> found
+  | None -> meaningHere m u
+
+-- Of another package's, by the path its symbol gives: `Maybe.Maybe.Just`.
+fun meaningInDep (m : Renamed) (p : Compiled) (u : Int) (package : String) (path : String) : (Maybe String, Maybe String) =
+  let parts = S.split "." path in
+  let n = V.len parts in
+  let ctor = V.any (\e -> match e with | CtorEntry.CtorEntry v _ -> v == u) p.ctors in
+  let cut = if ctor and n >= 2 then n - 2 else n - 1 in
+  let home = S.join "." (V.slice parts 0 cut) in
+  -- (an earlier part of this package's is one of its modules)
+  let from =
+    if cut == 0 then package
+    else if p.name == packageOf m m.first then home
+    else package ++ "." ++ home
+  in
+  (Just (S.join "." (V.slice parts cut n)), Just "`${from}`")
+
+-- Of what the module and the prelude declare.
+fun meaningHere (m : Renamed) (u : Int) : (Maybe String, Maybe String) =
+  let h = hirArena m.hir in
+  let root = hirRoot m.hir in
+  let text = \x -> hirIdentText h x in
+  let from = \q ->
+    match q with
+    | Just q2 -> "`${q2}`"
+    | None -> if u < m.first then "the prelude" else "this module"
+  in
+  let ctors =
+    V.concatMap
+      (\d ->
+        let dn = hirDataName h d in
+        V.concatMap
+          (\c -> if uniqueOf h (ctorName h c) == u then [(text dn ++ "." ++ text (ctorName h c), uniqueOf h dn)] else [])
+          (hirDataCtors h d))
+      (hirModuleDatas h root)
+  in
+  match V.head ctors with
+  | Just (written, dt) -> (Just written, Just (from (Hm.lookup dt m.qualifiers)))
+  | None ->
+      if V.any (\b -> uniqueOf h (hirBindName h b) == u) (V.concatMap (bindsOf h) (hirModuleGroups h root)) then (None, Just (from (Hm.lookup u m.qualifiers)))
+      else (None, None)
 
 -- The effects the runtime handles: the prelude's `Eff`, or failing that,
 -- `Div`.

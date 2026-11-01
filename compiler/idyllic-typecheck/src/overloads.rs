@@ -266,6 +266,8 @@ impl Checker {
         let of = |s: &Self, u: usize| s.ctors.get(&u).map(|info| info.data);
         let fits: Vec<usize> = match &*ty {
             Value::Opaque(d, _, _) => candidates.iter().copied().filter(|&u| of(self, u) == Some(*d)).collect(),
+            // (`Bool`'s `True` is a literal: a builtin type has no constructors)
+            Value::LitTy(_) => Vec::new(),
             Value::Error => return None,
             _ => candidates.clone(),
         };
