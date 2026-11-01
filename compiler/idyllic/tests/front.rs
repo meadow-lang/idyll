@@ -222,6 +222,11 @@ const PORTED: &[&str] = &[
     "a linear value boxed",
     "a linear type for a type parameter that is shared",
     "a linear value at the top level",
+    "an instance * cannot be here",
+    "this instance * overlaps another",
+    "universe too large",
+    "these effects may be resumed more than once",
+    "* is not strictly positive",
 ];
 
 /// Whether `headline` is of the shape `pattern`, each `*` in it any text.

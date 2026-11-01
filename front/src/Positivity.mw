@@ -32,8 +32,9 @@ use Std.Maybe.Maybe.*
 
 -- A data type declared in the module: its unique, the level of its first
 -- parameter in its fields' contexts, how many parameters, and its fields,
--- each with the size of the context it was elaborated in and its type.
-@pub data Shape = Shape Int Int Int [(Int, Value)]
+-- each with the size of the context it was elaborated in, its type and
+-- its constructor's name.
+@pub data Shape = Shape Int Int Int [(Int, Value, String)]
 
 -- What an occurrence is being looked for: these data types, or a parameter
 -- by its level.
@@ -53,7 +54,7 @@ fun isParam (t : Target) (k : Int) : Bool = match t with | Target.Param p -> p =
             V.concatMap
               (\i ->
                 let u = V.getOr 0 uniques i in
-                if V.any (\f -> match f with | (l, ty) -> M.isSome (mentions tc l ty (Target.Datas [u]))) fields then [i] else [])
+                if V.any (\f -> match f with | (l, ty, _) -> M.isSome (mentions tc l ty (Target.Datas [u]))) fields then [i] else [])
               (V.range 0 (V.len shapes)))
       shapes
   in
@@ -66,7 +67,12 @@ fun isParam (t : Target) (k : Int) : Bool = match t with | Target.Param p -> p =
             match V.get shapes i with
             | Just (Shape.Shape _ _ _ fields) ->
                 V.foldl
-                  (\b f -> match f with | (l, ty) -> if positive tc l ty (Target.Datas members) then () else T.error tc "NotStrictlyPositive")
+                  (\b f ->
+                    match f with
+                    | (l, ty, ctor) ->
+                        (match negative tc l ty (Target.Datas members) with
+                         | Just (name, why) -> T.errorOf tc "NotStrictlyPositive" [] [name, ctor, why]
+                         | None -> ()))
                   ()
                   fields
             | None -> ())
@@ -101,7 +107,7 @@ fun demote (tc : Tc s) (group : [Shape]) : Bool ! { St s | e } =
             (\ch p ->
               let now = Hm.getOr [] u (getRef tc.positive) in
               if not (V.getOr False now p) then ch
-              else if V.any (\f -> match f with | (l, ty) -> not (positive tc l ty (Target.Param (at + p)))) fields then
+              else if V.any (\f -> match f with | (l, ty, _) -> M.isSome (negative tc l ty (Target.Param (at + p)))) fields then
                 let w = setRef tc.positive (Hm.insert u (V.set now p False) (getRef tc.positive)) in
                 True
               else ch)
@@ -110,41 +116,56 @@ fun demote (tc : Tc s) (group : [Shape]) : Bool ! { St s | e } =
     False
     group
 
--- Whether `v`, a type in a context of `l` slots, is strictly positive in
--- the target.
-fun positive (tc : Tc s) (l : Int) (v0 : Value) (target : Target) : Bool ! { St s | e } =
+-- Where `v`, a type in a context of `l` slots, is not strictly positive in
+-- the target, if it is not: what is there, and how it appears.
+fun negative (tc : Tc s) (l : Int) (v0 : Value) (target : Target) : Maybe (String, String) ! { St s | e } =
   let v = force tc v0 in
   match mentions tc l v target with
-  | None -> True
-  | Just _ ->
+  | None -> None
+  | Just found ->
+      let unknown = Just (found, "it appears under a type it is not known to be positive in,") in
       (match v with
        | Value.Pi _ _ _ _ dom cod ->
-           if M.isSome (mentions tc l dom target) then False else positive tc (l + 1) (apply tc cod (Va.vvar l "_")) target
-       | Value.BoxTy _ a -> positive tc l a target
-       | Value.Comp a _ -> positive tc l a target
-       | Value.Opaque u _ sp ->
-           if isData target u then notInArguments tc l sp target
+           (match mentions tc l dom target with
+            | Just name -> Just (name, "it appears to the left of an arrow")
+            | None -> negative tc (l + 1) (apply tc cod (Va.vvar l "_")) target)
+       | Value.BoxTy _ a -> negative tc l a target
+       | Value.Comp a _ -> negative tc l a target
+       | Value.Opaque u outer sp ->
+           if isData target u then inArguments tc l sp target
            else if Hm.member u (getRef tc.datas) or Hm.member u (getRef tc.natives) then
              let polarity = Hm.lookup u (getRef tc.positive) in
-             V.all
-               (\i ->
-                 match V.get sp i with
-                 | Just (Elim.App arg) ->
-                     (match mentions tc l arg target with
-                      | Just _ ->
-                          let ok = match polarity with | Just ps -> V.getOr False ps i | None -> False in
-                          ok and positive tc l arg target
-                      | None -> True)
-                 | _ -> False)
+             V.foldl
+               (\acc i ->
+                 match acc with
+                 | Just _ -> acc
+                 | None ->
+                     (match V.get sp i with
+                      | Just (Elim.App arg) ->
+                          (match mentions tc l arg target with
+                           | Just name ->
+                               let ok = match polarity with | Just ps -> V.getOr False ps i | None -> False in
+                               if ok then negative tc l arg target
+                               else Just (name, "it appears inside ${outer}, whose parameter is not strictly positive,")
+                           | None -> None)
+                      | _ -> unknown))
+               None
                (V.range 0 (V.len sp))
-           else False
-       | Value.Rigid k _ sp -> if isParam target k then notInArguments tc l sp target else False
-       | _ -> False)
+           else unknown
+       | Value.Rigid k _ sp -> if isParam target k then inArguments tc l sp target else unknown
+       | _ -> unknown)
 
 -- At an occurrence of what is being defined: its arguments may not mention
 -- it again.
-fun notInArguments (tc : Tc s) (l : Int) (sp : [Elim]) (target : Target) : Bool ! { St s | e } =
-  V.all (\e -> match e with | Elim.App arg -> M.isNone (mentions tc l arg target) | _ -> True) sp
+fun inArguments (tc : Tc s) (l : Int) (sp : [Elim]) (target : Target) : Maybe (String, String) ! { St s | e } =
+  V.foldl
+    (\acc e ->
+      match (acc, e) with
+      | (Just _, _) -> acc
+      | (None, Elim.App arg) -> M.map (\name -> (name, "it appears in an argument of itself")) (mentions tc l arg target)
+      | _ -> None)
+    None
+    sp
 
 fun firstOf (tc : Tc s) (l : Int) (vs : [Value]) (target : Target) : Maybe String ! { St s | e } =
   V.foldl (\acc v -> match acc with | Just x -> Just x | None -> mentions tc l v target) None vs

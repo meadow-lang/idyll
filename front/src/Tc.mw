@@ -192,6 +192,8 @@ use Std.Maybe.Maybe.*
   -- how each thing an overloaded name may mean is written in full, and
   -- where it is from: what a message about the name lists (`Check.meaningOf`)
   meaningOf : StRef s (Int -> (Maybe String, Maybe String)),
+  -- the package a thing is from, as a message says it (`Check.homeOf`)
+  homeOf : StRef s (Int -> String),
   -- the metavariables standing for an auto argument still to be found, and
   -- what each was found to be, with the length of the context it was found
   -- in: written over the placeholder once the definition is checked
@@ -294,6 +296,7 @@ use Std.Maybe.Maybe.*
     instanceFields = newRef Hm.empty,
     hintNames = newRef Hm.empty,
     meaningOf = newRef (\u -> (None, None)),
+    homeOf = newRef (\u -> "the prelude"),
     placeholders = newRef [],
     chosen = newRef Hm.empty,
     deferredAutos = newRef [],
@@ -368,6 +371,7 @@ use Std.Maybe.Maybe.*
     instanceFields = newRef (getRef tc.instanceFields),
     hintNames = newRef (getRef tc.hintNames),
     meaningOf = newRef (getRef tc.meaningOf),
+    homeOf = newRef (getRef tc.homeOf),
     placeholders = newRef (getRef tc.placeholders),
     chosen = newRef (getRef tc.chosen),
     deferredAutos = newRef (getRef tc.deferredAutos),

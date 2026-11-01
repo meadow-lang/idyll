@@ -178,6 +178,20 @@ fun worded (sols : [Maybe Core]) (linear : Bool) (at : Meta) (r : Report) : Diag
       else if kind == "LinearTopLevel" then
         withNote "make it a function, so that each call makes one of its own"
           (withLabel at "${word 0} is of type ${ty 0}, which is linear, and every use of a top-level definition shares it" (errorAt at "a linear value at the top level"))
+      else if kind == "OrphanInstance" then
+        withNote "an instance lives with its trait or with its type, so that no two packages give the same one; a named instance, `instance name : ..`, may live anywhere, and is given by hand, `f @{name}`"
+          (withLabel at "neither ${word 0} nor the type it is for is this package's" (errorAt at "an instance ${ty 0} cannot be here"))
+      else if kind == "OverlappingInstances" then
+        withNote "two instances of a trait may not be for types that unify: a search could not tell which to take; name one, `instance name : ..`, to give it by hand"
+          (withLabel at "${word 0} is for the same types" (errorAt at "this instance ${ty 0} overlaps another"))
+      else if kind == "UniverseTooLarge" then
+        withLabel at "${word 0} must be a type in ${ty 1}, but here it would be ${ty 0}, which is in ${ty 2}" (errorAt at "universe too large")
+      else if kind == "ManyEffectsInRow" then
+        withNote "a row variable takes effects resumed at most once unless it says otherwise: bind it as {e : Effect []}"
+          (withLabel at "${word 0} stands for effects resumed at most once, and ${ty 0} has an operation declared @many" (errorAt at "these effects may be resumed more than once"))
+      else if kind == "NotStrictlyPositive" then
+        withNote "a data type may appear in its own constructors' fields only to the right of every arrow; otherwise it can express a term that loops without recursion"
+          (withLabel at "${word 2} in this field of ${word 1}" (errorAt at "${word 0} is not strictly positive"))
       else if kind == "UnsolvedMeta" then withNote "add a type annotation to pin it down" (withLabel at "could not infer ${word 0}" (errorAt at "unsolved metavariable"))
       else if kind == "MissingCases" then withLabel at "missing: ${S.join ", " words}" (errorAt at "the patterns do not cover every case")
       else if kind == "UnreachableClause" then withLabel at "the cases before this one cover everything it matches" (warningAt at "unreachable")

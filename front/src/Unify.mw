@@ -415,8 +415,8 @@ fun solveMeta (tc : Tc s) (gamma : Int) (m : Int) (sp : [Elim]) (rhs : Value) : 
               -- once where they may not be, is reported here, and the
               -- metavariable solved with an error
               match violation tc info value with
-              | Just why ->
-                  let w = T.error tc why in
+              | Just (kind, types, words) ->
+                  let w = T.errorOf tc kind types words in
                   let v = T.solve tc m Value.Error in
                   True
               | None ->
@@ -509,22 +509,28 @@ fun prunable (tc : Tc s) (pren : Renaming) (sp : [Elim]) : Maybe [Bool] ! { St s
       | Just (_, keep) -> if V.all (\k -> k) keep then None else Just keep
       | None -> None
 
--- What is wrong with a solution, if anything: the kind of error.
-fun violation (tc : Tc s) (info : MetaInfo) (solution : Value) : Maybe String ! { St s | e } =
+-- What is wrong with a solution, if anything: the error's kind, and what
+-- its words are made of.
+fun violation (tc : Tc s) (info : MetaInfo) (solution : Value) : Maybe (String, [Core], [String]) ! { St s | e } =
   match info with
-  | MetaInfo.MetaInfo _ _ (Just (MetaTy.MetaTy types spine ty)) ->
+  | MetaInfo.MetaInfo _ origin (Just (MetaTy.MetaTy types spine ty)) ->
+      -- (the solution, back in the context the metavariable was made in)
+      let at = V.len types in
       let inst = V.foldl (\f k -> vapp tc f (Va.vvar k (fst (V.getOr ("_", Value.Error) types k)))) solution spine in
-      let tooLarge =
+      let what = match origin with | Origin.Hole -> "this hole" | Origin.Inferred desc -> desc in
+      let large =
         match force tc ty with
         | Value.Type allowed ->
             (match sortOf tc types inst with
-             | Just actual -> actual > allowed
-             | None -> False)
-        | _ -> False
+             | Just actual -> if actual > allowed then Just (allowed, actual) else None
+             | None -> None)
+        | _ -> None
       in
-      if tooLarge then Just "UniverseTooLarge"
-      else if rowKind tc ty == Just False and rowIsMany tc types inst then Just "ManyEffectsInRow"
-      else None
+      (match large with
+       | Just (allowed, actual) -> Just ("UniverseTooLarge", [quote tc at inst, Core.Type allowed, Core.Type actual], [what])
+       | None ->
+           if rowKind tc ty == Just False and rowIsMany tc types inst then Just ("ManyEffectsInRow", [quote tc at (shownRow tc inst)], [what])
+           else None)
   | _ -> None
 
 -- A lower bound on the universe a type is in, given the variables' types;

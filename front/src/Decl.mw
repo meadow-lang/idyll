@@ -250,7 +250,7 @@ fun writtenLevel (h : HirArena) (k : HirExpr) : Maybe Int =
 
 -- The constructors of a data type, and all their fields, for positivity:
 -- each with the size of the context it is in, and its type.
-fun declareCtors (tc : Tc s) (ctx : Ctx) (d : DataDecl) (ks : [Core]) (indices : Int) : (Ctx, [(Int, Value)]) ! { St s | e } =
+fun declareCtors (tc : Tc s) (ctx : Ctx) (d : DataDecl) (ks : [Core]) (indices : Int) : (Ctx, [(Int, Value, String)]) ! { St s | e } =
   -- the parameters again, now that the type itself is in scope
   let params = bindParams tc ctx d.params ks in
   let n = V.len d.params in
@@ -275,7 +275,7 @@ fun declareCtors (tc : Tc s) (ctx : Ctx) (d : DataDecl) (ks : [Core]) (indices :
                let info = CtorInfo.CtorInfo (H.textOf x) (H.uniqueOf d.name) tag (n + implicit) fields in
                let w2 = setRef tc.ctors (Hm.insert (H.uniqueOf x) info (getRef tc.ctors)) in
                let w3 = setRef tc.opens (Hm.insert (H.uniqueOf x) (fieldOpens tc shape found fields) (getRef tc.opens)) in
-               (declareConstant tc c x ty, V.append fieldsSoFar found)))
+               (declareConstant tc c x ty, V.append fieldsSoFar (V.map (\f -> (fst f, snd f, H.textOf x)) found))))
     (ctx, [])
     (V.zip (V.range 0 (V.len d.ctors)) d.ctors)
 

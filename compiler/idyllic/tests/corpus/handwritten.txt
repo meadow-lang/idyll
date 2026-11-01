@@ -1397,3 +1397,73 @@ main () = printInt (ask ())
 \(x : [2..1] Int) -> x
 %%%
 (\(x : Bool) -> 1) : Int -> Int
+%%%
+data Bad = Bad (Bad -> Int)
+%%%
+data Bad a = Bad (Bad (Bad a))
+%%%
+data Neg a = Neg (a -> Int)
+use Neg.*
+data Bad = Bad (Neg Bad)
+%%%
+data Bad = Bad (List (Bad -> Int))
+%%%
+trait Describe (a : Type) where
+  describe : a -> String
+
+instance Describe Int where
+  describe n = showInt n
+
+instance Describe Int where
+  describe n = ""
+
+1
+%%%
+trait Describe (a : Type) where
+  describe : a -> String
+
+instance Describe Int where
+  describe n = showInt n
+
+instance Describe a => Describe (List a) where
+  describe xs = "a list"
+
+instance Describe (List Int) where
+  describe xs = "ints"
+
+1
+%%%
+instance PartialEq Unit where
+  x == y = True
+
+1
+%%%
+use Std.Collections.Array
+
+instance PartialEq (Array Int) where
+  x == y = True
+
+1
+%%%
+id : {a : Type} -> a -> a
+id x = x
+
+id Type
+%%%
+effect Ask where
+  ask : () -> Int
+
+effect Choose where
+  @many flip : () -> Bool
+
+compose : {e : Effect} -> (f : Int -> Int ! e) -> (g : Int -> Int ! e) -> (n : Int) -> Int ! e
+compose f g n = f (g n)
+
+pick : Int -> Int ! Choose
+pick n = if flip () then n else 0
+
+addAsk : Int -> Int ! Ask
+addAsk n = n + ask ()
+
+both : Int -> Int ! {Ask, Choose}
+both n = compose pick addAsk n
