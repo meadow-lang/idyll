@@ -82,11 +82,17 @@ cli! {
       prelude : Option String "The prelude each program is checked after: a pass's dump, not a build" value "FILE"
       std : Option String "Std's sources, for a program that names Std" value "DIR"
     }
-    | build "Build a package into Cut, which Meadow runs" { path : Maybe String "the package (here, if left out)" } with Dump
+    options Profile {
+      release : Flag "Build with the release profile: native code"
+      debug : Flag "Build with the debug profile (the default)"
+      backend : Option String "Which of Meadow's runtimes runs the program, glade or silo: over the profile and Idyll.toml" value "BACKEND"
+      silo : Flag "--backend silo"
+      glade : Flag "--backend glade"
+    }
+    | build "Build a package into Cut, which Meadow runs" { path : Maybe String "the package (here, if left out)" } with Dump, Profile
     | run "Build a package and run it on Meadow; with --prelude, run each file on the CEK machine" {
         paths : [String] "the package (here, if left out); with --prelude, the files"
-        release : Flag "Run it as native code, built by Silo"
-      } with Dump
+      } with Dump, Profile
     | check "Check a package and what it depends on" { path : Maybe String "the package (here, if left out)" }
     | update "Move git dependencies forward to what their references name now" {
         names : [String] "just these dependencies (every one, if none)"
@@ -116,11 +122,11 @@ fun main () =
   match argsTool () with
   | (every, Tool.Build r) ->
       (match r.dump.prelude with
-       | None -> D.buildCommand every.offline every.locked r.path
+       | None -> asTold r.profile (\told -> D.buildCommand every.offline every.locked told r.path)
        | Just path -> withPrelude path (\prelude -> builtDump prelude r.dump.std (M.unwrapOr "." r.path)))
   | (every, Tool.Run r) ->
       (match r.dump.prelude with
-       | None -> D.runCommand every.offline every.locked (V.get r.paths 0) r.release
+       | None -> asTold r.profile (\told -> D.runCommand every.offline every.locked told (V.get r.paths 0))
        | Just path -> withPrelude path (\prelude -> eachAgainstStd prelude r.dump.std r.paths ran ranAgainst))
   | (every, Tool.Check r) -> D.checkCommand every.offline every.locked r.path
   | (every, Tool.Update r) -> D.updateCommand r.names r.dryRun
@@ -139,6 +145,14 @@ fun main () =
   | (every, Tool.Parted r) -> withPreludeOf r.dump.prelude (\prelude -> packageDump prelude r.name r.dir (\modules texts -> partedDump prelude r.name modules texts))
   | (every, Tool.Compiled r) -> withPreludeOf r.dump.prelude (\prelude -> packageDump prelude r.name r.dir (\modules texts -> compiledDump prelude r.name modules))
   | (every, Tool.Package r) -> withPreludeOf r.dump.prelude (\prelude -> packageDump prelude r.name r.dir (\modules texts -> packageTypes prelude r.name modules))
+
+-- What the profile flags told a build, to `k`; or what is wrong with them.
+fun asTold p k =
+  match D.toldBuild p.release p.debug p.backend p.silo p.glade with
+  | Ok told -> k told
+  | Err why ->
+      let w = writeError "error: ${why}\n" in
+      exit 1
 
 -- `idyll fmt` of `file`: set out in place, or with `check` only said if it
 -- is not. Whether it is set out now; a file with errors is left as it is.

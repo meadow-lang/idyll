@@ -696,6 +696,93 @@ fn front_builds_and_runs_a_package_with_a_dependency() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// A build is made as a profile, under `target/<profile>`, one leaving
+/// another's where it was: debug on Glade, release as an executable, and the
+/// runtime named in `[profile.<name>]` over the profile and by a flag over
+/// that, which only links again.
+#[test]
+fn front_builds_as_a_profile() {
+    let Ok(exe) = front() else {
+        eprintln!("no front/ to build with");
+        return;
+    };
+    let root = std::env::temp_dir().join(format!("idyll-front-profile-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("src")).expect("a directory");
+    let manifest = "[package]\nname = \"App\"\nversion = \"0.1.0\"\n";
+    std::fs::write(root.join("Idyll.toml"), manifest).unwrap();
+    std::fs::write(root.join("src/Main.idl"), "main : () -> () ! Eff\nmain () = putStrLn \"hello\"\n").unwrap();
+    let link = |profile: &str| root.join("target").join(profile).join("link");
+    let built = |profile: &str| link(profile).join("bin").join(format!("App{}", std::env::consts::EXE_SUFFIX));
+    // debug runs on Glade, from the Cut
+    let (said, ok) = front_tool(&exe, &root, &["run"]);
+    assert!(ok && said.contains("hello\n"), "{said}");
+    assert!(link("debug").join("program.cut").is_file() && !built("debug").exists());
+    // release builds an executable, and says where it is
+    let (said, ok) = front_tool(&exe, &root, &["run", "--release"]);
+    assert!(ok && said.contains("hello\n") && built("release").is_file(), "{said}");
+    let (said, ok) = front_tool(&exe, &root, &["build", "--release"]);
+    assert!(ok && said.contains("idyll: 0 compiled, 2 up to date") && said.contains("Fresh link") && said.contains("bin/App"), "{said}");
+    // going back to debug compiles nothing
+    let (said, ok) = front_tool(&exe, &root, &["run"]);
+    assert!(ok && said.contains("idyll: 0 compiled, 2 up to date") && said.contains("Fresh link") && said.contains("hello\n"), "{said}");
+    // a flag says what runs it: linked again, nothing compiled
+    let (said, ok) = front_tool(&exe, &root, &["run", "--silo"]);
+    assert!(ok && said.contains("idyll: 0 compiled, 2 up to date") && said.contains("Linked") && said.contains("hello\n") && built("debug").is_file(), "{said}");
+    let (said, ok) = front_tool(&exe, &root, &["build", "--backend", "glade"]);
+    assert!(ok && said.contains("program.cut") && !built("debug").exists(), "{said}");
+    // the manifest says it over the profile, the flag over the manifest
+    std::fs::write(root.join("Idyll.toml"), format!("{manifest}\n[profile.debug]\nbackend = \"silo\"\n")).unwrap();
+    let (said, ok) = front_tool(&exe, &root, &["build"]);
+    assert!(ok && built("debug").is_file(), "{said}");
+    let (said, ok) = front_tool(&exe, &root, &["build", "--glade"]);
+    assert!(ok && !built("debug").exists(), "{said}");
+    // a backend a later compiler may have is no error in a manifest
+    std::fs::write(root.join("Idyll.toml"), format!("{manifest}\n[profile.debug]\nbackend = \"later\"\n")).unwrap();
+    let (said, ok) = front_tool(&exe, &root, &["build"]);
+    assert!(ok, "{said}");
+    // on the command line it is, as flags that do not go together are
+    let (said, ok) = front_tool(&exe, &root, &["build", "--backend", "later"]);
+    assert!(!ok && said.contains("`backend` is one of Glade, Silo, not `later`"), "{said}");
+    let (said, ok) = front_tool(&exe, &root, &["build", "--release", "--debug"]);
+    assert!(!ok && said.contains("do not go together"), "{said}");
+    let (said, ok) = front_tool(&exe, &root, &["build", "--silo", "--glade"]);
+    assert!(!ok && said.contains("do not go together"), "{said}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A package with nothing to run is checked, as the Rust driver checks it:
+/// the build goes well and makes nothing, and only running it is an error.
+#[test]
+fn front_checks_a_package_with_nothing_to_run() {
+    let Ok(exe) = front() else {
+        eprintln!("no front/ to build with");
+        return;
+    };
+    let root = std::env::temp_dir().join(format!("idyll-front-library-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("src")).expect("a directory");
+    std::fs::write(root.join("Idyll.toml"), "[package]\nname = \"Lib\"\nversion = \"0.1.0\"\n").unwrap();
+    std::fs::write(root.join("src/Main.idl"), "main : () -> () ! Eff\nmain () = putStrLn \"hello\"\n").unwrap();
+    let (said, ok) = front_tool(&exe, &root, &["build", "--release"]);
+    assert!(ok && said.contains("bin/Lib"), "{said}");
+    // what is no longer a program leaves nothing of one behind
+    std::fs::remove_file(root.join("src/Main.idl")).unwrap();
+    std::fs::write(root.join("src/Lib.idl"), "@pub\nanswer : Int\nanswer = 42\n").unwrap();
+    for args in [&["build"][..], &["build", "--release"][..], &["check"][..]] {
+        let (said, ok) = front_tool(&exe, &root, args);
+        assert!(ok && !said.contains("program.cut") && !said.contains("bin/Lib"), "{args:?}: {said}");
+    }
+    assert!(!root.join("target/release/link/program.cut").exists());
+    let (said, ok) = front_tool(&exe, &root, &["build"]);
+    assert!(ok && said.contains("Fresh link"), "{said}");
+    let (said, ok) = front_tool(&exe, &root, &["run"]);
+    assert!(!ok && said.contains("`Lib` has nothing to run"), "{said}");
+    // and what does not check still fails
+    std::fs::write(root.join("src/Lib.idl"), "@pub\nanswer : Int\nanswer = True\n").unwrap();
+    let (said, ok) = front_tool(&exe, &root, &["build"]);
+    assert!(!ok && said.contains("Failed"), "{said}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// What is wrong with a package is drawn in the file it is in, also where
 /// the modules that import each other are checked as one part, and the
 /// places of the second are not those of the first.

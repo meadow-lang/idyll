@@ -1476,9 +1476,13 @@ do yet `(unsupported)`, and the tests count those apart.
   A build draws what is wrong in the files it is in, the renamer's and the
   checker's errors alike (2026-11-02,
   `front_draws_what_is_wrong_in_the_file_it_is_in`).
-  Left: profiles and options as `make!` has them, workspaces. (Lingua e15e7f9, Cut
-  071b64b: a part's room of uniques is its first module's place among the
-  package's sources, `partUnitPaths`.)
+  A build is made as a profile (2026-11-02, `front_builds_as_a_profile`):
+  `--release`/`--debug`, `--backend`, `--silo`, `--glade` and
+  `[profile.<name>]`, as the Rust driver takes them, on `make!`'s options and
+  profiles, each under `target/<profile>`; release builds an executable into
+  `link/bin`, which is the link's to redo when the runtime changes.
+  Left: workspaces. (Lingua e15e7f9, Cut 071b64b: a part's room of uniques
+  is its first module's place among the package's sources, `partUnitPaths`.)
 - [x] front/'s own REPL, `Idyll repl`, a `repl!` (see phase 6), and its
   language server, `Idyll lsp`, an `lsp!`, over one `database!` of
   front/'s queries. For them the passes keep their state in `St`, not

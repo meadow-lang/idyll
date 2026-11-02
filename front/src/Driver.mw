@@ -13,10 +13,11 @@
 -- this program (`includeStr`) under `~/.idyll/std/<hash>`, which every
 -- package depends on. The link puts the program together from the compiled
 -- packages (`Link.linked`) and lowers it to Cut, its `main` the entry, into
--- `target/link/program.cut`, which `run` hands to `meadow cut`.
+-- `target/<profile>/link/program.cut`, which `run` hands to `meadow cut`; if
+-- the program runs on Silo the link builds it into an executable there too.
 
 use Lingua (make!)
-use Lingua.Make (Given, Linking, Part, unitDir, unitSources, unitImports, linkRoot, linkUnits, linkOut, linkDir)
+use Lingua.Make (Given, Linking, Part, unitDir, unitSources, unitImports, linkRoot, linkUnits, linkOut, linkDirIn)
 use Lingua.Make (partDir, partSources, partImports, partUnitImports, partUnitPaths, resolverOf)
 use Lingua.Diagnostic (renderAll)
 use Lingua.Resolve (Dep, GitRef, reqOf, resolve)
@@ -36,8 +37,8 @@ use Std.Collections.Vector as V
 use Std.String as S
 use Std.Maybe as M
 use Std.Path as Path
-use Std.Fs (writeString, readDir, isDir, exists, readToStringOr, createDirAll)
-use Std.Process (runInherit, getEnv)
+use Std.Fs (writeString, readDir, isDir, exists, readToStringOr, createDirAll, removeFile, copy)
+use Std.Process (runInherit, getEnv, spawn, command, withArgs, withCwd)
 use Std.Sort (sortOn)
 use Std.St as St
 use Std.St (runSt)
@@ -64,6 +65,13 @@ make! {
     | assemble = assembleUnit
     | link = linkProgram
     | salt = compilerSalt
+    | options {
+      backend : Glade | Silo = Glade "which of Meadow's runtimes runs the program" for link
+      named : Bool = False "someone asked for that backend, so no other will do" for link
+    }
+    | profile debug {}
+    | profile release { backend = Silo }
+    | overrides = profileOf
 }
 
 -- A package compiled, or one part of one: its name (a package's as its
@@ -97,25 +105,52 @@ fun union (done : [Built]) (more : [Built]) : [Built] =
 
 -- --- the command line ---------------------------------------------------------
 
--- `idyll build`: the package built, and where its Cut is, said.
-@pub fun buildCommand (offline : Bool) (locked : Bool) (path : Maybe String) =
-  if built offline locked (here path) then writeOutput "${cutOf (here path)}\n" else exit 1
+-- What the command line told a build: the profile, and the options over it.
+-- `--backend` names a runtime as a manifest does; one there is not is the
+-- build's to refuse.
+@pub fun toldBuild (release : Bool) (debug : Bool) (backend : Maybe String) (silo : Bool) (glade : Bool)
+    : Result String (String, [(String, String)]) =
+  let names =
+    V.concat [
+      M.unwrapOr [] (M.map (\b -> [b]) backend),
+      if silo then ["silo"] else [],
+      if glade then ["glade"] else []
+    ]
+  in
+  if release and debug then Err "--release and --debug do not go together"
+  else if V.len names > 1 then Err "--backend, --silo and --glade do not go together"
+  else Ok (if release then "release" else "debug", V.concatMap (\b -> backendSet (M.unwrapOr b (backendNamed b))) names)
+
+-- `idyll build`: the package built, and what came of it said: its
+-- executable, or its Cut.
+@pub fun buildCommand (offline : Bool) (locked : Bool) (told : (String, [(String, String)])) (path : Maybe String) =
+  if built offline locked told (here path) then
+    let made = M.unwrapOr (cutOf (fst told) (here path)) (executableOf (fst told) (here path)) in
+    if exists made then writeOutput "${made}\n" else ()
+  else exit 1
 
 -- `idyll check`: the package checked, and what it depends on.
 @pub fun checkCommand (offline : Bool) (locked : Bool) (path : Maybe String) =
-  if built offline locked (here path) then () else exit 1
+  if built offline locked ("debug", []) (here path) then () else exit 1
 
 -- `idyll update`: git dependencies moved forward.
 @pub fun updateCommand (names : [String]) (dryRun : Bool) =
   if updateUnits "." names dryRun then () else exit 1
 
 -- `idyll run`: the package built, and run on Meadow.
-@pub fun runCommand (offline : Bool) (locked : Bool) (path : Maybe String) (release : Bool) =
+@pub fun runCommand (offline : Bool) (locked : Bool) (told : (String, [(String, String)])) (path : Maybe String) =
   let root = here path in
-  if not (built offline locked root) then exit 1
+  if not (built offline locked told root) then exit 1
+  else if not (exists (cutOf (fst told) root)) then
+    let w = writeError "error: `${packageIn root}` has nothing to run: give it a `main`, or an expression\n" in
+    exit 1
   else
-    let args = if release then ["cut", "--runtime", "silo", cutOf root] else ["cut", cutOf root] in
-    match runInherit "meadow" args with
+    let ran =
+      match executableOf (fst told) root with
+      | Just exe -> runInherit exe []
+      | None -> runInherit "meadow" ["cut", cutOf (fst told) root]
+    in
+    match ran with
     | Ok 0 -> ()
     | Ok code -> exit code
     | Err why ->
@@ -124,13 +159,44 @@ fun union (done : [Built]) (more : [Built]) : [Built] =
 
 fun here (path : Maybe String) : String = M.unwrapOr "." path
 
--- Build the package at `root`, Std written out first.
-fun built (offline : Bool) (locked : Bool) (root : String) : Bool ! { Fs, Process | e } =
+-- Build the package at `root` as it was told, Std written out first.
+fun built (offline : Bool) (locked : Bool) (told : (String, [(String, String)])) (root : String) : Bool ! { Fs, Process | e } =
   let w = writtenStd () in
-  buildUnitsWith offline locked root
+  buildUnitsWith offline locked (fst told) (snd told) root
 
--- Where the link put a package's Cut.
-fun cutOf (root : String) : String = Path.join (linkDir root) "program.cut"
+-- Where the link of a build as `profile` put a package's Cut.
+fun cutOf (profile : String) (root : String) : String = Path.join (linkDirIn root profile) "program.cut"
+
+-- Where it put the package's executable, by each name the package's may
+-- have, if it built one: the link removes what it no longer means.
+fun executableOf (profile : String) (root : String) : Maybe String ! { Fs | e } =
+  V.find exists (V.map (\f -> Path.join (binIn (linkDirIn root profile)) f) (executableNames (packageIn root)))
+
+fun packageIn (root : String) : String ! { Fs | e } =
+  plainName (nameOfManifest root (readToStringOr "" (Path.join root "Idyll.toml")))
+
+fun binIn (out : String) : String = Path.join out "bin"
+
+fun executableNames (name : String) : [String] = [name, "${name}.exe"]
+
+-- A runtime as a manifest and `--backend` name it, as the build's option
+-- names it; and what naming one sets.
+fun backendNamed (name : String) : Maybe String =
+  match name with
+  | "glade" -> Just "Glade"
+  | "silo" -> Just "Silo"
+  | _ -> None
+
+fun backendSet (backend : String) : [(String, String)] = [("backend", backend), ("named", "true")]
+
+-- The root package's `[profile.<name>]`: what it says over the profile. A
+-- dependency's says nothing, and a backend this compiler does not know is
+-- left, so that a manifest written for a later one still builds.
+fun profileOf (root : String) (dir : String) (manifest : String) (profile : String) : [(String, String)] =
+  if Path.normalize root != Path.normalize dir then []
+  else
+    let said = M.andThen backendNamed (manifestField "backend" (S.join "\n" (sectionOf "[profile.${profile}]" manifest))) in
+    M.unwrapOr [] (M.map backendSet said)
 
 -- Where Std is written out: under the home directory, `~/.idyll/std/<hash>`
 -- (or `$IDYLL_HOME/std/<hash>`), the hash of the Std this program holds, so
@@ -210,10 +276,12 @@ fun dependenciesOf (root : String) (dir : String) (manifest : String) : Result S
   | Err why -> Err why
   | Ok ds -> Ok (if manifestField "name" manifest == Just "Std" then ds else V.pushBack ds (Dep.Path (stdDir ())))
 
+-- The lines that set something under a section of a manifest.
+fun sectionOf (header : String) (manifest : String) : [String] =
+  snd (V.foldl (\acc l -> match acc with | (inIt, found) -> (let t = S.trim l in if S.startsWith "[" t then (t == header, found) else if inIt and S.contains "=" t then (inIt, V.pushBack found t) else acc)) (False, []) (S.lines manifest))
+
 -- What a manifest's `[dependencies]` say.
 fun declaredIn (manifest : String) : Result String [Dep] =
-  let lines = S.lines manifest in
-  let section = V.foldl (\acc l -> match acc with | (inDeps, found) -> (let t = S.trim l in if S.startsWith "[" t then (t == "[dependencies]", found) else if inDeps and S.contains "=" t then (inDeps, V.pushBack found t) else acc)) (False, []) lines in
   V.foldl
     (\acc t ->
       match (acc, dependencyOf t) with
@@ -221,7 +289,7 @@ fun declaredIn (manifest : String) : Result String [Dep] =
       | (_, Err why) -> Err why
       | (Ok ds, Ok d) -> Ok (V.pushBack ds d))
     (Ok [])
-    (snd section)
+    (sectionOf "[dependencies]" manifest)
 
 -- The directories of the packages a manifest at `dir` names, each found
 -- without reaching the network, by the lock file beside `root`: a repository
@@ -346,7 +414,7 @@ fun visibleIn (names : PackageNames) : Bool =
 -- Check a part: its modules, against the compiled packages its package
 -- depends on and the compiled parts it imports. Its interface: what it
 -- compiled to, after those parts.
-fun compileScc (x : Part Interface PartOut) : Result String PartOut ! { Fs | e } =
+fun compileScc (o : UnitsOptions) (x : Part Interface PartOut) : Result String PartOut ! { Fs | e } =
   let dir = partDir x in
   let name = nameOfManifest dir (readToStringOr "" (Path.join dir "Idyll.toml")) in
   let own = V.map (\s -> (S.join "." (modulePath dir (fst s)), snd s)) (V.filter (\s -> S.endsWith ".idl" (fst s)) (partSources x)) in
@@ -426,7 +494,7 @@ fun fileOfModule (dir : String) (sources : [(String, String)]) (path : String) :
 
 -- A package, once its parts are compiled: its parts made one, after every
 -- package it reaches.
-fun assembleUnit (u : Given Interface) (parts : [PartOut]) : Result String Interface =
+fun assembleUnit (o : UnitsOptions) (u : Given Interface) (parts : [PartOut]) : Result String Interface =
   let dir = unitDir u in
   let name = nameOf dir (unitSources u) in
   let packages = V.foldl (\acc i -> union acc (packagesOf (snd i))) [] (unitImports u) in
@@ -439,8 +507,9 @@ fun assembleUnit (u : Given Interface) (parts : [PartOut]) : Result String Inter
     Ok (Interface.Interface (V.pushBack packages (Built.Built (plainName name) (mergedNames (V.map builtNames own)) whole)) own)
 
 -- Put the program together: the root package and every package it reaches,
--- linked, and lowered to Cut, its `main` the entry.
-fun linkProgram (l : Linking Interface) : Result String () ! { Fs | e } =
+-- linked, and lowered to Cut, its `main` the entry; and built, if it runs on
+-- Silo.
+fun linkProgram (o : UnitsOptions) (l : Linking Interface) : Result String () ! { Fs, Process | e } =
   let root = linkRoot l in
   match V.find (\u -> match u with | (d, _, _) -> d == root) (linkUnits l) with
   | None -> Err "the root package was not built"
@@ -457,11 +526,53 @@ fun linkProgram (l : Linking Interface) : Result String () ! { Fs | e } =
             | Ok pre ->
                 let (empty, _, _) = renamePackageWith compiled.name [] pre [] [] compiled.high True False in
                 let text = Lo.cutTextOfPackages (sccModule empty) compiled (V.map builtCompiled deps) "Main" in
-                if S.startsWith "(" text then Err "${compiled.name} is not lowered: ${text}"
+                if text == "(not lowered: ${Lo.nothingToRun})" then
+                  -- a library: checked is all there is to it
+                  let made = createDirAll (linkOut l) in
+                  let cut = removeFile (Path.join (linkOut l) "program.cut") in
+                  let exe = executableGone (plainName compiled.name) (linkOut l) in
+                  Ok ()
+                else if S.startsWith "(" text then Err "${compiled.name} is not lowered: ${text}"
                 else
                   match writeString (Path.join (linkOut l) "program.cut", text) with
-                  | Ok _ -> Ok ()
+                  | Ok _ -> executableBuilt o (plainName compiled.name) text (linkOut l)
                   | Err why -> Err why))
+
+-- The executable of the program whose Cut is `cut`, if it runs on Silo:
+-- under `bin` in `out`, Silo's own directory beside it, kept between builds
+-- so that a build after a small change reuses most of what it made. Whatever
+-- was there before goes first: on Glade there is none, and `run` goes by
+-- that. A backend nobody named gives way if there is no `meadow` to build
+-- with.
+fun executableBuilt (o : UnitsOptions) (name : String) (cut : String) (out : String) : Result String () ! { Fs, Process | e } =
+  let gone = executableGone name out in
+  match o.backend with
+  | UnitsBackend.Glade -> Ok ()
+  | UnitsBackend.Silo ->
+      let work = Path.join out "silo" in
+      (match writeString (Path.join work "${name}.cut", cut) with
+       | Err why -> Err why
+       | Ok _ ->
+           let silo = command "meadow" |> withArgs ["cut", "--runtime", "silo", "--no-run", "${name}.cut"] |> withCwd work in
+           (match spawn silo with
+            | Err why ->
+                if o.named then Err "could not run meadow: ${why}\n"
+                else
+                  let w = writeError "warning: `${name}` was not built into native code: could not run meadow: ${why}; it runs on Glade\n" in
+                  Ok ()
+            | Ok (0, _, _) ->
+                let made = Path.joinAll [work, "target", "release", "native", "silo"] in
+                let bin = createDirAll (binIn out) in
+                (match V.find (\f -> exists (Path.join made f)) (executableNames name) with
+                 | None -> Err "Silo left no executable for ${name}\n"
+                 | Just f ->
+                     (match copy (Path.join made f, Path.join (binIn out) f) with
+                      | Ok _ -> Ok ()
+                      | Err why -> Err "${why}\n"))
+            | Ok (_, _, said) -> Err said))
+
+fun executableGone (name : String) (out : String) : () ! { Fs | e } =
+  V.foldl (\u f -> match removeFile (Path.join (binIn out) f) with | _ -> ()) () (executableNames name)
 
 -- --- compiling a package ---------------------------------------------------------
 
