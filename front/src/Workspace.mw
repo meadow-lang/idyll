@@ -1,0 +1,357 @@
+-- Workspaces: several packages developed together, as the Rust driver has
+-- them (`idyll-driver/src/workspace.rs`), and how a manifest is read.
+--
+-- A workspace is a directory whose `Idyll.toml` has a `[workspace]` naming
+-- its members: `members` and `exclude` are directories, where `*` and `?`
+-- match in a segment, and `default-members` is what a command at the root
+-- builds. The root may be a package too; without a `[package]` its manifest
+-- only says what the workspace is. A path dependency of a member under the
+-- root is a member too, unless `exclude` says otherwise, and a package under
+-- the root that is neither is an error rather than a package built with the
+-- wrong profiles into the wrong `target`. A member takes `version.workspace
+-- = true` from `[workspace.package]` and `name = { workspace = true }` from
+-- `[workspace.dependencies]`, whose paths are the root's.
+--
+-- What being a member means is the build's (`Driver.mw`): the root is a
+-- `make!` home, so one `target`, one `idyll.lock` and one set of profiles,
+-- and what is chosen here are the roots it is told to build.
+
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Maybe as M
+use Std.Path as Path
+use Std.Fs (exists, isDir, isFile, readDir, readToStringOr)
+use Std.Process (getEnv, run)
+use Std.Sort (sortOn)
+use Std.Maybe.Maybe.*
+use Std.Result.Result.*
+
+@pub record Member = {
+  name : String,
+  dir : String,
+  manifest : String,
+}
+
+-- Every member, the root package first if there is one, then as `members`
+-- lists them, then the path dependencies that joined; `defaults` are the
+-- directories of those a command at the root means.
+@pub record Workspace = {
+  root : String,
+  manifest : String,
+  members : [Member],
+  defaults : [String],
+  excluded : [String],
+}
+
+-- What a command was told to build: `-p`, `--workspace` and `--exclude`.
+@pub record Selection = {
+  packages : [String],
+  every : Bool,
+  exclude : [String],
+}
+
+-- What that picked: package directories, in the workspace if there is one.
+@pub record Selected = {
+  workspace : Maybe Workspace,
+  paths : [String],
+}
+
+-- --- reading a manifest ----------------------------------------------------------
+
+-- A field of a manifest, `name = "Util"`: the first line that sets it.
+@pub fun manifestField (key : String) (manifest : String) : Maybe String =
+  V.foldl
+    (\acc line ->
+      match acc with
+      | Just n -> Just n
+      | None ->
+          let t = S.trim line in
+          let parts = S.split "\"" t in
+          if S.startsWith key t and S.trim (S.drop (S.take t (S.byteLength (V.getOr "" parts 0))) (S.byteLength key)) == "=" then V.get parts 1 else None)
+    None
+    (S.lines manifest)
+
+-- Every line under a section of a manifest.
+fun sectionLines (header : String) (manifest : String) : [String] =
+  snd (V.foldl (\acc l -> match acc with | (inIt, found) -> (let t = S.trim l in if S.startsWith "[" t then (t == header, found) else if inIt then (inIt, V.pushBack found t) else acc)) (False, []) (S.lines manifest))
+
+-- The lines that set something under a section of a manifest.
+@pub fun sectionOf (header : String) (manifest : String) : [String] =
+  V.filter (\t -> S.contains "=" t) (sectionLines header manifest)
+
+-- The text in quotes after `key =` in `line`: `"../util"` of `path`.
+@pub fun quotedAfter (key : String) (line : String) : Maybe String =
+  let starts = \i -> S.startsWith (key ++ " ") (S.drop line i) or S.startsWith (key ++ "=") (S.drop line i) in
+  -- (a word of its own: `tag`, not the end of `stag`)
+  let alone = \i -> i == 0 or not (isWordByte (byteOf line (i - 1))) in
+  let at = V.find (\i -> starts i and alone i) (V.range 0 (S.byteLength line)) in
+  match at with
+  | None -> None
+  | Just i ->
+      let rest = S.drop line (i + S.byteLength key) in
+      let afterEq = S.trimStart (S.drop (S.trimStart rest) 1) in
+      if S.startsWith "\"" afterEq then V.get (S.split "\"" afterEq) 1 else None
+
+fun isWordByte (b : Int) : Bool = (b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b == 95 or b == 39 or b == 46
+
+fun byteOf (s : String) (i : Int) : Int = if i >= 0 and i < stringByteLength s then toInt (stringByteAt s i) else 0 - 1
+
+-- The strings of `key = [ ... ]` among a section's lines, which may run over
+-- several.
+fun stringsOf (key : String) (lines : [String]) : [String] =
+  let from = V.dropWhile (\t -> not (S.startsWith "=" (S.trim (S.drop t (S.byteLength key))) and S.startsWith key t)) lines in
+  let open = V.takeWhile (\t -> not (S.contains "]" t)) from in
+  let parts = S.split "\"" (S.join " " (V.take from (V.len open + 1))) in
+  V.concatMap (\i -> if i % 2 == 1 then [V.getOr "" parts i] else []) (V.range 0 (V.len parts))
+
+-- The line of `[dependencies]` that takes a dependency from the workspace,
+-- `name = { workspace = true }` or `name.workspace = true`: its name.
+@pub fun inheritedName (line : String) : Maybe String =
+  let key = S.trim (V.getOr "" (S.split "=" line) 0) in
+  if S.endsWith ".workspace" key then Just (S.take key (S.byteLength key - 10))
+  else if S.contains "workspace" line and M.isNone (quotedAfter "path" line) and M.isNone (quotedAfter "git" line) then Just key
+  else None
+
+fun manifestIn (dir : String) : String ! { Fs | e } = readToStringOr "" (Path.join dir "Idyll.toml")
+
+fun hasManifest (dir : String) : Bool ! { Fs | e } = isFile (Path.join dir "Idyll.toml")
+
+fun declaresWorkspace (manifest : String) : Bool =
+  V.any (\l -> let t = S.trim l in t == "[workspace]" or S.startsWith "[workspace." t) (S.lines manifest)
+
+fun isPackage (manifest : String) : Bool = V.any (\l -> S.trim l == "[package]") (S.lines manifest) or not (declaresWorkspace manifest)
+
+-- --- paths -----------------------------------------------------------------------
+
+-- `path`, from the root of the file system. Which directory a build was
+-- started in decides what it is in, and a workspace must come to the same
+-- paths wherever in it a command is run.
+@pub fun absolutePath (path : String) : String ! { Process | e } =
+  if Path.isAbsolute path then Path.normalize path else Path.normalize (Path.join (workingDir ()) path)
+
+-- (Meadow's Std does not say this yet: `currentDir` is asked of it.)
+fun workingDir () : String ! { Process | e } =
+  let asked = if getEnv "OS" == Just "Windows_NT" then run "cmd" ["/c", "cd"] else run "pwd" [] in
+  match asked with
+  | Ok (0, out, _) -> S.trim out
+  | _ -> "."
+
+-- `dir` and every directory above it, nearest first.
+fun ancestors (dir : String) : [String] =
+  match Path.parent dir with
+  | Just up if up != dir and not (S.isEmpty up) -> V.concat [[dir], ancestors up]
+  | _ -> [dir]
+
+fun under (dir : String) (path : String) : Bool = path == dir or S.startsWith (dir ++ "/") path
+
+fun isPattern (pattern : String) : Bool = S.contains "*" pattern or S.contains "?" pattern
+
+-- The directories `pattern` names under `root`, sorted.
+fun expanded (root : String) (pattern : String) : [String] ! { Fs | e } =
+  let step =
+    \dirs segment ->
+      V.concatMap
+        (\dir ->
+          if not (isPattern segment) then [Path.join dir segment]
+          else
+            match readDir dir with
+            | Err _ -> []
+            | Ok names ->
+                V.map
+                  (\n -> Path.join dir n)
+                  (sortOn (\n -> n) (V.filter (\n -> isDir (Path.join dir n) and wildcard segment n) names)))
+        dirs
+  in
+  V.map Path.normalize (V.filter isDir (V.foldl step [root] (V.filter (\s -> s != ".") (Path.components pattern))))
+
+-- Whether `name` matches `pattern`'s `*` and `?`.
+fun wildcard (pattern : String) (name : String) : Bool = matches (S.chars pattern) (S.chars name) 0 0
+
+fun matches (p : [Char]) (n : [Char]) (i : Int) (j : Int) : Bool =
+  if i == V.len p then j == V.len n
+  else
+    let c = V.getOr ' ' p i in
+    if c == '*' then V.any (\k -> matches p n (i + 1) k) (V.range j (V.len n + 1))
+    else if j >= V.len n then False
+    else if c == '?' or c == V.getOr ' ' n j then matches p n (i + 1) (j + 1)
+    else False
+
+-- --- a workspace -----------------------------------------------------------------
+
+-- The workspace whose root manifest is in `root`.
+@pub fun workspaceAt (root : String) : Result String Workspace ! { Fs | e } =
+  let manifest = manifestIn root in
+  let section = sectionLines "[workspace]" manifest in
+  let excluded = V.concatMap (expanded root) (stringsOf "exclude" section) in
+  let listed =
+    V.foldl
+      (\acc pattern ->
+        match acc with
+        | Err why -> Err why
+        | Ok dirs ->
+            let found = expanded root pattern in
+            if not (isPattern pattern) and V.isEmpty found then Err "workspace member `${pattern}` of ${root} does not exist"
+            else
+              V.foldl
+                (\got dir ->
+                  match got with
+                  | Err why -> Err why
+                  | Ok ds ->
+                      if hasManifest dir then Ok (pushNew ds dir)
+                      else if not (isPattern pattern) then Err "workspace member `${pattern}` has no Idyll.toml at ${dir}"
+                      else Ok ds)
+                (Ok dirs)
+                found)
+      (Ok (if isPackage manifest then [root] else []))
+      (stringsOf "members" section)
+  in
+  match listed with
+  | Err why -> Err why
+  | Ok dirs ->
+      let kept = V.filter (\d -> d == root or not (V.elem d excluded)) dirs in
+      let members = joined root manifest excluded kept 0 [] in
+      (match V.find (\a -> V.len (V.filter (\(b : Member) -> b.name == nameIn a) members) > 1) (V.map (\(m : Member) -> m.dir) members) with
+       | Just dir -> Err "two members of the workspace at ${root} are called `${memberName members dir}`"
+       | None ->
+           let defaulted = stringsOf "default-members" section in
+           let named = V.concatMap (expanded root) (if V.isEmpty defaulted then stringsOf "default_members" section else defaulted) in
+           (match V.find (\d -> not (V.any (\(m : Member) -> m.dir == d) members)) named with
+            | Just d -> Err "`default-members` names ${d}, which is not a member of the workspace"
+            | None -> Ok (Workspace { root, manifest, members, defaults = V.foldl pushNew [] named, excluded })))
+
+fun nameIn (dir : String) : String ! { Fs | e } = memberNamed dir (manifestIn dir)
+
+fun memberName (members : [Member]) (dir : String) : String =
+  M.unwrapOr dir (M.map (\(m : Member) -> m.name) (V.find (\(m : Member) -> m.dir == dir) members))
+
+fun memberNamed (dir : String) (manifest : String) : String = M.unwrapOr (Path.fileName dir) (manifestField "name" manifest)
+
+fun pushNew (dirs : [String]) (dir : String) : [String] = if V.elem dir dirs then dirs else V.pushBack dirs dir
+
+-- The members from `dirs` at `i` on: their path dependencies under the root
+-- join, and theirs, and so on.
+fun joined (root : String) (manifest : String) (excluded : [String]) (dirs : [String]) (i : Int) (done : [Member]) : [Member] ! { Fs | e } =
+  if i >= V.len dirs then done
+  else
+    let dir = V.getOr root dirs i in
+    let own = if dir == root then manifest else manifestIn dir in
+    let more =
+      V.filter
+        (\d -> under root d and not (V.elem d excluded) and hasManifest d)
+        (V.concatMap (pathDependency root manifest dir) (sectionOf "[dependencies]" own))
+    in
+    joined root manifest excluded (V.foldl pushNew dirs more) (i + 1) (V.pushBack done (Member { name = memberNamed dir own, dir, manifest = own }))
+
+-- Where a line of `[dependencies]` of the package at `dir` leads, if it is by
+-- path: an inherited path is the root's.
+fun pathDependency (root : String) (manifest : String) (dir : String) (line : String) : [String] =
+  match inheritedName line with
+  | Just name ->
+      V.concatMap
+        (\t -> M.unwrapOr [] (M.map (\p -> [Path.normalize (Path.join root p)]) (quotedAfter "path" t)))
+        (V.filter (\t -> S.trim (V.getOr "" (S.split "=" t) 0) == name) (sectionOf "[workspace.dependencies]" manifest))
+  | None -> M.unwrapOr [] (M.map (\p -> [Path.normalize (Path.join dir p)]) (quotedAfter "path" line))
+
+-- The directory of the workspace `dir` is in: the nearest at or above it with
+-- a `[workspace]` manifest.
+@pub fun workspaceRootOver (dir : String) : Maybe String ! { Fs | e } =
+  V.find (\d -> declaresWorkspace (manifestIn d)) (ancestors dir)
+
+-- The workspace `path` is part of, which is from the root of the file system.
+-- `None` where there is none, and an error if the package `path` is in lies
+-- under a workspace without being a member of it.
+@pub fun workspaceOver (path : String) : Result String (Maybe Workspace) ! { Fs | e } =
+  let start = if isFile path then M.unwrapOr path (Path.parent path) else path in
+  match workspaceRootOver start with
+  | None -> Ok None
+  | Just root ->
+      (match workspaceAt root with
+       | Err why -> Err why
+       | Ok ws ->
+           (match V.find hasManifest (ancestors start) with
+            | Just p if p != root and not (V.any (\(m : Member) -> m.dir == p) ws.members) ->
+                if V.any (\e -> under e p) ws.excluded then Ok None
+                else Err "the package at ${p} is inside the workspace at ${root} but is not a member of it: add it to `members`, or to `exclude` to keep it out"
+            | _ -> Ok (Just ws)))
+
+-- Every member's name, for a message.
+fun names (ws : Workspace) : String = S.join ", " (V.map (\(m : Member) -> "`${m.name}`") ws.members)
+
+fun unknown (ws : Workspace) (name : String) : String =
+  "the workspace at ${ws.root} has no member `${name}`; its members are ${names ws}"
+
+-- The packages a selection means for a command given `path`, unchanged if it
+-- is no workspace's. Without `-p` or `--workspace` it means itself, unless it
+-- is a workspace's root, where it means `default-members`, or else the root
+-- package, or else, in a virtual workspace, every member.
+@pub fun selected (path : String) (s : Selection) : Result String Selected ! { Fs, Process | e } =
+  let here = absolutePath path in
+  match workspaceOver here with
+  | Err why -> Err why
+  | Ok None ->
+      if s.every then Err "${path} is not in a workspace"
+      else
+        let own = manifestField "name" (manifestIn path) in
+        (match V.find (\p -> Just p != own) s.packages with
+         | Just bad -> Err "no package `${bad}` here: ${path} is not in a workspace"
+         | None -> Ok (Selected { workspace = None, paths = [path] }))
+  | Ok (Just ws) ->
+      (match chosen ws here s with
+       | Err why -> Err why
+       | Ok paths ->
+           if V.isEmpty paths then Err "the workspace at ${ws.root} has no members to build"
+           else Ok (Selected { workspace = Just ws, paths }))
+
+fun chosen (ws : Workspace) (here : String) (s : Selection) : Result String [String] =
+  let dirs = \ms -> V.map (\(m : Member) -> m.dir) ms in
+  let known = \name -> V.any (\(m : Member) -> m.name == name) ws.members in
+  if s.every then
+    match V.find (\n -> not (known n)) s.exclude with
+    | Just name -> Err (unknown ws name)
+    | None -> Ok (dirs (V.filter (\(m : Member) -> not (V.elem m.name s.exclude)) ws.members))
+  else if not (V.isEmpty s.packages) then
+    match V.find (\n -> not (known n)) s.packages with
+    | Just name -> Err (unknown ws name)
+    | None -> Ok (V.foldl pushNew [] (V.concatMap (\n -> dirs (V.filter (\(m : Member) -> m.name == n) ws.members)) s.packages))
+  else if here != ws.root then Ok [here]
+  else if not (V.isEmpty ws.defaults) then Ok ws.defaults
+  else if isPackage ws.manifest then Ok [ws.root]
+  else Ok (dirs ws.members)
+
+-- The one package a command that runs one needs.
+@pub fun onePackage (s : Selected) (command : String) : Result String String =
+  match (V.get s.paths 0, s.workspace) with
+  | (Just one, _) if V.len s.paths == 1 -> Ok one
+  | (_, Just ws) ->
+      Err "`idyll ${command}` needs one package, and this means ${show (V.len s.paths)}: choose one of ${names ws} with `-p NAME`, or set `default-members`"
+  | _ -> Err "`idyll ${command}` needs one package"
+
+-- The members among `paths` whose own `[profile.*]` sections go unread.
+@pub fun ignoredProfiles (ws : Workspace) (paths : [String]) : [Member] =
+  V.filter
+    (\(m : Member) -> m.dir != ws.root and V.elem m.dir paths and V.any (\l -> S.startsWith "[profile." (S.trim l)) (S.lines m.manifest))
+    ws.members
+
+-- What a member's `version.workspace = true` comes to, if it says that.
+@pub fun inheritedVersion (dir : String) (manifest : String) : Result String (Maybe String) ! { Fs, Process | e } =
+  let says = \t -> S.startsWith "version" t and S.contains "workspace" t in
+  if not (V.any says (sectionOf "[package]" manifest)) then Ok None
+  else
+    let name = memberNamed dir manifest in
+    match workspaceRootOver (absolutePath dir) with
+    | None -> Err "`${name}` inherits from a workspace, but is not in one: no `Idyll.toml` with a `[workspace]` above ${dir}"
+    | Just root ->
+        (match manifestField "version" (S.join "\n" (sectionOf "[workspace.package]" (manifestIn root))) with
+         | Just v -> Ok (Just v)
+         | None -> Err "`${name}` says `version.workspace = true`, but ${root} has no `version` under `[workspace.package]`")
+
+-- The line of `[workspace.dependencies]` a member's dependency `name` comes
+-- from, and the root its path is from.
+@pub fun inheritedLine (dir : String) (manifest : String) (name : String) : Result String (String, String) ! { Fs, Process | e } =
+  let package = memberNamed dir manifest in
+  match workspaceRootOver (absolutePath dir) with
+  | None -> Err "`${package}` inherits from a workspace, but is not in one: no `Idyll.toml` with a `[workspace]` above ${dir}"
+  | Just root ->
+      (match V.find (\t -> S.trim (V.getOr "" (S.split "=" t) 0) == name) (sectionOf "[workspace.dependencies]" (manifestIn root)) with
+       | Just line -> Ok (root, line)
+       | None -> Err "`${package}` depends on `${name}` from the workspace, but ${root} has no `${name}` under `[workspace.dependencies]`")

@@ -1481,7 +1481,12 @@ do yet `(unsupported)`, and the tests count those apart.
   `[profile.<name>]`, as the Rust driver takes them, on `make!`'s options and
   profiles, each under `target/<profile>`; release builds an executable into
   `link/bin`, which is the link's to redo when the runtime changes.
-  Left: workspaces. (Lingua e15e7f9, Cut 071b64b: a part's room of uniques
+  A workspace builds as the Rust driver builds it (2026-11-02,
+  `Workspace.mw`, `front_builds_a_workspace`,
+  `front_keeps_one_lock_for_a_workspace`): `[workspace]` with patterns,
+  `exclude`, `default-members`, inherited versions and dependencies, `-p`,
+  `--workspace` and `--exclude`, on `make!`'s several roots in one home
+  (Lingua e6b7864). (Lingua e15e7f9, Cut 071b64b: a part's room of uniques
   is its first module's place among the package's sources, `partUnitPaths`.)
 - [x] front/'s own REPL, `Idyll repl`, a `repl!` (see phase 6), and its
   language server, `Idyll lsp`, an `lsp!`, over one `database!` of

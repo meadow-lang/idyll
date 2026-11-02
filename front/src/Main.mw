@@ -53,6 +53,7 @@ use Idyll.World as W
 use Idyll.Core as C
 use Idyll.Hir (Literal)
 use Idyll.Driver as D
+use Idyll.Workspace (Selection)
 use Lingua (cli!)
 use Std.Fs (writeString)
 use Idyll.Format as Fmt
@@ -89,11 +90,16 @@ cli! {
       silo : Flag "--backend silo"
       glade : Flag "--backend glade"
     }
-    | build "Build a package into Cut, which Meadow runs" { path : Maybe String "the package (here, if left out)" } with Dump, Profile
+    options Select {
+      package : Option [String] "In a workspace: the member to use, by name; repeat it for more" short "p" value "NAME"
+      workspace : Flag "Every member of the workspace" alias "all"
+      exclude : Option [String] "With --workspace: leave this member out; repeat it for more" value "NAME"
+    }
+    | build "Build a package into Cut, which Meadow runs" { path : Maybe String "the package (here, if left out)" } with Dump, Profile, Select
     | run "Build a package and run it on Meadow; with --prelude, run each file on the CEK machine" {
         paths : [String] "the package (here, if left out); with --prelude, the files"
-      } with Dump, Profile
-    | check "Check a package and what it depends on" { path : Maybe String "the package (here, if left out)" }
+      } with Dump, Profile, Select
+    | check "Check a package and what it depends on" { path : Maybe String "the package (here, if left out)" } with Select
     | update "Move git dependencies forward to what their references name now" {
         names : [String] "just these dependencies (every one, if none)"
         dryRun : Flag "Say what would change, and change nothing"
@@ -122,13 +128,13 @@ fun main () =
   match argsTool () with
   | (every, Tool.Build r) ->
       (match r.dump.prelude with
-       | None -> asTold r.profile (\told -> D.buildCommand every.offline every.locked told r.path)
+       | None -> asTold r.profile (\told -> D.buildCommand every.offline every.locked told (selection r.select) r.path)
        | Just path -> withPrelude path (\prelude -> builtDump prelude r.dump.std (M.unwrapOr "." r.path)))
   | (every, Tool.Run r) ->
       (match r.dump.prelude with
-       | None -> asTold r.profile (\told -> D.runCommand every.offline every.locked told (V.get r.paths 0))
+       | None -> asTold r.profile (\told -> D.runCommand every.offline every.locked told (selection r.select) (V.get r.paths 0))
        | Just path -> withPrelude path (\prelude -> eachAgainstStd prelude r.dump.std r.paths ran ranAgainst))
-  | (every, Tool.Check r) -> D.checkCommand every.offline every.locked r.path
+  | (every, Tool.Check r) -> D.checkCommand every.offline every.locked (selection r.select) r.path
   | (every, Tool.Update r) -> D.updateCommand r.names r.dryRun
   | (every, Tool.Lsp) -> serveServer ()
   | (every, Tool.Repl) -> runPrompt ()
@@ -153,6 +159,9 @@ fun asTold p k =
   | Err why ->
       let w = writeError "error: ${why}\n" in
       exit 1
+
+-- Which members of a workspace the flags picked.
+fun selection s = Selection { packages = s.package, every = s.workspace, exclude = s.exclude }
 
 -- `idyll fmt` of `file`: set out in place, or with `check` only said if it
 -- is not. Whether it is set out now; a file with errors is left as it is.
