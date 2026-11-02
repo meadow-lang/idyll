@@ -191,15 +191,15 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
   let world = worldOf tc ctx preludeGroups in
   let w1 =
     V.foldl
-      (\acc p ->
-        match p with
-        | Pending.NonRec _ rhs -> unhandled tc ctx rhs world
+      (\acc gp ->
+        match gp with
+        | (g, Pending.NonRec _ rhs) -> T.placing tc (M.unwrapOr (getRef tc.at) (M.map (\b -> metaHirExpr h (hirBindRhs h b)) (V.head (bindsOf h g)))) (\() -> unhandled tc ctx rhs world)
         | _ -> ())
       ()
-      owed
+      (V.zip groups owed)
   in
   let main = V.find (\b -> Just (bindUnique h b) == m.main) (V.concatMap (bindsOf h) groups) in
-  let mainFits = M.map (\b -> checkMain tc ctx (identOf h (hirBindName h b)) world) main in
+  let mainFits = M.map (\b -> T.placing tc (metaHirBind h b) (\() -> checkMain tc ctx (identOf h (hirBindName h b)) world)) main in
   -- what the program uses of its top-level definitions: its expression's
   -- uses, or `main`, used once
   let bodyUses = newRef (M.map (\b -> U.var (bindUnique h b)) main) in
@@ -216,7 +216,7 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
         let s2 = A.resolveRecDefs tc mark in
         let core = A.specialize tc ctx core1 ctx.lvl in
         let s3 = A.specializeRecDefs tc ctx mark in
-        let w2 = if mainFits == Just False then () else unhandled tc ctx usage world in
+        let w2 = if mainFits == Just False then () else T.placing tc (metaHirExpr h e) (\() -> unhandled tc ctx usage world) in
         Just (core, quote tc ctx.lvl ty)
     -- `main ()`
     | None ->
@@ -226,7 +226,8 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
   in
   let ranMain = M.isNone (hirModuleBody h root) and M.isSome body in
   -- instances of traits: where they live, and that no two overlap
-  let wi = A.checkInstances tc ctx m.first in
+  let bindPlaces = V.foldl (\acc b -> Hm.insert (bindUnique h b) (metaHirBind h b) acc) Hm.empty (V.concatMap (bindsOf h) groups) in
+  let wi = A.checkInstances tc ctx m.first bindPlaces in
   let w2 = reportHoles tc in
   let w2g = reportGoals tc in
   let w3 = retryPostponed tc True in

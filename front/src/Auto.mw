@@ -35,6 +35,8 @@ use Idyll.Unify (unify)
 use Idyll.Ctx (Ctx, Entry)
 use Idyll.Ctx as X
 use Idyll.Hir (Ident)
+use Lingua.Lang as Lang
+use Lingua.Lang (noMeta)
 use Idyll.Elab (insertImplicit, argument, freshMetaWith)
 use Idyll.Literals as L
 use Std.Collections.Vector as V
@@ -77,7 +79,7 @@ fun errorCount (tc : Tc s) : Int ! { St s | e } = V.len (getRef tc.errors)
 
 -- A metavariable standing for an auto argument still to be found.
 fun placeholder (tc : Tc s) : Int ! { St s | e } =
-  let m = T.newMeta tc (MetaInfo.MetaInfo 0 (Origin.Inferred "an auto argument") None) in
+  let m = T.newMeta tc (MetaInfo.MetaInfo (getRef tc.at) (Origin.Inferred "an auto argument") None) in
   let w = setRef tc.placeholders (V.pushBack (getRef tc.placeholders) m) in
   m
 
@@ -142,10 +144,10 @@ fun searchAutos (tc : Tc s) (last : Bool) (mid : Bool) : Bool ! { St s | e } =
                 (match search tc ctx wanted 0 with
                  | Ok f -> f
                  | Err why ->
-                     let w3 = T.errorOf tc why [quote tc ctx.lvl wanted] [] in
+                     let w3 = T.errorAt tc (T.placeOfMeta tc m) why [quote tc ctx.lvl wanted] [] in
                      Core.Error)
               else
-                let w3 = T.errorOf tc "UnknownInstance" [quote tc ctx.lvl wanted] [] in
+                let w3 = T.errorAt tc (T.placeOfMeta tc m) "UnknownInstance" [quote tc ctx.lvl wanted] [] in
                 Core.Error
             in
             let w4 = choose tc m ctx found in
@@ -547,9 +549,10 @@ fun specializeAt (methods : HashMap Int (Int, Int, Int)) (fields : HashMap Int [
 -- Each instance of a trait this package declares (a hint whose type comes to
 -- a trait's record, with a unique from `first` on): that it lives with its
 -- trait or with the type it is for, and that no other instance of the trait
--- is for types that unify with its.
-@pub fun checkInstances (tc : Tc s) (ctx : Ctx) (first : Int) : () ! { St s | e } =
+-- is for types that unify with its; `places`, where each definition is.
+@pub fun checkInstances (tc : Tc s) (ctx : Ctx) (first : Int) (places : HashMap Int Lang.Meta) : () ! { St s | e } =
   let own = \u -> u >= first in
+  let placeOf = \u -> Hm.getOr noMeta u places in
   let instances =
     V.concatMap
       (\u ->
@@ -559,7 +562,7 @@ fun specializeAt (methods : HashMap Int (Int, Int, Int)) (fields : HashMap Int [
              | Just (t, head) ->
                  let w =
                    if own u and not (own t) and not (match head with | Just hd -> own hd | None -> False) then
-                     T.errorOf tc "OrphanInstance" [quote tc ctx.lvl ty] ["the trait, from ${(getRef tc.homeOf) t},"]
+                     T.errorAt tc (placeOf u) "OrphanInstance" [quote tc ctx.lvl ty] ["the trait, from ${(getRef tc.homeOf) t},"]
                    else ()
                  in
                  [(u, t)]
@@ -579,7 +582,7 @@ fun specializeAt (methods : HashMap Int (Int, Int, Int)) (fields : HashMap Int [
                 (V.range 0 i)
             in
             (match (V.head clash, X.lookup ctx (named u)) with
-             | (Just v, Just (_, ty, _)) -> T.errorOf tc "OverlappingInstances" [quote tc ctx.lvl ty] [hintName tc ctx own v]
+             | (Just v, Just (_, ty, _)) -> T.errorAt tc (placeOf u) "OverlappingInstances" [quote tc ctx.lvl ty] [hintName tc ctx own v]
              | _ -> ())
       | None -> ())
     ()

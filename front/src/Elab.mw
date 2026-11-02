@@ -45,6 +45,7 @@ use Idyll.Hir (Ident)
 use Idyll.Hir as H
 use Idyll.Rename
 use Idyll.Rename (Hir!)
+use Lingua.Lang as Lang
 use Idyll.Elaborated
 use Idyll.Elaborated (Elaborated!)
 use Lingua (pass!)
@@ -179,7 +180,7 @@ fun spineOfCore (c : Core) (args : [Core]) : (Core, [Core]) =
 -- type where that is known.
 @pub fun freshMetaWith (tc : Tc s) (ctx : Ctx) (origin : Origin) (ty : Maybe Value) : Core ! { St s | e } =
   let mt = M.map (\t -> MetaTy.MetaTy (X.types ctx) (X.boundLevels ctx) t) ty in
-  let m = T.newMeta tc (MetaInfo.MetaInfo 0 origin mt) in
+  let m = T.newMeta tc (MetaInfo.MetaInfo (getRef tc.at) origin mt) in
   V.foldl (\acc v -> Core.App acc v) (Core.Meta m) (X.boundVarCores ctx)
 
 @pub fun freshMeta (tc : Tc s) (ctx : Ctx) (desc : String) : Core ! { St s | e } = freshMetaWith tc ctx (Origin.Inferred desc) None
@@ -214,7 +215,7 @@ fun elabGoal (tc : Tc s) (ctx : Ctx) (name : String) (ty : Value) : Core ! { St 
 fun elabHole (tc : Tc s) (ctx : Ctx) (ty : Value) : Core ! { St s | e } =
   let c = freshMetaWith tc ctx Origin.Hole (Just ty) in
   let v = eval tc ctx.env c in
-  let w = setRef tc.holes (V.pushBack (getRef tc.holes) (HoleAt.HoleAt ctx.lvl v ty)) in
+  let w = setRef tc.holes (V.pushBack (getRef tc.holes) (HoleAt.HoleAt (getRef tc.at) ctx.lvl v ty)) in
   c
 
 -- --- types -----------------------------------------------------------------------
@@ -223,7 +224,7 @@ fun elabHole (tc : Tc s) (ctx : Ctx) (ty : Value) : Core ! { St s | e } =
 -- may have no effects.
 @pub fun checkType (tc : Tc s) (ctx : Ctx) (t : HirExpr) : (Core, Value) ! { St s | e } =
   let (core, value, level, usage) = inferType tc ctx t in
-  if pure tc ctx usage then (core, value) else (Core.Error, Value.Error)
+  if T.placing tc (metaHirExpr (hirOf tc) t) (\() -> pure tc ctx usage) then (core, value) else (Core.Error, Value.Error)
 
 -- The effects a usage records, as one row; none if there are none.
 @pub fun effectsOf (tc : Tc s) (usage : Usage) : Maybe Value ! { St s | e } =
@@ -354,7 +355,7 @@ fun fitsMeta (tc : Tc s) (ctx : Ctx) (m : Int) (ty : Value) : Bool ! { St s | e 
   | Value.Pi name Icit.Implicit grade _ dom cod ->
       let arg = freshMetaWith tc ctx (Origin.Inferred ("the implicit argument " ++ name)) (Just dom) in
       let argV = eval tc ctx.env arg in
-      let w = noteLinearWant tc ctx name dom cod argV in
+      let w = noteLinearWant tc ctx (getRef tc.at) name dom cod argV in
       insert tc ctx (Core.App core (argument tc grade arg)) (fst (splitComp tc (apply tc cod argV)))
   | Value.Pi name Icit.Auto grade _ dom cod ->
       let later = determines tc (quote tc (ctx.lvl + 1) (apply tc cod (Va.vvar ctx.lvl name))) 0 in
@@ -370,7 +371,7 @@ fun fitsMeta (tc : Tc s) (ctx : Ctx) (m : Int) (ty : Value) : Bool ! { St s | e 
   | Value.Pi name Icit.Implicit grade _ dom cod ->
       let arg = freshMetaWith tc ctx (Origin.Inferred ("the implicit argument " ++ name)) (Just dom) in
       let argV = eval tc ctx.env arg in
-      let w = noteLinearWant tc ctx name dom cod argV in
+      let w = noteLinearWant tc ctx (getRef tc.at) name dom cod argV in
       insertImplicit tc ctx (Core.App core (argument tc grade arg)) (fst (splitComp tc (apply tc cod argV)))
   | fty -> (core, fty)
 
@@ -528,9 +529,9 @@ fun sharesFrom (tc : Tc s) (a : Int) (ty : Value) (l : Int) : Bool ! { St s | e 
 -- An implicit argument `given` for the parameter `name` of a function type
 -- whose body is `cod`, a type: if the function may share a value of that
 -- type, the argument is to be no linear type, checked once it is known.
-@pub(pkg) fun noteLinearWant (tc : Tc s) (ctx : Ctx) (name : String) (dom : Value) (cod : Closure) (given : Value) : () ! { St s | e } =
+@pub(pkg) fun noteLinearWant (tc : Tc s) (ctx : Ctx) (at : Lang.Meta) (name : String) (dom : Value) (cod : Closure) (given : Value) : () ! { St s | e } =
   let isType = match force tc dom with | Value.Type _ -> True | _ -> False in
-  if isType and shares tc ctx.lvl name cod then setRef tc.linearWants (V.pushBack (getRef tc.linearWants) (ctx.lvl, given, name, getRef tc.at))
+  if isType and shares tc ctx.lvl name cod then setRef tc.linearWants (V.pushBack (getRef tc.linearWants) (ctx.lvl, given, name, at))
   else ()
 
 -- The type parameters given what may be linear types: each that is one is
@@ -642,7 +643,7 @@ fun linearLets (tc : Tc s) (ctx : Ctx) (from : Int) (usage : Usage) (pending : [
 -- arrows' grades are being worked out does not depend on the parameters
 -- before them for that.
 @pub(pkg) fun inferredGrade (tc : Tc s) (ctx : Ctx) (name : String) : (Core, Value) ! { St s | e } =
-  let m = T.newMeta tc (MetaInfo.MetaInfo 0 (Origin.Inferred ("the grade of " ++ name)) None) in
+  let m = T.newMeta tc (MetaInfo.MetaInfo (getRef tc.at) (Origin.Inferred ("the grade of " ++ name)) None) in
   let w = setRef tc.inferred (Hm.insert m [] (getRef tc.inferred)) in
   (Core.Meta m, eval tc ctx.env (Core.Meta m))
 
@@ -656,7 +657,7 @@ fun linearLets (tc : Tc s) (ctx : Ctx) (from : Int) (usage : Usage) (pending : [
 @pub(pkg) fun joinUsage (tc : Tc s) (a : Usage) (b : Usage) : Usage ! { St s | e } =
   U.joinWith a b (\p q ->
     if M.isSome (waitsOn tc p) or M.isSome (waitsOn tc q) then
-      let j = T.newMeta tc (MetaInfo.MetaInfo 0 (Origin.Inferred "the larger of two uses") None) in
+      let j = T.newMeta tc (MetaInfo.MetaInfo (getRef tc.at) (Origin.Inferred "the larger of two uses") None) in
       let w = setRef tc.joins (V.pushBack (getRef tc.joins) (j, p, q)) in
       Va.polyAtom (Value.Flex j [])
     else Va.polyJoin p q)
@@ -937,7 +938,7 @@ fun checkGroupIn (tc : Tc s) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, May
   let wl = if top then setRef tc.localFrom ctx.lvl else () in
   match (h, group) with
   | HirGroupNonRec hb ->
-      let b = BindOf { name = bindName h hb, ty = hirBindTy h hb, rhs = hirBindRhs h hb } in
+      let b = BindOf { name = bindName h hb, ty = hirBindTy h hb, rhs = hirBindRhs h hb, at = metaHirBind h hb } in
       let (rhs0, ty, usage) =
         match b.ty with
         -- no signature: inferred, and the definition is transparent (its
@@ -952,7 +953,7 @@ fun checkGroupIn (tc : Tc s) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, May
             let (rhsC, usage) = checkAgainstSig tc ctx b.rhs sigTy vsig in
             let w =
               match effectsOf tc usage with
-              | Just effects -> if effectsFit tc ctx.lvl effects (eval tc ctx.env allowed) then () else T.errorOf tc "EffectNotAllowed" [quote tc ctx.lvl effects, quote tc ctx.lvl (eval tc ctx.env allowed)] []
+              | Just effects -> if effectsFit tc ctx.lvl effects (eval tc ctx.env allowed) then () else T.errorAt tc (metaHirExpr h b.rhs) "EffectNotAllowed" [quote tc ctx.lvl effects, quote tc ctx.lvl (eval tc ctx.env allowed)] []
               | None -> ()
             in
             (rhsC, vsig, usage)
@@ -982,7 +983,7 @@ fun checkGroupIn (tc : Tc s) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, May
       in
       (bound, Pending.NonRec (keyOf b.name) usage, Just (H.textOf b.name, rhs))
   | HirGroupRec hbs ->
-      let bs = V.map (\hb -> BindOf { name = bindName h hb, ty = hirBindTy h hb, rhs = hirBindRhs h hb }) hbs in
+      let bs = V.map (\hb -> BindOf { name = bindName h hb, ty = hirBindTy h hb, rhs = hirBindRhs h hb, at = metaHirBind h hb }) hbs in
       -- every member needs a signature: there is nothing else to check the
       -- recursive uses against
       let sigs =
@@ -990,7 +991,7 @@ fun checkGroupIn (tc : Tc s) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, May
           (\(b : BindOf) ->
             match b.ty with
             | None ->
-                let w = T.errorOf tc "RecursiveBindingNeedsSignature" [] [H.textOf b.name] in
+                let w = T.errorAt tc b.at "RecursiveBindingNeedsSignature" [] [H.textOf b.name] in
                 Value.Error
             | Just sig ->
                 let w = setRef tc.inferSpine (parameters h b.rhs) in
@@ -1031,7 +1032,7 @@ fun checkGroupIn (tc : Tc s) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, May
                   let u = H.uniqueOf (nameOf b) in
                   if V.elem u (getRef tc.terminating) then ()
                   else if declaresDiv tc ctxRec.lvl ty (arity core) then ()
-                  else T.errorOf tc "MayNotTerminate" [] [H.textOf (nameOf b)])
+                  else T.errorAt tc (placeOf b) "MayNotTerminate" [] [H.textOf (nameOf b)])
             ()
             (V.zip (V.zip bs sigs) checked)
       in
@@ -1042,10 +1043,13 @@ fun checkGroupIn (tc : Tc s) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, May
 record BindOf = {
   name : Ident,
   ty : Maybe HirExpr,
-  rhs : HirExpr
+  rhs : HirExpr,
+  at : Lang.Meta
 }
 
 fun nameOf (b : BindOf) : Ident = b.name
+
+fun placeOf (b : BindOf) : Lang.Meta = b.at
 
 -- Whether a type says `! Div` where a call with `arity` arguments gets to.
 fun declaresDiv (tc : Tc s) (lvl : Int) (ty : Value) (n : Int) : Bool ! { St s | e } =
@@ -1154,7 +1158,7 @@ fun coreHead (c : Core) : Core =
 fun postpone (tc : Tc s) (lvl : Int) (actual : Value) (expected : Value) : Bool ! { St s | e } =
   if not (stuckWithin tc lvl expected 3 or stuckWithin tc lvl actual 3) then False
   else
-    let w = setRef tc.postponed (V.pushBack (getRef tc.postponed) (Postponed.Postponed lvl actual expected)) in
+    let w = setRef tc.postponed (V.pushBack (getRef tc.postponed) (Postponed.Postponed (getRef tc.at) lvl actual expected)) in
     True
 
 -- The postponed questions asked again until none can be answered; with
@@ -1164,7 +1168,7 @@ fun postpone (tc : Tc s) (lvl : Int) (actual : Value) (expected : Value) : Bool 
   if last then
     let left = getRef tc.postponed in
     let w2 = setRef tc.postponed [] in
-    V.foldl (\acc p -> match p with | Postponed.Postponed l a x -> T.errorOf tc "Mismatch" [quote tc l x, quote tc l a] []) () left
+    V.foldl (\acc p -> match p with | Postponed.Postponed at l a x -> T.errorAt tc at "Mismatch" [quote tc l x, quote tc l a] []) () left
   else ()
 
 fun retryRound (tc : Tc s) =
@@ -1174,7 +1178,7 @@ fun retryRound (tc : Tc s) =
     V.foldl
       (\acc p ->
         match p with
-        | Postponed.Postponed l a x -> if subtype tc l a x then () else setRef tc.postponed (V.pushBack (getRef tc.postponed) p))
+        | Postponed.Postponed _ l a x -> if subtype tc l a x then () else setRef tc.postponed (V.pushBack (getRef tc.postponed) p))
       ()
       waiting
   in
@@ -1476,17 +1480,17 @@ pass! {
              -- what goes in a box is a value: `[Nothing]` boxes a `Maybe
              -- ?a`, its implicit argument given, not a function of a type
              let (eC, eTy) = insert c.tc c.ctx eC0 eTy0 in
-             let w = linearBox c.tc c.ctx.lvl eTy in
+             let w = T.placing c.tc (metaHirExpr (hirOf c.tc) expr) (\() -> linearBox c.tc c.ctx.lvl eTy) in
              (Core.BoxIntro eC, Value.BoxTy grade eTy, U.scale usage (toPoly c.tc grade)))
            (\(c : Cx s) g ->
              match g with
              | Value.BoxTy grade a ->
                  (let (eC, usage) = check c.tc c.ctx expr a in
-                  let wLinear = linearBox c.tc c.ctx.lvl a in
+                  let wLinear = T.placing c.tc (metaHirExpr (hirOf c.tc) expr) (\() -> linearBox c.tc c.ctx.lvl a) in
                   let w =
                     if constant c.tc grade == Just G.zero then
                       (match effectsOf c.tc usage with
-                       | Just _ -> T.error c.tc "ImpureArgument"
+                       | Just _ -> T.placing c.tc (metaHirExpr (hirOf c.tc) expr) (\() -> T.error c.tc "ImpureArgument")
                        | None -> ())
                     else ()
                   in
@@ -1742,7 +1746,7 @@ fun checkLam (tc : Tc s) (ctx : Ctx) (x : Ident) (ann : Maybe HirGrade) (tyAnn :
         let (_, annV) = checkType tc ctx ta in
         -- (one the expected type is stuck on a meta for is asked again once
         -- more is known)
-        if unify tc ctx.lvl annV dom then () else if postpone tc ctx.lvl annV dom then () else T.errorOf tc "BinderMismatch" [quote tc ctx.lvl dom, quote tc ctx.lvl annV] []
+        T.placing tc (metaHirExpr h ta) (\() -> if unify tc ctx.lvl annV dom then () else if postpone tc ctx.lvl annV dom then () else T.errorOf tc "BinderMismatch" [quote tc ctx.lvl dom, quote tc ctx.lvl annV] [])
     | None -> ()
   in
   let allowed =
@@ -1799,10 +1803,10 @@ fun unsupported (tc : Tc s) (what : String) : (Core, Value, Usage) ! { St s | e 
 fun inferImplicitApp (tc : Tc s) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value, Usage) ! { St s | e } =
   let (fC, fTy, fU) = infer tc ctx f in
   match force tc fTy with
-  | Value.Pi _ Icit.Implicit _ _ _ _ -> applyTo tc ctx fC fTy fU a
+  | Value.Pi _ Icit.Implicit _ _ _ _ -> appliedAt tc ctx f fC fTy fU a
   | Value.Error -> failed ()
   | _ ->
-      let w = T.errorOf tc "NoImplicitArgument" [quote tc ctx.lvl fTy] [] in
+      let w = T.errorAt tc (metaHirExpr (hirOf tc) a) "NoImplicitArgument" [quote tc ctx.lvl fTy] [] in
       failed ()
 
 -- `f @{d}`, the implicit arguments before `d`'s worked out.
@@ -1811,13 +1815,18 @@ fun inferAutoApp (tc : Tc s) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Va
   let w0 = setRef tc.autoGiven (kindHirExpr (hirOf tc) f == HirExprKind.App) in
   let (fC0, fTy0, fU) = infer tc ctx f in
   let w1 = setRef tc.autoGiven False in
-  let (fC, fTy) = insertImplicit tc ctx fC0 fTy0 in
+  let (fC, fTy) = T.placing tc (metaHirExpr (hirOf tc) f) (\() -> insertImplicit tc ctx fC0 fTy0) in
   match fTy with
-  | Value.Pi _ Icit.Auto _ _ _ _ -> applyTo tc ctx fC fTy fU a
+  | Value.Pi _ Icit.Auto _ _ _ _ -> appliedAt tc ctx f fC fTy fU a
   | Value.Error -> failed ()
   | _ ->
-      let w = T.errorOf tc "NoAutoArgument" [quote tc ctx.lvl fTy] [] in
+      let w = T.errorAt tc (metaHirExpr (hirOf tc) a) "NoAutoArgument" [quote tc ctx.lvl fTy] [] in
       failed ()
+
+-- `applyTo`, for an `f` elaborated from the term `f`: what is wrong with
+-- it is found there.
+fun appliedAt (tc : Tc s) (ctx : Ctx) (f : HirExpr) (fC : Core) (fTy : Value) (fU : Usage) (a : HirExpr) : (Core, Value, Usage) ! { St s | e } =
+  T.placing tc (metaHirExpr (hirOf tc) f) (\() -> applyTo tc ctx fC fTy fU a)
 
 fun inferApp (tc : Tc s) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value, Usage) ! { St s | e } =
   let h = hirOf tc in
@@ -1830,10 +1839,10 @@ fun inferApp (tc : Tc s) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value,
     | HirExprLit (Literal.Int k) ->
         if k >= 0 then (Core.Type k, Value.Type (k + 1), U.none ())
         else
-          let w = T.errorOf tc "LevelNotANumber" [] [] in
+          let w = T.errorAt tc (metaHirExpr h a) "LevelNotANumber" [] [] in
           failed ()
     | _ ->
-        let w = T.errorOf tc "LevelNotANumber" [] [] in
+        let w = T.errorAt tc (metaHirExpr h a) "LevelNotANumber" [] [] in
         failed ()
   else
     let (fC0, fTy0, fU) =
@@ -1842,7 +1851,7 @@ fun inferApp (tc : Tc s) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value,
         (c, Value.Type 0, usage)
       else infer tc ctx f
     in
-    let (fC, fTy) = insert tc ctx fC0 fTy0 in
+    let (fC, fTy) = T.placing tc (metaHirExpr h f) (\() -> insert tc ctx fC0 fTy0) in
     let boxed = match (h, a) with | HirExprBox g -> Just g | _ -> None in
     match (fTy, boxed) with
     -- brackets after a type are the graded modality, `a [r]`
@@ -1855,8 +1864,8 @@ fun inferApp (tc : Tc s) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value,
         if unify tc ctx.lvl fTy (Value.Type 0) then
           let (gC, _) = checkGrade tc ctx g in
           (Core.BoxTy gC fC, Value.Type 0, fU)
-        else autosAfterIf tc ctx (not given) (applyTo tc ctx fC fTy fU a)
-    | _ -> autosAfterIf tc ctx (not given) (applyTo tc ctx fC fTy fU a)
+        else autosAfterIf tc ctx (not given) (appliedAt tc ctx f fC fTy fU a)
+    | _ -> autosAfterIf tc ctx (not given) (appliedAt tc ctx f fC fTy fU a)
 
 -- `f a`, for an `f` elaborated already, its implicit arguments inserted.
 @pub fun applyTo (tc : Tc s) (ctx : Ctx) (fC : Core) (fTy : Value) (fU : Usage) (a : HirExpr) : (Core, Value, Usage) ! { St s | e } =
@@ -1888,7 +1897,7 @@ fun inferApp (tc : Tc s) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value,
            let built = match coreHead fC with | Core.Opaque u _ -> M.isSome (T.ctorInfo tc u) | _ -> False in
            let (aC, aU) = check tc ctx a dom in
            let aV0 = eval tc ctx.env aC in
-           let wLinear = noteLinearWant tc ctx param dom cod aV0 in
+           let wLinear = noteLinearWant tc ctx (metaHirExpr (hirOf tc) a) param dom cod aV0 in
            -- a computation with effects never reaches a type: not as an
            -- argument the result mentions, nor as an erased one
            let aV =
@@ -1896,7 +1905,7 @@ fun inferApp (tc : Tc s) (ctx : Ctx) (f : HirExpr) (a : HirExpr) : (Core, Value,
              | Just effects ->
                  let erased = constant tc grade == Just G.zero in
                  if erased or depends tc ctx.lvl cod then
-                   let w = T.errorOf tc "ImpureArgument" [quote tc ctx.lvl effects] [if erased then "erased" else ""] in
+                   let w = T.errorAt tc (metaHirExpr (hirOf tc) a) "ImpureArgument" [quote tc ctx.lvl effects] [if erased then "erased" else ""] in
                    Value.Error
                  else aV0
              | None -> aV0
@@ -1923,7 +1932,7 @@ fun unbox (tc : Tc s) (ctx : Ctx) (x : Ident) (boxed : HirExpr) : Maybe (Ctx, Va
         -- not known to be a box yet: made one, of metavariables with the
         -- old one's spine
         | Value.Flex _ sp ->
-            let part = \desc -> Value.Flex (T.newMeta tc (MetaInfo.MetaInfo 0 (Origin.Inferred desc) None)) sp in
+            let part = \desc -> Value.Flex (T.newMeta tc (MetaInfo.MetaInfo (getRef tc.at) (Origin.Inferred desc) None)) sp in
             let g = part "the grade of this box" in
             let a = part "the type inside this box" in
             if unify tc ctx.lvl bTy (Value.BoxTy g a) then Just (g, a) else None
@@ -1935,7 +1944,7 @@ fun unbox (tc : Tc s) (ctx : Ctx) (x : Ident) (boxed : HirExpr) : Maybe (Ctx, Va
            let value = eval tc ctx.env unboxed in
            Just (X.define ctx x a value, grade, unboxed, bU)
        | None ->
-           let w = T.errorOf tc "NotABox" [quote tc ctx.lvl bTy] [] in
+           let w = T.errorAt tc (metaHirExpr (hirOf tc) boxed) "NotABox" [quote tc ctx.lvl bTy] [] in
            None)
 
 -- --- the end of a module -------------------------------------------------------------
@@ -1991,10 +2000,10 @@ fun closeMeta (tc : Tc s) (m : Int) (n : Int) =
   V.foldl
     (\acc h ->
       match h with
-      | HoleAt.HoleAt l v ty ->
+      | HoleAt.HoleAt at l v ty ->
           (match force tc v with
-           | Value.Flex _ _ -> T.errorOf tc "HoleUnsolved" [quote tc l ty] []
-           | forced -> T.errorOf tc "HoleSolved" [quote tc l ty, quote tc l forced] []))
+           | Value.Flex _ _ -> T.errorAt tc at "HoleUnsolved" [quote tc l ty] []
+           | forced -> T.errorAt tc at "HoleSolved" [quote tc l ty, quote tc l forced] []))
     ()
     holes
 
@@ -2003,7 +2012,7 @@ fun closeMeta (tc : Tc s) (m : Int) (n : Int) =
   V.foldl
     (\acc entry ->
       match entry with
-      | Meta.Unsolved (MetaInfo.MetaInfo _ (Origin.Inferred desc) _) -> T.errorOf tc "UnsolvedMeta" [] [desc]
+      | Meta.Unsolved (MetaInfo.MetaInfo at (Origin.Inferred desc) _) -> T.errorAt tc at "UnsolvedMeta" [] [desc]
       | _ -> ())
     ()
     (getRef tc.metas)

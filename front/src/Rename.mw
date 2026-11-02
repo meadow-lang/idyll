@@ -35,7 +35,7 @@
 
 use Std.St (StRef, newRef, getRef, setRef)
 use Lingua (lang!, pass!)
-use Lingua.Lang (Meta, noMeta)
+use Lingua.Lang (Meta, noMeta, spanMeta, metaStart, metaEnd)
 use Idyll.Surface
 use Idyll.Surface (Surface!)
 use Idyll.Hir (Icit, Literal, Visibility)
@@ -546,7 +546,9 @@ fun import (r : Rn s) (name : String) (unique : Int) (public : Bool) =
 
 -- `use M`, `use M as C`, `use M (a, b)`: another module's names; `use T.*`,
 -- `use T (C)`: a type's constructors, bare.
-fun renameUse (r : Rn s) (u : Use) =
+fun renameUse (r : Rn s) (u : Use) = atNode r u.at (\v -> renameUseHere r u)
+
+fun renameUseHere (r : Rn s) (u : Use) =
   match resolvePath r u.path with
   | None -> ()
   | Just (Target.Namespace _ _) -> bad r "${S.join "." u.path} has no module of its own"
@@ -748,8 +750,8 @@ fun unresolved out (m : Meta) = newHirExprVar out m (idNode out m (Ident.Ident [
 -- --- records ----------------------------------------------------------------------
 
 -- `Point { x = 1, y = 2 }`: the constructor, given each field in order.
-fun recordLiteral out (m : Meta) (r : Rn s) (name : String) (values : [(String, HirExpr)]) =
-  match recordNamed r name True with
+fun recordLiteral out (m : Meta) (r : Rn s) (nameAt : Meta) (name : String) (values : [(String, HirExpr)]) =
+  match atNode r nameAt (\u -> recordNamed r name True) with
   | None -> None
   | Just fields ->
       let ordered = inFieldOrder r name fields values True in
@@ -915,14 +917,18 @@ pass! {
         scoped r (\u -> (let p = (pat r) () in Clause { pats = [p], rhs = rhs r }))
     | Handle { body, clauses } -> Handle { body, clauses }
     -- `op x k -> e`: `return` is not a name
-    | Clause { op, params, later body } ->
-        (let op2 = if op != "return" then Just (idNode out here (useName r op)) else None in
+    | Clause { raw op, params, later body } ->
+        (let name = surfaceNameText src op in
+         let op2 = if name != "return" then Just (idNode out (metaSurfaceName src op) (useName r name)) else None in
          scoped r (\u ->
            (let xs = V.map (\x -> idNode out here (bindName r x)) params in
             HandleClause { op = op2, params = xs, body = body r })))
-    | Expr.Seq { items } -> V.foldr (\h tl -> newHirExprSeqCons out here h tl) (newHirExprSeqNil out here) items
-    | Expr.Record { name, fields } ->
-        (match atNode r here (\u -> recordLiteral out here r name fields) with
+    -- (each tail from its first item, as what is wrong with one is there)
+    | Expr.Seq { raw items } ->
+        (let built = V.map (\i -> (metaStart (metaSurfaceExpr src i), resolveExpr src out r i)) items in
+         V.foldr (\p tl -> match p with | (start, h) -> newHirExprSeqCons out (spanMeta start (metaEnd here)) h tl) (newHirExprSeqNil out here) built)
+    | Expr.Record { raw name, fields } ->
+        (match atNode r here (\u -> recordLiteral out here r (metaSurfaceName src name) (surfaceNameText src name) fields) with
          | Just built -> built
          | None -> unresolved out here)
     -- equations: each a clause of a match, as a definition's are
@@ -972,8 +978,9 @@ pass! {
          in \u -> Pattern.Var { ident = idNode out here x })
     | Wild {} -> (\u -> Wild {})
     | Pat.Lit { lit } -> (\u -> Pattern.Lit { lit })
-    | Con { name, args } ->
-        (\u -> Con { ctor = idNode out here (asTerm r (\v -> atNode r here (\w -> useName r name))), args = V.map (\a -> a ()) args })
+    | Con { raw name, args } ->
+        (let at = metaSurfaceName src name in
+         \u -> Con { ctor = idNode out here (asTerm r (\v -> atNode r at (\w -> useName r (surfaceNameText src name)))), args = V.map (\a -> a ()) args })
     | As { name, later pat } ->
         (let x = bindName r name in
          let q = pat r in
@@ -1052,6 +1059,7 @@ record Program = {
 }
 
 record Use = {
+  at : Meta,
   public : Bool,
   path : [String],
   glob : Bool,
@@ -1099,6 +1107,7 @@ fun twice (r : Rn s) (modules : [([String], SurfaceProgram)]) =
       V.map
         (\u ->
           Use {
+            at = metaSurfaceUse a u,
             public = surfaceUsePublic a u,
             path = V.map text (surfaceUsePath a u),
             glob = surfaceUseGlob a u,
@@ -1130,7 +1139,7 @@ fun bindDatas (r : Rn s) (a : SurfaceArena) (datas : [SurfaceData]) =
         V.foldl
           (\acc c ->
             let cname = ctorNameOf a c in
-            let w = if V.any (\x -> fst x == cname) acc then bad r "duplicate binding of ${cname}" else () in
+            let w = if V.any (\x -> fst x == cname) acc then atNode r (metaSurfaceCtor a c) (\u -> bad r "duplicate binding of ${cname}") else () in
             V.pushBack acc (cname, fresh r))
           []
           (surfaceDataCtors a d)
@@ -1223,7 +1232,7 @@ fun bindDecls (a : SurfaceArena) (r : Rn s) (ds : [SurfaceDecl]) : [Def] ! { St 
         match (a, d) with
         | SurfaceDeclSig x ty ->
             let n = surfaceNameText a x in
-            let w = if V.any (\s -> fst s == n) acc then bad r "duplicate binding of ${n}" else () in
+            let w = if V.any (\s -> fst s == n) acc then atNode r (metaSurfaceName a x) (\u -> bad r "duplicate binding of ${n}") else () in
             V.pushBack acc (n, ty)
         | _ -> acc)
       []
@@ -1249,12 +1258,23 @@ fun bindDecls (a : SurfaceArena) (r : Rn s) (ds : [SurfaceDecl]) : [Def] ! { St 
     V.map
       (\eqs ->
         let x = match M.andThen (equation a) (V.head eqs) with | Just (f, _) -> f | None -> "_" in
-        let ident = bindName r x in
+        let at = match M.map (\d -> (a, d)) (V.head eqs) with | Just (SurfaceDeclDef f _ _ _) -> metaSurfaceName a f | _ -> noMeta in
+        let ident = atNode r at (\u -> bindName r x) in
         Def { eqs, name = ident, sig = M.map snd (V.find (\s -> fst s == x) sigs) })
       groups
   in
   let defined = V.map (\(d : Def) -> H.textOf d.name) defs in
-  let w = V.foldl (\acc s -> if V.elem (fst s) defined then acc else bad r "the signature for ${fst s} has no definition") () sigs in
+  let w =
+    V.foldl
+      (\acc d ->
+        match (a, d) with
+        | SurfaceDeclSig x _ ->
+            let n = surfaceNameText a x in
+            if V.elem n defined then acc else atNode r (metaSurfaceName a x) (\u -> bad r "the signature for ${n} has no definition")
+        | _ -> acc)
+      ()
+      ds
+  in
   defs
 
 fun renameDefs src out (r : Rn s) (defs : [Def]) = V.map (\d -> renameDef src out r d) defs
@@ -1266,7 +1286,11 @@ fun simplePat (a : SurfaceArena) (p : SurfacePat) : Bool =
   | _ -> False
 
 fun renameDef src out (r : Rn s) (dfn : Def) =
-  let m = match V.head dfn.eqs with | Just d -> metaSurfaceDecl src d | None -> noMeta in
+  let m =
+    match (V.head dfn.eqs, V.last dfn.eqs) with
+    | (Just d, Just l) -> spanMeta (metaStart (metaSurfaceDecl src d)) (metaEnd (metaSurfaceDecl src l))
+    | _ -> noMeta
+  in
   match M.map (\d -> (src, d)) (V.head dfn.eqs) with
   | Just (SurfaceDeclDef _ params inline rhs) ->
       -- `x : a = e` is a signature written inline; anywhere else an inline
@@ -1387,7 +1411,7 @@ record Bound = {
   dataNames : [(Ident, [Ident])],
   effectNames : [(Ident, [Ident])],
   defs : [Def],
-  natives : [(Ident, SurfaceExpr)]
+  natives : [(Ident, SurfaceExpr, Meta)]
 }
 
 -- The names a program declares, `decls` its declarations (or a `let`'s), all
@@ -1405,7 +1429,7 @@ fun bindProgram (r : Rn s) (prog : Program) (decls : [SurfaceDecl]) : Bound ! { 
   in
   let dataNames = bindDatas r a prog.datas in
   let natives =
-    V.concatMap (\d -> match (a, d) with | SurfaceDeclNative x ty -> [(bindName r (surfaceNameText a x), ty)] | _ -> []) decls
+    V.concatMap (\d -> match (a, d) with | SurfaceDeclNative x ty -> [(bindName r (surfaceNameText a x), ty, metaSurfaceDecl a d)] | _ -> []) decls
   in
   let defs = bindDecls a r decls in
   -- a record's fields, by their projections, which the parser named `Point.x`
@@ -1495,7 +1519,7 @@ fun renameProgram out (r : Rn s) (prog : Program) (b : Bound) =
   in
   let natives =
     V.map
-      (\n -> match n with | (x, ty) -> newHirNative out (metaSurfaceExpr src ty) (idNode out (metaSurfaceExpr src ty) x) (renameSig src out r ty))
+      (\n -> match n with | (x, ty, at) -> newHirNative out at (idNode out (metaSurfaceExpr src ty) x) (renameSig src out r ty))
       b.natives
   in
   let binds = renameDefs src out r b.defs in
@@ -1511,7 +1535,7 @@ fun export (r : Rn s) (i : Int) (prog : Program) (b : Bound) =
       V.map (\dn -> match dn with | (d, (n, _)) -> (n, surfaceDataVis a d)) (V.zip b.datas b.dataNames),
       V.concatMap (\en -> match en with | (e, (n, ops)) -> V.map (\x -> (x, surfaceEffectVis a e)) (V.append [n] ops)) (V.zip prog.effects b.effectNames),
       V.map (\(d : Def) -> (d.name, declared (H.textOf d.name))) b.defs,
-      V.map (\nt -> (fst nt, declared (H.textOf (fst nt)))) b.natives
+      V.map (\nt -> match nt with | (x, _, _) -> (x, declared (H.textOf x))) b.natives
     ]
   in
   match modAt r i with

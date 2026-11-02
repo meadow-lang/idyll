@@ -34,7 +34,7 @@ use Std.Maybe.Maybe.*
 
 -- A metavariable: where it was made (a node of the HIR), where it came
 -- from, and its type if that is known.
-@pub data MetaInfo = MetaInfo Int Origin (Maybe MetaTy)
+@pub data MetaInfo = MetaInfo Lang.Meta Origin (Maybe MetaTy)
 
 -- A use that had to fit a grade still being worked out: at what length of
 -- context, what was used, what was allowed, and whether it is a field's.
@@ -45,7 +45,7 @@ use Std.Maybe.Maybe.*
 -- A `_` the program wrote, kept to be reported at the end, when what fills
 -- it is known: the context's length, the metavariable applied to its
 -- spine, and its type.
-@pub data HoleAt = HoleAt Int Value Value
+@pub data HoleAt = HoleAt Lang.Meta Int Value Value
 
 -- A goal, `?name`: where it is, its name, and the type wanted there, at a
 -- context's length; and the variables of the definition it is in, each its
@@ -55,7 +55,7 @@ use Std.Maybe.Maybe.*
 -- A question kept for later: at a context's length, a term of type
 -- `actual` where `expected` was wanted, which neither unified nor failed
 -- for good, one being stuck on a metavariable applied to something.
-@pub data Postponed = Postponed Int Value Value
+@pub data Postponed = Postponed Lang.Meta Int Value Value
 
 -- What is known of a constructor: its name, its data type's unique, its
 -- position among the type's constructors, how many erased arguments come
@@ -460,6 +460,25 @@ use Std.Maybe.Maybe.*
 @pub fun errorOf (tc : Tc s) (kind : String) (types : [Core]) (words : [String]) =
   let w = setRef tc.reported (V.pushBack (getRef tc.reported) (getRef tc.at, Report.Report kind types words)) in
   error tc kind
+
+-- What `act` finds wrong, found at `at`.
+@pub fun placing (tc : Tc s) (at : Lang.Meta) act =
+  let before = getRef tc.at in
+  let w = setRef tc.at at in
+  let x = act () in
+  let w2 = setRef tc.at before in
+  x
+
+-- An error with what its words are made of, found at `at`.
+@pub fun errorAt (tc : Tc s) (at : Lang.Meta) (kind : String) (types : [Core]) (words : [String]) =
+  placing tc at (\() -> errorOf tc kind types words)
+
+-- Where metavariable `m` was made, and so where what was left to it is
+-- found.
+@pub fun placeOfMeta (tc : Tc s) (m : Int) : Lang.Meta ! { St s | e } =
+  match meta tc m with
+  | Just entry -> (match infoOf entry with | MetaInfo.MetaInfo at _ _ -> at)
+  | None -> getRef tc.at
 
 -- An error, by its kind's name, found at the node being checked.
 @pub fun error (tc : Tc s) (kind : String) =

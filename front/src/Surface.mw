@@ -33,7 +33,7 @@
 -- (`compiler/idyllic/tests/front.rs` writes the Rust side).
 
 use Lingua (lang!, pass!)
-use Lingua.Lang (Meta, spanMeta, noMeta)
+use Lingua.Lang (Meta, spanMeta, noMeta, metaStart, metaEnd)
 use Lingua.Diagnostic (Diagnostic, Report, errorAt, say, collect, parseErrors)
 use Idyll.Syntax
 use Idyll.Syntax.Idyll.*
@@ -329,6 +329,11 @@ fun var out (cx : Cx) (m : Meta) (x : String) =
 
 fun binary out (m : Meta) (op : String) l r = app out m (app out m (newSurfaceExprVar out m (nameAt out m op)) l) r
 
+-- `l op r`, with `op` where it is written, and `l op` what is between.
+fun binaryAt out (m : Meta) (opAt : Meta) (op : String) l r =
+  let partial = spanMeta (metaStart (metaSurfaceExpr out l)) (metaEnd opAt) in
+  app out m (app out partial (newSurfaceExprVar out opAt (nameAt out opAt op)) l) r
+
 -- `[]`, any number of uses: `[0..∞]`.
 fun anyGrade out (m : Meta) = newSurfaceExprRange out m (lit out m (Literal.Int 0)) (newSurfaceExprInf out m)
 
@@ -558,7 +563,7 @@ pass! {
         (match asIdyllRecordLit node with
          | Just r ->
              Expr.Record {
-               name = nameAt out here (textOf (idyllRecordLitName r)),
+               name = nameAt out (match idyllRecordLitName r with | Just n -> metaOf n | None -> here) (textOf (idyllRecordLitName r)),
                fields = (match idyllRecordLitFields r with | Just fs -> fieldVals out cx fs | None -> [])
              }
          | None -> hole out here)
@@ -654,7 +659,9 @@ fun chainOf out (cx : Cx) (op : IdyllOp) (skip : Int) =
 -- `t ! row`, or `t`.
 fun comp out (cx : Cx) (m : Meta) (t : Maybe IdyllTerm) (effects : Maybe IdyllEffects) =
   match effects with
-  | Just e -> newSurfaceExprEff out m (termOr out cx m t) (rowOfEffects out cx e)
+  | Just e ->
+      let ty = termOr out cx m t in
+      newSurfaceExprEff out (spanMeta (metaStart (metaSurfaceExpr out ty)) (metaEnd (metaOf (syntaxIdyllEffects e)))) ty (rowOfEffects out cx e)
   | None -> termOr out cx m t
 
 fun rowOfEffects out (cx : Cx) (e : IdyllEffects) =
@@ -765,7 +772,8 @@ fun chainTerm out (cx : Cx) (chain : IdyllChain) (skip : Int) =
       [match idyllChainFirst chain with | Just a -> appTerm out cx a skip | None -> hole out m]
       (V.map (\l -> match idyllLinkOperand l with | Just a -> appTerm out cx a 0 | None -> hole out m) links)
   in
-  grouped out (syntaxIdyllChain chain) operands (V.map opText links) 0 (V.len operands - 1) 5
+  let opsAt = V.map (\l -> match idyllLinkOp l with | Just op -> metaOf op | None -> m) links in
+  grouped out (syntaxIdyllChain chain) operands (V.map opText links) opsAt 0 (V.len operands - 1) 5
 
 fun levelOf (op : String) : Int =
   if op == "*" or op == "/" or op == "%" then 1
@@ -777,26 +785,37 @@ fun levelOf (op : String) : Int =
 
 -- Operands `lo` to `hi` and the operators between (operator `i` is after
 -- operand `i`), grouped at `level` and tighter.
-fun grouped out (at : Syn) xs (ops : [String]) (lo : Int) (hi : Int) (level : Int) =
+fun grouped out (at : Syn) xs (ops : [String]) (opsAt : [Meta]) (lo : Int) (hi : Int) (level : Int) =
   let m = metaOf at in
+  -- operands `a` to `b`: the chain's own ends where they are its ends
+  let between = \a b ->
+    let last = V.len xs - 1 in
+    spanMeta
+      (if a == 0 then metaStart m else metaStart (metaSurfaceExpr out (V.getOr (hole out m) xs a)))
+      (if b == last then metaEnd m else metaEnd (metaSurfaceExpr out (V.getOr (hole out m) xs b)))
+  in
   if level == 0 then V.getOr (hole out m) xs lo
   else
     let here = V.filter (\i -> levelOf (V.getOr "" ops i) == level) (V.range lo hi) in
-    if V.isEmpty here then grouped out at xs ops lo hi (level - 1)
+    if V.isEmpty here then grouped out at xs ops opsAt lo hi (level - 1)
     else
       let starts = V.append [lo] (V.map (\i -> i + 1) here) in
       let ends = V.append here [hi] in
-      let parts = V.map (\b -> match b with | (s, e) -> grouped out at xs ops s e (level - 1)) (V.zip starts ends) in
+      let parts = V.map (\b -> match b with | (s, e) -> grouped out at xs ops opsAt s e (level - 1)) (V.zip starts ends) in
       let opNames = V.map (\i -> V.getOr "" ops i) here in
+      let opPlaces = V.map (\i -> V.getOr m opsAt i) here in
+      let startOf = \i -> if i == 0 then lo else V.getOr lo here (i - 1) + 1 in
+      let endOf = \i -> if i == V.len here then hi else V.getOr hi here i in
+      let opAt = \i -> V.getOr m opPlaces i in
       let n = V.len here in
       let part = \i -> V.getOr (hole out m) parts i in
       if level >= 4 then
         let u = if n > 1 then bad at "comparisons and intervals do not chain" else () in
-        if level == 5 then newSurfaceExprRange out m (part 0) (part 1) else binary out m (V.getOr "" opNames 0) (part 0) (part 1)
+        if level == 5 then newSurfaceExprRange out (between lo hi) (part 0) (part 1) else binaryAt out (between lo hi) (opAt 0) (V.getOr "" opNames 0) (part 0) (part 1)
       else if level == 3 then
-        V.foldr (\i acc -> binary out m (V.getOr "" opNames i) (part i) acc) (part n) (V.range 0 n)
+        V.foldr (\i acc -> binaryAt out (between (startOf i) hi) (opAt i) (V.getOr "" opNames i) (part i) acc) (part n) (V.range 0 n)
       else
-        V.foldl (\acc i -> binary out m (V.getOr "" opNames i) acc (part (i + 1))) (part 0) (V.range 0 n)
+        V.foldl (\acc i -> binaryAt out (between lo (endOf (i + 1))) (opAt i) (V.getOr "" opNames i) acc (part (i + 1))) (part 0) (V.range 0 n)
 
 -- Atoms applied to each other, each with the fields read off it: `f x.y` is
 -- `f (x.y)`.
@@ -1131,7 +1150,7 @@ fun handleE out (cx : Cx) (h : IdyllHandleE) =
          newSurfaceClause
            out
            cm
-           (nameAt out cm (textOf (idyllClauseOp c)))
+           (nameAt out (match idyllClauseOp c with | Just op -> metaOf op | None -> cm) (textOf (idyllClauseOp c)))
            (V.map
               (\x ->
                 let xm = metaOf (syntaxIdyllClauseParam x) in
@@ -1188,7 +1207,7 @@ pass! {
         (match asIdyllRecordLit node with
          | Just r ->
              Pat.Record {
-               name = nameAt out here (textOf (idyllRecordLitName r)),
+               name = nameAt out (match idyllRecordLitName r with | Just n -> metaOf n | None -> here) (textOf (idyllRecordLitName r)),
                fields =
                  (match idyllRecordLitFields r with
                   | Just fs ->
@@ -1207,7 +1226,7 @@ pass! {
     | DotA { raw target } ->
         (match asIdyllAtom target with
          | Just (IdyllAtom.Name n) if M.isNone (idyllNameAsTail n) and nameKind n != TokenQualLower ->
-             Dot { expr = newSurfaceExprVar out here (nameAt out (metaOf target) (nameText n)) }
+             Dot { expr = newSurfaceExprVar out (metaOf target) (nameAt out (metaOf target) (nameText n)) }
          | Just (IdyllAtom.Paren q) if V.len (idyllParenItems q) == 1 ->
              Dot { expr = termOr out (plain cx) here (V.head (idyllParenItems q)) }
          | _ -> (let u = bad node "a dot pattern is .x or .(e)" in Wild {}))

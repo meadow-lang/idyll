@@ -297,6 +297,35 @@ fn shaped(headline: &str, pattern: &str) -> bool {
 /// where this compiler may keep one for each part of it.
 #[test]
 fn the_messages_agree() {
+    messages_agree(|l| l.split_once(' ').map_or(l, |(_, said)| said));
+}
+
+/// The same, each error at the same bytes of the program.
+#[test]
+fn the_error_places_agree() {
+    messages_agree(|l| l);
+}
+
+/// An application takes in a closing parenthesis, and an instance ends with
+/// its last method, not at what comes after the blank lines after it.
+#[test]
+fn a_node_ends_where_it_is_written() {
+    let source = idyllic::pipeline::PRELUDE;
+    let prelude = program(source).expect("the prelude parses");
+    let positive = "data Bad a = Bad (Bad (Bad a))\n";
+    assert!(messages(&prelude, positive).starts_with("18-29 "), "{}", messages(&prelude, positive));
+    let trait_ = "trait T (a : Type) where\n  t : a\n";
+    let first = "instance T Int where\n  t = 1\n";
+    let second = "instance T Int where\n  t = 2\n\n\n";
+    let start = trait_.len() + first.len();
+    let end = start + second.trim_end().len();
+    let overlapping = format!("{trait_}{first}{second}1\n");
+    let said = messages(&prelude, &overlapping);
+    assert!(said.lines().any(|l| l.starts_with(&format!("{start}-{end} "))), "{said}");
+}
+
+/// `the_messages_agree`, a line being compared as `kept` leaves it.
+fn messages_agree(kept: fn(&str) -> &str) {
     let source = idyllic::pipeline::PRELUDE;
     let prelude = program(source).expect("the prelude parses");
     let std_dir = repo().join("lib/Std/src");
@@ -305,28 +334,37 @@ fn the_messages_agree() {
         &["messages", "--prelude", "_prelude.txt", "--std", &std_dir],
         &[("_prelude.txt", source)],
         |src| messages(&prelude, src),
-        ported_lines,
+        |d| ported_lines(d, kept),
     );
 }
 
-/// A message dump's lines of the kinds ported, each once, sorted.
-fn ported_lines(dump: &str) -> String {
+/// A message dump's lines of the kinds ported, each once, sorted, each as
+/// `kept` leaves it.
+fn ported_lines(dump: &str, kept: fn(&str) -> &str) -> String {
     if dump.starts_with('(') {
         return dump.to_string();
     }
-    let headline = |l: &str| l.split(": ").next().unwrap_or("").to_string();
+    let said = |l: &str| l.split_once(' ').map_or("", |(_, said)| said).to_string();
+    let headline = |l: &str| said(l).split(": ").next().unwrap_or("").to_string();
     // (the renamer's errors are each said as the Rust renamer says them)
     let mut lines: Vec<&str> =
-        dump.lines().filter(|l| l.starts_with("rename: ") || PORTED.iter().any(|p| shaped(&headline(l), p))).collect();
+        dump.lines().filter(|l| said(l).starts_with("rename: ") || PORTED.iter().any(|p| shaped(&headline(l), p))).map(kept).collect();
     lines.sort_unstable();
     lines.dedup();
     // (each side's metavariables numbered by first appearance)
     renumbered_by(&lines.join("\n"), '?')
 }
 
-/// A program's errors, said in words: each diagnostic's headline and label
-/// (and an overloaded name's candidates), a line each; `(error)` if it does
-/// not parse or rename.
+/// The bytes a diagnostic is about, as they start its line: where its first
+/// label points.
+fn place_of(d: &idyllic_diagnostics::Diagnostic) -> String {
+    let span = d.labels.first().map_or(idyllic_span::Span::at(0), |l| l.span);
+    format!("{}-{} ", span.start, span.end)
+}
+
+/// A program's errors, said in words: each diagnostic's place, headline and
+/// label (and an overloaded name's candidates), a line each; `(error)` if it
+/// does not parse or rename.
 fn messages(prelude: &idyllic_ast::Program, src: &str) -> String {
     let Some(p) = program(src) else { return "(error)".to_string() };
     let std = idyllic::stdlib::compiled();
@@ -340,7 +378,8 @@ fn messages(prelude: &idyllic_ast::Program, src: &str) -> String {
     };
     // what renaming found, each said as it says it
     if !result.errors.is_empty() {
-        return result.errors.iter().map(|e| format!("rename: {}", e.to_diagnostic().message)).collect::<Vec<_>>().join("\n");
+        let said = |d: idyllic_diagnostics::Diagnostic| format!("{}rename: {}", place_of(&d), d.message);
+        return result.errors.iter().map(|e| said(e.to_diagnostic())).collect::<Vec<_>>().join("\n");
     }
     let spans = result.spans.clone();
     let module = idyllic_scc::scc_module(result.module);
@@ -351,9 +390,10 @@ fn messages(prelude: &idyllic_ast::Program, src: &str) -> String {
         .iter()
         .map(|e| {
             let d = e.to_diagnostic(&spans);
+            let place = place_of(&d);
             let line = match d.labels.first() {
-                Some(l) => format!("{}: {}", d.message, l.message),
-                None => d.message.clone(),
+                Some(l) => format!("{place}{}: {}", d.message, l.message),
+                None => format!("{place}{}", d.message),
             };
             // (a name's candidates are what its message is for)
             if d.message.starts_with("no `") || d.message.starts_with("ambiguous `") {

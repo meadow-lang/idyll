@@ -55,6 +55,7 @@ use Idyll.Elab (check, infer, insert, freshMeta, closeEffects, leaveKey, leaveBi
 use Idyll.Hir (Ident)
 use Idyll.Hir as H
 use Idyll.Rename
+use Lingua.Lang as Lang
 use Idyll.Sequences (seqPatternCtors)
 use Std.Collections.Vector as V
 use Std.String as S
@@ -148,7 +149,7 @@ fun isCtor (tc : Tc s) (c : Int) : Bool ! { St s | e } = M.isSome (T.ctorInfo tc
         | Just c ->
             if explicitPatterns hir (patsOf hir c) == arity then [Problem.Problem c i (patsOf hir c) [] [] []]
             else
-              let w = T.errorOf tc "ClauseArity" [] [show arity, show (explicitPatterns hir (patsOf hir c))] in
+              let w = T.errorAt tc (metaHirClause hir c) "ClauseArity" [] [show arity, show (explicitPatterns hir (patsOf hir c))] in
               []
         | None -> [])
       (V.range 0 (V.len clauses))
@@ -287,7 +288,7 @@ fun runMatch (tc : Tc s) (ctx : Ctx) (clauses : [HirClause]) (problems : [Proble
         (\acc i ->
           match V.get clauses i with
           | Just c ->
-              if not (V.getOr True (getRef m.used) i) and not (isImpossible hir (rhsOf hir c)) and plausible tc ctx m c then T.errorOf tc "UnreachableClause" [] []
+              if not (V.getOr True (getRef m.used) i) and not (isImpossible hir (rhsOf hir c)) and plausible tc ctx m c then T.errorAt tc (metaHirClause hir c) "UnreachableClause" [] []
               else ()
           | None -> ())
         ()
@@ -406,7 +407,7 @@ fun intro (tc : Tc s) (m : Matcher s) (ctx : Ctx) (problems : [Problem]) (goal0 
                       | Just q -> Problem.Problem c i (V.drop pending 1) (V.pushBack cs (q, Target.Slot lvl)) bs ds
                       | None ->
                           if icit == Icit.Explicit then
-                            let w4 = T.errorOf tc "MisplacedImplicitPattern" [] [] in
+                            let w4 = T.errorAt tc (metaHirPattern hir pat) "MisplacedImplicitPattern" [] [] in
                             let w5 = fail m in
                             Problem.Problem c i (V.drop pending 1) (V.pushBack cs (implicitInner hir pat, Target.Slot lvl)) bs ds
                           else p)
@@ -438,7 +439,8 @@ fun tooManyPatterns (tc : Tc s) (m : Matcher s) (ctx : Ctx) (problems : [Problem
   let hir = hirOf tc in
   let next = match V.head problems with | Just (Problem.Problem _ _ pending _ _ _) -> V.head pending | _ -> None in
   let implicit = match M.map (\q -> (hir, q)) next with | Just (HirPatternImplicit _ _) -> True | _ -> False in
-  let w = T.errorOf tc (if implicit then "MisplacedImplicitPattern" else "TooManyPatterns") [quote tc ctx.lvl goal] [] in
+  let at = M.unwrapOr (getRef tc.at) (M.map (metaHirPattern hir) next) in
+  let w = T.errorAt tc at (if implicit then "MisplacedImplicitPattern" else "TooManyPatterns") [quote tc ctx.lvl goal] [] in
   let w2 = fail m in
   nothing ()
 
@@ -465,6 +467,14 @@ fun implicitInner (hir : HirArena) (p : HirPattern) : HirPattern =
 -- Settle what can be settled of a problem's patterns, left to right, until
 -- one waits on a variable or disagrees.
 fun simplify (tc : Tc s) (ctx : Ctx) (p : Problem) : (Step, Problem) ! { St s | e } =
+  match p with
+  | Problem.Problem _ _ _ constraints _ _ ->
+      (match V.head constraints with
+       | None -> (Step.Done, p)
+       -- what is wrong with a pattern is found at it
+       | Just (pat, _) -> T.placing tc (metaHirPattern (hirOf tc) pat) (\() -> settleFirst tc ctx p))
+
+fun settleFirst (tc : Tc s) (ctx : Ctx) (p : Problem) : (Step, Problem) ! { St s | e } =
   let hir = hirOf tc in
   match p with
   | Problem.Problem clause index pending constraints bindings dots ->
@@ -569,26 +579,27 @@ fun plausible (tc : Tc s) (ctx : Ctx) (m : Matcher s) (clause : HirClause) : Boo
       else
         match pt with
         | (pat, ty) ->
-            (match (hir, peel hir pat) with
-             | HirPatternCon c _ ->
-                 let u = M.unwrapOr (0 - 1) (O.patternCtor tc ctx (peel hir pat) c ty) in
-                 if u < 0 then False
-                 else
-                   (match T.ctorInfo tc u with
-                    | None ->
-                        let w = T.errorOf tc "NotAConstructor" [] [H.textOf (identOf hir c)] in
-                        False
-                    | Just (CtorInfo.CtorInfo _ dt _ _ _) ->
-                        (match force tc ty with
-                         | Value.Opaque d dn dsp ->
-                             if d == dt then True
-                             else
-                               let w = T.errorOf tc "NotAConstructorOf" [quote tc ctx.lvl (Value.Opaque d dn dsp)] [H.textOf (identOf hir c)] in
-                               False
-                         | other ->
-                             let w = T.errorOf tc "NotAConstructorOf" [quote tc ctx.lvl other] [H.textOf (identOf hir c)] in
-                             False))
-             | _ -> True))
+            T.placing tc (metaHirPattern hir (peel hir pat)) (\() ->
+              match (hir, peel hir pat) with
+              | HirPatternCon c _ ->
+                  let u = M.unwrapOr (0 - 1) (O.patternCtor tc ctx (peel hir pat) c ty) in
+                  if u < 0 then False
+                  else
+                    (match T.ctorInfo tc u with
+                     | None ->
+                         let w = T.errorOf tc "NotAConstructor" [] [H.textOf (identOf hir c)] in
+                         False
+                     | Just (CtorInfo.CtorInfo _ dt _ _ _) ->
+                         (match force tc ty with
+                          | Value.Opaque d dn dsp ->
+                              if d == dt then True
+                              else
+                                let w = T.errorOf tc "NotAConstructorOf" [quote tc ctx.lvl (Value.Opaque d dn dsp)] [H.textOf (identOf hir c)] in
+                                False
+                          | other ->
+                              let w = T.errorOf tc "NotAConstructorOf" [quote tc ctx.lvl other] [H.textOf (identOf hir c)] in
+                              False))
+              | _ -> True))
     True
     (V.zip (patsOf hir clause) (getRef m.argTypes))
 
@@ -651,7 +662,7 @@ fun leaf (tc : Tc s) (m : Matcher s) (ctx : Ctx) (p : Problem) (rest : [Problem]
            (match emptySplit tc m ctx with
             | Just found -> found
             | None ->
-                let w2 = T.errorOf tc "NotImpossible" [] [] in
+                let w2 = T.errorAt tc (metaHirClause hir clause) "NotImpossible" [] [] in
                 let w3 = fail m in
                 nothing ())
        | (_, rhs) ->
@@ -675,12 +686,13 @@ fun leaf (tc : Tc s) (m : Matcher s) (ctx : Ctx) (p : Problem) (rest : [Problem]
                      let ty = targetType inner target in
                      -- never run, and so it must be pure
                      let (eC, notRun) = check tc inner e ty in
-                     (match effectsOf tc notRun with
-                      | Just _ -> T.error tc "ImpureType"
-                      | None ->
-                          let given = eval tc inner.env eC in
-                          let expected = targetValue inner target in
-                          if unify tc inner.lvl expected given then () else T.errorOf tc "DotMismatch" [quote tc inner.lvl expected, quote tc inner.lvl given] []))
+                     T.placing tc (metaHirExpr hir e) (\() ->
+                       match effectsOf tc notRun with
+                       | Just _ -> T.error tc "ImpureType"
+                       | None ->
+                           let given = eval tc inner.env eC in
+                           let expected = targetValue inner target in
+                           if unify tc inner.lvl expected given then () else T.errorOf tc "DotMismatch" [quote tc inner.lvl expected, quote tc inner.lvl given] []))
                ()
                dots
            in
@@ -769,14 +781,20 @@ fun split (tc : Tc s) (m : Matcher s) (ctx : Ctx) (problems : [Problem]) (goal :
        | Value.Opaque d _ _ ->
            (match Hm.lookup d (getRef tc.datas) with
             | Just ctors -> splitData tc m ctx problems goal k scrutinee used ctors
-            | None -> notData tc m ctx (X.typeAt ctx k))
+            | None -> notData tc m ctx problems (X.typeAt ctx k))
        | Value.Error ->
            let w = fail m in
            nothing ()
-       | _ -> notData tc m ctx (X.typeAt ctx k))
+       | _ -> notData tc m ctx problems (X.typeAt ctx k))
 
-fun notData (tc : Tc s) (m : Matcher s) (ctx : Ctx) (ty : Value) : (Core, Usage) ! { St s | e } =
-  let w = T.errorOf tc "NotADataType" [quote tc ctx.lvl (force tc ty)] [] in
+-- The first clause left: where what is wrong with a split is found.
+fun firstClause (tc : Tc s) (problems : [Problem]) : Lang.Meta ! { St s | e } =
+  match V.head problems with
+  | Just (Problem.Problem c _ _ _ _ _) -> metaHirClause (hirOf tc) c
+  | None -> getRef tc.at
+
+fun notData (tc : Tc s) (m : Matcher s) (ctx : Ctx) (problems : [Problem]) (ty : Value) : (Core, Usage) ! { St s | e } =
+  let w = T.errorAt tc (firstClause tc problems) "NotADataType" [quote tc ctx.lvl (force tc ty)] [] in
   let w2 = fail m in
   nothing ()
 
@@ -800,7 +818,7 @@ fun splitData (tc : Tc s) (m : Matcher s) (ctx : Ctx) (problems : [Problem]) (go
             (match unified with
              | Unified.Absurd -> (alts, usage)
              | Unified.Stuck a b ->
-                 let w = T.errorOf tc "IndexUnificationStuck" [quote tc (lvlOf inner) a, quote tc (lvlOf inner) b] [] in
+                 let w = T.errorAt tc (firstClause tc problems) "IndexUnificationStuck" [quote tc (lvlOf inner) a, quote tc (lvlOf inner) b] [] in
                  let w2 = fail m in
                  (alts, usage)
              | Unified.Refined ctx2 sigma ->

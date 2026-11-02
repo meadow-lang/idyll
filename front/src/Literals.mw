@@ -63,7 +63,7 @@ fun defaultOf (lit : Literal) : Builtin =
 -- A number literal checked against `ty`, a type still to be worked out: a
 -- placeholder, read once it is known.
 @pub fun deferLiteral (tc : Tc s) (ctx : Ctx) (lit : Literal) (ty : Value) : Core ! { St s | e } =
-  let m = T.newMeta tc (MetaInfo.MetaInfo 0 (Origin.Inferred "a number") None) in
+  let m = T.newMeta tc (MetaInfo.MetaInfo (getRef tc.at) (Origin.Inferred "a number") None) in
   let w = setRef tc.placeholders (V.pushBack (getRef tc.placeholders) m) in
   let w2 = setRef tc.deferredLiterals (V.pushBack (getRef tc.deferredLiterals) (m, ctx, ty, lit)) in
   Core.Meta m
@@ -111,7 +111,7 @@ fun isBareMeta (tc : Tc s) (ty : Value) : Bool ! { St s | e } =
               | _ ->
                   if unify tc ctx.lvl t (Value.LitTy (defaultOf lit)) then Core.Lit lit
                   else
-                    let w3 = T.errorOf tc "Mismatch" [quote tc ctx.lvl t, Core.LitTy (defaultOf lit)] [] in
+                    let w3 = T.errorAt tc (T.placeOfMeta tc m) "Mismatch" [quote tc ctx.lvl t, Core.LitTy (defaultOf lit)] [] in
                     Core.Error
             in
             let value = eval tc ctx.env core in

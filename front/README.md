@@ -178,7 +178,8 @@ cd idyll-eval && cargo test --release --test front -- --nocapture
 It prints, for each pass, how many programs there are and how many are an
 error to `front/`. A program that is an error must be an error on both sides,
 so an error counts as agreement only when both agree there is one.
-`the_messages_agree` compares what each says about the error as well.
+`the_messages_agree` compares what each says about the error as well, and
+`the_error_places_agree` the bytes each says it about.
 
 `IDYLL_FRONT_SHOW=handwritten-0003,prelude` prints both sides' output for the
 programs named, which is how a difference is looked into.
@@ -1060,6 +1061,17 @@ name's message lists its candidates in a note, and the differential
 compares those too: how each is written and where it is from are looked
 up only when a message wants them (`Check.meaningOf`, `Check.homeOf`), so
 that a program with nothing wrong pays nothing for them.
+
+An error is found at `tc.at`, the node being checked, which `elaborate`
+sets for each expression. What is about something else says so: `T.errorAt`
+for one error at a place, and `T.placing` for everything a step finds. A
+pattern's errors are found at the pattern (`simplify`), a clause's at the
+clause, a declaration's at what it declares. What is found after it was
+written keeps where it was written: a metavariable carries the place it was
+made (`MetaInfo`, read with `T.placeOfMeta`, which is where a deferred auto
+argument or literal is reported), and so do a hole (`HoleAt`) and a
+postponed mismatch (`Postponed`). `the_error_places_agree` holds each to the
+Rust checker's bytes.
 
 The checker keeps the node it is checking (`Tc.at`, set around each node by
 `Elab.elaborate`) and each error with it (`Tc.placed`), beside the kinds

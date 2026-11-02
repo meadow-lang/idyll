@@ -992,7 +992,10 @@ where
             entries.delimited_by(just(Token::LBrace), just(Token::RBrace)),
         )))
         .validate(|((name, head), entries), e, emitter| {
-            let span = span_of(e.span());
+            // (it ends with its last entry, not where its block is closed,
+            // which is the next thing written)
+            let whole = span_of(e.span());
+            let span = entries.last().map_or(whole, |d: &LDecl| Span::new(whole.start, d.span.end));
             match instance_parts(name, head, entries, span) {
                 Ok(item) => item,
                 Err((at, why)) => {
@@ -1639,8 +1642,8 @@ where
         }),
         term.clone().delimited_by(just(Token::LParen), just(Token::RParen)),
     ));
-    let single = atom.clone().foldl(atom.repeated(), |f: LTerm, a: LTerm| {
-        let span = f.span.merge(a.span);
+    let single = atom.clone().foldl_with(atom.repeated(), |f: LTerm, a: LTerm, e| {
+        let span = span_of(e.span());
         Spanned::new(Term::App(Box::new(f), Box::new(a)), span)
     });
     let braced = term
@@ -1835,8 +1838,8 @@ where
         ));
         let app = atom
             .clone()
-            .foldl(argument.repeated(), |f: LTerm, (a, icit): (LTerm, Icit)| {
-                let span = f.span.merge(a.span);
+            .foldl_with(argument.repeated(), |f: LTerm, (a, icit): (LTerm, Icit), e| {
+                let span = span_of(e.span());
                 let applied = match icit {
                     Icit::Explicit => Term::App(Box::new(f), Box::new(a)),
                     Icit::Implicit => Term::ImplicitApp(Box::new(f), Box::new(a)),
