@@ -254,8 +254,9 @@ type Parts = (i64, Option<(Doc, i64, i64)>, i64);
 /// owed, and whether a rule asked for them; how many it ends with already;
 /// the space the text had, which a break that follows drops; how far in the
 /// line the text broke to was written; how far in the line being written is
-/// set; and whether anything is written yet, before which blank space is no
-/// one's.
+/// set; whether anything is written yet, before which blank space is no
+/// one's; and whether anything but a comment is, before which there is no
+/// line for the next to go on with.
 struct Writing {
     doc: Doc,
     owed: i64,
@@ -265,6 +266,7 @@ struct Writing {
     col: i64,
     cur: i64,
     shown: bool,
+    begun: bool,
 }
 
 struct Style<'s> {
@@ -308,7 +310,7 @@ impl<'s> Style<'s> {
         } else if opens > 0 || w.asked || w.col < 0 {
             0
         } else {
-            (w.col - base).max(UNIT)
+            (w.col - base).max(if w.begun { UNIT } else { 0 })
         };
         let lead = if fresh {
             breaks_after(doc::nil(), n)
@@ -323,6 +325,7 @@ impl<'s> Style<'s> {
         w.col = -1;
         w.cur = set;
         w.shown = true;
+        w.begun = true;
     }
 
     /// A node no rule is for, as it was written: its tokens and children in
@@ -348,6 +351,7 @@ impl<'s> Style<'s> {
             col: -1,
             cur: 0,
             shown: false,
+            begun: false,
         };
         for c in &all[first..=last] {
             match c {
@@ -356,9 +360,11 @@ impl<'s> Style<'s> {
                     if !t.trim().is_empty() {
                         // A comment on a line of its own between two items
                         // is neither's: the next line is set in as it would be.
-                        let asked = w.asked;
+                        let (asked, begun) = (w.asked, w.begun);
+                        w.begun = false;
                         self.put(&mut w, base, 0, doc::text(t.trim()));
                         w.asked = asked;
+                        w.begun = begun;
                     } else {
                         let lines: Vec<&str> = t.split('\n').collect();
                         let n = 2.min(lines.len() as i64 - 1);

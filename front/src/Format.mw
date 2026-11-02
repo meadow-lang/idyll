@@ -60,6 +60,12 @@ fun once (text : String) =
     "-- a\nx = 1\n\n-- b\ny =\n  case x of\n    1 -> 2\n    _ -> 3 -- c\n"
     "the comments where they were, the blank lines one"
 
+@test fun aFileMayOpenWithLinesOfComment () =
+  assertEq
+    (once "-- one\n-- two\n\n-- three\nx = 1\n")
+    "-- one\n-- two\n\n-- three\nx = 1\n"
+    "each at its column, with nothing before them to go on from"
+
 @test fun aDeclarationBlockIsUnderWhatOpensIt () =
   assertEq
     (once "effect Ask where ask : Int\n")

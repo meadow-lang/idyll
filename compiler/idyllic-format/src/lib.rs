@@ -85,6 +85,11 @@ mod tests {
     }
 
     #[test]
+    fn a_file_may_open_with_lines_of_comment() {
+        assert_eq!(once("-- one\n-- two\n\n-- three\nx = 1\n"), "-- one\n-- two\n\n-- three\nx = 1\n");
+    }
+
+    #[test]
     fn a_declaration_block_is_under_what_opens_it() {
         assert_eq!(once("effect Ask where ask : Int\n"), "effect Ask where\n  ask : Int\n");
     }

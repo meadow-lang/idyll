@@ -906,9 +906,8 @@ accepted when what it does fits within what resuming was found to.
   Pretty's printer, each following what it is ported from): a directory is
   every `.idl` under it, and the two set every corpus program out alike,
   and `lib/` and `examples/` when run by hand. An attribute is a line of its
-  own, and a sequence fits on a line or is an item a line. Still to come: a
-  file's opening comment keeps its column, Lingua's fix for which comes with
-  the next Lingua pin.
+  own, and a sequence fits on a line or is an item a line. A file's opening
+  comment keeps its column (Lingua f51cd9f, and the same in `idyllic-format`).
 - [~] **The language server**, written with Lingua's `lsp!` over a
   `database!` of front/'s queries (front/README.md, "The editor"), as the
   formatter is written with `format!`. `Idyll lsp`:
