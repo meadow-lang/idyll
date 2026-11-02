@@ -71,7 +71,21 @@ jobs:
         with:
           token: ${{ github.token }}
       - working-directory: compiler
-        run: cargo test --release -p idyllic --test front --no-fail-fast
+        run: cargo test --release -p idyllic --test front --no-fail-fast -- --skip front_
+
+  # (apart from the differentials over the corpus: together they outlast what
+  # the merge queue waits for a check, an hour)
+  front-builds:
+    name: front/'s builds against the compiler
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          token: ${{ github.token }}
+      - working-directory: compiler
+        run: cargo test --release -p idyllic --test front --no-fail-fast front_
 
   driver:
     name: The driver
@@ -114,7 +128,7 @@ jobs:
   check:
     name: check
     if: always()
-    needs: [front, compiler, differentials, driver, eval, cut-corpus]
+    needs: [front, compiler, differentials, front-builds, driver, eval, cut-corpus]
     runs-on: ubuntu-latest
     steps:
       - name: Every job passed
