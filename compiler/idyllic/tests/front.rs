@@ -750,6 +750,146 @@ fn front_builds_as_a_profile() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// A workspace, as the Rust driver has it: one `target`, its members from
+/// patterns and path dependencies, what a member takes from the root, and
+/// what a command picks wherever in it it is run.
+#[test]
+fn front_builds_a_workspace() {
+    let Ok(exe) = front() else {
+        eprintln!("no front/ to build with");
+        return;
+    };
+    let root = std::env::temp_dir().join(format!("idyll-front-workspace-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let ws = root.join("ws");
+    for d in ["app", "libs/my_util", "libs/old", "stray"] {
+        std::fs::create_dir_all(ws.join(d).join("src")).expect("a directory");
+    }
+    std::fs::write(
+        ws.join("Idyll.toml"),
+        "[workspace]\nmembers = [\n  \"app\",\n  \"libs/*\",\n]\nexclude = [\"libs/old\"]\ndefault-members = [\"app\"]\n\n\
+         [workspace.package]\nversion = \"0.2.0\"\n\n[workspace.dependencies]\nUtil = { path = \"libs/my_util\" }\n",
+    )
+    .unwrap();
+    std::fs::write(ws.join("app/Idyll.toml"), "[package]\nname = \"App\"\nversion.workspace = true\n\n[dependencies]\nUtil = { workspace = true }\n").unwrap();
+    std::fs::write(ws.join("app/src/Main.idl"), "use Util (answer)\n\nmain : () -> () ! Eff\nmain () = putStrLn \"the answer is ${answer}\"\n").unwrap();
+    std::fs::write(ws.join("libs/my_util/Idyll.toml"), "[package]\nname = \"Util\"\nversion = \"0.1.0\"\n\n[profile.release]\nbackend = \"glade\"\n").unwrap();
+    std::fs::write(ws.join("libs/my_util/src/Lib.idl"), "@pub\nanswer : Int\nanswer = 42\n").unwrap();
+    std::fs::write(ws.join("libs/old/Idyll.toml"), "[package]\nname = \"Old\"\nversion = \"0.1.0\"\n").unwrap();
+    std::fs::write(ws.join("libs/old/src/Lib.idl"), "@pub\nanswer : Int\nanswer = 1\n").unwrap();
+    std::fs::write(ws.join("stray/Idyll.toml"), "[package]\nname = \"Stray\"\nversion = \"0.1.0\"\n").unwrap();
+    std::fs::write(ws.join("stray/src/Lib.idl"), "@pub\nanswer : Int\nanswer = 1\n").unwrap();
+    // at the root a command means `default-members`, and the member what it
+    // depends on
+    let (said, ok) = front_tool(&exe, &ws, &["run"]);
+    assert!(ok && said.contains("idyll: 3 compiled, 0 up to date") && said.contains("the answer is 42\n"), "{said}");
+    // the same build from inside a member, in the same `target`
+    let (said, ok) = front_tool(&exe, &ws.join("app"), &["run"]);
+    assert!(ok && said.contains("idyll: 0 compiled, 3 up to date") && said.contains("the answer is 42\n"), "{said}");
+    assert!(ws.join("target/debug").is_dir() && !ws.join("app/target").exists());
+    // every member, and the one left out; a member only ever links itself
+    let (said, ok) = front_tool(&exe, &ws, &["build", "--workspace"]);
+    assert!(ok && said.contains("idyll: 0 compiled, 3 up to date") && said.contains("Linked") && said.contains("util"), "{said}");
+    let (said, ok) = front_tool(&exe, &ws, &["build", "--workspace", "--exclude", "Util"]);
+    assert!(ok && said.contains("Fresh link") && !said.contains("Linked"), "{said}");
+    // a change one member does not reach links only the other
+    std::fs::write(ws.join("app/src/Main.idl"), "use Util (answer)\n\nmain : () -> () ! Eff\nmain () = putStrLn \"now ${answer}\"\n").unwrap();
+    let (said, ok) = front_tool(&exe, &ws, &["build", "--workspace"]);
+    assert!(ok && said.contains("idyll: 1 compiled, 2 up to date"), "{said}");
+    assert!(said.lines().any(|l| l.contains("Linked") && l.contains("app")) && said.lines().any(|l| l.contains("Fresh link") && l.contains("util")), "{said}");
+    // a version taken from the root is what names the package, and changes
+    std::fs::write(ws.join("Idyll.toml"), std::fs::read_to_string(ws.join("Idyll.toml")).unwrap().replace("0.2.0", "0.3.0")).unwrap();
+    let (said, ok) = front_tool(&exe, &ws, &["build", "--workspace"]);
+    assert!(ok && said.contains("idyll: 1 compiled, 2 up to date"), "{said}");
+    // `-p`, from anywhere in it
+    let (said, ok) = front_tool(&exe, &ws.join("app"), &["run", "-p", "App"]);
+    assert!(ok && said.contains("now 42\n"), "{said}");
+    let (said, ok) = front_tool(&exe, &ws, &["run", "--workspace"]);
+    assert!(!ok && said.contains("needs one package") && said.contains("`App`, `Util`"), "{said}");
+    let (said, ok) = front_tool(&exe, &ws, &["run", "-p", "Util"]);
+    assert!(!ok && said.contains("`Util` has nothing to run"), "{said}");
+    let (said, ok) = front_tool(&exe, &ws, &["build", "-p", "Nope"]);
+    assert!(!ok && said.contains("no member `Nope`"), "{said}");
+    // a member's own profiles go unread, and it is told so
+    let (said, ok) = front_tool(&exe, &ws, &["check", "-p", "Util"]);
+    assert!(ok && said.contains("Fresh") , "{said}");
+    let (said, ok) = front_tool(&exe, &ws.join("libs/old"), &["check"]);
+    assert!(ok, "what is excluded is a package by itself: {said}");
+    assert!(ws.join("libs/old/target").is_dir());
+    // a package under the root that is neither is an error
+    let (said, ok) = front_tool(&exe, &ws.join("stray"), &["check"]);
+    assert!(!ok && said.contains("is not a member of it"), "{said}");
+    // and a version inherited from nothing
+    std::fs::create_dir_all(root.join("alone/src")).unwrap();
+    std::fs::write(root.join("alone/Idyll.toml"), "[package]\nname = \"Alone\"\nversion.workspace = true\n").unwrap();
+    std::fs::write(root.join("alone/src/Lib.idl"), "@pub\nanswer : Int\nanswer = 1\n").unwrap();
+    let (said, ok) = front_tool(&exe, &root.join("alone"), &["check"]);
+    assert!(!ok && said.contains("inherits from a workspace, but is not in one"), "{said}");
+    let (said, ok) = front_tool(&exe, &root.join("alone"), &["build", "--workspace"]);
+    assert!(!ok && said.contains("is not in a workspace"), "{said}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// One lock file for a workspace: a build of one member leaves what the
+/// others pinned, and `update` covers them all wherever it is run.
+#[test]
+fn front_keeps_one_lock_for_a_workspace() {
+    let Ok(exe) = front() else {
+        eprintln!("no front/ to build with");
+        return;
+    };
+    if std::process::Command::new("git").arg("--version").output().is_err() {
+        eprintln!("no git to make a dependency with");
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("idyll-front-workspace-lock-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (ws, home) = (root.join("ws"), root.join("home"));
+    std::fs::create_dir_all(&ws).expect("a directory");
+    std::fs::write(ws.join("Idyll.toml"), "[workspace]\nmembers = [\"one\", \"two\"]\n").unwrap();
+    for (dep, member, name) in [("Red", "one", "One"), ("Blue", "two", "Two")] {
+        let repo = root.join(dep);
+        std::fs::create_dir_all(repo.join("src")).expect("a directory");
+        std::fs::write(repo.join("Idyll.toml"), format!("[package]\nname = \"{dep}\"\nversion = \"1.0.0\"\n")).unwrap();
+        std::fs::write(repo.join("src/Lib.idl"), "@pub\ngreet : String\ngreet = \"one\"\n").unwrap();
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-qm", "one"]);
+        let url = format!("file:///{}", repo.display().to_string().replace('\\', "/").trim_start_matches('/'));
+        let at = ws.join(member);
+        std::fs::create_dir_all(at.join("src")).expect("a directory");
+        std::fs::write(at.join("Idyll.toml"), format!("[package]\nname = \"{name}\"\n\n[dependencies]\n{dep} = {{ git = \"{url}\" }}\n")).unwrap();
+        std::fs::write(at.join("src/Lib.idl"), format!("use {dep} (greet)\n\n@pub\nsaid : String\nsaid = greet\n")).unwrap();
+    }
+    let tool = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new(&exe).args(args).current_dir(dir).env("IDYLL_HOME", &home).output().expect("front/ runs");
+        let text = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n") + &String::from_utf8_lossy(&out.stderr).replace("\r\n", "\n");
+        (text, out.status.success())
+    };
+    let pinned = || {
+        let lock = std::fs::read_to_string(ws.join("idyll.lock")).unwrap_or_default();
+        (lock.contains("\"Red\""), lock.contains("\"Blue\""))
+    };
+    let (said, ok) = tool(&ws, &["build", "--workspace"]);
+    assert!(ok, "{said}");
+    assert_eq!(pinned(), (true, true));
+    assert!(!ws.join("one/idyll.lock").exists());
+    // one member, and the other's pin stays
+    let (said, ok) = tool(&ws, &["build", "-p", "One"]);
+    assert!(ok, "{said}");
+    assert_eq!(pinned(), (true, true));
+    let (said, ok) = tool(&ws, &["build", "--workspace", "--locked"]);
+    assert!(ok, "{said}");
+    // `update` in a member covers them all, and in a virtual root it runs
+    let (said, ok) = tool(&ws.join("one"), &["update"]);
+    assert!(ok, "{said}");
+    assert_eq!(pinned(), (true, true));
+    let (said, ok) = tool(&ws, &["update"]);
+    assert!(ok, "{said}");
+    assert_eq!(pinned(), (true, true));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// A package with nothing to run is checked, as the Rust driver checks it:
 /// the build goes well and makes nothing, and only running it is an error.
 #[test]

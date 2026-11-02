@@ -17,7 +17,7 @@
 -- the program runs on Silo the link builds it into an executable there too.
 
 use Lingua (make!)
-use Lingua.Make (Given, Linking, Part, unitDir, unitSources, unitImports, linkRoot, linkUnits, linkOut, linkDirIn)
+use Lingua.Make (Given, Linking, Part, unitDir, unitSources, unitImports, linkRoot, linkUnits, linkOut, linkDirIn, linkDirOf)
 use Lingua.Make (partDir, partSources, partImports, partUnitImports, partUnitPaths, resolverOf)
 use Lingua.Diagnostic (renderAll)
 use Lingua.Resolve (Dep, GitRef, reqOf, resolve)
@@ -43,6 +43,8 @@ use Std.Sort (sortOn)
 use Std.St as St
 use Std.St (runSt)
 use Idyll.Parts as Pa
+use Idyll.Workspace (Member, Selected, Selection, Workspace, manifestField, sectionOf, quotedAfter, inheritedName)
+use Idyll.Workspace as Ws
 use Std.Maybe.Maybe.*
 use Std.Result.Result.*
 
@@ -68,6 +70,7 @@ make! {
     | options {
       backend : Glade | Silo = Glade "which of Meadow's runtimes runs the program" for link
       named : Bool = False "someone asked for that backend, so no other will do" for link
+      version : String = "" "what a member's `version.workspace` comes to"
     }
     | profile debug {}
     | profile release { backend = Silo }
@@ -121,56 +124,102 @@ fun union (done : [Built]) (more : [Built]) : [Built] =
   else if V.len names > 1 then Err "--backend, --silo and --glade do not go together"
   else Ok (if release then "release" else "debug", V.concatMap (\b -> backendSet (M.unwrapOr b (backendNamed b))) names)
 
--- `idyll build`: the package built, and what came of it said: its
+-- `idyll build`: the packages built, and what came of each said: its
 -- executable, or its Cut.
-@pub fun buildCommand (offline : Bool) (locked : Bool) (told : (String, [(String, String)])) (path : Maybe String) =
-  if built offline locked told (here path) then
-    let made = M.unwrapOr (cutOf (fst told) (here path)) (executableOf (fst told) (here path)) in
-    if exists made then writeOutput "${made}\n" else ()
-  else exit 1
+@pub fun buildCommand (offline : Bool) (locked : Bool) (told : (String, [(String, String)])) (s : Selection) (path : Maybe String) =
+  withSelected path s (\picked ->
+    if built offline locked told picked then
+      V.foldl
+        (\u root ->
+          let out = linkOf picked (fst told) root in
+          let made = M.unwrapOr (cutIn out) (executableIn out root) in
+          if exists made then writeOutput "${made}\n" else ())
+        ()
+        picked.paths
+    else exit 1)
 
--- `idyll check`: the package checked, and what it depends on.
-@pub fun checkCommand (offline : Bool) (locked : Bool) (path : Maybe String) =
-  if built offline locked ("debug", []) (here path) then () else exit 1
+-- `idyll check`: the packages checked, and what they depend on.
+@pub fun checkCommand (offline : Bool) (locked : Bool) (s : Selection) (path : Maybe String) =
+  withSelected path s (\picked -> if built offline locked ("debug", []) picked then () else exit 1)
 
--- `idyll update`: git dependencies moved forward.
+-- `idyll update`: git dependencies moved forward, for every member of a
+-- workspace, whichever this is run in: the lock file is theirs, and what it
+-- is not told of it drops.
 @pub fun updateCommand (names : [String]) (dryRun : Bool) =
-  if updateUnits "." names dryRun then () else exit 1
+  match Ws.workspaceOver (Ws.absolutePath ".") with
+  | Err why -> refused why
+  | Ok None -> if updateUnits "." names dryRun then () else exit 1
+  | Ok (Just ws) ->
+      if V.isEmpty ws.members then refused "the workspace at ${ws.root} has no members"
+      else if updateUnitsIn ws.root (V.map (\(m : Member) -> m.dir) ws.members) names dryRun then ()
+      else exit 1
 
 -- `idyll run`: the package built, and run on Meadow.
-@pub fun runCommand (offline : Bool) (locked : Bool) (told : (String, [(String, String)])) (path : Maybe String) =
-  let root = here path in
-  if not (built offline locked told root) then exit 1
-  else if not (exists (cutOf (fst told) root)) then
-    let w = writeError "error: `${packageIn root}` has nothing to run: give it a `main`, or an expression\n" in
-    exit 1
-  else
-    let ran =
-      match executableOf (fst told) root with
-      | Just exe -> runInherit exe []
-      | None -> runInherit "meadow" ["cut", cutOf (fst told) root]
-    in
-    match ran with
-    | Ok 0 -> ()
-    | Ok code -> exit code
-    | Err why ->
-        let w = writeError "could not run meadow: ${why}\n" in
-        exit 1
+@pub fun runCommand (offline : Bool) (locked : Bool) (told : (String, [(String, String)])) (s : Selection) (path : Maybe String) =
+  withSelected path s (\picked ->
+    match Ws.onePackage picked "run" with
+    | Err why -> refused why
+    | Ok root ->
+        if not (built offline locked told picked) then exit 1
+        else
+          let out = linkOf picked (fst told) root in
+          if not (exists (cutIn out)) then refused "`${packageIn root}` has nothing to run: give it a `main`, or an expression"
+          else
+            let ran =
+              match executableIn out root with
+              | Just exe -> runInherit exe []
+              | None -> runInherit "meadow" ["cut", cutIn out]
+            in
+            match ran with
+            | Ok 0 -> ()
+            | Ok code -> exit code
+            | Err why ->
+                let w = writeError "could not run meadow: ${why}\n" in
+                exit 1)
 
-fun here (path : Maybe String) : String = M.unwrapOr "." path
+fun refused (why : String) =
+  let w = writeError "error: ${why}\n" in
+  exit 1
 
--- Build the package at `root` as it was told, Std written out first.
-fun built (offline : Bool) (locked : Bool) (told : (String, [(String, String)])) (root : String) : Bool ! { Fs, Process | e } =
+-- What a command means for `path`, to `k`: a workspace's members it picks,
+-- after what they say to no effect is said; or why it means nothing.
+fun withSelected (path : Maybe String) (s : Selection) k =
+  match Ws.selected (M.unwrapOr "." path) s with
+  | Err why -> refused why
+  | Ok picked ->
+      let w =
+        (match picked.workspace with
+         | None -> ()
+         | Just ws ->
+             V.foldl
+               (\u (m : Member) ->
+                 writeError "warning: the `[profile]` sections of `${m.name}` are ignored: a workspace member builds with the profiles in ${ws.root}/Idyll.toml\n")
+               ()
+               (Ws.ignoredProfiles ws picked.paths))
+      in
+      k picked
+
+-- Build what was picked as it was told, Std written out first: a package
+-- by itself, or a workspace's members in its home.
+fun built (offline : Bool) (locked : Bool) (told : (String, [(String, String)])) (picked : Selected) : Bool ! { Fs, Process | e } =
   let w = writtenStd () in
-  buildUnitsWith offline locked (fst told) (snd told) root
+  match picked.workspace with
+  | None -> V.all (\root -> buildUnitsWith offline locked (fst told) (snd told) root) picked.paths
+  | Just ws -> buildUnitsIn offline locked (fst told) (snd told) ws.root picked.paths
 
--- Where the link of a build as `profile` put a package's Cut.
-fun cutOf (profile : String) (root : String) : String = Path.join (linkDirIn root profile) "program.cut"
+-- Where the link of a package picked, as `profile`, wrote.
+fun linkOf (picked : Selected) (profile : String) (root : String) : String =
+  match picked.workspace with
+  | None -> linkDirIn root profile
+  | Just ws -> linkDirOf ws.root profile root
 
--- Where it put the package's executable, by each name the package's may
--- have, if it built one: the link removes what it no longer means.
-fun executableOf (profile : String) (root : String) : Maybe String ! { Fs | e } =
-  V.find exists (V.map (\f -> Path.join (binIn (linkDirIn root profile)) f) (executableNames (packageIn root)))
+-- A package's Cut, where its link wrote.
+fun cutIn (out : String) : String = Path.join out "program.cut"
+
+-- Its executable, by each name the package's may have, if it built one: the
+-- link removes what it no longer means.
+fun executableIn (out : String) (root : String) : Maybe String ! { Fs | e } =
+  V.find exists (V.map (\f -> Path.join (binIn out) f) (executableNames (packageIn root)))
 
 fun packageIn (root : String) : String ! { Fs | e } =
   plainName (nameOfManifest root (readToStringOr "" (Path.join root "Idyll.toml")))
@@ -189,14 +238,20 @@ fun backendNamed (name : String) : Maybe String =
 
 fun backendSet (backend : String) : [(String, String)] = [("backend", backend), ("named", "true")]
 
--- The root package's `[profile.<name>]`: what it says over the profile. A
--- dependency's says nothing, and a backend this compiler does not know is
--- left, so that a manifest written for a later one still builds.
-fun profileOf (root : String) (dir : String) (manifest : String) (profile : String) : [(String, String)] =
-  if Path.normalize root != Path.normalize dir then []
-  else
-    let said = M.andThen backendNamed (manifestField "backend" (S.join "\n" (sectionOf "[profile.${profile}]" manifest))) in
-    M.unwrapOr [] (M.map backendSet said)
+-- What a unit's manifest and the build's root say over the profile: the
+-- root's `[profile.<name>]`, a workspace's being every member's and a
+-- dependency's saying nothing, where a backend this compiler does not know
+-- is left, so that a manifest written for a later one still builds; and a
+-- member's version, which is its workspace's to say.
+fun profileOf (root : String) (dir : String) (manifest : String) (profile : String) : [(String, String)] ! { Fs, Process | e } =
+  let home = readToStringOr "" (Path.join root "Idyll.toml") in
+  let said = M.andThen backendNamed (manifestField "backend" (S.join "\n" (sectionOf "[profile.${profile}]" home))) in
+  let version =
+    match Ws.inheritedVersion dir manifest with
+    | Ok (Just v) -> [("version", v)]
+    | _ -> []
+  in
+  V.concat [M.unwrapOr [] (M.map backendSet said), version]
 
 -- Where Std is written out: under the home directory, `~/.idyll/std/<hash>`
 -- (or `$IDYLL_HOME/std/<hash>`), the hash of the Std this program holds, so
@@ -271,34 +326,44 @@ fun compilerSalt () : String = show (hash (prelude, stdModules, compilerSources)
 -- default branch), as the Rust driver reads them; and Std, which every
 -- package but Std has. Lingua's resolver fetches what is by git, takes the
 -- newest release a version allows, and keeps what it chose in `idyll.lock`.
-fun dependenciesOf (root : String) (dir : String) (manifest : String) : Result String [Dep] ! { Process | e } =
-  match declaredIn manifest with
-  | Err why -> Err why
-  | Ok ds -> Ok (if manifestField "name" manifest == Just "Std" then ds else V.pushBack ds (Dep.Path (stdDir ())))
+fun dependenciesOf (root : String) (dir : String) (manifest : String) : Result String [Dep] ! { Fs, Process | e } =
+  match (Ws.inheritedVersion dir manifest, declaredIn dir manifest) with
+  | (Err why, _) -> Err why
+  | (_, Err why) -> Err why
+  | (_, Ok ds) -> Ok (if manifestField "name" manifest == Just "Std" then ds else V.pushBack ds (Dep.Path (stdDir ())))
 
--- The lines that set something under a section of a manifest.
-fun sectionOf (header : String) (manifest : String) : [String] =
-  snd (V.foldl (\acc l -> match acc with | (inIt, found) -> (let t = S.trim l in if S.startsWith "[" t then (t == header, found) else if inIt and S.contains "=" t then (inIt, V.pushBack found t) else acc)) (False, []) (S.lines manifest))
-
--- What a manifest's `[dependencies]` say.
-fun declaredIn (manifest : String) : Result String [Dep] =
+-- What the `[dependencies]` of the manifest at `dir` say, those it takes
+-- from its workspace by what the workspace says of them there.
+fun declaredIn (dir : String) (manifest : String) : Result String [Dep] ! { Fs, Process | e } =
   V.foldl
     (\acc t ->
-      match (acc, dependencyOf t) with
+      match (acc, dependencyIn dir manifest t) with
       | (Err why, _) -> Err why
       | (_, Err why) -> Err why
       | (Ok ds, Ok d) -> Ok (V.pushBack ds d))
     (Ok [])
     (sectionOf "[dependencies]" manifest)
 
+fun dependencyIn (dir : String) (manifest : String) (line : String) : Result String Dep ! { Fs, Process | e } =
+  match inheritedName line with
+  | None -> dependencyOf line
+  | Just name ->
+      (match Ws.inheritedLine dir manifest name with
+       | Err why -> Err why
+       | Ok (root, written) ->
+           (match dependencyOf written with
+            | Ok (Dep.Path p) -> Ok (Dep.Path (Path.normalize (Path.join root p)))
+            | other -> other))
+
 -- The directories of the packages a manifest at `dir` names, each found
--- without reaching the network, by the lock file beside `root`: a repository
--- never fetched has nothing to read, and a package is left without it.
+-- without reaching the network, by the lock file beside `root`, or its
+-- workspace's: a repository never fetched has nothing to read, and a package
+-- is left without it.
 @pub fun dependencyDirs (root : String) (dir : String) (manifest : String) =
-  let r = resolverOf "~/.idyll/git" "IDYLL_HOME" "idyll.lock" root True False False [] in
+  let r = resolverOf "~/.idyll/git" "IDYLL_HOME" "idyll.lock" (M.unwrapOr root (Ws.workspaceRootOver root)) True False False [] in
   V.concatMap
     (\d -> match resolve r dir d with | Ok found -> [found] | Err _ -> [])
-    (match declaredIn manifest with | Ok ds -> ds | Err _ -> [])
+    (match declaredIn dir manifest with | Ok ds -> ds | Err _ -> [])
 
 -- One line of a manifest's `[dependencies]`, as a dependency.
 fun dependencyOf (line : String) : Result String Dep =
@@ -317,19 +382,6 @@ fun dependencyOf (line : String) : Result String Dep =
             | None -> Err "${name}: `${v}` is not a version")
        | _ -> Ok (Dep.Git name url GitRef.Default))
   | _ -> Err "${name}: a dependency needs a `path` or a `git`"
-
--- The text in quotes after `key =` in `line`: `"../util"` of `path`.
-fun quotedAfter (key : String) (line : String) : Maybe String =
-  let starts = \i -> S.startsWith (key ++ " ") (S.drop line i) or S.startsWith (key ++ "=") (S.drop line i) in
-  -- (a word of its own: `tag`, not the end of `stag`)
-  let alone = \i -> i == 0 or not (isWordByte (byteOf line (i - 1))) in
-  let at = V.find (\i -> starts i and alone i) (V.range 0 (S.byteLength line)) in
-  match at with
-  | None -> None
-  | Just i ->
-      let rest = S.drop line (i + S.byteLength key) in
-      let afterEq = S.trimStart (S.drop (S.trimStart rest) 1) in
-      if S.startsWith "\"" afterEq then V.get (S.split "\"" afterEq) 1 else None
 
 -- --- a package's parts ------------------------------------------------------------
 
@@ -362,10 +414,6 @@ fun packageNameIn (sources : [(String, String)]) : String =
   let last = M.unwrapOr "" (V.last rel) in
   let named = V.pushBack (V.take rel (V.len rel - 1)) (S.take last (S.byteLength last - 4)) in
   if V.len named == 1 and (V.getOr "" named 0 == "Main" or V.getOr "" named 0 == "Lib") then [] else named
-
-fun isWordByte (b : Int) : Bool = (b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b == 95 or b == 39 or b == 46
-
-fun byteOf (s : String) (i : Int) : Int = if i >= 0 and i < stringByteLength s then toInt (stringByteAt s i) else 0 - 1
 
 -- How many uniques each module of a package has room for: a part names its
 -- things from the slot of its first module (by path), so that parts
@@ -416,7 +464,7 @@ fun visibleIn (names : PackageNames) : Bool =
 -- compiled to, after those parts.
 fun compileScc (o : UnitsOptions) (x : Part Interface PartOut) : Result String PartOut ! { Fs | e } =
   let dir = partDir x in
-  let name = nameOfManifest dir (readToStringOr "" (Path.join dir "Idyll.toml")) in
+  let name = versioned o (nameOfManifest dir (readToStringOr "" (Path.join dir "Idyll.toml"))) in
   let own = V.map (\s -> (S.join "." (modulePath dir (fst s)), snd s)) (V.filter (\s -> S.endsWith ".idl" (fst s)) (partSources x)) in
   if V.isEmpty own then Ok (PartOut.PartOut [])
   else
@@ -496,7 +544,7 @@ fun fileOfModule (dir : String) (sources : [(String, String)]) (path : String) :
 -- package it reaches.
 fun assembleUnit (o : UnitsOptions) (u : Given Interface) (parts : [PartOut]) : Result String Interface =
   let dir = unitDir u in
-  let name = nameOf dir (unitSources u) in
+  let name = versioned o (nameOf dir (unitSources u)) in
   let packages = V.foldl (\acc i -> union acc (packagesOf (snd i))) [] (unitImports u) in
   let own = V.concatMap (\p -> match V.last (partClosure p) with | Just b -> [b] | None -> []) parts in
   let ranges = sortOn (\r -> fst r) (V.map (\b -> let c = builtCompiled b in (c.low, c.high)) own) in
@@ -587,18 +635,9 @@ fun nameOf (dir : String) (sources : [(String, String)]) : String =
   | Just v -> "${name}@${v}"
   | None -> name
 
--- A field of a manifest, `name = "Util"`: the first line that sets it.
-@pub fun manifestField (key : String) (manifest : String) : Maybe String =
-  V.foldl
-    (\acc line ->
-      match acc with
-      | Just n -> Just n
-      | None ->
-          let t = S.trim line in
-          let parts = S.split "\"" t in
-          if S.startsWith key t and S.trim (S.drop (S.take t (S.byteLength (V.getOr "" parts 0))) (S.byteLength key)) == "=" then V.get parts 1 else None)
-    None
-    (S.lines manifest)
+-- A name, with the version its workspace gave it.
+fun versioned (o : UnitsOptions) (name : String) : String =
+  if S.isEmpty o.version then name else "${plainName name}@${o.version}"
 
 -- A source's module path, from where it is under `src/`: `src/Collections/
 -- List.idl` is `Collections.List`; `Main.idl` or `Lib.idl` the root.
@@ -692,6 +731,7 @@ def compilerSources : [String] =
     includeStr "Unify.mw",
     includeStr "Usage.mw",
     includeStr "Value.mw",
+    includeStr "Workspace.mw",
     includeStr "World.mw"
   ]
 

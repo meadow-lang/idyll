@@ -85,6 +85,21 @@ Cut. A backend no one named gives way if there is no `meadow` to build with.
 A package with nothing to run is only checked: its build makes nothing, and
 running it is the error.
 
+A workspace is several packages developed together, `Workspace.mw` saying
+what one is as the Rust driver's `workspace.rs` does: a `[workspace]` with
+`members` and `exclude` (`*` and `?` match in a segment) and
+`default-members`, the path dependencies under the root joining, and a
+member taking `version.workspace = true` and `name = { workspace = true }`
+from the root. `selected` works out which members a command means, from
+`-p`, `--workspace`, `--exclude` and where it was run, and that is all
+`make!` hears: the root is its *home*, where `target/` and `idyll.lock` are,
+and the members chosen are its *roots*, one graph with a link for each
+(`buildUnitsIn`, `linkDirOf`). So `-p` keeps what the other members built and
+pinned, and `update` is always told every member, since it is what drops from
+the lock. A member's version is an option `overrides` sets, and so part of
+what it is compiled from, because a compiler reads only its own unit: a
+change at the root compiles what took it, and nothing else.
+
 Inside a package the unit of work is a *part*: the modules that import each
 other, in a circle or not, as `idyllic::parts` has them in the Rust
 compiler (`Parts.mw` is that, for compiling a package's parts in one go).

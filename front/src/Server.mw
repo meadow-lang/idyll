@@ -11,6 +11,7 @@ use Std.Exn (toResult)
 use Std.Result.Result.*
 use Lingua.Lsp (pathOf)
 use Idyll.Driver as D
+use Idyll.Workspace as Ws
 use Std.Path as Path
 use Std.Fs (exists, readToString, readToStringOr, createDirAll, writeString)
 use Std.Maybe as M
@@ -50,7 +51,7 @@ fun packageRoot (dir : Maybe String) : Maybe String ! { Fs | e } =
 fun contextOf (root : String) (path : String) : Maybe PackageContext ! { Fs | e } =
   let own = D.modulePathIn path in
   let manifest = readToStringOr "" (Path.join root "Idyll.toml") in
-  let name = M.unwrapOr "Main" (D.manifestField "name" manifest) in
+  let name = M.unwrapOr "Main" (Ws.manifestField "name" manifest) in
   let others = V.filter (\m -> fst m != own) (modulesAt root) in
   let dirs = D.dependencyDirs root root manifest in
   let found = V.foldl (\acc d -> packagesFrom root [root] acc d) [] dirs in
