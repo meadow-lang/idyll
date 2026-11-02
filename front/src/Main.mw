@@ -62,6 +62,7 @@ use Idyll.Prompt (runPrompt)
 use Idyll.Agent (serveAgent)
 use Lingua.Green (dump)
 use Lingua.Diagnostic (renderAll, Diagnostic)
+use Lingua.Lang (Meta, metaStart, metaEnd)
 use Idyll.Messages as Messages
 use Std.Collections.Vector as V
 use Std.Result.Result.*
@@ -263,7 +264,7 @@ fun renamed prelude (text : String) : String =
 fun typed prelude (text : String) : String = typedWith prelude None text
 
 -- A program's errors in words, as the message differential compares them:
--- each diagnostic's headline and its label, a line each, sorted; checked
+-- each diagnostic's place, headline and label, a line each, sorted; checked
 -- against Std compiled, if it names Std. `(error)` if it does not parse or
 -- rename.
 fun messagesIn prelude (std : Maybe (Rename.PackageNames, Compiled)) (text : String) : String =
@@ -276,7 +277,7 @@ fun messagesIn prelude (std : Maybe (Rename.PackageNames, Compiled)) (text : Str
       (match Rename.renamePackageWith "Main" [([], prog)] prelude (V.map (\d -> match d with | (n, ns, _) -> (n, ns)) deps) [] first True vis with
        | (m, _, problems) ->
            -- what renaming found, each said as the Rust renamer says it
-           if not (V.isEmpty problems) then S.join "\n" (V.map (\p -> "rename: " ++ M.unwrapOr (snd p) (V.head (S.split "\n" (snd p)))) m.problemsAt)
+           if not (V.isEmpty problems) then S.join "\n" (V.map (\p -> placeOf (fst p) ++ "rename: " ++ M.unwrapOr (snd p) (V.head (S.split "\n" (snd p)))) m.problemsAt)
            else
              let lines =
                runSt (\() ->
@@ -285,10 +286,17 @@ fun messagesIn prelude (std : Maybe (Rename.PackageNames, Compiled)) (text : Str
              in
              S.join "\n" (V.foldl (\acc l -> V.concat [V.filter (\x -> not (S.lessThan l x)) acc, [l], V.filter (\x -> S.lessThan l x) acc]) [] lines))
 
+-- The bytes an error is about, as they start its line.
+fun placeOf (at : Meta) : String = "${metaStart at}-${metaEnd at} "
+
 fun messageLine (d : Diagnostic) : String =
   match d with
-  | Diagnostic.Diagnostic _ said _ labels notes ->
-      let line = said ++ (match V.head labels with | Just (_, l) -> ": " ++ l | None -> "") in
+  | Diagnostic.Diagnostic _ said at labels notes ->
+      let line =
+        match V.head labels with
+        | Just (place, l) -> placeOf place ++ said ++ ": " ++ l
+        | None -> placeOf at ++ said
+      in
       -- (a name's candidates are what its message is for)
       if S.startsWith "no `" said or S.startsWith "ambiguous `" said then
         line ++ " | " ++ S.join " | " (S.split "\n" (S.join "\n" notes))

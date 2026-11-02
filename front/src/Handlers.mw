@@ -32,6 +32,7 @@ use Idyll.Elab (check, infer, insert, freshMeta, leaveBinder, lam, keyOf, hirOf)
 use Idyll.Hir (Ident)
 use Idyll.Hir as H
 use Idyll.Rename
+use Lingua.Lang (Meta, metaStart, spanMeta)
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
 use Std.Maybe as M
@@ -44,6 +45,7 @@ fun gradeValue g : Value = Va.polyValue (Va.polyConstant g)
 -- A handler's clause, read off the renamed program's tables: its
 -- operation (none for `return`), what it binds, and its body.
 record Clause = {
+  at : Meta,
   op : Maybe Ident,
   params : [Ident],
   body : HirExpr
@@ -55,11 +57,18 @@ fun clausesOf (hir : HirArena) (cs : [HirHandleClause]) : [Clause] =
       Clause {
         op = M.map (\x -> identOf hir x) (hirHandleClauseOp hir c),
         params = V.map (\x -> identOf hir x) (hirHandleClauseParams hir c),
-        body = hirHandleClauseBody hir c
+        body = hirHandleClauseBody hir c,
+        at =
+          match hirHandleClauseOp hir c with
+          | Just x -> metaHirIdent hir x
+          -- (`return`, which is not a name, starts the clause)
+          | None -> (let start = metaStart (metaHirHandleClause hir c) in spanMeta start (start + 6))
       })
     cs
 
 fun opOf (c : Clause) : Maybe Ident = c.op
+
+fun placeOf (c : Clause) : Meta = c.at
 
 fun paramsOf (c : Clause) : [Ident] = c.params
 
@@ -83,14 +92,14 @@ fun effectOf (tc : Tc s) (clauses : [Clause]) : Maybe (Maybe Int) ! { St s | e }
           else
             (match Hm.lookup (V.getOr 0 us 0) (getRef tc.ops) with
              | None ->
-                 let w = T.errorOf tc "NotAnOperation" [] [H.textOf op] in
+                 let w = T.errorAt tc (placeOf c) "NotAnOperation" [] [H.textOf op] in
                  None
              | Just (OpInfo.OpInfo _ eff _ _ _ _) ->
                  (match found with
                   | None -> Just (Just eff)
                   | Just e ->
                       if e != eff then
-                        let w = T.errorOf tc "HandlerMixesEffects" [] [] in
+                        let w = T.errorAt tc (placeOf c) "HandlerMixesEffects" [] [] in
                         None
                       else acc)))
     (Just None)
@@ -123,10 +132,10 @@ fun handleEffect (tc : Tc s) (ctx : Ctx) (body : HirExpr) (clauses : [Clause]) (
         let w = T.errorOf tc "MissingOperations" [] (V.map (\op -> match opInfo tc op with | OpInfo.OpInfo name _ _ _ _ _ -> name) missing) in
         failed ()
       else if M.isSome duplicated then
-        let w = match duplicated with | Just op -> (match opInfo tc op with | OpInfo.OpInfo name _ _ _ _ _ -> T.errorOf tc "DuplicateOperation" [] [name]) | None -> () in
+        let w = match duplicated with | Just op -> (match opInfo tc op with | OpInfo.OpInfo name _ _ _ _ _ -> T.errorAt tc (M.unwrapOr (getRef tc.at) (M.map placeOf (V.get (clausesFor clauses op) 1))) "DuplicateOperation" [] [name]) | None -> () in
         failed ()
       else if M.isSome badParams then
-        let w = match badParams with | Just c -> T.errorOf tc "ClauseParams" [] [M.unwrapOr "return" (M.map H.textOf (opOf c)), show (want c)] | None -> () in
+        let w = match badParams with | Just c -> T.errorAt tc (placeOf c) "ClauseParams" [] [M.unwrapOr "return" (M.map H.textOf (opOf c)), show (want c)] | None -> () in
         failed ()
       else
         -- what is handled: the effect, at the arguments the body has it at
@@ -173,7 +182,7 @@ fun handleEffect (tc : Tc s) (ctx : Ctx) (body : HirExpr) (clauses : [Clause]) (
                         let u2 = leaveBinder tc inner x one usage False in
                         (lam tc ctx (H.textOf x) one bodyTy cBody, u2)
                     | None ->
-                        let w = if subtype tc ctx.lvl bodyTy result then () else T.errorOf tc "Mismatch" [quote tc ctx.lvl result, quote tc ctx.lvl bodyTy] [] in
+                        let w = if subtype tc ctx.lvl bodyTy result then () else T.errorAt tc (metaHirExpr (hirOf tc) body) "Mismatch" [quote tc ctx.lvl result, quote tc ctx.lvl bodyTy] [] in
                         (lam tc ctx "x" one bodyTy (Core.Var 0 "x"), U.none ())
                   in
                   -- `op x k -> ..`, for each operation in turn
@@ -242,8 +251,8 @@ fun opClause (tc : Tc s) (ctx : Ctx) (clauses : [Clause]) (op : Int) (args : [Va
                   if many or unknown then ()
                   else
                     (match Va.asConstant (toPoly tc (force tc kGrade)) with
-                     | Just g -> if G.fits g (M.unwrapOr G.any (G.range G.zero G.one)) then () else T.errorOf tc "ResumesTooOften" [] [opName, effName]
-                     | None -> T.errorOf tc "ResumesTooOften" [] [opName, effName])
+                     | Just g -> if G.fits g (M.unwrapOr G.any (G.range G.zero G.one)) then () else T.errorAt tc (placeOf c) "ResumesTooOften" [] [opName, effName]
+                     | None -> T.errorAt tc (placeOf c) "ResumesTooOften" [] [opName, effName])
                 in
                 let u2 = V.foldl (\u xb -> match xb with | (x, _, _, grade) -> leaveBinder tc innerX x grade u False) u1 xBinders in
                 let withK = lam tc innerX (H.textOf k) kGrade kTy cBody in

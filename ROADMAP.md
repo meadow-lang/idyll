@@ -1377,9 +1377,17 @@ do yet `(unsupported)`, and the tests count those apart.
   they list), and all the rest: every kind of the Rust checker's 76 but
   `TestType` and `NoTestRunner`, which are `idyll test`'s, and front/ has
   no such command yet. The renamer's errors are compared too, each headline as the Rust renamer's
-  (a problem's text is its headline, and its label on a line after). An
-  error's place (front/ places one at the node being checked when it is
-  found) is still to compare.
+  (a problem's text is its headline, and its label on a line after).
+  `the_error_places_agree` holds each error to the same bytes of the
+  program (2026-11-01). front/ had placed an error at the node being
+  elaborated when it was found, and at no place at all in what runs outside
+  an expression; now a declaration's, a definition's, a pattern's, a
+  handler clause's and a renamed `use`'s errors are found at what they are
+  about, and what is found late (a metavariable never solved, a hole, an
+  auto argument, a literal, a postponed mismatch) where it was left. The
+  comparison found two places the Rust compiler had wrong as well: an
+  application stopped short of a closing parenthesis, and an instance ran
+  on over the blank lines after it.
 - [x] **Renaming** (`Rename`: `resolve`, a `pass!` from `Surface` to `Hir`,
   a `lang!`, under a driver for packages and `use`s), for a module after the prelude:
   every program agrees with `idyllic-rename`, binder for binder (the test

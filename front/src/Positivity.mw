@@ -23,6 +23,7 @@ use Idyll.Value (Value, Elim, Row)
 use Idyll.Value as Va
 use Idyll.Tc (Tc)
 use Idyll.Tc as T
+use Lingua.Lang (Meta)
 use Idyll.Eval (force, apply, eval)
 use Idyll.Scc (components)
 use Std.Collections.Vector as V
@@ -34,7 +35,7 @@ use Std.Maybe.Maybe.*
 -- parameter in its fields' contexts, how many parameters, and its fields,
 -- each with the size of the context it was elaborated in, its type and
 -- its constructor's name.
-@pub data Shape = Shape Int Int Int [(Int, Value, String)]
+@pub data Shape = Shape Int Int Int [(Int, Value, String, Meta)]
 
 -- What an occurrence is being looked for: these data types, or a parameter
 -- by its level.
@@ -54,7 +55,7 @@ fun isParam (t : Target) (k : Int) : Bool = match t with | Target.Param p -> p =
             V.concatMap
               (\i ->
                 let u = V.getOr 0 uniques i in
-                if V.any (\f -> match f with | (l, ty, _) -> M.isSome (mentions tc l ty (Target.Datas [u]))) fields then [i] else [])
+                if V.any (\f -> match f with | (l, ty, _, _) -> M.isSome (mentions tc l ty (Target.Datas [u]))) fields then [i] else [])
               (V.range 0 (V.len shapes)))
       shapes
   in
@@ -69,9 +70,9 @@ fun isParam (t : Target) (k : Int) : Bool = match t with | Target.Param p -> p =
                 V.foldl
                   (\b f ->
                     match f with
-                    | (l, ty, ctor) ->
+                    | (l, ty, ctor, at) ->
                         (match negative tc l ty (Target.Datas members) with
-                         | Just (name, why) -> T.errorOf tc "NotStrictlyPositive" [] [name, ctor, why]
+                         | Just (name, why) -> T.errorAt tc at "NotStrictlyPositive" [] [name, ctor, why]
                          | None -> ()))
                   ()
                   fields
@@ -107,7 +108,7 @@ fun demote (tc : Tc s) (group : [Shape]) : Bool ! { St s | e } =
             (\ch p ->
               let now = Hm.getOr [] u (getRef tc.positive) in
               if not (V.getOr False now p) then ch
-              else if V.any (\f -> match f with | (l, ty, _) -> M.isSome (negative tc l ty (Target.Param (at + p)))) fields then
+              else if V.any (\f -> match f with | (l, ty, _, _) -> M.isSome (negative tc l ty (Target.Param (at + p)))) fields then
                 let w = setRef tc.positive (Hm.insert u (V.set now p False) (getRef tc.positive)) in
                 True
               else ch)

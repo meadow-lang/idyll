@@ -410,13 +410,13 @@ fun solveMeta (tc : Tc s) (gamma : Int) (m : Int) (sp : [Elim]) (rhs : Value) : 
           | Renaming.Renaming _ _ _ names ->
               let solution = V.foldr (\n acc -> Core.Lam n acc) body names in
               let value = eval tc (Va.emptyEnv ()) solution in
-              let info = M.unwrapOr (MetaInfo.MetaInfo 0 Origin.Hole None) (M.map T.infoOf (T.meta tc m)) in
+              let info = M.unwrapOr (MetaInfo.MetaInfo (getRef tc.at) Origin.Hole None) (M.map T.infoOf (T.meta tc m)) in
               -- a solution too large, or holding effects resumed more than
               -- once where they may not be, is reported here, and the
               -- metavariable solved with an error
               match violation tc info value with
               | Just (kind, types, words) ->
-                  let w = T.errorOf tc kind types words in
+                  let w = match info with | MetaInfo.MetaInfo at _ _ -> T.errorAt tc at kind types words in
                   let v = T.solve tc m Value.Error in
                   True
               | None ->
@@ -693,13 +693,13 @@ fun intTy () : Value = Value.LitTy Builtin.Int
 
 @test fun aMetavariableIsSolvedByWhatItMeets () =
   let tc = T.new () in
-  let m = T.newMeta tc (MetaInfo.MetaInfo 0 (Origin.Inferred "a test") None) in
+  let m = T.newMeta tc (MetaInfo.MetaInfo (getRef tc.at) (Origin.Inferred "a test") None) in
   let a = assertTrue (unify tc 0 (Va.vmeta m) (intTy ())) "?m =? Int" in
   assertEq (C.shown False (quote tc 0 (Va.vmeta m))) "Int" "and ?m is Int from then on"
 
 @test fun aMetavariableAppliedToVariablesIsAFunctionOfThem () =
   let tc = T.new () in
-  let m = T.newMeta tc (MetaInfo.MetaInfo 0 (Origin.Inferred "a test") None) in
+  let m = T.newMeta tc (MetaInfo.MetaInfo (getRef tc.at) (Origin.Inferred "a test") None) in
   -- ?m x =? (x, Int), in a context of one variable
   let x = Va.vvar 0 "x" in
   let rhs = Value.Pi "_" Icit.Explicit (Va.polyValue (Va.polyConstant G.any)) (Va.polyValue (Va.polyConstant G.any)) x (Closure.Closure (Va.emptyEnv ()) (Core.LitTy Builtin.Int)) in
@@ -708,15 +708,15 @@ fun intTy () : Value = Value.LitTy Builtin.Int
 
 @test fun theOccursCheckRefuses () =
   let tc = T.new () in
-  let m = T.newMeta tc (MetaInfo.MetaInfo 0 (Origin.Inferred "a test") None) in
+  let m = T.newMeta tc (MetaInfo.MetaInfo (getRef tc.at) (Origin.Inferred "a test") None) in
   let arrow = Value.Pi "_" Icit.Explicit (Va.polyValue (Va.polyConstant G.any)) (Va.polyValue (Va.polyConstant G.any)) (Va.vmeta m) (Closure.Closure (Va.emptyEnv ()) (Core.LitTy Builtin.Int)) in
   assertTrue (not (unify tc 0 (Va.vmeta m) arrow)) "?m =? ?m -> Int has no solution"
 
 @test fun twoOpenRowsMeetThroughAFreshTail () =
   let tc = T.new () in
   let kind = Just (MetaTy.MetaTy [] [] (Value.LitTy Builtin.Effect)) in
-  let a1 = T.newMeta tc (MetaInfo.MetaInfo 0 (Origin.Inferred "a row") kind) in
-  let b1 = T.newMeta tc (MetaInfo.MetaInfo 0 (Origin.Inferred "a row") kind) in
+  let a1 = T.newMeta tc (MetaInfo.MetaInfo (getRef tc.at) (Origin.Inferred "a row") kind) in
+  let b1 = T.newMeta tc (MetaInfo.MetaInfo (getRef tc.at) (Origin.Inferred "a row") kind) in
   let log = Value.Opaque 30 "Log" [] in
   let ask = Value.Opaque 31 "Ask" [] in
   let ra = row tc [log, Va.vmeta a1] in

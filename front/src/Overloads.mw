@@ -95,7 +95,7 @@ fun elaborateAs (tc : Tc s) (ctx : Ctx) (t : HirExpr) (head : Int) (u : Int) (wa
       | Just g -> g
       | None -> eval tc ctx.env (freshMeta tc ctx "the type of an overloaded name's use")
     in
-    let m = T.newMeta tc (MetaInfo.MetaInfo 0 (Origin.Inferred "an overloaded name's meaning") None) in
+    let m = T.newMeta tc (MetaInfo.MetaInfo (getRef tc.at) (Origin.Inferred "an overloaded name's meaning") None) in
     let w1 = setRef tc.placeholders (V.pushBack (getRef tc.placeholders) m) in
     let w2 = setRef tc.deferred (V.pushBack (getRef tc.deferred) (m, head, t, ctx, ty)) in
     (Core.Meta m, ty, U.none ())
