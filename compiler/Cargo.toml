@@ -32,3 +32,9 @@ idyllic-span = { path = "idyllic-span" }
 idyllic-typecheck = { path = "idyllic-typecheck" }
 idyllic-world = { path = "idyllic-world" }
 idyllic-cut = { path = "idyllic-cut" }
+
+# Every test binary compiles Std, once a process, and unoptimised that alone
+# took most of each one's time: a third of it at this level, and still with
+# the checks a test build wants.
+[profile.dev]
+opt-level = 1
