@@ -229,6 +229,14 @@ impl Workspace {
         self.members.iter().find(|m| m.name == name)
     }
 
+    /// Whether `entries` are every member: what a build of fewer leaves
+    /// unsaid of the others, which share its lockfile.
+    pub fn is_whole(&self, entries: &[&Path]) -> bool {
+        let dirs: Vec<PathBuf> =
+            entries.iter().map(|e| canonical(&std::path::absolute(e).unwrap_or_else(|_| e.to_path_buf()))).collect();
+        self.members.iter().all(|m| dirs.contains(&m.dir))
+    }
+
     /// Every member's name, for a message.
     pub fn names(&self) -> String {
         self.members
