@@ -126,6 +126,76 @@ fn a_second_build_needs_no_network() {
     assert!(graph.packages.iter().any(|p| p.name == "Greet"), "the dependency is in the graph");
 }
 
+/// A workspace of members `One` and `Two`, each depending on a repository
+/// of its own.
+fn workspace_using(what: &str, one: &Path, two: &Path) -> PathBuf {
+    let dir = scratch(what);
+    std::fs::write(dir.join("Idyll.toml"), "[workspace]\nmembers = [\"one\", \"two\"]\n").unwrap();
+    for (member, name, repo) in [("one", "One", one), ("two", "Two", two)] {
+        let at = dir.join(member);
+        std::fs::create_dir_all(at.join("src")).unwrap();
+        std::fs::write(
+            at.join("Idyll.toml"),
+            format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n\
+                 [dependencies]\nGreet = {{ git = \"{}\", tag = \"v1.0.0\" }}\n",
+                repo.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(at.join("src/Lib.idl"), "use Greet (greeting)\n\n@pub said : String\nsaid = greeting\n").unwrap();
+    }
+    dir
+}
+
+#[test]
+fn a_build_of_one_member_keeps_what_the_others_pinned() {
+    let (Some(a), Some(b)) = (dependency_repo("repo-one", "one"), dependency_repo("repo-two", "two")) else {
+        eprintln!("skipped: no usable git");
+        return;
+    };
+    let ws = workspace_using("ws", &a, &b);
+    let (one, two) = (ws.join("one"), ws.join("two"));
+    let cache = scratch("cache-ws");
+    let discover = |entries: &[&Path]| {
+        let mut resolver = Resolver::for_entry(&ws);
+        resolver.cache = cache.clone();
+        pipeline::discover_with(entries, &mut resolver).expect("the members resolve");
+    };
+    discover(&[&one, &two]);
+    assert_eq!(Lock::load(&ws).packages.len(), 2);
+    // one member, by itself or the other: the other's pin stays
+    discover(&[&one]);
+    assert_eq!(Lock::load(&ws).packages.len(), 2, "what the other member pinned");
+    discover(&[&two]);
+    assert_eq!(Lock::load(&ws).packages.len(), 2, "what the other member pinned");
+    // and a build of everything still drops what nothing names any more
+    std::fs::write(two.join("Idyll.toml"), "[package]\nname = \"Two\"\nversion = \"0.1.0\"\n").unwrap();
+    std::fs::write(two.join("src/Lib.idl"), "@pub said : String\nsaid = \"two\"\n").unwrap();
+    discover(&[&one, &two]);
+    assert_eq!(Lock::load(&ws).packages.len(), 1, "what no manifest names");
+}
+
+#[test]
+fn update_in_one_member_keeps_what_the_others_pinned() {
+    let (Some(a), Some(b)) = (dependency_repo("repo-three", "one"), dependency_repo("repo-four", "two")) else {
+        eprintln!("skipped: no usable git");
+        return;
+    };
+    let ws = workspace_using("ws-update", &a, &b);
+    let home = scratch("home-ws-update");
+    let idyll = |dir: &Path, args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_idyll")).args(args).current_dir(dir).env("IDYLL_HOME", &home).output().expect("idyll runs");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    };
+    idyll(&ws, &["build", "--workspace"]);
+    assert_eq!(Lock::load(&ws).packages.len(), 2);
+    idyll(&ws.join("one"), &["update"]);
+    assert_eq!(Lock::load(&ws).packages.len(), 2, "what the other member pinned");
+    idyll(&ws, &["update"]);
+    assert_eq!(Lock::load(&ws).packages.len(), 2, "a virtual root updates its members");
+}
+
 #[test]
 fn a_locked_build_refuses_a_dependency_that_is_not_pinned() {
     let Some(repo) = dependency_repo("repo3", "unpinned") else {

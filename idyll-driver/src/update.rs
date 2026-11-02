@@ -18,6 +18,7 @@ use crate::git;
 use crate::lock::{self, Lock};
 use crate::package::{PackageGraph, Resolver};
 use crate::status;
+use crate::workspace::Workspace;
 use std::path::{Path, PathBuf};
 
 pub struct Options {
@@ -64,8 +65,13 @@ pub fn run(opts: &Options) -> Result<(), String> {
     resolver.net = git::Net::Allowed;
     resolver.locked = false;
 
-    let entry: &Path = &opts.dir;
-    let graph = PackageGraph::build_all_with(&[entry], &mut resolver)
+    // The lockfile is the whole workspace's, wherever in it this was run.
+    let dirs: Vec<PathBuf> = match Workspace::find(&opts.dir)? {
+        Some(ws) => ws.members.iter().map(|m| m.dir.clone()).collect(),
+        None => vec![opts.dir.clone()],
+    };
+    let entries: Vec<&Path> = dirs.iter().map(PathBuf::as_path).collect();
+    let graph = PackageGraph::build_all_with(&entries, &mut resolver)
         .map_err(|d| format!("{}: {}", d.filename, d.msg))?;
     let _ = graph;
 

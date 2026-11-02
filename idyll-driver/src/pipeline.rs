@@ -224,7 +224,12 @@ pub fn discover_with(
         status::warning(w);
     }
     if !resolver.seen.is_empty() {
-        resolver.lock.retain(&resolver.seen);
+        // What was not seen is only out of date if everything was looked at:
+        // the members left out of a build share this lockfile.
+        let whole = !matches!(entries.first().map(|e| Workspace::find(e)), Some(Ok(Some(ws))) if !ws.is_whole(entries));
+        if whole {
+            resolver.lock.retain(&resolver.seen);
+        }
         if let Err(e) = resolver.lock.save(&lock_dir) {
             status::warning(format!("could not write {}: {e}", crate::lock::FILE));
         }
