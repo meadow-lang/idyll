@@ -26,6 +26,7 @@ use Idyll.Rename (renamePackageWith, PackageNames, Exported, namesExports)
 use Idyll.Hir (Visibility)
 use Idyll.Scc (sccModule)
 use Idyll.Check (checkedAgainst)
+use Idyll.Messages (diagnosticsIn, drawnInFiles, problemAt)
 use Idyll.Compiled (compiledOf)
 use Idyll.Interface (Compiled)
 use Idyll.Link (merged, mergedNames)
@@ -373,19 +374,55 @@ fun compileScc (x : Part Interface PartOut) : Result String PartOut ! { Fs | e }
     | (Err _, _) -> Err "the prelude does not parse"
     | (_, Err why) -> Err why
     | (Ok pre, Ok modules) ->
+        let against = V.append (V.map builtCompiled packages) (V.map builtCompiled siblings) in
+        let refused =
+          \() ->
+            let files = V.map (\m -> (fst m, fileOfModule dir (partSources x) (fst m), snd m)) (rootFirst (dependencyFirst name own)) in
+            Err "${name} does not check:\n${drawnWrong name files pre direct (V.map builtNames siblings) first root visibility against}"
+        in
         (match renamePackageWith name modules pre direct (V.map builtNames siblings) first root visibility with
          | (m, names, problems) ->
-             if not (V.isEmpty problems) then Err (S.join "\n" problems)
+             if not (V.isEmpty problems) then refused ()
              else
                let grouped = sccModule m in
                runSt (\() ->
-                 let c = checkedAgainst grouped root (V.append (V.map builtCompiled packages) (V.map builtCompiled siblings)) in
-                 let errors = St.getRef c.tc.errors in
-                 if not (V.isEmpty errors) then Err ("${name} (${S.join ", " (V.map fst own)}) does not check: ${S.join ", " errors}")
+                 let c = checkedAgainst grouped root against in
+                 if not (V.isEmpty (St.getRef c.tc.errors)) then refused ()
                  else
                    let compiled = compiledOf c grouped names in
                    if compiled.high > first + slot then Err "${name}: a part has more names than its room, ${show slot}"
                    else Ok (PartOut.PartOut (V.pushBack siblings (Built.Built (S.join "+" (V.map fst own)) names compiled)))))
+
+-- What is wrong with a part, drawn in the files it is in: `files`, each its
+-- module's path, the file and the text. Each module is read again after as
+-- many newlines as those before it have bytes, so that each has places of
+-- its own in one source map, as the language server reads a package
+-- (`Session.preparedFor`). Only a part that failed is: a build that goes
+-- well would read Std's modules after each other's bytes for nothing.
+fun drawnWrong name (files : [(String, String, String)]) pre direct siblings first root visibility (against : [Compiled]) : String =
+  let bases = V.foldl (\acc f -> match f with | (_, _, text) -> V.pushBack acc (M.unwrapOr 0 (V.last acc) + S.byteLength text + 1)) [0] files in
+  let at = V.range 0 (V.len files) in
+  let spread =
+    V.concatMap
+      (\i ->
+        match V.get files i with
+        | None -> []
+        | Just (p, _, text) ->
+            (match Surface.parsed (S.repeat "\n" (V.getOr 0 bases i) ++ text) with
+             | Ok prog -> [(if p == "" then [] else S.split "." p, prog)]
+             | Err _ -> []))
+      at
+  in
+  let (m, _, _) = renamePackageWith name spread pre direct siblings first root visibility in
+  let wrong =
+    if not (V.isEmpty m.problemsAt) then V.map (\p -> problemAt (fst p) (snd p)) m.problemsAt
+    else runSt (\() -> let c = checkedAgainst (sccModule m) root against in diagnosticsIn c.tc m.linearBody)
+  in
+  drawnInFiles (V.concatMap (\i -> match V.get files i with | Just (_, file, text) -> [(file, text, V.getOr 0 bases i)] | None -> []) at) wrong
+
+-- The file a module of a package is in, of the part's `sources`.
+fun fileOfModule (dir : String) (sources : [(String, String)]) (path : String) : String =
+  M.unwrapOr path (M.map fst (V.find (\s -> S.join "." (modulePath dir (fst s)) == path) (V.filter (\s -> S.endsWith ".idl" (fst s)) sources)))
 
 -- A package, once its parts are compiled: its parts made one, after every
 -- package it reaches.

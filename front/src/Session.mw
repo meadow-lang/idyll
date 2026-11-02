@@ -12,7 +12,7 @@
 
 use Lingua (database!)
 use Lingua.Green (Green)
-use Lingua.Diagnostic (Diagnostic, errorAt, warningAt, isError, whereAt, withLabel)
+use Lingua.Diagnostic (Diagnostic, errorAt, warningAt, isError, whereAt)
 use Lingua.Lang (Meta, spanMeta)
 use Idyll.Syntax (Idyll, parseIdyll)
 use Idyll.Surface (SurfaceProgram)
@@ -32,7 +32,7 @@ use Idyll.Driver as D
 use Idyll.Format as Fmt
 use Idyll.Lower as Lo
 use Idyll.Parts as Parts
-use Idyll.Messages (diagnosticsIn, placedDiagnostics, said)
+use Idyll.Messages (diagnosticsIn, placedDiagnostics, said, problemAt, shiftedBack, metaBack)
 use Std.St (runSt)
 use Std.St as St
 use Std.Collections.Vector as V
@@ -79,10 +79,6 @@ database! {
 
 -- What renaming found wrong, at the name it was resolving: its headline,
 -- and the label on a line after it, if it has one.
-fun problemAt (at : Meta) (why : String) : Diagnostic =
-  match S.indexOf "\n" why with
-  | Just i -> withLabel at (S.drop why (i + 1)) (errorAt at (S.slice why 0 i))
-  | None -> errorAt at why
 
 -- --- what the queries do ----------------------------------------------------------
 
@@ -250,15 +246,6 @@ fun packagePrepared (text : String) (pc : PackageContext) (built : () -> [Depend
             (match Rename.renamePackageWith pc.name progs pre (V.map (\d -> match d with | (n, ns, _) -> (n, ns)) direct) [] (highest deps) True vis with
              | (m, _, _) ->
                  Just (Ok (m, V.map (\d -> match d with | (_, _, cp) -> cp) deps, V.map (\p -> match p with | (at, why) -> problemAt at why) m.problemsAt), base))
-
--- A diagnostic `by` bytes further back.
-fun shiftedBack (d : Diagnostic) (by : Int) : Diagnostic =
-  match d with
-  | Diagnostic.Diagnostic s m w ls ns -> Diagnostic.Diagnostic s m (metaBack w by) (V.map (\l -> (metaBack (fst l) by, snd l)) ls) ns
-
-fun metaBack (m : Meta) (by : Int) : Meta =
-  match m with
-  | Meta.Meta a b -> if a >= by then Meta.Meta (a - by) (b - by) else Meta.Meta 0 0
 
 -- What tactic mode (`Tactic`) needs of the goal `?name`: the type wanted
 -- there; its definition's variables, each its name and type; and, for each

@@ -1474,8 +1474,10 @@ do yet `(unsupported)`, and the tests count those apart.
   `idyll.lock` in the Rust driver's format (the Rust driver builds `--locked`
   from front/'s), `--offline`, `--locked`, `Idyll update [--dry-run]`; Std
   written under `~/.idyll/std/<hash>` (`front_builds_with_a_git_dependency`).
-  Left: profiles and options as `make!` has them, workspaces, error messages drawn where
-  they are (the checker's errors are kinds only). (Lingua e15e7f9, Cut
+  A build draws what is wrong in the files it is in, the renamer's and the
+  checker's errors alike (2026-11-02,
+  `front_draws_what_is_wrong_in_the_file_it_is_in`).
+  Left: profiles and options as `make!` has them, workspaces. (Lingua e15e7f9, Cut
   071b64b: a part's room of uniques is its first module's place among the
   package's sources, `partUnitPaths`.)
 - [x] front/'s own REPL, `Idyll repl`, a `repl!` (see phase 6), and its

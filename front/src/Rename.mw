@@ -247,6 +247,10 @@ fun bindName (r : Rn s) (name : String) =
     let v = onTop r (\s -> Hm.insert name [u] s) in
     Ident.Ident [u] name
 
+-- The same for a name as it is written: a duplicate is found there.
+fun bindWritten (r : Rn s) (a : SurfaceArena) (x : SurfaceName) =
+  atNode r (metaSurfaceName a x) (\u -> bindName r (surfaceNameText a x))
+
 -- What `name` may stand for here: the innermost scope that has it. The
 -- module's own names and what its `use`s bring are one layer.
 fun lookup (r : Rn s) (name : String) : [Int] ! { St s | e } =
@@ -1134,7 +1138,7 @@ fun bindDatas (r : Rn s) (a : SurfaceArena) (datas : [SurfaceData]) =
   V.map
     (\d ->
       let dn = dataName a d in
-      let name = bindName r dn in
+      let name = bindWritten r a (surfaceDataName a d) in
       let cs =
         V.foldl
           (\acc c ->
@@ -1421,15 +1425,15 @@ fun bindProgram (r : Rn s) (prog : Program) (decls : [SurfaceDecl]) : Bound ! { 
   let effectNames =
     V.map
       (\e ->
-        let name = bindName r (surfaceNameText a (surfaceEffectName a e)) in
-        let ops = V.map (\o -> bindName r (surfaceNameText a (surfaceOpSigName a o))) (surfaceEffectOps a e) in
+        let name = bindWritten r a (surfaceEffectName a e) in
+        let ops = V.map (\o -> bindWritten r a (surfaceOpSigName a o)) (surfaceEffectOps a e) in
         let w = setRef r.effectOps (Hm.insert (H.uniqueOf name) (V.map (\o -> (H.textOf o, H.uniqueOf o)) ops) (getRef r.effectOps)) in
         (name, ops))
       prog.effects
   in
   let dataNames = bindDatas r a prog.datas in
   let natives =
-    V.concatMap (\d -> match (a, d) with | SurfaceDeclNative x ty -> [(bindName r (surfaceNameText a x), ty, metaSurfaceDecl a d)] | _ -> []) decls
+    V.concatMap (\d -> match (a, d) with | SurfaceDeclNative x ty -> [(bindWritten r a x, ty, metaSurfaceDecl a d)] | _ -> []) decls
   in
   let defs = bindDecls a r decls in
   -- a record's fields, by their projections, which the parser named `Point.x`
