@@ -36,3 +36,9 @@ rustyline = { version = "18.0.1", features = ["derive", "custom-bindings"] }
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 # Fuzzy matching of names, as Helix's pickers (and Meadow's finder) do.
 nucleo-matcher = "0.3"
+
+# Every test binary checks the prelude, and unoptimised that alone took most
+# of each one's time: a third of it at this level, and still with the checks
+# a test build wants.
+[profile.dev]
+opt-level = 1
