@@ -235,7 +235,7 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
   let w5 = closeRows tc in
   let wl1 = checkLinearWants tc in
   let named = V.map (\gp -> match gp with | (g, p) -> (M.map (\b -> identOf h (hirBindName h b)) (V.head (bindsOf h g)), p)) (V.zip groups owed) in
-  let wl2 = linearTopLevel tc ctx named (getRef bodyUses) in
+  let wl2 = linearTopLevel tc ctx bindPlaces named (getRef bodyUses) in
   let w6 = reportUnsolved tc in
   -- the unique of each top-level `let`: each group that made one
   let toplevel =

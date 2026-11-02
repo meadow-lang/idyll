@@ -696,6 +696,34 @@ fn front_builds_and_runs_a_package_with_a_dependency() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// What is wrong with a package is drawn in the file it is in, also where
+/// the modules that import each other are checked as one part, and the
+/// places of the second are not those of the first.
+#[test]
+fn front_draws_what_is_wrong_in_the_file_it_is_in() {
+    let Ok(exe) = front() else {
+        eprintln!("no front/ to build with");
+        return;
+    };
+    let root = std::env::temp_dir().join(format!("idyll-front-drawn-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("src")).expect("a directory");
+    std::fs::write(root.join("Idyll.toml"), "[package]\nname = \"Cycle\"\nversion = \"0.1.0\"\n").unwrap();
+    std::fs::write(root.join("src/Main.idl"), "use Ping (ping)\n\nmain : () -> () ! Eff\nmain () = putStrLn \"${ping}\"\n").unwrap();
+    std::fs::write(root.join("src/Ping.idl"), "use Pong (pong)\n\n@pub\nping : Int\nping = True\n").unwrap();
+    std::fs::write(root.join("src/Pong.idl"), "use Ping (ping)\n\n@pub\npong : Int\npong = \"no\"\n").unwrap();
+    let (said, ok) = front_tool(&exe, &root, &["build"]);
+    assert!(!ok && said.contains("Cycle@0.1.0 does not check:"), "{said}");
+    for (place, line) in [("Ping.idl:5:8", " 5 │ ping = True"), ("Pong.idl:5:8", " 5 │ pong = \"no\"")] {
+        assert!(said.contains(place) && said.contains(line), "{said}");
+    }
+    assert!(said.contains("type mismatch") && said.contains("expected Int"), "{said}");
+    // and so is what the renamer finds
+    std::fs::write(root.join("src/Pong.idl"), "use Ping (ping)\n\n@pub\npong : Int\npong = missing\n").unwrap();
+    let (said, ok) = front_tool(&exe, &root, &["build"]);
+    assert!(!ok && said.contains("Pong.idl:5:8") && said.contains(" 5 │ pong = missing"), "{said}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Two packages that do not depend on each other, compiled apart, with one
 /// that uses both: what each defines must stay its own. They once named their
 /// things from the same place, and `left + right` read `right` twice.

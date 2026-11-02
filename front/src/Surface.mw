@@ -1669,7 +1669,7 @@ fun effectDecl out (cx : Cx) (d : IdyllEffectDecl) =
               | Just a -> if textOf (idyllOpAttrName a) != "many" then bad (syntaxIdyllOpAttr a) "an operation may be @many" else ()
               | None -> ()
             in
-            newSurfaceOpSig out om (nameAt out om (textOf (idyllOpSigName o))) (termOr out cx om (idyllOpSigTy o)) (M.isSome (idyllOpSigAttr o)))
+            newSurfaceOpSig out om (nameAt out (match idyllOpSigName o with | Just n -> metaOf n | None -> om) (textOf (idyllOpSigName o))) (termOr out cx om (idyllOpSigTy o)) (M.isSome (idyllOpSigAttr o)))
           (separated bat entries True False)
       in
       Item.Effect (newSurfaceEffect out m name (V.map (typeParam out cx) (idyllEffectDeclParams d)) ops (visOf cx))

@@ -590,7 +590,7 @@ fun linearLets (tc : Tc s) (ctx : Ctx) (from : Int) (usage : Usage) (pending : [
 -- expression, or a `main`, which `uses` is the uses of) each is used at
 -- most once, what a definition uses being used once per use of it; in a
 -- library, which any module may use as often as it likes, there is none.
-@pub fun linearTopLevel (tc : Tc s) (ctx : Ctx) (groups : [(Maybe Ident, Pending)]) (uses : Maybe Usage) : () ! { St s | e } =
+@pub fun linearTopLevel (tc : Tc s) (ctx : Ctx) (places : Hm.HashMap Int Lang.Meta) (groups : [(Maybe Ident, Pending)]) (uses : Maybe Usage) : () ! { St s | e } =
   match uses with
   | None ->
       V.foldl
@@ -598,7 +598,7 @@ fun linearLets (tc : Tc s) (ctx : Ctx) (from : Int) (usage : Usage) (pending : [
           match g with
           | (Just x, Pending.NonRec _ _) ->
               (match X.lookup ctx x with
-               | Just (_, ty, _) -> if isLinear tc ty then T.errorOf tc "LinearTopLevel" [quote tc ctx.lvl ty] [H.textOf x] else acc
+               | Just (_, ty, _) -> if isLinear tc ty then T.errorAt tc (Hm.getOr Lang.noMeta (H.uniqueOf x) places) "LinearTopLevel" [quote tc ctx.lvl ty] [H.textOf x] else acc
                | None -> acc)
           | _ -> acc)
         ()

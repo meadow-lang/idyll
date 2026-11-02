@@ -18,13 +18,49 @@ use Idyll.Core as C
 use Idyll.Core (Core)
 use Idyll.Grade as G
 use Idyll.Eval (quote)
-use Lingua.Diagnostic (Diagnostic, errorAt, warningAt, withLabel, withNote)
-use Lingua.Lang (Meta)
+use Lingua.Diagnostic (Diagnostic, errorAt, warningAt, withLabel, withNote, whereAt, message, renderAll)
+use Lingua.Lang (Meta, metaStart)
 use Std.St (StRef, getRef)
 use Std.Collections.Vector as V
 use Std.String as S
 use Std.Maybe as M
 use Std.Maybe.Maybe.*
+
+-- What the renamer found at a place, as a diagnostic: its first line the
+-- headline, any more the label.
+@pub fun problemAt (at : Meta) (why : String) : Diagnostic =
+  match S.indexOf "\n" why with
+  | Just i -> withLabel at (S.drop why (i + 1)) (errorAt at (S.slice why 0 i))
+  | None -> errorAt at why
+
+-- A diagnostic `by` bytes further back.
+@pub fun shiftedBack (d : Diagnostic) (by : Int) : Diagnostic =
+  match d with
+  | Diagnostic.Diagnostic s m w ls ns -> Diagnostic.Diagnostic s m (metaBack w by) (V.map (\l -> (metaBack (fst l) by, snd l)) ls) ns
+
+@pub fun metaBack (m : Meta) (by : Int) : Meta =
+  match m with
+  | Meta.Meta a b -> if a >= by then Meta.Meta (a - by) (b - by) else Meta.Meta 0 0
+
+-- What is wrong with a package, drawn in the files it is in: `files` are
+-- each a name, a text and the byte its places start at, as one source map
+-- has them. A label in another file than its diagnostic's is left out, and
+-- a diagnostic in none of them is said in words.
+@pub fun drawnInFiles (files : [(String, String, Int)]) (ds : [Diagnostic]) : String =
+  let inFile = \f at -> match f with | (_, text, start) -> metaStart at >= start and metaStart at <= start + S.byteLength text in
+  let drawn =
+    \f ->
+      match f with
+      | (name, text, start) ->
+          let mine = V.filter (\d -> inFile f (whereAt d)) ds in
+          renderAll name text (V.map (\d -> shiftedBack (labelsIn (inFile f) d) start) mine)
+  in
+  let nowhere = V.filter (\d -> not (V.any (\f -> inFile f (whereAt d)) files)) ds in
+  S.join "" (V.append (V.map drawn files) (V.map (\d -> "${message d}\n") nowhere))
+
+fun labelsIn (inside : Meta -> Bool) (d : Diagnostic) : Diagnostic =
+  match d with
+  | Diagnostic.Diagnostic s m w ls ns -> Diagnostic.Diagnostic s m w (V.filter (\l -> inside (fst l)) ls) ns
 
 -- The checker's errors, each once where it was found, in words; a goal,
 -- and a hole filled in, are warnings, since what is around them can still

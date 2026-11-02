@@ -1467,3 +1467,30 @@ addAsk n = n + ask ()
 
 both : Int -> Int ! {Ask, Choose}
 both n = compose pick addAsk n
+%%%
+data T = A
+data T = B
+%%%
+effect E where
+  go : Unit -> Int
+effect E where
+  go2 : Unit -> Int
+%%%
+effect E where
+  go : Unit -> Int
+  go : Unit -> Int
+%%%
+@native
+thing : Int
+
+@native
+thing : Int
+%%%
+-- a library's linear definition, which any module could use twice
+use Std.Collections.MArray (MArray, new)
+
+x : Int
+x = 1
+
+grid : MArray Int
+grid = new 1 0

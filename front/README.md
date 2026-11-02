@@ -1073,6 +1073,14 @@ argument or literal is reported), and so do a hole (`HoleAt`) and a
 postponed mismatch (`Postponed`). `the_error_places_agree` holds each to the
 Rust checker's bytes.
 
+A build draws what is wrong in the files it is in, as `Idyll errors` draws a
+syntax error (`Driver.drawnWrong`). A part may be several modules, and each
+module's places start from 0, so a part that failed is read again with each
+module after as many newlines as those before it have bytes, which gives each
+places of its own in one source map, and `Messages.drawnInFiles` draws each
+diagnostic against the file its place is in. A build that goes well does none
+of this.
+
 The checker keeps the node it is checking (`Tc.at`, set around each node by
 `Elab.elaborate`) and each error with it (`Tc.placed`), beside the kinds
 the differential tests compare. The renamer does the same around the names

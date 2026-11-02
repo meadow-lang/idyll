@@ -15,7 +15,7 @@ use Lingua.Repl (Reply, Hit, hitName)
 use Lingua.Diagnostic (Diagnostic, renderAll, whereAt, isError)
 use Lingua.Lang (Meta)
 use Idyll.Session
-use Idyll.Messages (diagnosticsIn)
+use Idyll.Messages (diagnosticsIn, shiftedBack)
 use Idyll.Find as Find
 use Idyll.Prove as Prove
 use Idyll.Tactic as Tactic
@@ -166,16 +166,7 @@ def fuel = 5000000
 fun drawn (program : String) (earlier : Int) (ds : [Diagnostic]) : String =
   let entry = S.slice program earlier (S.byteLength program) in
   let mine = V.filter (\d -> match whereAt d with | Meta.Meta a b -> a >= earlier or (a == 0 and b == 0)) ds in
-  renderAll "entry" entry (V.map (\d -> shifted d earlier) mine)
-
--- A diagnostic `by` bytes further back.
-fun shifted (d : Diagnostic) (by : Int) : Diagnostic =
-  match d with
-  | Diagnostic.Diagnostic s m w ls ns -> Diagnostic.Diagnostic s m (back w by) (V.map (\l -> (back (fst l) by, snd l)) ls) ns
-
-fun back (m : Meta) (by : Int) : Meta =
-  match m with
-  | Meta.Meta a b -> if a >= by then Meta.Meta (a - by) (b - by) else Meta.Meta 0 0
+  renderAll "entry" entry (V.map (\d -> shiftedBack d earlier) mine)
 
 -- --- the rest of what the prompt asks ---------------------------------------------
 
