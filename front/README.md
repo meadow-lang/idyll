@@ -71,7 +71,19 @@ reading it); the
 prelude is in the program, `compiler/idyllic/src/prelude.idl`, the Rust
 compiler's own. The link puts the program together from the compiled packages
 (`Link.linked`), lowers it to Cut, its `main` the entry, into
-`target/link/program.cut`, and `run` hands that to `meadow cut`.
+`target/<profile>/link/program.cut`, and `run` hands that to `meadow cut`.
+
+A build is made as a profile, `make!`'s `options` and `profile`s: debug runs
+on Glade and release on Silo, `backend = "silo"` in the root package's
+`[profile.<name>]` says otherwise, and `--backend`, `--silo` and `--glade`
+say otherwise over that. The backend is an option `for link`: changing it
+compiles nothing. Each profile keeps its build in a directory of its own, so
+going from one to the other and back compiles nothing the second time. On
+Silo the link builds the executable too, into `link/bin` (`executableBuilt`),
+Silo's own objects kept beside it, and `run` runs what is there, or else the
+Cut. A backend no one named gives way if there is no `meadow` to build with.
+A package with nothing to run is only checked: its build makes nothing, and
+running it is the error.
 
 Inside a package the unit of work is a *part*: the modules that import each
 other, in a circle or not, as `idyllic::parts` has them in the Rust

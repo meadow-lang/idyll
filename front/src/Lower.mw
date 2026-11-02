@@ -334,6 +334,10 @@ fun writeProgram (l : L s) (entry : Maybe Sym) (answer : Bool) (datas : [CutDecl
       | Ok text -> text
       | Err whys -> "(not lowered: " ++ S.join "; " whys ++ ")")
 
+-- Why a package that only declares has no Cut: what a library is, and no
+-- failure of a build's.
+@pub def nothingToRun : String = "there is no program: it only declares"
+
 -- --- small things ----------------------------------------------------------------------
 
 fun vecOf (m : Maybe a) : [a] =
@@ -482,7 +486,7 @@ fun opInfo (l : L s) (u : Int) : Maybe OpInfo ! { St s | e } = Hm.lookup u (getR
   let a = elaboratedArena ready in
   let root = elaboratedRoot ready in
   match elaboratedModuleBody a root with
-  | None -> Err ["there is no program: it only declares"]
+  | None -> Err [nothingToRun]
   | Just program ->
       let recs =
         V.foldl
