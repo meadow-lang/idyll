@@ -1,0 +1,22 @@
+use Std.Console (println)
+
+data Cells = End | Cell Int Cells
+
+use Cells.*
+
+fun build (n : Int) (acc : Cells) : Cells = if n == 0 then acc else build (n - 1) (Cell n acc)
+
+fun sum (xs : Cells) (acc : Int) : Int =
+  match xs with
+  | End -> acc
+  | Cell y ys -> sum ys (acc + y)
+
+fun mapRev (f : Int -> Int) (xs : Cells) (acc : Cells) : Cells =
+  match xs with
+  | End -> acc
+  | Cell y ys -> mapRev f ys (Cell (f y) acc)
+
+fun rounds (r : Int) (total : Int) : Int =
+  if r == 0 then total else rounds (r - 1) (total + sum (mapRev (\x -> x + r) (build 1000000 End) End) 0)
+
+fun main () = println (rounds 20 0)

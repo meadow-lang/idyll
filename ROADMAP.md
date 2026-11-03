@@ -771,7 +771,7 @@ and a `Map` built with one `Ord` is rejected when used with another.
 
 ## Phase 5: Standard library
 
-- [ ] **Port `lib/Std` in dependency order**: `Bool`, `Maybe`, `Either`,
+- [~] **Port `lib/Std` in dependency order**: `Bool`, `Maybe`, `Either`,
   `Result`, `Tuple`, `Function`, `Ordering`, `Cmp` (done, without traits:
   comparisons are passed along); then `String` and `Char` (done, as
   Meadow's, on the prelude's string natives and a builtin `Char`), `Bytes`
@@ -1286,7 +1286,7 @@ Work split: each session changes only its own repository.
     back end leaves out the top-level and recursive definitions a program
     never uses (`idyllic-typecheck/src/prune.rs`), so the prelude costs
     nothing when it isn't called.
-- [~] **Step 4**: a shared corpus, on which the reference interpreter,
+- [x] **Step 4**: a shared corpus, on which the reference interpreter,
   Glade and Silo agree in CI. `cut-corpus/` is it (241 programs: 216 pure,
   6 with the world's effects, 19 with handlers), its answers the reference
   interpreter's (`idyll-eval/examples/cut_corpus.rs`). Glade and Silo agree
@@ -1294,7 +1294,8 @@ Work split: each session changes only its own repository.
   since 2026-10-18, after Meadow's Cut lowering, its handler fix PR 11, and
   Idyll's own fixes to representation variables and array elements).
   `idyll-eval/tests/spec.rs` holds Glade to the interpreter on the whole
-  test corpus and tutorial too. Left: running it in CI.
+  test corpus and tutorial too. Both run in CI: the corpus in a job of its
+  own on Glade and Silo, and `spec.rs` in the reference interpreter's.
 - [x] **Step 5**: Idyll's build tool on Glade (debug) and Silo (release),
   done 2026-10-19. Every program is lowered to Cut and handed to `meadow
   cut` (`compiler/idyllic/src/meadow.rs`): the REPL, `idyll run` and the
@@ -1309,7 +1310,9 @@ Work split: each session changes only its own repository.
   array was Cut's persistent array, which a write copies, and is Meadow's
   `st` array now, written in place; and, in Meadow, `Process.argv` gave a
   vector to a program without vector roles, and a val that performs was
-  never run unless read. Left: the benchmarks, rerun on Silo.
+  never run unless read. The benchmarks, rerun on Silo (2026-11-03,
+  `bench/README.md`): Idyll runs a little ahead of Meadow on Silo, and
+  `fib` in 1.6× C's time, where the LLVM back end had it in C's.
 - [ ] **Step 6**: calling between languages.
 - [~] **Arrays**: `Array a` and `#[a; b]` literals are done (see phase 1),
   natively and in Cut. Left: array patterns, and an `Array n a` sized in
