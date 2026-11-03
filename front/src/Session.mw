@@ -420,10 +420,11 @@ fun kindOf (ty : String) : String =
   else if S.contains "->" ty then "function"
   else "constant"
 
--- Names to complete with at byte `at`: the program's own and the
--- prelude's (Std's, if it names Std), each with its type. The line being
--- written seldom parses yet, so if the program does not, it is checked
--- without that line; and failing that, the prelude's alone.
+-- Names to complete with at byte `at`: the variables in scope there, then
+-- the program's own and the prelude's (Std's, if it names Std), each with
+-- its type. The line being written seldom parses yet, so if the program
+-- does not, it is checked without that line; and failing that, the
+-- prelude's alone.
 @pub fun completionsIn (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (at : Int) : [(String, String)] ! e =
   completionsInPackage text None prelude std at
 
@@ -438,14 +439,46 @@ fun kindOf (ty : String) : String =
          | d -> d)
     | d -> d
   in
+  -- (the innermost of two variables of a name is the one in scope)
+  let locals = V.foldl (\acc l -> if V.any (\x -> fst x == fst l) acc then acc else V.pushBack acc l) [] (localsAt text package prelude std at) in
   match declared with
   | (ds, _) ->
       V.foldl
         (\acc d ->
           match d with
           | (_, name, ty) -> if not (written name) or V.any (\x -> fst x == name) acc then acc else V.pushBack acc (name, ty))
-        []
+        locals
         ds
+
+-- The variables in scope at byte `at`, innermost first, each with its
+-- type: the context of a goal put where the name being written is, so
+-- that `n + na` is checked as `n + ?completing` (and a line that stops
+-- where a name should be parses). None after a `.`, where what is wanted
+-- is what a module gives.
+fun localsAt (text : String) (package : Maybe (PackageContext, () -> [Dependency] ! e)) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (at : Int) : [(String, String)] ! e =
+  let start = wordStart text at in
+  if start > 0 and byteOf text (start - 1) == 46 then []
+  else
+    let asked = S.slice text 0 start ++ "?completing" ++ S.slice text at (S.byteLength text) in
+    match fst (preparedFor asked package prelude std) with
+    | Ok (m, deps, _) ->
+        runSt (\() ->
+          let c = checkedAgainst (sccModule m) False deps in
+          match goalNamed c.tc "completing" with
+          | Just (_, locals) -> V.reverse (V.map (\l -> match l with | (x, t) -> (x, C.shown m.linearBody t)) locals)
+          | None -> [])
+    | Err _ -> []
+
+-- Where the name that ends at byte `at` starts.
+fun wordStart (text : String) (at : Int) : Int =
+  if at > 0 and isNameByte (byteOf text (at - 1)) then wordStart text (at - 1) else at
+
+fun isNameByte (b : Int) : Bool = (b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b == 95 or b == 39
+
+fun byteOf (s : String) (i : Int) : Int =
+  match S.byteAt s i with
+  | Just b -> toInt b
+  | None -> 0 - 1
 
 -- Whether a program could write the name: not the checker's own
 -- (`#super0`), nor one with nothing after its type's name.

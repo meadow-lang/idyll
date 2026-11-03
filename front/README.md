@@ -1068,8 +1068,12 @@ So far the server:
 - goes to a name's definition (where it is first bound), and finds every
   place it is named, from every name of the renamed program with its place
   (`Rename.occurrences`, a `pass!` fold);
-- completes names: the program's and the prelude's, with their types. A
-  program that does not parse is checked without the line being written;
+- completes names: the variables in scope at the cursor, then the
+  program's and the prelude's, with their types. The variables are what a
+  goal there would list: the name being written is made a goal,
+  `?completing`, and the program checked (so `n + na` is `n + ?completing`,
+  and a line that stops where a name should be parses). A program that
+  does not parse is checked without the line being written;
 - gives an outline of the program's own declarations;
 - colours a file from its tree;
 - formats a file as `Idyll fmt` does.

@@ -231,6 +231,13 @@ fun listed (field : String) (reply : Maybe Json) : [Json] =
   let labels = listed "label" (V.get said 1) in
   assertEq (V.elem (J.jString "double") labels, V.elem (J.jString "putStrLn") labels) (True, True) "double, and the prelude's putStrLn"
 
+@test fun completionOffersTheVariablesInScope () =
+  let begun = told [opening "file:///a.idl" "f : Int -> Int\nf count = let total = count + 1 in to\n", asked 1 "textDocument/completion" "file:///a.idl" 1 37] serveServer in
+  let labels = listed "label" (V.get begun 1) in
+  let a = assertEq (V.elem (J.jString "count") labels, V.elem (J.jString "total") labels) (True, True) "f's parameter, and the let's" in
+  let unfinished = told [opening "file:///a.idl" "f : Int -> Int\nf count = count + \n", asked 1 "textDocument/completion" "file:///a.idl" 1 18] serveServer in
+  assertEq (V.elem (J.jString "count") (listed "label" (V.get unfinished 1))) True "where the line stops"
+
 @test fun theOutlineIsTheProgramsOwnDeclarations () =
   let said = told [opening "file:///a.idl" "double : Int -> Int\ndouble n = n + n\n", asking 1 "textDocument/documentSymbol" (inFile "file:///a.idl")] serveServer in
   assertEq (listed "name" (V.get said 1)) [J.jString "double"] "double, and nothing of the prelude's"

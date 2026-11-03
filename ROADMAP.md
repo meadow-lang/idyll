@@ -917,7 +917,8 @@ accepted when what it does fits within what resuming was found to.
     repository already fetched;
   - says a term's type on hover;
   - goes to a name's definition, and finds every place it is named;
-  - completes names, the program's and the prelude's, with their types;
+  - completes names, the variables in scope at the cursor and the
+    program's and the prelude's, with their types;
   - gives an outline of the program's own declarations;
   - colours a file from its tree, and formats it.
 
@@ -925,8 +926,7 @@ accepted when what it does fits within what resuming was found to.
   For that, front/'s renamer, checker and lowering keep their state in `St`
   cells, since a query may perform nothing but asking other queries. Still
   to come:
-  - completion of the names in scope where the cursor is (locals, a
-    module's after its alias), not only the program's top level;
+  - completion after a module's alias (`L.`) of what that module gives;
   - hover, definitions and completion kept in the session, rather than
     the file checked again for each.
 - [~] **The VS Code extension** (`editors/vscode`), as Meadow's is: a
