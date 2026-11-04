@@ -935,9 +935,11 @@ accepted when what it does fits within what resuming was found to.
 - [~] **The VS Code extension** (`editors/vscode`), as Meadow's is: a
   client that starts front/'s `Idyll lsp`, with a TextMate grammar and
   indentation rules for `.idl` that work without it. `build.sh` packages
-  it (`idyll-<version>.vsix`). Still to come: finding the server without
-  `idyll.server.path` (Meadow's extension searches its install
-  directories), and a release that ships the `.vsix`.
+  it (`idyll-<version>.vsix`). It finds the server as Meadow's finds
+  `meadow` (`src/resolve.js`, 2026-11-03): `PATH`, then `$IDYLL_HOME/bin`
+  and `~/.idyll/bin`, then, in a trusted workspace, a checkout's front/
+  build, each asked whether it serves before it is chosen. Still to come: a
+  release that ships the `.vsix`.
 - [x] **Named holes, for type-driven development** (Chris, 2026-10-16), as
   Idris and Agda have them. Done, in both compilers (the differentials
   agree on the corpus's goals):
