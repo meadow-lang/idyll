@@ -43,7 +43,7 @@
 				"idyll.server.path": {
 					"type": "string",
 					"default": "Idyll",
-					"description": "Path to front/'s executable, `Idyll` (built by `meadow build --release` in front/, at front/target/release/native/silo/Idyll); the extension runs `Idyll lsp`. Left at `Idyll`, it is looked for on your PATH."
+					"description": "Path to front/'s executable, `Idyll` (built by `meadow build --release` in front/, at front/target/release/native/silo/Idyll); the extension runs `Idyll lsp`. Left at `Idyll`, it is looked for on your PATH, in $IDYLL_HOME/bin and ~/.idyll/bin, and, in a trusted workspace, at front/target/release/native/silo/Idyll in an open folder."
 				},
 				"idyll.trace.server": {
 					"type": "string",
@@ -66,6 +66,9 @@
 	},
 	"dependencies": {
 		"vscode-languageclient": "^9.0.1"
+	},
+	"scripts": {
+		"test": "node --test test/resolve.test.js"
 	},
 	"devDependencies": {
 		"@vscode/vsce": "2.32.0"

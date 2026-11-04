@@ -12,16 +12,23 @@ Syntax highlighting for Idyll (`.idl`), and, from front/'s language server
 
 ## The server
 
-The extension runs `Idyll lsp`. Build front/ natively and point the
-extension at the executable:
+The extension runs `Idyll lsp`. Build front/ natively:
 
 ```sh
 cd front
 meadow build --release        # front/target/release/native/silo/Idyll
 ```
 
-then set `idyll.server.path` to that file, or put it on your `PATH`.
-Without it, the extension highlights and does nothing else.
+The extension looks for it, as Meadow's looks for `meadow`
+(`src/resolve.js`): on your `PATH` first, then in `$IDYLL_HOME/bin` and
+`~/.idyll/bin`, then, in a workspace you trust, a checkout's own build at
+`front/target/release/native/silo/Idyll` in a folder you opened. Each it
+finds is asked whether it serves (`Idyll lsp --stdio --help`) before it is
+chosen, so the Rust driver's `idyll`, which has no `lsp`, is passed over.
+`idyll.server.path` names one instead. Without one, the extension
+highlights and does nothing else.
+
+`npm test` runs the search's tests (`node --test`, no VS Code needed).
 
 ## Building the extension
 

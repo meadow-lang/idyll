@@ -137,10 +137,19 @@ jobs:
       - name: Silo
         run: python3 scripts/cut-corpus.py cut-corpus silo
 
+  editor:
+    name: The VS Code extension
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - working-directory: editors/vscode
+        run: node --test test/resolve.test.js
+
   check:
     name: check
     if: always()
-    needs: [front, compiler, differentials, front-checker, front-builds, driver, eval, cut-corpus]
+    needs: [front, compiler, differentials, front-checker, front-builds, driver, eval, cut-corpus, editor]
     runs-on: ubuntu-latest
     steps:
       - name: Every job passed
