@@ -258,6 +258,9 @@ fun listed (field : String) (reply : Maybe Json) : [Json] =
   let j = assertEq (firstAt wrong) (Just (J.jInt 3, J.jInt 4)) "where it is in Main.idl" in
   let hovered = told [opening uri "use Util (next)\n\nx : Int\nx = next 2\n", hovering 1 uri 3 4] serveServer in
   let k = assertEq (M.andThen (J.path ["result", "contents", "value"]) (V.get hovered 1)) (Just (J.jString "```idyll\n(_ : [1] Int) -> Int\n```")) "Util's next, on hover" in
+  -- (Std, named by this text alone: what it depends on is compiled after it)
+  let withStd = told [opening uri "use Util (next)\nuse Std.Maybe (withDefault)\n\nx : Int\nx = withDefault (next 2) Nothing\n"] serveServer in
+  let l = assertEq (published withStd) (Just 0) "Std and Util both" in
   assertEq (M.map (\n -> n > 0) (published reached)) (Just True) "Base is not one of its own dependencies"
 
 -- A package on disk, its root module using another: checked alone, `Helper`
