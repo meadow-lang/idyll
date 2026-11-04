@@ -1129,8 +1129,11 @@ what the Rust REPL does (`pipeline::Session`):
 - an entry that ends in a signature waits for its equations.
 
 Tab completes names as the server does, Ctrl-F finds what has been
-declared, and `:type`, `:reset`, `:declarations`, `:goals`, `:prove`,
-`:tactic`, `:by`, `:qed` and `:abandon` are its commands.
+declared, and `:type`, `:reset`, `:declarations`, `:module` (`:browse`),
+`:find`, `:time`, `:goals`, `:prove`, `:tactic`, `:by`, `:qed` and
+`:abandon` are its commands. `:module`, `:find` and `:time EXPR` say what
+the Rust REPL's say: each declaration with its type; the finder's first
+dozen hits; and the entry, then how long it took.
 
 A goal, `?name`, is a term of its own from the lexer on (`Lex`'s `Goal`,
 `Syntax`'s `GoalA`, `Surface`'s and `Hir`'s `Goal`):

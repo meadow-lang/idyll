@@ -32,6 +32,7 @@ use Std.Fs (writeString)
 use Std.Path as Path
 use Std.St as St
 use Std.Exn (toResult)
+use Std.Time (timed)
 use Std.Collections.Vector as V
 use Std.String as S
 use Std.Maybe as M
@@ -228,6 +229,10 @@ def promptCommands =
     ("type", "EXPR", "what an expression is, without running it", typeOfEntry),
     ("reset", "", "forget every declaration entered", \db rest -> (let u = setSessionEarlier db 0 "" in Reply.Said "")),
     ("declarations", "", "the declarations entered so far, as source", \db rest -> Reply.Said (S.trimEnd (earlierIn db))),
+    ("module", "", "what has been declared so far, each with its type (:browse)", moduleSoFar),
+    ("browse", "", "what has been declared so far, each with its type", moduleSoFar),
+    ("find", "QUERY", "search by name, or by a type like  Int -> String; ?TYPE, by proof search", foundFor),
+    ("time", "EXPR", "enter an entry, and say how long it took", timedEntry),
     ("goals", "", "the goals (?name) left in what has been declared, each with its type", goalsSoFar),
     ("prove", "TYPE", "look for a term of a type, or for the goal ?name: proof search", provedEntry),
     ("tactic", "?NAME", "prove the goal ?name a step at a time, each step a `:by`", beganProof),
@@ -235,6 +240,26 @@ def promptCommands =
     ("qed", "", "keep the proof under way: the declarations, the goal filled", keptProof),
     ("abandon", "", "drop the proof under way", \db rest -> (let u = setSessionProving db 0 None in Reply.Said "(abandoned)"))
   ]
+
+-- `:module`: what has been declared so far, a line each, as the Rust REPL
+-- lists it.
+fun moduleSoFar db rest =
+  match declaredSoFar db 0 with
+  | [] -> Reply.Said "(nothing defined yet)"
+  | ds -> Reply.Said (S.join "\n" (V.map (\d -> match d with | (name, ty, _) -> "${name} : ${ty}") ds))
+
+-- `:find QUERY`: what the finder finds (Ctrl-F's), the first dozen, each
+-- with its type.
+fun foundFor db rest =
+  match V.take (searchedFor db 0 rest) 12 with
+  | [] -> Reply.Said "(nothing matches)"
+  | hits -> Reply.Said (S.join "\n" (V.map (\h -> match h with | Hit.Hit name ty _ _ _ _ -> if S.isEmpty ty then name else "${name} : ${ty}") hits))
+
+-- `:time EXPR`: the entry entered, as any is, and how long that took.
+fun timedEntry db rest =
+  let w = setSessionSource db 0 rest in
+  match timed (\() -> entered db 0) with
+  | (said, took) -> Reply.Said ((if S.isEmpty said then "" else said ++ "\n") ++ "(${show (took / 1000000)} ms, checked and run)")
 
 -- The proof under way in tactic mode, if one is.
 fun provingIn db = answered None (\() -> sessionProving db 0)
@@ -359,6 +384,13 @@ fun commandsSaid (declared : String) (commands : [(String, String)]) =
     | Just (_, _, _, act) -> (match act db rest with | Reply.Said s -> s | _ -> "")
     | None -> "") in
   (V.map run commands, earlierIn db)
+
+@test fun moduleFindAndTimeSayWhatTheRustReplSays () =
+  let (said, after) = commandsSaid "double : Int -> Int\ndouble n = n + n" [("module", ""), ("find", "double"), ("time", "double 21"), ("find", "zzzz")] in
+  let a = assertEq (V.getOr "" said 0) "double : Int -> Int" "what is declared" in
+  let b = assertEq (S.startsWith "double : Int -> Int" (V.getOr "" said 1)) True "found by name, with its type" in
+  let c = assertEq (S.startsWith "42 : Int\n(" (V.getOr "" said 2), S.endsWith " ms, checked and run)" (V.getOr "" said 2)) (True, True) "the answer, then how long" in
+  assertEq (V.getOr "" said 3) "(nothing matches)" "nothing of that name"
 
 @test fun aGoalIsProvedAStepAtATime () =
   let (said, after) =
