@@ -1130,11 +1130,15 @@ what the Rust REPL does (`pipeline::Session`):
 
 Tab completes names as the server does, Ctrl-F finds what has been
 declared, and `:type`, `:reset`, `:declarations`, `:module` (`:browse`),
-`:find`, `:time`, `:goals`, `:prove`, `:tactic`, `:by`, `:qed` and
+`:find`, `:time`, `:ir`, `:goals`, `:prove`, `:tactic`, `:by`, `:qed` and
 `:abandon` are its commands. `:module`, `:find` and `:time EXPR` say what
 the Rust REPL's say: each declaration with its type; the finder's first
 dozen hits; and the entry, then how long it took (`:time` alone says it
-of every entry from then on, until it is said again).
+of every entry from then on, until it is said again). `:ir [STAGES] [CODE]`
+shows the code, after the declarations so far (or the last entry, after
+those it came after), at each of front/'s passes, as `Idyll tokens`,
+`parse`, `rename`, `types` and `cut` write them: in a pane on a terminal,
+a page a stage (Lingua's `Reply.Pages`), each page in turn off one.
 
 A goal, `?name`, is a term of its own from the lexer on (`Lex`'s `Goal`,
 `Syntax`'s `GoalA`, `Surface`'s and `Hir`'s `Goal`):

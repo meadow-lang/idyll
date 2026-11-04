@@ -296,42 +296,48 @@ fun irOf db rest =
   if S.isEmpty entry then
     Reply.Said ("(:ir takes a block of code, or shows the last entry: there is none yet)\n\n" ++ S.join "\n" (V.map (\s -> "  ${fst s}  ${snd s}") irStages))
   else
+    -- (each worked out here, not in a function given to another, where the
+    -- session's queries may not be asked)
+    let program = earlier ++ entry ++ "\n" in
+    let prelude = preludeIn db in
+    let std = \u -> stdIn db in
+    let texts = [Layout.dumped entry, Surface.dumped entry, renamedStage program earlier prelude, typesStage program earlier entry prelude std, cutIn program prelude std] in
     let pages =
       V.concatMap
-        (\s -> match s with | (name, about) -> if V.isEmpty wanted or V.elem name wanted then [(name, "-- ${about}\n\n" ++ stageOf db name earlier entry)] else [])
-        irStages
+        (\i -> match V.get irStages i with
+          | Just (name, about) -> if V.isEmpty wanted or V.elem name wanted then [(name, "-- ${about}\n\n" ++ V.getOr "" texts i)] else []
+          | None -> [])
+        (V.range 0 (V.len irStages))
     in
     Reply.Pages (V.getOr "" (S.split "\n" entry) 0) pages
 
--- What `entry`, after `earlier`, is at the stage `name`: the tokens and the
--- tree of the entry itself, the rest of the program they make together.
-fun stageOf db (name : String) (earlier : String) (entry : String) : String =
-  let program = earlier ++ entry ++ "\n" in
-  let prelude = preludeIn db in
-  if name == "tokens" then Layout.dumped entry
-  else if name == "parse" then Surface.dumped entry
-  else if name == "rename" then
-    (match (Surface.parsed program, prelude) with
-     | (Ok prog, Ok pre) -> (match Rename.renameModule prog pre with | (m, problems) -> if V.isEmpty problems then Rename.dumped m else S.join "\n" problems)
-     | (Err ds, _) -> drawn program (S.byteLength earlier) ds
-     | _ -> "(the prelude does not parse)")
-  else if name == "types" then
-    (match preparedProgram program prelude (\u -> stdIn db) with
-     | Err ds -> drawn program (S.byteLength earlier) ds
-     | Ok (m, deps, renaming) ->
-         if not (V.isEmpty renaming) then drawn program (S.byteLength earlier) renaming
-         else
-           runSt (\() ->
-             let c = checkedAgainst (sccModule m) False deps in
-             let wrong = V.filter isError (diagnosticsIn c.tc m.linearBody) in
-             if not (V.isEmpty wrong) then drawn program (S.byteLength earlier) wrong
-             else
-               match c.bodyType with
-               | Just ty -> "${entry} : ${C.shown m.linearBody ty}"
-               | None ->
-                   let before = (match declaredIn earlier prelude (\u -> stdIn db) with | (ds, _) -> V.map (\d -> match d with | (_, n, _) -> n) ds) in
-                   S.join "\n" (V.concatMap (\d -> match d with | (u, n, ty) -> if u >= m.first and written n and not (V.elem n before) then ["${n} : ${C.shown m.linearBody ty}"] else []) (St.getRef c.tc.declared))))
-  else cutIn program prelude (\u -> stdIn db)
+-- The program an entry makes with the declarations before it, `earlier`,
+-- renamed: its HIR.
+fun renamedStage (program : String) (earlier : String) prelude : String =
+  match (Surface.parsed program, prelude) with
+  | (Ok prog, Ok pre) -> (match Rename.renameModule prog pre with | (m, problems) -> if V.isEmpty problems then Rename.dumped m else S.join "\n" problems)
+  | (Err ds, _) -> drawn program (S.byteLength earlier) ds
+  | _ -> "(the prelude does not parse)"
+
+-- The same, checked: each declaration the entry makes, with its type, or
+-- the entry's type if it is an expression.
+fun typesStage (program : String) (earlier : String) (entry : String) prelude std =
+  -- (what was declared before, not to be said again)
+  let before = match declaredIn earlier prelude std with | (ds, _) -> V.map (\d -> match d with | (_, n, _) -> n) ds in
+  match preparedProgram program prelude std with
+  | Err ds -> drawn program (S.byteLength earlier) ds
+  | Ok (m, deps, renaming) ->
+      if not (V.isEmpty renaming) then drawn program (S.byteLength earlier) renaming
+      else
+        runSt (\() ->
+          let c = checkedAgainst (sccModule m) False deps in
+          let wrong = V.filter isError (diagnosticsIn c.tc m.linearBody) in
+          if not (V.isEmpty wrong) then drawn program (S.byteLength earlier) wrong
+          else
+            match c.bodyType with
+            | Just ty -> "${entry} : ${C.shown m.linearBody ty}"
+            | None ->
+                S.join "\n" (V.concatMap (\d -> match d with | (u, n, ty) -> if u >= m.first and written n and not (V.elem n before) then ["${n} : ${C.shown m.linearBody ty}"] else []) (St.getRef c.tc.declared)))
 
 -- `:time EXPR`: the entry entered, as any is, and how long that took; `:time`
 -- alone, every entry's time said from now on, or no longer.
@@ -475,11 +481,14 @@ fun commandsSaid (declared : String) (commands : [(String, String)]) =
   let said = entered db 0 in
   let lastOne =
     match irOf db "" with
-    | Reply.Pages title ps -> (title, V.map fst ps, S.contains "double : Int -> Int" (snd (V.getOr ("", "") ps 3)), S.contains "double" (snd (V.getOr ("", "") ps 4)))
-    | _ -> ("", [], False, False)
+    | Reply.Pages title ps -> (title, V.map fst ps, S.contains "double : Int -> Int" (snd (V.getOr ("", "") ps 3)))
+    | _ -> ("", [], False)
   in
+  -- (an expression's Cut, the declarations it uses in it)
+  let cut = match irOf db "cut double 21" with | Reply.Pages _ ps -> S.contains "double" (snd (V.getOr ("", "") ps 0)) | _ -> False in
   let a = assertEq asked ["tokens", "types"] "the stages asked for" in
-  assertEq lastOne ("double : Int -> Int", ["tokens", "parse", "rename", "types", "cut"], True, True) "the last entry's, at every stage"
+  let b = assertEq cut True "double, in the Cut of what uses it" in
+  assertEq lastOne ("double : Int -> Int", ["tokens", "parse", "rename", "types", "cut"], True) "the last entry's, at every stage"
 
 @test fun moduleFindAndTimeSayWhatTheRustReplSays () =
   let (said, after) = commandsSaid "double : Int -> Int\ndouble n = n + n" [("module", ""), ("find", "double"), ("time", "double 21"), ("find", "zzzz")] in
