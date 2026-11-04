@@ -49,6 +49,8 @@ database! {
     | input proving (unit : Int) : Maybe Proof
     -- whether a prompt says how long each entry took (`Prompt`'s `:time`)
     | input timing (unit : Int) : Bool
+    -- the last entry, and the declarations it was entered after (`:ir`)
+    | input last (unit : Int) : (String, String)
     -- the package a file is a module of, if it is one (`Server`'s `opened`)
     | input package (file : Int) : Maybe PackageContext
     | query parsed (file : Int) : (Green Idyll, [(Int, String)]) = parseIdyll (querySource file)
