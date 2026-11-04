@@ -65,6 +65,32 @@ fn tests_are_picked_by_their_names() {
     assert!(tested(&dir, &none).0.starts_with("running 0 tests"));
 }
 
+/// As `idyll test` runs them, each alone: a test stopped by an error of its
+/// own fails and stops no other, and what a test printed is its own.
+#[test]
+fn a_test_that_stops_stops_no_other() {
+    let dir = package("alone");
+    common::write(
+        &dir.join("src/Maths.idl"),
+        "use Std.Test (assertEq)\n\n@pub\ndouble : (n : Int) -> Int\ndouble n = n * 2\n\n\
+         @test\ndivides : () -> () ! Eff\ndivides u = printInt (10 / (double 0))\n\n\
+         @test\nsays : () -> () ! Eff\nsays u = let p = putStrLn \"before\" in assertEq 1 2 \"one\"\n",
+    );
+    let told = common::on_big_stack(|| {
+        let out = pipeline::build_tests(&dir, Profile::Debug, &common::OPTS, &TestSelection::default());
+        assert!(said(&out).is_empty(), "{:?}", said(&out));
+        let linked = idyllic::pipeline::link_compiled(&out.packages(), &common::OPTS);
+        idyll::testing::run_each(linked.cut.as_deref().expect("lowered"), 2).expect("run")
+    });
+    let names: Vec<(&str, bool)> = told.iter().map(|t| (t.name.as_str(), t.passed)).collect();
+    assert_eq!(names, [("addsUp", true), ("breaks", false), ("Maths.divides", false), ("Maths.says", false)]);
+    assert!(told[2].said.contains("zero"), "{:?}", told[2]);
+    assert_eq!((told[3].printed.replace("\r\n", "\n").as_str(), told[3].said.as_str()), ("before\n", "one: expected 2, got 1"));
+    let report = idyll::testing::report(&told);
+    assert!(report.ends_with("test result: FAILED. 1 passed; 3 failed\n"), "{report}");
+    assert!(report.contains("\n---- Maths.says ----\nbefore\none: expected 2, got 1\n"), "{report}");
+}
+
 #[test]
 fn a_build_runs_main_and_not_the_tests() {
     let dir = package("main");

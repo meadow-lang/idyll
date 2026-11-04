@@ -31,6 +31,7 @@ pub mod profile;
 pub mod prove;
 pub mod semver;
 pub mod status;
+pub mod testing;
 pub mod update;
 pub mod viewer;
 pub mod workspace;

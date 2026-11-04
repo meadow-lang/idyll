@@ -872,7 +872,7 @@ impl TypeError {
                 .label(here, format!("{name} is {ty}"))
                 .help("a test takes () and gives (), with at most the effects the runtime handles, as main does: t : () -> () ! Eff"),
             TypeErrorKind::NoTestRunner => Diagnostic::error("nothing to run the tests with")
-                .help("idyll test runs them with Std.Test's testsStart, testCase and testsDone"),
+                .help("idyll test runs them with Std.Test's testWanted, testsBegin, testAt and testsEnd"),
             TypeErrorKind::MainType(ty) => Diagnostic::error("main has the wrong type")
                 .label(here, format!("main is {ty}"))
                 .help("main takes () and gives (), with at most the effects the runtime handles: main : () -> () ! Eff"),

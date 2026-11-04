@@ -84,6 +84,44 @@ testCase name body = handle body () with
   return x -> let u = putStrLn ("test " ++ name ++ " ... ok") in 1
   fail message k -> let u = putStrLn ("test " ++ name ++ " ... FAILED") in let v = putStrLn ("    " ++ message) in 0
 
+-- Which test a program of tests is asked to run, by its first argument.
+-- `idyll test` runs each in a process of its own, as Meadow's native tests
+-- are run, so that a test stopped by an error of its own (dividing by zero)
+-- stops no other: a number is that test's; `names`, `-2`, asks for their
+-- names, one a line; none, `-1`, runs them all in turn.
+@pub
+testWanted : (u : ()) -> Int ! Eff
+testWanted u = case Std.Process.arg 0 of
+  Nothing -> 0 - 1
+  Just a -> if a == "names" then 0 - 2 else Std.Maybe.withDefault (0 - 1) (Std.String.toInt a)
+
+-- Before the tests, how many there are, if they all run.
+@pub
+testsBegin : (k : Int) -> (total : Int) -> () ! Eff
+testsBegin k total = if k == 0 - 1 then testsStart total else ()
+
+-- The test numbered `i`, `name`: run among the others (`testCase`), alone,
+-- or named, as `k` asks (see `testWanted`); `1` unless it failed.
+@pub
+testAt : (k : Int) -> (i : Int) -> (name : String) -> (body : (u : ()) -> () ! Eff) -> Int ! Eff
+testAt k i name body =
+  if k == 0 - 1 then testCase name body
+  else if k == 0 - 2 then let u = putStrLn name in 1
+  else if k == i then testAlone body
+  else 1
+
+-- A test run alone: what it prints is its own, and a failure is said on
+-- standard error, the program failing.
+testAlone : (body : (u : ()) -> () ! Eff) -> Int ! Eff
+testAlone body = handle body () with
+  return x -> 1
+  fail message k -> let u = putErr (message ++ "\n") in let v = exit 1 in 0
+
+-- After the tests: how they went, if they all ran.
+@pub
+testsEnd : (k : Int) -> (passed : Int) -> (total : Int) -> () ! Eff
+testsEnd k passed total = if k == 0 - 1 then testsDone passed total else ()
+
 -- How they went; the program fails, exit status 1, if any did.
 @pub
 testsDone : (passed : Int) -> (total : Int) -> () ! Eff

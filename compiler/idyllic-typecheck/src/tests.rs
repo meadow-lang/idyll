@@ -4,15 +4,19 @@
 //! failing not stopping the rest:
 //!
 //! ```text
-//! let s = testsStart n in
-//! let r0 = testCase "Module.first" first in
+//! let k = testWanted () in
+//! let s = testsBegin k n in
+//! let r0 = testAt k 0 "Module.first" first in
 //! ..
-//! testsDone (r0 + ..) n
+//! testsEnd k (r0 + ..) n
 //! ```
 //!
-//! `testCase` handles the test's `Test` effect, prints how it went and
-//! gives back `1` or `0`; `testsDone` prints the total and exits with status
-//! 1 if any failed.
+//! `k` is which test the program was asked for, by its first argument: with
+//! none, every test runs in turn, `testCase` handling its `Test` effect,
+//! saying how it went and giving back `1` or `0`, and `testsDone` saying the
+//! total and exiting with status 1 if any failed. `idyll test` asks for each
+//! by its number instead, in a process of its own (and for their names
+//! first), so that a test stopped by an error of its own stops no other.
 
 use super::core::Core;
 use super::packages::CompiledPackage;
@@ -33,7 +37,7 @@ impl Checker {
             })?;
             ctx.lookup(&hir::Ident { unique: Some(u), text: name.into() }).map(|(c, _, _)| c)
         };
-        let (Some(start), Some(case), Some(done)) = (runner("testsStart"), runner("testCase"), runner("testsDone")) else {
+        let (Some(wanted), Some(start), Some(case), Some(done)) = (runner("testWanted"), runner("testsBegin"), runner("testAt"), runner("testsEnd")) else {
             self.error(hir::NodeId(0), TypeErrorKind::NoTestRunner);
             return None;
         };
@@ -65,13 +69,16 @@ impl Checker {
             app(app(Rc::new(Core::Prim(Prim::IntAdd)), a), b)
         });
         let total = total.unwrap_or_else(|| int(0));
-        let mut body = app(app(shifted(&done, n + 1), total), int(n));
+        // `k`, under `d` lets of its own
+        let k = |d: usize| Rc::new(Core::Var(d, "k".into()));
+        let mut body = app(app(app(shifted(&done, n + 2), k(n + 1)), total), int(n));
         for (i, (name, test)) in tests.iter().enumerate().rev() {
-            let d = i + 1;
-            let call = app(app(shifted(&case, d), Rc::new(Core::Lit(Lit::Str(name.clone())))), shifted(test, d));
+            let d = i + 2;
+            let call = app(app(app(app(shifted(&case, d), k(d - 1)), int(i)), Rc::new(Core::Lit(Lit::Str(name.clone())))), shifted(test, d));
             body = Rc::new(Core::Let(format!("r{i}"), call, body));
         }
-        Some(Rc::new(Core::Let("s".into(), app(start, int(n)), body)))
+        let body = Rc::new(Core::Let("s".into(), app(app(shifted(&start, 1), k(0)), int(n)), body));
+        Some(Rc::new(Core::Let("k".into(), app(wanted, Rc::new(Core::Lit(Lit::Unit))), body)))
     }
 
     /// A test is `() -> ()`, with at most the effects the runtime handles,
