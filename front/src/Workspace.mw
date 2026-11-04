@@ -21,7 +21,7 @@ use Std.String as S
 use Std.Maybe as M
 use Std.Path as Path
 use Std.Fs (exists, isDir, isFile, readDir, readToStringOr)
-use Std.Process (getEnv, run)
+use Std.Process (currentDir)
 use Std.Sort (sortOn)
 use Std.Maybe.Maybe.*
 use Std.Result.Result.*
@@ -129,12 +129,13 @@ fun isPackage (manifest : String) : Bool = V.any (\l -> S.trim l == "[package]")
 @pub fun absolutePath (path : String) : String ! { Process | e } =
   if Path.isAbsolute path then Path.normalize path else Path.normalize (Path.join (workingDir ()) path)
 
--- (Meadow's Std does not say this yet: `currentDir` is asked of it.)
+-- The directory the command was started in, its separators `/`; `.` if
+-- the platform cannot say (it was removed since), as `currentDir` answers
+-- `""` then.
 fun workingDir () : String ! { Process | e } =
-  let asked = if getEnv "OS" == Just "Windows_NT" then run "cmd" ["/c", "cd"] else run "pwd" [] in
-  match asked with
-  | Ok (0, out, _) -> S.trim out
-  | _ -> "."
+  match currentDir () with
+  | "" -> "."
+  | dir -> Path.normalize dir
 
 -- `dir` and every directory above it, nearest first.
 fun ancestors (dir : String) : [String] =
