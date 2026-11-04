@@ -1133,7 +1133,8 @@ declared, and `:type`, `:reset`, `:declarations`, `:module` (`:browse`),
 `:find`, `:time`, `:goals`, `:prove`, `:tactic`, `:by`, `:qed` and
 `:abandon` are its commands. `:module`, `:find` and `:time EXPR` say what
 the Rust REPL's say: each declaration with its type; the finder's first
-dozen hits; and the entry, then how long it took.
+dozen hits; and the entry, then how long it took (`:time` alone says it
+of every entry from then on, until it is said again).
 
 A goal, `?name`, is a term of its own from the lexer on (`Lex`'s `Goal`,
 `Syntax`'s `GoalA`, `Surface`'s and `Hir`'s `Goal`):

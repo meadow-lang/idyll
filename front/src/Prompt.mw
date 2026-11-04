@@ -61,9 +61,18 @@ fun stdIn db = answered (Err "Std could not be compiled") (\() -> sessionStd db 
 -- The declarations entered so far.
 fun earlierIn db = answered "" (\() -> sessionEarlier db 0)
 
+-- What entering the entry says, and how long it took if every entry's time
+-- is said (`:time`).
+fun entered db file = if answered False (\() -> sessionTiming db 0) then timed1 (\() -> enteredNow db file) else enteredNow db file
+
+-- What `act`, an entry entered, says, then how long it took.
+fun timed1 act =
+  match timed act with
+  | (said, took) -> (if S.isEmpty said then "" else said ++ "\n") ++ "(${show (took / 1000000)} ms, checked and run)"
+
 -- What entering the entry says; the declarations entered so far are
 -- extended by it, if it is declarations alone and nothing is wrong.
-fun entered db file =
+fun enteredNow db file =
   let before = earlierIn db in
   let entry = answered "" (\() -> sessionSource db file) in
   let program = before ++ S.trimEnd entry ++ "\n" in
@@ -232,7 +241,7 @@ def promptCommands =
     ("module", "", "what has been declared so far, each with its type (:browse)", moduleSoFar),
     ("browse", "", "what has been declared so far, each with its type", moduleSoFar),
     ("find", "QUERY", "search by name, or by a type like  Int -> String; ?TYPE, by proof search", foundFor),
-    ("time", "EXPR", "enter an entry, and say how long it took", timedEntry),
+    ("time", "[EXPR]", "enter an entry, and say how long it took; alone, time every entry from now on, or stop", timedEntry),
     ("goals", "", "the goals (?name) left in what has been declared, each with its type", goalsSoFar),
     ("prove", "TYPE", "look for a term of a type, or for the goal ?name: proof search", provedEntry),
     ("tactic", "?NAME", "prove the goal ?name a step at a time, each step a `:by`", beganProof),
@@ -255,11 +264,16 @@ fun foundFor db rest =
   | [] -> Reply.Said "(nothing matches)"
   | hits -> Reply.Said (S.join "\n" (V.map (\h -> match h with | Hit.Hit name ty _ _ _ _ -> if S.isEmpty ty then name else "${name} : ${ty}") hits))
 
--- `:time EXPR`: the entry entered, as any is, and how long that took.
+-- `:time EXPR`: the entry entered, as any is, and how long that took; `:time`
+-- alone, every entry's time said from now on, or no longer.
 fun timedEntry db rest =
-  let w = setSessionSource db 0 rest in
-  match timed (\() -> entered db 0) with
-  | (said, took) -> Reply.Said ((if S.isEmpty said then "" else said ++ "\n") ++ "(${show (took / 1000000)} ms, checked and run)")
+  if S.isEmpty (S.trim rest) then
+    let now = not (answered False (\() -> sessionTiming db 0)) in
+    let w = setSessionTiming db 0 now in
+    Reply.Said "(timing every entry: ${if now then "on" else "off"})"
+  else
+    let w = setSessionSource db 0 rest in
+    Reply.Said (timed1 (\() -> enteredNow db 0))
 
 -- The proof under way in tactic mode, if one is.
 fun provingIn db = answered None (\() -> sessionProving db 0)
@@ -390,7 +404,15 @@ fun commandsSaid (declared : String) (commands : [(String, String)]) =
   let a = assertEq (V.getOr "" said 0) "double : Int -> Int" "what is declared" in
   let b = assertEq (S.startsWith "double : Int -> Int" (V.getOr "" said 1)) True "found by name, with its type" in
   let c = assertEq (S.startsWith "42 : Int\n(" (V.getOr "" said 2), S.endsWith " ms, checked and run)" (V.getOr "" said 2)) (True, True) "the answer, then how long" in
-  assertEq (V.getOr "" said 3) "(nothing matches)" "nothing of that name"
+  let d = assertEq (V.getOr "" said 3) "(nothing matches)" "nothing of that name" in
+  -- `:time` alone: every entry timed, then none
+  let db = batchSession () in
+  let on = match timedEntry db "" with | Reply.Said s -> s | _ -> "" in
+  let w = setSessionSource db 0 "1 + 2" in
+  let first = entered db 0 in
+  let off = match timedEntry db "" with | Reply.Said s -> s | _ -> "" in
+  let second = entered db 0 in
+  assertEq (on, S.startsWith "3 : Int\n(" first, off, second) ("(timing every entry: on)", True, "(timing every entry: off)", "3 : Int") "on, timed, off, not"
 
 @test fun aGoalIsProvedAStepAtATime () =
   let (said, after) =

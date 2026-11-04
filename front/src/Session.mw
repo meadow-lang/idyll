@@ -47,6 +47,8 @@ database! {
     | input earlier (unit : Int) : String
     -- the proof under way in tactic mode, if one is (`Tactic`)
     | input proving (unit : Int) : Maybe Proof
+    -- whether a prompt says how long each entry took (`Prompt`'s `:time`)
+    | input timing (unit : Int) : Bool
     -- the package a file is a module of, if it is one (`Server`'s `opened`)
     | input package (file : Int) : Maybe PackageContext
     | query parsed (file : Int) : (Green Idyll, [(Int, String)]) = parseIdyll (querySource file)
