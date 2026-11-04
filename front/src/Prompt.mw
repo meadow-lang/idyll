@@ -20,6 +20,9 @@ use Idyll.Find as Find
 use Idyll.Prove as Prove
 use Idyll.Tactic as Tactic
 use Idyll.Syntax (parseIdyll)
+use Idyll.Layout as Layout
+use Idyll.Surface as Surface
+use Idyll.Rename as Rename
 use Idyll.Scc (sccModule)
 use Idyll.Check (checkedAgainst)
 use Idyll.Core as C
@@ -76,6 +79,7 @@ fun enteredNow db file =
   let before = earlierIn db in
   let entry = answered "" (\() -> sessionSource db file) in
   let program = before ++ S.trimEnd entry ++ "\n" in
+  let wl = setSessionLast db 0 (before, S.trimEnd entry) in
   match ran program (S.byteLength before) (answered (Err []) (\() -> sessionPrelude db 0)) (\u -> stdIn db) with
   | (said, extends) ->
       let w = if extends then setSessionEarlier db 0 program else () in
@@ -241,7 +245,8 @@ def promptCommands =
     ("module", "", "what has been declared so far, each with its type (:browse)", moduleSoFar),
     ("browse", "", "what has been declared so far, each with its type", moduleSoFar),
     ("find", "QUERY", "search by name, or by a type like  Int -> String; ?TYPE, by proof search", foundFor),
-    ("time", "[EXPR]", "enter an entry, and say how long it took; alone, time every entry from now on, or stop", timedEntry),
+    ("ir", "[STAGES] [CODE]", "what an entry is at each stage of the compiler, in a pane (:ir tokens,cut 1 + 2); alone, the last entry's", irOf),
+    ("time", "[EXPR]","enter an entry, and say how long it took; alone, time every entry from now on, or stop", timedEntry),
     ("goals", "", "the goals (?name) left in what has been declared, each with its type", goalsSoFar),
     ("prove", "TYPE", "look for a term of a type, or for the goal ?name: proof search", provedEntry),
     ("tactic", "?NAME", "prove the goal ?name a step at a time, each step a `:by`", beganProof),
@@ -263,6 +268,74 @@ fun foundFor db rest =
   match V.take (searchedFor db 0 rest) 12 with
   | [] -> Reply.Said "(nothing matches)"
   | hits -> Reply.Said (S.join "\n" (V.map (\h -> match h with | Hit.Hit name ty _ _ _ _ -> if S.isEmpty ty then name else "${name} : ${ty}") hits))
+
+-- The stages `:ir` shows, each its name and what it is: front/'s passes, as
+-- `Idyll tokens`, `parse`, `rename`, `types` and `cut` write them.
+def irStages : [(String, String)] =
+  [
+    ("tokens", "the lexer's tokens, laid out: «{» «;» «}» are what layout inserts"),
+    ("parse", "the parser's syntax tree"),
+    ("rename", "names resolved to uniques: the HIR"),
+    ("types", "what the checker made of the entry: each declaration's type, or the expression's"),
+    ("cut", "Cut, the IR Meadow's runtimes, Glade and Silo, run (docs/CUT.md in Meadow)")
+  ]
+
+-- `:ir [STAGES] [CODE]`: what the code is at each stage (those named, `:ir
+-- tokens,cut 1 + 2`, or all), after the declarations so far, in a pane of a
+-- page a stage, as the Rust REPL's `:ir` shows them; with no code, the last
+-- entry's, after the declarations it was entered after.
+fun irOf db rest =
+  let names = V.map fst irStages in
+  let line = S.trim rest in
+  let first = V.getOr "" (S.split " " line) 0 in
+  let asked = S.split "," first in
+  let named = not (S.isEmpty first) and V.all (\s -> V.elem s names) asked in
+  let wanted = if named then asked else [] in
+  let code = if named then S.trim (S.drop line (S.byteLength first)) else line in
+  let (earlier, entry) = if S.isEmpty code then answered ("", "") (\() -> sessionLast db 0) else (earlierIn db, code) in
+  if S.isEmpty entry then
+    Reply.Said ("(:ir takes a block of code, or shows the last entry: there is none yet)\n\n" ++ S.join "\n" (V.map (\s -> "  ${fst s}  ${snd s}") irStages))
+  else
+    let program = earlier ++ entry ++ "\n" in
+    let prelude = preludeIn db in
+    let std = \u -> stdIn db in
+    let texts = [Layout.dumped entry, Surface.dumped entry, renamedStage program earlier prelude, typesStage program earlier entry prelude std, cutIn program prelude std] in
+    let pages =
+      V.concatMap
+        (\i -> match V.get irStages i with
+          | Just (name, about) -> if V.isEmpty wanted or V.elem name wanted then [(name, "-- ${about}\n\n" ++ V.getOr "" texts i)] else []
+          | None -> [])
+        (V.range 0 (V.len irStages))
+    in
+    Reply.Pages (V.getOr "" (S.split "\n" entry) 0) pages
+
+-- The program an entry makes with the declarations before it, `earlier`,
+-- renamed: its HIR.
+fun renamedStage (program : String) (earlier : String) prelude : String =
+  match (Surface.parsed program, prelude) with
+  | (Ok prog, Ok pre) -> (match Rename.renameModule prog pre with | (m, problems) -> if V.isEmpty problems then Rename.dumped m else S.join "\n" problems)
+  | (Err ds, _) -> drawn program (S.byteLength earlier) ds
+  | _ -> "(the prelude does not parse)"
+
+-- The same, checked: each declaration the entry makes, with its type, or
+-- the entry's type if it is an expression.
+fun typesStage (program : String) (earlier : String) (entry : String) prelude std =
+  -- (what was declared before, not to be said again)
+  let before = match declaredIn earlier prelude std with | (ds, _) -> V.map (\d -> match d with | (_, n, _) -> n) ds in
+  match preparedProgram program prelude std with
+  | Err ds -> drawn program (S.byteLength earlier) ds
+  | Ok (m, deps, renaming) ->
+      if not (V.isEmpty renaming) then drawn program (S.byteLength earlier) renaming
+      else
+        runSt (\() ->
+          let c = checkedAgainst (sccModule m) False deps in
+          let wrong = V.filter isError (diagnosticsIn c.tc m.linearBody) in
+          if not (V.isEmpty wrong) then drawn program (S.byteLength earlier) wrong
+          else
+            match c.bodyType with
+            | Just ty -> "${entry} : ${C.shown m.linearBody ty}"
+            | None ->
+                S.join "\n" (V.concatMap (\d -> match d with | (u, n, ty) -> if u >= m.first and written n and not (V.elem n before) then ["${n} : ${C.shown m.linearBody ty}"] else []) (St.getRef c.tc.declared)))
 
 -- `:time EXPR`: the entry entered, as any is, and how long that took; `:time`
 -- alone, every entry's time said from now on, or no longer.
@@ -398,6 +471,22 @@ fun commandsSaid (declared : String) (commands : [(String, String)]) =
     | Just (_, _, _, act) -> (match act db rest with | Reply.Said s -> s | _ -> "")
     | None -> "") in
   (V.map run commands, earlierIn db)
+
+@test fun irShowsEachStageInAPage () =
+  let db = batchSession () in
+  let asked = match irOf db "tokens,types 1 + 2" with | Reply.Pages _ ps -> V.map fst ps | _ -> [] in
+  let w = setSessionSource db 0 "double : Int -> Int\ndouble n = n + n" in
+  let said = entered db 0 in
+  let lastOne =
+    match irOf db "" with
+    | Reply.Pages title ps -> (title, V.map fst ps, S.contains "double : Int -> Int" (snd (V.getOr ("", "") ps 3)))
+    | _ -> ("", [], False)
+  in
+  -- (an expression's Cut, the declarations it uses in it)
+  let cut = match irOf db "cut double 21" with | Reply.Pages _ ps -> S.contains "double" (snd (V.getOr ("", "") ps 0)) | _ -> False in
+  let a = assertEq asked ["tokens", "types"] "the stages asked for" in
+  let b = assertEq cut True "double, in the Cut of what uses it" in
+  assertEq lastOne ("double : Int -> Int", ["tokens", "parse", "rename", "types", "cut"], True) "the last entry's, at every stage"
 
 @test fun moduleFindAndTimeSayWhatTheRustReplSays () =
   let (said, after) = commandsSaid "double : Int -> Int\ndouble n = n + n" [("module", ""), ("find", "double"), ("time", "double 21"), ("find", "zzzz")] in

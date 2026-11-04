@@ -1006,8 +1006,9 @@ accepted when what it does fits within what resuming was found to.
   Its commands are `:type`, `:reset` and `:declarations`, and, as the Rust
   REPL's say them (2026-11-04), `:module` (`:browse`), `:find` and `:time`;
   Tab completes names, and Ctrl-F finds what has been declared. Still to
-  come of the Rust REPL's: `:ir`, which wants a pop-up (asked of Lingua's
-  `repl!`), and the tour. It runs
+  come of the Rust REPL's: the tour. `:ir` shows an entry at each stage,
+  tokens, parse, rename, types and Cut, in a pane of a page a stage
+  (Lingua's `Reply.Pages`, pinned 07cbed8, with Cut e2e4bd1). It runs
   expressions on Glade (2026-10-30), as a program runs, the CEK machine
   where Meadow cannot be run.
 - [~] **Searching and proving in the REPL**, for the REPL `front/` gets
