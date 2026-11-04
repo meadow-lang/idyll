@@ -352,6 +352,18 @@ impl Checker {
         self.inferred.retain(|m, _| *m < mark.metas);
     }
 
+    /// Whether a hint is the prelude's trait `trait_name` (`Integer`) at
+    /// `ty`, a type with a constant of its own at its head (`Nat`): a cheap
+    /// look, by heads, as a search's first is.
+    pub(super) fn has_instance_at(&self, ctx: &Ctx, trait_name: &str, ty: &VTy) -> bool {
+        let Some(&t) = self.prelude.get(trait_name) else { return false };
+        let Value::Opaque(head, _, _) = &*self.force(ty.clone()) else { return false };
+        self.hints.iter().any(|&u| {
+            let x = hir::Ident { unique: Some(u), text: String::new() };
+            ctx.lookup(&x).is_some_and(|(_, hint, _)| self.head_of(ctx.lvl, &hint) == (Some(t), Some(*head)))
+        })
+    }
+
     /// What a type comes to past its binders, roughly: the constant at its
     /// head, and that of its first argument, where they are constants.
     fn head_of(&self, lvl: Lvl, ty: &VTy) -> (Option<usize>, Option<usize>) {

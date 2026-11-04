@@ -1736,6 +1736,10 @@ impl Checker {
             (TermKind::Lit(l @ (Lit::Int(_) | Lit::Float(_))), Value::Rigid(_, _, sp)) if sp.is_empty() => {
                 (self.literal_through(ctx, nid, l, expected.clone()), Usage::none())
             }
+            // and at a type of its own with an instance, `Nat`
+            (TermKind::Lit(l @ (Lit::Int(_) | Lit::Float(_))), Value::Opaque(..)) if self.has_instance_at(ctx, literals::trait_of(l), &expected) => {
+                (self.literal_through(ctx, nid, l, expected.clone()), Usage::none())
+            }
             (TermKind::Lit(Lit::Int(n)), Value::LitTy(Builtin::Grade)) => match u64::try_from(*n) {
                 Ok(n) => (Core::grade(Grade::exact(n)), Usage::none()),
                 Err(_) => {

@@ -1284,6 +1284,7 @@ fun elaborateAt (tc : Tc s) (cx : Cx s) (t : HirExpr) : (Core, Value, Usage) ! {
 -- is the program, once it is checked.)
 @pub fun install (tc : Tc s) out =
   let w = setRef tc.through (\ctx lit ty -> literalThrough tc ctx lit ty) in
+  let wi = setRef tc.instanced (\ctx lit ty -> A.hasInstanceAt tc ctx lit ty) in
   setRef tc.elab (\cx t -> elabExpr (getRef tc.hir) out cx t)
 
 -- A number literal at the type variable `ty`: `fromInt` (`fromFloat`) of
@@ -1640,6 +1641,9 @@ fun literalAgainst (cx : Cx s) (again : Cx s -> (Core, Value, Usage) ! { St s | 
   -- at a type variable, through its instance (see `Literals`)
   | (Literal.Int _, Value.Rigid _ _ sp) if V.isEmpty sp -> (literalThrough cx.tc cx.ctx lit g, g, U.none ())
   | (Literal.Float _, Value.Rigid _ _ sp) if V.isEmpty sp -> (literalThrough cx.tc cx.ctx lit g, g, U.none ())
+  -- and at a type of its own with an instance, `Nat`
+  | (Literal.Int _, Value.Opaque _ _ _) if A.hasInstanceAt cx.tc cx.ctx lit g -> (literalThrough cx.tc cx.ctx lit g, g, U.none ())
+  | (Literal.Float _, Value.Opaque _ _ _) if A.hasInstanceAt cx.tc cx.ctx lit g -> (literalThrough cx.tc cx.ctx lit g, g, U.none ())
   | (Literal.Int n, Value.LitTy Builtin.Grade) ->
       if n >= 0 then (C.grade (G.exact n), g, U.none ())
       else

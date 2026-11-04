@@ -108,6 +108,8 @@ fun isBareMeta (tc : Tc s) (ty : Value) : Bool ! { St s | e } =
               | Value.LitTy b if readsAs lit b -> Core.Lit (readNumber tc lit b)
               -- at a type variable, through its instance
               | Value.Rigid _ _ sp if V.isEmpty sp -> (getRef tc.through) ctx lit t
+              -- or a type of its own with an instance, `Nat`
+              | Value.Opaque _ _ _ if (getRef tc.instanced) ctx lit t -> (getRef tc.through) ctx lit t
               | _ ->
                   if unify tc ctx.lvl t (Value.LitTy (defaultOf lit)) then Core.Lit lit
                   else

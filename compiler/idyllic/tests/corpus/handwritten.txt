@@ -1494,3 +1494,16 @@ x = 1
 
 grid : MArray Int
 grid = new 1 0
+%%%
+-- a literal at a type with an `Integer` instance, Std's `Nat`, read
+-- through it, in a term and in a type
+use Std.Num.Nat (Nat, toInt)
+use Std.Collections.Vec (Vec)
+
+next : Nat -> Nat
+next n = n + 1
+
+pair : {a : Type} -> a -> a -> Vec (0 + 2) a
+pair x y = Vec.Cons x (Vec.Cons y Vec.Nil)
+
+toInt (next 2)

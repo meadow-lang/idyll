@@ -113,6 +113,19 @@ fn a_literal_at_a_type_variable_is_read_through_its_instance() {
     assert_eq!(value(&format!("{fact}(factorial 20, factorial (toUInt8 5), half 3.0, half (toFloat32 1.0))\n")).0, "(2432902008176640000, 120, 1.5, 0.5)");
     // with no instance to read it through, it says so
     assert!(rejected("zero : {n : Type} -> (k : [] n) -> n\nzero k = 0\n\n1\n").iter().any(|e| e.contains("Integer n")));
-    // and only at a type variable: anything else is a mismatch, as it was
+    // and at a type with no instance it is a mismatch, as it was
     assert!(rejected("(5 : List Int)\n").iter().any(|e| e.starts_with("type mismatch")));
+}
+
+#[test]
+fn a_literal_at_a_type_with_an_instance_is_read_through_it() {
+    // Std's `Nat` has `Integer`: `2` is `S (S Z)`, and in a type a literal
+    // computes as the instance's `fromInt` does
+    let nat = "use Std.Num.Nat (Nat, toInt)\nuse Std.Collections.Vec (Vec)\n\n\
+               next : Nat -> Nat\nnext n = n + 1\n\n\
+               pair : {a : Type} -> a -> a -> Vec (0 + 2) a\npair x y = Vec.Cons x (Vec.Cons y Vec.Nil)\n\n\
+               grow : {a : Type} -> {n : Nat} -> a -> Vec n a -> Vec (1 + n) a\ngrow x xs = Vec.Cons x xs\n\n";
+    assert_eq!(value(&format!("{nat}(toInt (next 2), toInt (0 : Nat), toInt 40)\n")).0, "(3, 0, 40)");
+    // and a type that is no number, with no instance, still wants one of its own
+    assert!(rejected(&format!("{nat}wrong : Vec 2 Int\nwrong = Vec.Cons 1 Vec.Nil\n\n1\n")).iter().any(|e| e.starts_with("type mismatch")));
 }
