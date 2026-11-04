@@ -296,8 +296,6 @@ fun irOf db rest =
   if S.isEmpty entry then
     Reply.Said ("(:ir takes a block of code, or shows the last entry: there is none yet)\n\n" ++ S.join "\n" (V.map (\s -> "  ${fst s}  ${snd s}") irStages))
   else
-    -- (each worked out here, not in a function given to another, where the
-    -- session's queries may not be asked)
     let program = earlier ++ entry ++ "\n" in
     let prelude = preludeIn db in
     let std = \u -> stdIn db in
