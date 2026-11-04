@@ -998,9 +998,11 @@ accepted when what it does fits within what resuming was found to.
     said;
   - an entry that ends in a signature waits for its equations.
 
-  Its commands are `:type`, `:reset` and `:declarations`; Tab completes
-  names, and Ctrl-F finds what has been declared. Still to come: running
-  the rest of the Rust REPL's commands (`:ir`, `:load`, ...). It runs
+  Its commands are `:type`, `:reset` and `:declarations`, and, as the Rust
+  REPL's say them (2026-11-04), `:module` (`:browse`), `:find` and `:time`;
+  Tab completes names, and Ctrl-F finds what has been declared. Still to
+  come of the Rust REPL's: `:ir`, which wants a pop-up (asked of Lingua's
+  `repl!`), and the tour. It runs
   expressions on Glade (2026-10-30), as a program runs, the CEK machine
   where Meadow cannot be run.
 - [~] **Searching and proving in the REPL**, for the REPL `front/` gets
