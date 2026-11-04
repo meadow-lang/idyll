@@ -1072,8 +1072,12 @@ So far the server:
   program's and the prelude's, with their types. The variables are what a
   goal there would list: the name being written is made a goal,
   `?completing`, and the program checked (so `n + na` is `n + ?completing`,
-  and a line that stops where a name should be parses). A program that
-  does not parse is checked without the line being written;
+  and a line that stops where a name should be parses). After a module's
+  name and a `.` it is what that module gives instead: the module a `use`
+  calls so (`L.` after `use Std.Collections.List as L`), or the one at
+  that path, of a package the program depends on (each export typed from
+  the package's compiled constants) or of its own. A program that does not
+  parse is checked without the line being written;
 - gives an outline of the program's own declarations;
 - colours a file from its tree;
 - formats a file as `Idyll fmt` does.

@@ -17,7 +17,8 @@ use Lingua.Lang (Meta, spanMeta)
 use Idyll.Syntax (Idyll, parseIdyll)
 use Idyll.Surface (SurfaceProgram)
 use Idyll.Surface as Surface
-use Idyll.Rename (PackageNames)
+use Idyll.Rename (PackageNames, Exported)
+use Idyll.Hir (Visibility)
 use Idyll.Rename as Rename
 use Idyll.Scc (sccModule)
 use Idyll.Check (checkedAgainst, checkedWanting)
@@ -27,7 +28,7 @@ use Std.Collections.HashMap as Hm
 use Idyll.Core as C
 use Idyll.Core (Core)
 use Idyll.Compiled (compiledOf)
-use Idyll.Interface (Compiled)
+use Idyll.Interface (Compiled, Constant)
 use Idyll.Driver as D
 use Idyll.Format as Fmt
 use Idyll.Lower as Lo
@@ -420,17 +421,23 @@ fun kindOf (ty : String) : String =
   else if S.contains "->" ty then "function"
   else "constant"
 
--- Names to complete with at byte `at`: the variables in scope there, then
--- the program's own and the prelude's (Std's, if it names Std), each with
--- its type. The line being written seldom parses yet, so if the program
--- does not, it is checked without that line; and failing that, the
--- prelude's alone.
+-- Names to complete with at byte `at`, each with its type: after a
+-- module's name and a `.`, what it gives; else the variables in scope
+-- there, then the program's own and the prelude's (Std's, if it names
+-- Std). The line being written seldom parses yet, so if the program does
+-- not, it is checked without that line; and failing that, the prelude's
+-- alone.
 @pub fun completionsIn (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (at : Int) : [(String, String)] ! e =
   completionsInPackage text None prelude std at
 
 -- The same, of a file in its package, if it is in one: the names of the
 -- package's other modules among them.
 @pub fun completionsInPackage (text : String) (package : Maybe (PackageContext, () -> [Dependency] ! e)) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (at : Int) : [(String, String)] ! e =
+  match membersAt text package prelude std at with
+  | Just members -> members
+  | None -> inScopeAt text package prelude std at
+
+fun inScopeAt (text : String) (package : Maybe (PackageContext, () -> [Dependency] ! e)) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (at : Int) : [(String, String)] ! e =
   let declared =
     match declaredInPackage text package prelude std with
     | ([], _) ->
@@ -468,6 +475,55 @@ fun localsAt (text : String) (package : Maybe (PackageContext, () -> [Dependency
           | Just (_, locals) -> V.reverse (V.map (\l -> match l with | (x, t) -> (x, C.shown m.linearBody t)) locals)
           | None -> [])
     | Err _ -> []
+
+-- What the module named before the `.` that the name ending at byte `at`
+-- follows gives, each name with its type, if that names a module: one a
+-- `use` calls so (`L.` after `use Std.Collections.List as L`), or the one
+-- at that path, in a package the program depends on (`Std.`, then the
+-- module's path in it) or in its own.
+fun membersAt (text : String) (package : Maybe (PackageContext, () -> [Dependency] ! e)) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (at : Int) : Maybe [(String, String)] ! e =
+  let start = wordStart text at in
+  if not (start > 0 and byteOf text (start - 1) == 46) then None
+  else
+    let named = S.slice text (pathStart text (start - 1)) (start - 1) in
+    let rest = withoutLineAt text at in
+    let aliases = (match Surface.parsed rest with | Ok p -> Rename.aliasesOf p | Err _ -> []) in
+    let path = M.unwrapOr (S.split "." named) (M.map snd (V.find (\a -> fst a == named) aliases)) in
+    match fst (preparedFor rest package prelude std) with
+    | Ok (m, deps0, _) ->
+        -- (Std is compiled for a program only if its text names it, which
+        -- the line left out may have been alone in doing)
+        let deps = if V.head path == Just "Std" and not (V.any (\(c : Compiled) -> c.name == "Std") deps0) then (match std () with | Ok (_, s) -> V.pushBack deps0 s | Err _ -> deps0) else deps0 in
+        (match V.find (\(c : Compiled) -> V.head path == Just c.name) deps with
+         | Just c -> Just (exportsIn c (V.drop path 1))
+         | None ->
+             let own = S.join "." path in
+             let members =
+               runSt (\() ->
+                 let c = checkedAgainst (sccModule m) False deps in
+                 V.concatMap
+                   (\d -> match d with | (u, name, ty) -> if Hm.lookup u m.qualifiers == Just own and written name then [(name, C.shown m.linearBody ty)] else [])
+                   (St.getRef c.tc.declared))
+             in
+             if V.isEmpty members then None else Just members)
+    | Err _ -> None
+
+-- What a compiled package's module at `path` gives that others may name,
+-- each with its type, as far as the package's constants say it.
+fun exportsIn (c : Compiled) (path : [String]) : [(String, String)] =
+  V.concatMap
+    (\e ->
+      match e with
+      | Exported.Exported p name u vis ->
+          if p == path and vis != Visibility.Private and written name then [(name, M.unwrapOr "" (typeIn c u))] else [])
+    (Rename.namesExports c.names)
+
+fun typeIn (c : Compiled) (u : Int) : Maybe String =
+  M.map (\k -> match k with | Constant.Constant _ _ ty _ _ -> C.shown False ty) (V.find (\k -> match k with | Constant.Constant v _ _ _ _ -> v == u) c.constants)
+
+-- Where the dotted path that ends at byte `at` starts.
+fun pathStart (text : String) (at : Int) : Int =
+  if at > 0 and (isNameByte (byteOf text (at - 1)) or byteOf text (at - 1) == 46) then pathStart text (at - 1) else at
 
 -- Where the name that ends at byte `at` starts.
 fun wordStart (text : String) (at : Int) : Int =

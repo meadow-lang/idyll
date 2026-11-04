@@ -1126,6 +1126,11 @@ fun twice (r : Rn s) (modules : [([String], SurfaceProgram)]) =
     body = surfaceFileBody a f
   }
 
+-- What each `use` of a program calls the module it names, if it calls it
+-- something: its alias (`use Std.Collections.List as L` calls it `L`).
+@pub fun aliasesOf (p : SurfaceProgram) : [(String, [String])] =
+  V.concatMap (\(u : Use) -> match u.alias with | Just a -> [(a, u.path)] | None -> []) (programOf p).uses
+
 fun ctorNameOf (a : SurfaceArena) (c : SurfaceCtor) : String =
   match (a, c) with
   | SurfaceCtorFields n _ -> surfaceNameText a n

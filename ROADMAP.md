@@ -918,7 +918,8 @@ accepted when what it does fits within what resuming was found to.
   - says a term's type on hover;
   - goes to a name's definition, and finds every place it is named;
   - completes names, the variables in scope at the cursor and the
-    program's and the prelude's, with their types;
+    program's and the prelude's, with their types, and after a module's
+    alias or path and a `.`, what that module gives;
   - gives an outline of the program's own declarations;
   - colours a file from its tree, and formats it.
 
@@ -926,7 +927,6 @@ accepted when what it does fits within what resuming was found to.
   For that, front/'s renamer, checker and lowering keep their state in `St`
   cells, since a query may perform nothing but asking other queries. Still
   to come:
-  - completion after a module's alias (`L.`) of what that module gives;
   - hover, definitions and completion kept in the session, rather than
     the file checked again for each.
 - [~] **The VS Code extension** (`editors/vscode`), as Meadow's is: a
