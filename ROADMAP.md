@@ -884,9 +884,12 @@ accepted when what it does fits within what resuming was found to.
   handled, a line said), then `testsDone`, which exits with status 1 if
   any failed. The examples carry Meadow's tests of them (MiniML's 23 among
   them). front/ reads `@test` and checks where it is; running tests is the
-  Rust driver's. Still to come: a test's own panic (dividing by zero)
-  stops the rest, as it is no `Test` failure, and what a test prints is not
-  kept apart.
+  Rust driver's. Each test runs in a process of its own, as Meadow's native
+  tests do (2026-11-03, `idyll-driver/src/testing.rs`): the program is asked
+  for its tests' names, then run once a test with its number, several at a
+  time, so a test stopped by an error of its own (dividing by zero) fails
+  alone, and what a test printed is shown with its failure. With no
+  argument the program still runs them all in turn.
 - [~] **The formatter**, written with Lingua's `format!` over front/'s
   grammar (Chris, 2026-10-28: the build tools are Lingua's eDSLs, and so
   is this), as `meadow fmt` is over Meadow's. `Idyll fmt [--check]

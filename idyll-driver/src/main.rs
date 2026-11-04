@@ -578,8 +578,9 @@ fn executable(
 }
 
 /// Build the package at `path` and run it.
-/// `idyll test`: the package built with its tests for its program, and run
-/// on Glade; the program says how each went, and fails if any did.
+/// `idyll test`: the package built with its tests for its program, and each
+/// test run on Glade in a process of its own (`idyll::testing`); it fails if
+/// any did.
 fn test(path: &Path, profile: Resolved, opts: &Options, selection: &idyllic::pipeline::TestSelection) -> ExitCode {
     let started = std::time::Instant::now();
     let out = pipeline::build_tests(path, profile.profile, opts, selection);
@@ -588,18 +589,23 @@ fn test(path: &Path, profile: Resolved, opts: &Options, selection: &idyllic::pip
     if out.errors() > 0 {
         return could_not_compile(&name, out.errors());
     }
+    let linked = idyllic::pipeline::link_compiled(&out.packages(), opts);
+    let Some(cut) = linked.cut.as_deref() else {
+        status::error(format!("`{name}`'s tests were not lowered to Cut: {}", linked.not_lowered.join("; ")));
+        return ExitCode::FAILURE;
+    };
     finished(&profile, started);
     status::status("Running", format!("`{name}`'s tests"));
-    let ran = idyllic::pipeline::run_compiled(&out.packages(), opts, Vec::new());
-    let shown = ran.display("", "", opts.style);
-    if !shown.is_empty() {
-        println!("{shown}");
-    }
-    match &ran.evaluation {
-        _ if ran.has_errors() => ExitCode::FAILURE,
-        Some(Evaluation::Exited(code)) => ExitCode::from(*code as u8),
-        Some(Evaluation::Stopped(_) | Evaluation::Failed(_)) => ExitCode::FAILURE,
-        _ => ExitCode::SUCCESS,
+    let threads = std::thread::available_parallelism().map_or(1, usize::from);
+    match idyll::testing::run_each(cut, threads) {
+        Ok(told) => {
+            print!("{}", idyll::testing::report(&told));
+            if told.iter().all(|t| t.passed) { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+        }
+        Err(why) => {
+            status::error(why);
+            ExitCode::FAILURE
+        }
     }
 }
 
