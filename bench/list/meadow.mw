@@ -1,0 +1,17 @@
+use Std.Console (println)
+
+data Cells = End | Cell Int Cells
+
+use Cells.*
+
+fun build (n : Int) (acc : Cells) : Cells = if n == 0 then acc else build (n - 1) (Cell n acc)
+
+fun sum (xs : Cells) (acc : Int) : Int =
+  match xs with
+  | End -> acc
+  | Cell y ys -> sum ys (acc + y)
+
+fun rounds (r : Int) (total : Int) : Int =
+  if r == 0 then total else rounds (r - 1) (total + sum (build (1000000 + r) End) 0)
+
+fun main () = println (rounds 20 0)
