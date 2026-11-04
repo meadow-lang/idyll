@@ -231,6 +231,21 @@ fun listed (field : String) (reply : Maybe Json) : [Json] =
   let labels = listed "label" (V.get said 1) in
   assertEq (V.elem (J.jString "double") labels, V.elem (J.jString "putStrLn") labels) (True, True) "double, and the prelude's putStrLn"
 
+@test fun completionOffersTheVariablesInScope () =
+  let begun = told [opening "file:///a.idl" "f : Int -> Int\nf count = let total = count + 1 in to\n", asked 1 "textDocument/completion" "file:///a.idl" 1 37] serveServer in
+  let labels = listed "label" (V.get begun 1) in
+  let a = assertEq (V.elem (J.jString "count") labels, V.elem (J.jString "total") labels) (True, True) "f's parameter, and the let's" in
+  let unfinished = told [opening "file:///a.idl" "f : Int -> Int\nf count = count + \n", asked 1 "textDocument/completion" "file:///a.idl" 1 18] serveServer in
+  assertEq (V.elem (J.jString "count") (listed "label" (V.get unfinished 1))) True "where the line stops"
+
+@test fun completionAfterAModuleOffersWhatItGives () =
+  let aliased = told [opening "file:///a.idl" "use Std.Collections.List as L\n\nxs : List Int\nxs = L.\n", asked 1 "textDocument/completion" "file:///a.idl" 3 7] serveServer in
+  let labels = listed "label" (V.get aliased 1) in
+  let a = assertEq (V.elem (J.jString "map") labels, V.elem (J.jString "xs") labels, V.elem (J.jString "putStrLn") labels) (True, False, False) "List's map, and nothing of the program's or the prelude's" in
+  let b = assertEq (V.any (\d -> d != J.jString "") (listed "detail" (V.get aliased 1))) True "with their types" in
+  let pathed = told [opening "file:///a.idl" "xs : List Int\nxs = Std.Collections.List.\n", asked 1 "textDocument/completion" "file:///a.idl" 1 26] serveServer in
+  assertEq (V.elem (J.jString "map") (listed "label" (V.get pathed 1))) True "the module at that path in Std"
+
 @test fun theOutlineIsTheProgramsOwnDeclarations () =
   let said = told [opening "file:///a.idl" "double : Int -> Int\ndouble n = n + n\n", asking 1 "textDocument/documentSymbol" (inFile "file:///a.idl")] serveServer in
   assertEq (listed "name" (V.get said 1)) [J.jString "double"] "double, and nothing of the prelude's"
