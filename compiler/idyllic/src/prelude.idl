@@ -250,11 +250,14 @@ Float64 : Type
 Float64 = Float
 
 -- An integer type: what its conversions go through; and what an integer
--- literal is read through at a type variable (`fromInt`).
+-- literal is read through at a type variable, or at a type of a program's
+-- own with an instance, Std's `Nat` (`fromInt`). Its `Int` may be used any
+-- number of times, as counting one out takes (`Nat`'s does), and a literal
+-- is a constant.
 trait Integer (a : Type) where
   toInt : a -> Int
   toFloat : a -> Float
-  fromInt : Int -> a
+  fromInt : (n : [] Int) -> a
 
 -- A float type; and what a literal with a point is read through at a type
 -- variable (`fromFloat`).

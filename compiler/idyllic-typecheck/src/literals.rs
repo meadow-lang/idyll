@@ -13,7 +13,20 @@
 //! At a type variable, a literal is read through the variable's `Integer`
 //! instance (`Floating`'s, for one with a point), found as any auto
 //! argument is: `0` at `n` is `fromInt 0`, so code written once for any
-//! integer type, `{n : Type} -> Integer n => ..`, may say `0`.
+//! integer type, `{n : Type} -> Integer n => ..`, may say `0`. So it is at
+//! a type of a program's own that has such an instance, as Std's `Nat`
+//! has: `n + 1` at `Nat` is `n + fromInt 1`, which computes to `S n` in a
+//! type. At one with none, `5` where a `List Int` is wanted, it is a
+//! mismatch.
+
+/// The trait a literal is read through at a type that is no number: an
+/// integer's, or a number with a point's.
+pub(super) fn trait_of(lit: &Lit) -> &'static str {
+    match lit {
+        Lit::Float(_) => "Floating",
+        _ => "Integer",
+    }
+}
 
 use super::*;
 use idyllic_ast::Lit;
@@ -132,6 +145,7 @@ impl Checker {
             let core = match &*ty {
                 Value::LitTy(b) if reads_as(&d.lit, *b) => Rc::new(Core::Lit(self.read_number(d.node, &d.lit, *b))),
                 Value::Rigid(_, _, sp) if sp.is_empty() => self.literal_through(&d.ctx, d.node, &d.lit, ty.clone()),
+                Value::Opaque(..) if self.has_instance_at(&d.ctx, trait_of(&d.lit), &ty) => self.literal_through(&d.ctx, d.node, &d.lit, ty.clone()),
                 _ if !last && self.blocked(&ty) => {
                     self.deferred_literals.push(d);
                     continue;

@@ -238,7 +238,10 @@ use Std.Maybe.Maybe.*
   -- type variable is read through; and how (`Elab.literalThrough`, given
   -- here as `elab` is)
   numberLits : StRef s (HashMap String Int),
-  through : StRef s (Ctx -> Literal -> Value -> Core ! { St s })
+  through : StRef s (Ctx -> Literal -> Value -> Core ! { St s }),
+  -- whether a type of a program's own has the instance a literal would be
+  -- read through, `Nat` (`Auto.hasInstanceAt`, given here as `through` is)
+  instanced : StRef s (Ctx -> Literal -> Value -> Bool ! { St s })
 }
 
 @pub fun new () =
@@ -251,6 +254,7 @@ use Std.Maybe.Maybe.*
     linearWants = newRef [],
     numberLits = newRef Hm.empty,
     through = newRef (\ctx lit ty -> Core.Error),
+    instanced = newRef (\ctx lit ty -> False),
     globals = newRef Hm.empty,
     problems = newRef [],
     opened = newRef [],
@@ -326,6 +330,7 @@ use Std.Maybe.Maybe.*
     linearWants = newRef (getRef tc.linearWants),
     numberLits = newRef (getRef tc.numberLits),
     through = newRef (getRef tc.through),
+    instanced = newRef (getRef tc.instanced),
     globals = newRef (getRef tc.globals),
     problems = newRef (getRef tc.problems),
     opened = newRef (getRef tc.opened),
@@ -398,6 +403,7 @@ use Std.Maybe.Maybe.*
   let wLinearWants = setRef tc.linearWants (getRef saved.linearWants) in
   let wNumberLits = setRef tc.numberLits (getRef saved.numberLits) in
   let wThrough = setRef tc.through (getRef saved.through) in
+  let wInstanced = setRef tc.instanced (getRef saved.instanced) in
   let wGlobals = setRef tc.globals (getRef saved.globals) in
   let w4 = setRef tc.problems (getRef saved.problems) in
   let w5 = setRef tc.opened (getRef saved.opened) in

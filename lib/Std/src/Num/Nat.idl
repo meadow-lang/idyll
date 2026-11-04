@@ -120,6 +120,15 @@ bits (S fuel) n = if n < 1 then Z else plus (if n % 2 == 1 then S Z else Z) (dou
 sixtyFour : Nat
 sixtyFour = double (double (double (double (double (double (S Z))))))
 
+-- What a literal is read through where a `Nat` is wanted: `2` is
+-- `fromInt 2`, `S (S Z)`, so `Vec (n + 1) a` says what it means, and a
+-- negative one is `Z`.
+@pub
+instance Integer Nat where
+  toInt = toInt
+  toFloat n = intToFloat (toInt n)
+  fromInt = fromInt
+
 @pub
 show : (n : Nat) -> String
 show n = showInt (toInt n)

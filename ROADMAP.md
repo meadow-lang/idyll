@@ -758,9 +758,9 @@ from what `idyll.lock` pinned.
   tried again once an application's arguments are elaborated, as Lean
   synthesizes instances, so `2 + 2` and `Z + m` compute in types. Std
   checks in 311 ms, from 290. Grade arithmetic reads the methods as it
-  read the primitives. Left: literals read through the trait (`n + 1` at
-  `Nat`); comparisons, which are still the primitives, as Meadow has them
-  until `Cmp`.
+  read the primitives. Literals are read through the trait at `Nat` too
+  (2026-11-04: below, "Literals in generic code"). Left: comparisons,
+  which are still the primitives, as Meadow has them until `Cmp`.
 
 Meadow's `RUNTIME.md` section *Traits are dictionaries, and then they are
 not* is worth reading when the optimiser gets to removing dictionary passing.
@@ -850,8 +850,13 @@ and a `Map` built with one `Ord` is rejected when used with another.
   read through its `Integer` instance (`Floating`'s, for one with a
   point): `0` at `n` is `fromInt 0`, the instance searched for as any auto
   argument is, so `factorial : {n : Type} -> Integer n => .. -> n` says
-  `0` and `1`, as Meadow's generic code does. Only at a type variable: `5`
-  where a `List Int` is wanted stays a mismatch.
+  `0` and `1`, as Meadow's generic code does. So it is at a type of a
+  program's own with an `Integer` instance (2026-11-04, both compilers):
+  Std's `Nat` has one, so `n + 1` at `Nat` says what it means, and `Vec
+  (0 + 2) a` is `Vec (S (S Z)) a`, the literal computing as `fromInt`
+  does; `fromInt` takes its `Int` unrestricted, `[]`, as counting one out
+  uses it more than once. `5` where a `List Int` is wanted, a type with no
+  instance, stays a mismatch.
 
 *Done when:* Meadow's `examples/Tour`, `examples/MiniML` and
 `examples/RockPaperScissors` run, the last tested by feeding it input.

@@ -23,7 +23,7 @@
 -- that field (`specialize`): so `x + y` at `Int` is the primitive.
 
 use Std.St (StRef, newRef, getRef, setRef)
-use Idyll.Hir (Icit)
+use Idyll.Hir (Icit, Literal)
 use Idyll.Core (Core, Builtin, CaseAlt)
 use Idyll.Core as C
 use Idyll.Value (Value, Elim)
@@ -285,6 +285,32 @@ fun builtinKey (b : Builtin) : Int =
   let names = V.map C.builtinName C.builtins in
   let name = C.builtinName b in
   0 - 1000 - V.foldl (\acc i -> if V.getOr "" names i == name then i else acc) 99 (V.range 0 (V.len names))
+
+-- Whether a hint is the trait a literal is read through (`Integer`, the
+-- prelude's `fromInt`'s; `Floating`, for one with a point) at `ty`, a type
+-- with a constant of its own at its head (`Nat`): a cheap look, by heads,
+-- as a search's first is (`has_instance_at`).
+@pub fun hasInstanceAt (tc : Tc s) (ctx : Ctx) (lit : Literal) (ty : Value) : Bool ! { St s | e } =
+  match (force tc ty, literalTrait tc ctx lit) with
+  | (Value.Opaque head _ _, Just t) ->
+      V.any
+        (\u -> match X.lookup ctx (named u) with | Just (_, hint, _) -> headOf tc ctx.lvl hint == (Just t, Just head) | None -> False)
+        (getRef tc.hints)
+  | _ -> False
+
+-- The trait `fromInt` (`fromFloat`) is a method of: what its first auto
+-- binder wants.
+fun literalTrait (tc : Tc s) (ctx : Ctx) (lit : Literal) : Maybe Int ! { St s | e } =
+  let method = match lit with | Literal.Float _ -> "fromFloat" | _ -> "fromInt" in
+  match M.andThen (\u -> X.lookup ctx (Ident.Ident [u] method)) (Hm.lookup method (getRef tc.numberLits)) with
+  | Just (_, ty, _) -> autoWanted tc 0 ty
+  | None -> None
+
+fun autoWanted (tc : Tc s) (lvl : Int) (ty : Value) : Maybe Int ! { St s | e } =
+  match force tc ty with
+  | Value.Pi name Icit.Auto _ _ dom _ -> (match force tc dom with | Value.Opaque t _ _ -> Just t | _ -> None)
+  | Value.Pi name Icit.Implicit _ _ _ cod -> autoWanted tc (lvl + 1) (fst (splitComp tc (apply tc cod (Va.vvar lvl name))))
+  | _ -> None
 
 -- What a type comes to past its binders, roughly: the constant at its head,
 -- and that of its first argument, where they are constants.
