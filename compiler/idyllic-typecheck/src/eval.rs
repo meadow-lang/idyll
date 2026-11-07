@@ -23,8 +23,38 @@ impl Checker {
     }
 
     /// Expand the head of a value until it is no longer a solved metavariable.
+    ///
+    /// A stuck primitive forces its arguments to see whether they are
+    /// literals yet, and a definition that unfolds is unfolded again, each
+    /// time. So a value whose parts are shared, `doe` four times in `yoe` and
+    /// `yoe` three times in `doy` (`Std.Time.utc`), was forced as the tree it
+    /// spells out, exponentially. Within one `force` nothing can change what
+    /// a value forces to (it takes `&self`), so what each value forced to is
+    /// kept until the outermost one returns, and each shared part is forced
+    /// once.
     pub fn force(&self, v: Rc<Value>) -> Rc<Value> {
-        self.force_head(v, true)
+        if !matches!(&*v, Value::Prim(..) | Value::Stuck(..) | Value::Opaque(..)) {
+            return self.force_head(v, true);
+        }
+        let key = Rc::as_ptr(&v);
+        let outermost = FORCED.with(|f| {
+            let mut f = f.borrow_mut();
+            let outermost = f.is_none();
+            f.get_or_insert_with(Default::default);
+            outermost
+        });
+        let known = FORCED.with(|f| f.borrow().as_ref().and_then(|m| m.get(&key).map(|(_, r)| r.clone())));
+        let forced = known.unwrap_or_else(|| {
+            let r = self.force_head(v.clone(), true);
+            // (the value is kept with what it forced to, so that its address
+            // is not another's while this lasts)
+            FORCED.with(|f| f.borrow_mut().as_mut().map(|m| m.insert(key, (v, r.clone()))));
+            r
+        });
+        if outermost {
+            FORCED.with(|f| *f.borrow_mut() = None);
+        }
+        forced
     }
 
     /// `force`, unfolding definitions or not.
@@ -457,4 +487,9 @@ impl Checker {
         }
         Some(sum.unwrap_or_else(|| Core::grade(Grade::ZERO)))
     }
+}
+
+thread_local! {
+    /// What each value forced to, while a `force` runs (see [`Checker::force`]).
+    static FORCED: std::cell::RefCell<Option<std::collections::HashMap<*const Value, (Rc<Value>, Rc<Value>)>>> = const { std::cell::RefCell::new(None) };
 }

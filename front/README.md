@@ -755,7 +755,9 @@ lexicographic orders like Ackermann's. A group that terminates becomes
 *transparent*: from then on it unfolds in types, when its case tree can
 choose a right-hand side (`Eval.unfold`), so `first (Sigma x y)` is `x` in
 `second`'s type. A group that may not terminate must say `! Div`, or be
-vouched for with `@terminating` (`MayNotTerminate` otherwise).
+vouched for with `@terminating` (`MayNotTerminate` otherwise). A group
+that `@terminating` vouches for is taken at its word and not checked, so it
+stays opaque; an instance, which is vouched for too, is checked as ever.
 
 **Handlers** (`Handlers.mw`, `handlers.rs`). `handle e with clauses` takes
 care of every operation of one effect in `e`'s row. The effect's
