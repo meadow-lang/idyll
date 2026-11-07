@@ -17,6 +17,7 @@ use Idyll.Check (Checked)
 use Idyll.Interface
 use Idyll.Rename (PackageNames)
 use Idyll.Elaborated (ElaboratedProgram, newElaboratedBuilder, freezeElaborated, moduleRow)
+use Idyll.Typer as Ty
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
 use Std.Maybe as M
@@ -119,6 +120,23 @@ fun mentions (own : Compiled) (dep : Compiled) (c : Core) : Bool =
                 match d with
                 | RecDef.RecDef u name l core local -> (u, name, (if l < p.base then l else l - p.base + off), relocate p off l core, local))
               p.recDefs)
+      placedPackages
+  in
+  -- a recursive definition inside another has a type that may mention the
+  -- variables of the one it is in, which have moved as its body's have
+  let w =
+    V.foldl
+      (\u0 po ->
+        match po with
+        | ((p : Compiled), off) ->
+            V.foldl
+              (\u1 d ->
+                match d with
+                | RecDef.RecDef u _ l _ local ->
+                    if local and l >= p.base then Ty.relocate c.tc u l (\x -> if x < p.base then x else x - p.base + off) else u1)
+              u0
+              p.recDefs)
+      ()
       placedPackages
   in
   let ownOffset = M.unwrapOr own.base (V.last offsets) in

@@ -159,13 +159,27 @@ pub enum Producer {
     Array(Vec<Producer>),
 }
 
-/// A method of an object: `apply(x: i64; k) => s`.
+/// A method of an object: `apply(x: i64; k) ! {E} => s`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Method {
     pub name: String,
     pub params: Vec<Binder>,
     pub conts: Vec<String>,
+    /// what it may perform (see [`EffectRow`])
+    pub row: Option<EffectRow>,
     pub body: Statement,
+}
+
+/// What a definition or a method may perform once it has its parameters,
+/// other than what it handles itself: `! {E1, E2 | e}`, declared effects
+/// and its own effect variables.  Without one, anything: Meadow keeps its
+/// continuations on the heap if the program has an `@many` operation, and
+/// on a stack it is given only if the row says no such operation can be
+/// performed while it runs.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EffectRow {
+    pub effects: Vec<Symbol>,
+    pub vars: Vec<String>,
 }
 
 /// What receives a value.
@@ -262,7 +276,7 @@ pub enum Kind {
     ManyEffect,
 }
 
-/// `def S <'a = d; e: Effect> (params; conts) = body`
+/// `def S <'a = d; e: Effect> (params; conts) ! {E | e} = body`
 #[derive(Clone, Debug, PartialEq)]
 pub struct Def {
     pub symbol: Symbol,
@@ -272,6 +286,7 @@ pub struct Def {
     pub effect_vars: Vec<(String, Kind)>,
     pub params: Vec<Binder>,
     pub conts: Vec<String>,
+    pub row: Option<EffectRow>,
     pub body: Statement,
 }
 

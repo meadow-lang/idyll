@@ -129,7 +129,7 @@ impl Printer {
                         self.out.push(';');
                     }
                     self.line(indent + 1);
-                    write!(self.out, "{}{} =>", m.name, params(&m.params, &m.conts)).unwrap();
+                    write!(self.out, "{}{}{} =>", m.name, params(&m.params, &m.conts), row(&m.row)).unwrap();
                     self.nested(&m.body, indent + 2);
                 }
                 self.line(indent);
@@ -333,9 +333,17 @@ pub fn program(p: &Program) -> String {
         let generics = if head.is_empty() { String::new() } else { format!(" <{}>", head.join("; ")) };
         let mut pr = Printer { out: String::new() };
         pr.nested(&d.body, 1);
-        writeln!(out, "\ndef {}{generics} {} ={}", d.symbol, params(&d.params, &d.conts), pr.out).unwrap();
+        writeln!(out, "\ndef {}{generics} {}{} ={}", d.symbol, params(&d.params, &d.conts), row(&d.row), pr.out).unwrap();
     }
     out
+}
+
+/// ` ! {E1, E2 | e}`, or nothing for a row not known.
+fn row(row: &Option<EffectRow>) -> String {
+    let Some(r) = row else { return String::new() };
+    let effects = r.effects.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(", ");
+    let vars = if r.vars.is_empty() { String::new() } else { format!("{}| {}", if effects.is_empty() { "" } else { " " }, r.vars.join(", ")) };
+    format!(" ! {{{effects}{vars}}}")
 }
 
 impl fmt::Display for Program {
@@ -371,6 +379,7 @@ mod tests {
                 effect_vars: vec![],
                 params: vec![n("n")],
                 conts: vec!["k".into()],
+                row: None,
                 body: Statement::Prim(
                     "add".into(),
                     vec![Producer::Var("n".into()), Producer::Var("n".into())],

@@ -334,6 +334,8 @@ impl Lower<'_> {
                 Binder { name: n.clone(), rep: Rep::I64 },
             ],
             conts: vec![k],
+            // what shows a value performs nothing
+            row: Some(EffectRow::default()),
             body,
         });
         // the whole: brackets, and a `;` after one element alone
@@ -442,6 +444,8 @@ impl Lower<'_> {
             effect_vars: Vec::new(),
             params: params.into_iter().map(|(name, rep)| Binder { name, rep }).collect(),
             conts: vec![k],
+            // what shows a value performs nothing
+            row: Some(EffectRow::default()),
             body,
         });
     }
@@ -453,6 +457,8 @@ impl Lower<'_> {
             effect_vars: Vec::new(),
             params: vec![Binder { name: x, rep: Rep::Ptr }],
             conts: vec![k],
+            // what shows a value performs nothing
+            row: Some(EffectRow::default()),
             body,
         });
     }

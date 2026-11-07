@@ -928,9 +928,27 @@ descriptor, which tells a function generic in a type how its values are
 represented. A function value is codata, an object with one method,
 `apply`; a partial application is an object waiting for the rest. A
 recursive definition inside another is lifted out to a `def` of its own,
-what it uses of where it was defined becoming its first parameters. A
+what it uses of where it was defined becoming its first parameters, and
+the effect variables of the one it was in its own. A
 handler becomes Cut's `handle`, an operation `perform`, a resumption an
 object called with `resume`.
+
+Each `def` and each closure's `apply` says what it may perform once it has
+its parameters, a row: `! {idyll:Main/Choose | e}`, the effects it may
+perform and the effect variables it may perform through, or `! {}` for
+nothing. Meadow keeps a continuation on the heap only where an operation
+resumed more than once (`@many`) may be performed while it is live, and
+gives the rest stack frames; without a row it must assume anything.
+`Typer.performs` works the row out from the body: what each call it makes
+performs, as the type of what it calls says, other than what a handler in
+it handles, and nothing for a lambda until it is called. A resumption
+called in a clause adds nothing, since resuming does what the handle does.
+A lambda's type, as the typer works it out, says what calling it performs,
+so that a call to one bound in a `let` is counted too. A row is left off
+(unknown) where a call's type is not known, and on the last object of a
+partial application. Linking moves a recursive definition inside another
+to new levels, and its type with it (`Ty.relocate`), since that type may
+name the enclosing definition's variables.
 
 Every binder needs a representation, which comes from its type. The
 elaborated program does not say the types, so `Typer.mw` (`typer.rs`)

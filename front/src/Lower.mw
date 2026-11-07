@@ -47,6 +47,7 @@ use Idyll.CutAst (Rep, Sym, Binder)
 use Idyll.CutAst as A
 use Idyll.Num as N
 use Cut as C
+use Std.Sort (sortOn)
 use Cut (CutBuilder, CutProd, CutCons, CutStmt, CutDecl, CutConsKind, kindCutCons)
 use Idyll.Check (checkedIn, checkedAt, checkedWith)
 use Idyll.Compiled (compiledOf)
@@ -109,20 +110,26 @@ data Slot
 -- The slots of Core's context, the typer's scope, and the fields that are
 -- types of the records bound at levels of it: the level, the field's
 -- place, and the descriptor variable passed for it, if there is one, and
--- the representation variable it is (`TRep.Field`).
-data LEnv = LEnv [Slot] Ctx [(Int, Int, Maybe String, String)]
+-- the representation variable it is (`TRep.Field`). Then the effect
+-- variables the `def` being lowered declares: the level, the name in Cut,
+-- and the kind, which a row may name.
+data LEnv = LEnv [Slot] Ctx [(Int, Int, Maybe String, String)] [(Int, String, String)]
 
-fun slotsOf (e : LEnv) : [Slot] = match e with | LEnv.LEnv s _ _ -> s
+fun slotsOf (e : LEnv) : [Slot] = match e with | LEnv.LEnv s _ _ _ -> s
 
-fun scopeOf (e : LEnv) : Ctx = match e with | LEnv.LEnv _ c _ -> c
+fun scopeOf (e : LEnv) : Ctx = match e with | LEnv.LEnv _ c _ _ -> c
 
-fun fieldsOf (e : LEnv) : [(Int, Int, Maybe String, String)] = match e with | LEnv.LEnv _ _ fs -> fs
+fun fieldsOf (e : LEnv) : [(Int, Int, Maybe String, String)] = match e with | LEnv.LEnv _ _ fs _ -> fs
 
-fun pushSlot (e : LEnv) (s : Slot) : LEnv = match e with | LEnv.LEnv ss c fs -> LEnv.LEnv (V.pushBack ss s) c fs
+fun effectVarsOf (e : LEnv) : [(Int, String, String)] = match e with | LEnv.LEnv _ _ _ evs -> evs
 
-fun withScope (e : LEnv) (c : Ctx) : LEnv = match e with | LEnv.LEnv ss _ fs -> LEnv.LEnv ss c fs
+fun pushSlot (e : LEnv) (s : Slot) : LEnv = match e with | LEnv.LEnv ss c fs evs -> LEnv.LEnv (V.pushBack ss s) c fs evs
 
-fun pushField (e : LEnv) (f : (Int, Int, Maybe String, String)) : LEnv = match e with | LEnv.LEnv ss c fs -> LEnv.LEnv ss c (V.pushBack fs f)
+fun withScope (e : LEnv) (c : Ctx) : LEnv = match e with | LEnv.LEnv ss _ fs evs -> LEnv.LEnv ss c fs evs
+
+fun pushField (e : LEnv) (f : (Int, Int, Maybe String, String)) : LEnv = match e with | LEnv.LEnv ss c fs evs -> LEnv.LEnv ss c (V.pushBack fs f) evs
+
+fun pushEffectVar (e : LEnv) (v : (Int, String, String)) : LEnv = match e with | LEnv.LEnv ss c fs evs -> LEnv.LEnv ss c fs (V.pushBack evs v)
 
 -- The field of the record at level `lvl` at place `i`, if one is known.
 fun fieldAt (env : LEnv) (lvl : Int) (i : Int) : Maybe (Int, Int, Maybe String, String) =
@@ -226,12 +233,28 @@ fun param (l : L s) (b : Binder) =
 
 fun contParam (l : L s) (k : String) = C.param l.out C.nowhere k "ptr"
 
--- `def sym <reps; effects> (params; conts) = body`, written, with its symbol.
-fun defDecl (l : L s) (sym : Sym) (reps : [(String, String)]) (effs : [(String, String)]) (params : [Binder]) (conts : [String]) (body : CutStmt) =
-  (sym, C.defWith l.out C.nowhere (A.symText sym) reps effs (V.map (\b -> param l b) params) (V.map (\k -> contParam l k) conts) body)
+-- What a def or method may perform, other than what it handles itself: its
+-- effects and its own effect variables, or None for anything at all.
+type CutRow = Maybe ([Sym], [String])
 
-fun method (l : L s) (n : String) (ps : [Binder]) (ks : [String]) (body : CutStmt) =
-  C.newCutMethod l.out C.nowhere n (V.map (\b -> param l b) ps) (V.map (\k -> contParam l k) ks) body
+-- The row of what performs nothing.
+fun pureRow () : CutRow = Just ([], [])
+
+-- `def sym <reps; effects> (params; conts) ! row = body`, written, with its
+-- symbol.
+fun defDecl (l : L s) (sym : Sym) (reps : [(String, String)]) (effs : [(String, String)]) (params : [Binder]) (conts : [String]) (row : CutRow) (body : CutStmt) =
+  let ps = V.map (\b -> param l b) params in
+  let ks = V.map (\k -> contParam l k) conts in
+  match row with
+  | Just (es, vs) -> (sym, C.defWithRow l.out C.nowhere (A.symText sym) reps effs ps ks (V.map (\e -> A.symText e) es) vs body)
+  | None -> (sym, C.defWith l.out C.nowhere (A.symText sym) reps effs ps ks body)
+
+fun method (l : L s) (n : String) (ps : [Binder]) (ks : [String]) (row : CutRow) (body : CutStmt) =
+  let params = V.map (\b -> param l b) ps in
+  let conts = V.map (\k -> contParam l k) ks in
+  match row with
+  | Just (es, vs) -> C.methodWithRow l.out C.nowhere n params conts (V.map (\e -> A.symText e) es) vs body
+  | None -> C.method l.out C.nowhere n params conts body
 
 fun kVar (l : L s) (k : String) : CutCons ! { St s | e } = C.cont l.out C.nowhere k
 
@@ -533,7 +556,7 @@ fun opInfo (l : L s) (u : Int) : Maybe OpInfo ! { St s | e } = Hm.lookup u (getR
       -- the context every program starts in: the builtins, then the
       -- primitives
       let prims = [Prim.IntAdd, Prim.IntMul, Prim.IntSub, Prim.IntLt, Prim.IntEq, Prim.IntDiv, Prim.IntMod, Prim.StrAppend] in
-      let env0 = LEnv.LEnv (V.append (V.replicate (V.len IC.builtins) Slot.SErased) (V.map (\p -> Slot.SPrim p) prims)) (Ty.scope tc) [] in
+      let env0 = LEnv.LEnv (V.append (V.replicate (V.len IC.builtins) Slot.SErased) (V.map (\p -> Slot.SPrim p) prims)) (Ty.scope tc) [] [] in
       let base = V.len IC.builtins + V.len prims in
       let w1 = setRef l.local (localFreeLevels l recs (owners l program (V.len checked.toplevel) base recs)) in
       let w2 = setRef l.levels [env0] in
@@ -550,7 +573,7 @@ fun opInfo (l : L s) (u : Int) : Maybe OpInfo ! { St s | e } = Hm.lookup u (getR
                   (match V.find (\e -> lenOf e == lvl) (getRef l.levels) with
                    | None -> err l (nm ++ " is a recursive definition the lowering cannot place")
                    | Just at ->
-                       let d = defOf l (M.unwrapOr (A.idyll package nm) (symbol l u)) at core [] [] [] in
+                       let d = defOf l (M.unwrapOr (A.idyll package nm) (symbol l u)) at core [] [] in
                        setRef l.defs (V.pushBack (getRef l.defs) d)))
           ()
           (Hm.toVec recs)
@@ -598,7 +621,7 @@ fun opInfo (l : L s) (u : Int) : Maybe OpInfo ! { St s | e } = Hm.lookup u (getR
             abortHandler l au b inner r kEntry
         | None -> term l env c kEntry
       in
-      let w5 = setRef l.defs (V.pushBack (getRef l.defs) (defDecl l entry [] [] [] [k] body)) in
+      let w5 = setRef l.defs (V.pushBack (getRef l.defs) (defDecl l entry [] [] [] [k] None body)) in
       let text = declarations l (Just entry) answer in
       if V.isEmpty (getRef l.errors) then Ok text else Err (getRef l.errors)
 
@@ -703,7 +726,7 @@ fun toplevel (l : L s) (env : LEnv) (sym : Sym) (rhs : Tm) : Slot ! { St s | e }
   if Ty.isTypeFormer l.tc (scopeOf env) (dataOf l rhs) then Slot.SErased
   else if M.isSome (lambda l rhs) then
     let params = paramsOf l env rhs in
-    let d = defOf l sym env rhs [] [] [] in
+    let d = defOf l sym env rhs [] [] in
     let w = setRef l.defs (V.pushBack (getRef l.defs) d) in
     Slot.SDef sym params
   else
@@ -770,7 +793,7 @@ fun lift (l : L s) (u : Int) (env : LEnv) : Maybe (Sym, [Param], [Int]) ! { St s
                   let w = err l (nm ++ " is used outside where it is defined") in
                   None
                 else
-                  let at0 = LEnv.LEnv (slotsOf baseEnv) (X.prefix (scopeOf env) lvl) (fieldsOf baseEnv) in
+                  let at0 = LEnv.LEnv (slotsOf baseEnv) (X.prefix (scopeOf env) lvl) (fieldsOf baseEnv) [] in
                   let (at, binders, repVars, params, captured) =
                     V.foldl
                       (\acc lv ->
@@ -837,18 +860,17 @@ fun lift (l : L s) (u : Int) (env : LEnv) : Maybe (Sym, [Param], [Int]) ! { St s
                   -- known before its body is lowered, which may call it
                   let w = setRef l.lifted (Hm.insert u (sym, allParams, captured) (getRef l.lifted)) in
                   -- the enclosing definition's effect variables, which its body may
-                  -- perform through as the enclosing one does: Meadow keeps the
-                  -- continuations of a definition with a `ManyEffect` one on the heap
-                  let effects =
+                  -- perform through as the enclosing one does
+                  let atE =
                     V.foldl
-                      (\evs lv ->
+                      (\a lv ->
                         match Ty.effectVar l.tc (scopeOf env) lv with
-                        | Just (x, many) -> V.pushBack evs (name l x, if many then "ManyEffect" else "Effect")
-                        | None -> evs)
-                      []
+                        | Just (x, many) -> pushEffectVar a (lv, name l x, if many then "ManyEffect" else "Effect")
+                        | None -> a)
+                      at
                       (V.range top lvl)
                   in
-                  let w2 = setRef l.defs (V.pushBack (getRef l.defs) (defOf l sym at core repVars binders effects)) in
+                  let w2 = setRef l.defs (V.pushBack (getRef l.defs) (defOf l sym atE core repVars binders)) in
                   Just (sym, allParams, captured))
        | _ -> None)
 
@@ -857,27 +879,67 @@ fun uniqueSym taken (enclosing : Sym) (nm : String) (sym : Sym) (n : Int) : Sym 
 
 -- A function as a `def`: its leading lambdas are its parameters, after
 -- `outerParams` (with `outerReps`, their representations' variables), what
--- a lifted one is given, and `outerEffects`, the effect variables it has
--- from the definition it was in.
-fun defOf (l : L s) (sym : Sym) (env : LEnv) (c : Tm) (outerReps : [(String, String)]) (outerParams : [Binder]) (outerEffects : [(String, String)]) : (Sym, CutDecl) ! { St s | e } =
-  let (env2, body0, params, repVars, effectVars) = defParams l env c [] [] outerEffects in
+-- a lifted one is given. It declares the effect variables `env` has, and
+-- its own.
+fun defOf (l : L s) (sym : Sym) (env : LEnv) (c : Tm) (outerReps : [(String, String)]) (outerParams : [Binder]) : (Sym, CutDecl) ! { St s | e } =
+  let (env2, body0, params, repVars) = defParams l env c [] [] in
+  let row = rowOf l env2 body0 in
   let k = name l "k" in
   let body = term l env2 body0 (kVar l k) in
-  defDecl l sym (V.append outerReps repVars) effectVars (V.append outerParams params) [k] body
+  let effectVars = V.map (\v -> match v with | (_, x, kind) -> (x, kind)) (effectVarsOf env2) in
+  defDecl l sym (V.append outerReps repVars) effectVars (V.append outerParams params) [k] row body
 
-fun defParams (l : L s) (env : LEnv) (c : Tm) (params : [Binder]) (rvs : [(String, String)]) (evs : [(String, String)]) : (LEnv, Tm, [Binder], [(String, String)], [(String, String)]) ! { St s | e } =
+fun defParams (l : L s) (env : LEnv) (c : Tm) (params : [Binder]) (rvs : [(String, String)]) : (LEnv, Tm, [Binder], [(String, String)]) ! { St s | e } =
   match lambda l c with
-  | None -> (env, c, params, rvs, evs)
+  | None -> (env, c, params, rvs)
   | Just (x, grade, ty, body) ->
       -- an effect variable: declared, `<e: Effect>`, and erased
-      let evs2 =
+      let envE =
         match M.andThen (\t -> Ty.effectBinderKind l.tc (scopeOf env) t) ty with
-        | Just many -> V.pushBack evs (name l x, if many then "ManyEffect" else "Effect")
-        | None -> evs
+        | Just many -> pushEffectVar env ((scopeOf env).lvl, name l x, if many then "ManyEffect" else "Effect")
+        | None -> env
       in
-      let (env1, b, rv) = bindParam l env x grade ty in
+      let (env1, b, rv) = bindParam l envE x grade ty in
       let (env2, descs, drvs) = dictDescs l env1 x in
-      defParams l env2 body (V.concat [params, vecOf b, descs]) (V.concat [rvs, vecOf rv, drvs]) evs2
+      defParams l env2 body (V.concat [params, vecOf b, descs]) (V.concat [rvs, vecOf rv, drvs])
+
+-- What `c` may perform, as a row in Cut: None if that is not known, or
+-- names an effect variable the `def` does not declare. An effect a row
+-- names is declared, whether or not anything performs it.
+fun rowOf (l : L s) (env : LEnv) (c : Tm) : Maybe ([Sym], [String]) ! { St s | e } =
+  match Ty.performs l.tc (scopeOf env) (dataOf l c) with
+  | None -> None
+  | Just (effects, vars) ->
+      -- (an effect whose operations are not known is not declared)
+      let known = \u -> V.any (\o -> match o with | OpInfo.OpInfo _ eff _ _ _ _ -> eff == u) (Hm.values (getRef l.tc.ops)) in
+      let syms =
+        V.foldl
+          (\acc u ->
+            match acc with
+            | None -> None
+            | Just ss ->
+                if not (known u) then None
+                else
+                  (match symbol l u with
+                   | Just sy -> (let w = note l.effects u in Just (V.pushBack ss sy))
+                   | None -> None))
+          (Just [])
+          effects
+      in
+      let evs = effectVarsOf env in
+      let names =
+        V.foldl
+          (\acc lv ->
+            match acc with
+            | None -> None
+            | Just ns -> M.map (\v -> match v with | (_, x, _) -> V.pushBack ns (lv, x)) (V.find (\v -> match v with | (vl, _, _) -> vl == lv) evs))
+          (Just [])
+          vars
+      in
+      (match (syms, names) with
+       | (Just ss, Just ns) ->
+           Just (sortOn (\sy -> A.symText sy) ss, V.map snd (sortOn fst ns))
+       | _ -> None)
 
 -- A lambda's variable bound: a value parameter, a descriptor parameter for
 -- a type, or nothing for anything else erased.
@@ -933,7 +995,7 @@ fun bindMethodParam (l : L s) (env : LEnv) (x : String) (grade : Maybe Grade) (t
   match rv with
   | Just (a, _) ->
       (match env2 with
-       | LEnv.LEnv slots scope fs -> (LEnv.LEnv (V.set slots (V.len slots - 1) (Slot.STypeVar None a)) scope fs, b, None))
+       | LEnv.LEnv slots scope fs evs -> (LEnv.LEnv (V.set slots (V.len slots - 1) (Slot.STypeVar None a)) scope fs evs, b, None))
   | None -> (env2, b, rv)
 
 -- --- terms -----------------------------------------------------------------------------
@@ -1064,9 +1126,10 @@ fun closure (l : L s) (env : LEnv) (c : Tm) : CutProd ! { St s | e } =
                 let k = name l "k" in
                 pMu l k (term l inner body (kVar l k)))
        | Just binder ->
+           let row = rowOf l inner body in
            let k = name l "k" in
            let s = term l inner body (kVar l k) in
-           pCocase l [method l "apply" [binder] [k] s])
+           pCocase l [method l "apply" [binder] [k] row s])
 
 -- An application, or a head applied to nothing: a primitive, a constructor,
 -- an operation, a top-level function, or a value applied one argument at a
@@ -1269,7 +1332,11 @@ fun waiting (l : L s) (env : LEnv) (head : Head2) (given : [CutProd]) (remaining
                   (sCut l inner (kVar l outer), outer)
               | None -> (b, ct)
             in
-            (b2, ct2, Just (pCocase l [method l "apply" [Binder.Binder n r] [ct2] b2])))
+            -- each but the last only makes the next object, as a constructor
+            -- does; what the last calls is not known here
+            let makes = match (ob, head) with | (Just _, _) -> True | (None, Head2.HCon _) -> True | _ -> False in
+            let row = if makes then pureRow () else None in
+            (b2, ct2, Just (pCocase l [method l "apply" [Binder.Binder n r] [ct2] row b2])))
       (done, k, None)
       (V.reverse names)
   in
@@ -1526,7 +1593,7 @@ fun caseNamed (l : L s) (env : LEnv) (scrutinee : Tm) (alts : [ElaboratedAlt]) (
                             else match V.get types i with | Just t -> Ty.rep l.tc (scopeOf e) t | None -> TRep.Any
                           in
                           (pushSlot e (Slot.SVar v), V.pushBack fs (Binder.Binder v (rep e r))))
-                  (LEnv.LEnv (slotsOf env) innerScope (fieldsOf env), [])
+                  (LEnv.LEnv (slotsOf env) innerScope (fieldsOf env) (effectVarsOf env), [])
                   (V.zip (V.range 0 (V.len vars)) vars)
               in
               [arm l (symbol l u) fields (term l inner (elaboratedAltBody a alt) k)]
@@ -1910,7 +1977,7 @@ fun flatRep (l : L s) (s : Ctx) (ty : Value) : Rep ! { St s | e } =
   | r -> conv r
 
 fun pushDef (l : L s) (sym : Sym) (params : [(String, Rep)]) (k : String) (body : CutStmt) =
-  setRef l.showDefs (V.pushBack (getRef l.showDefs) (defDecl l sym [] [] (V.map (\p -> match p with | (n, r) -> Binder.Binder n r) params) [k] body))
+  setRef l.showDefs (V.pushBack (getRef l.showDefs) (defDecl l sym [] [] (V.map (\p -> match p with | (n, r) -> Binder.Binder n r) params) [k] (pureRow ()) body))
 
 fun pushShow (l : L s) (sym : Sym) (x : String) (k : String) (body : CutStmt) = pushDef l sym [(x, Rep.Ptr)] k body
 
@@ -2308,7 +2375,7 @@ fun makeByteAt (l : L s) (sym : Sym) =
   let i = name l "i" in
   let b = name l "b" in
   let body = sPrim l "stringByteAt" [pVar l st, pVar l i] [kMuT l (Binder.Binder b (Rep.Number "UInt8")) (sPrim l "toInt" [pVar l b] [kVar l k])] in
-  setRef l.defs (V.pushBack (getRef l.defs) (defDecl l sym [] [] [Binder.Binder st Rep.Str, Binder.Binder i Rep.I64] [k] body))
+  setRef l.defs (V.pushBack (getRef l.defs) (defDecl l sym [] [] [Binder.Binder st Rep.Str, Binder.Binder i Rep.I64] [k] (pureRow ()) body))
 
 fun makeGeneric (l : L s) (n : String) (sym : Sym) : Maybe () ! { St s | e } =
   let d = name l "d" in
@@ -2318,7 +2385,7 @@ fun makeGeneric (l : L s) (n : String) (sym : Sym) : Maybe () ! { St s | e } =
   let kv = kVar l k in
   let var = \x -> pVar l x in
   let bind = \x r body -> kMuT l (Binder.Binder x r) body in
-  let mk = \s params kk body -> defDecl l s [(a, d)] [] (V.append [Binder.Binder d Rep.Desc] params) [kk] body in
+  let mk = \s params kk body -> defDecl l s [(a, d)] [] (V.append [Binder.Binder d Rep.Desc] params) [kk] (pureRow ()) body in
   let push = \df -> setRef l.defs (V.pushBack (getRef l.defs) df) in
   if n == "arrayToList" then
     (match (preludeCtor l "Nil", preludeCtor l "::") with
