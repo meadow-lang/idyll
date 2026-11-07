@@ -640,6 +640,14 @@ impl Lower<'_> {
         def.params = binders;
         rep_vars.append(&mut def.rep_vars);
         def.rep_vars = rep_vars;
+        // the enclosing definition's effect variables, which its body may
+        // perform through as the enclosing one does: Meadow keeps the
+        // continuations of a definition with a `ManyEffect` one on the heap
+        let outer: Vec<(String, bool)> = (top..d.lvl).filter_map(|lvl| self.typer.effect_var(&env.scope, lvl)).collect();
+        let mut effect_vars: Vec<(String, Kind)> =
+            outer.into_iter().map(|(e, many)| (self.name(&e), if many { Kind::ManyEffect } else { Kind::Effect })).collect();
+        effect_vars.append(&mut def.effect_vars);
+        def.effect_vars = effect_vars;
         self.defs.push(def);
         Some((symbol, params, captured))
     }

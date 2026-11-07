@@ -305,6 +305,14 @@ impl Typer {
         self.chk.row_kind(&v)
     }
 
+    /// The name and kind of the effect variable at `lvl` in `s`, as
+    /// [`Typer::effect_binder_kind`] gives it, or `None` if it binds
+    /// anything else.
+    pub fn effect_var(&self, s: &Scope, lvl: Lvl) -> Option<(String, bool)> {
+        let b = &s.ctx.binders[lvl];
+        self.chk.row_kind(&b.ty).map(|many| (b.name.clone(), many))
+    }
+
     /// Whether the term `c` (in `s`) is a type: what an erased argument for a
     /// type parameter is.
     pub fn is_type(&mut self, s: &Scope, c: &Rc<Core>) -> bool {

@@ -550,7 +550,7 @@ fun opInfo (l : L s) (u : Int) : Maybe OpInfo ! { St s | e } = Hm.lookup u (getR
                   (match V.find (\e -> lenOf e == lvl) (getRef l.levels) with
                    | None -> err l (nm ++ " is a recursive definition the lowering cannot place")
                    | Just at ->
-                       let d = defOf l (M.unwrapOr (A.idyll package nm) (symbol l u)) at core [] [] in
+                       let d = defOf l (M.unwrapOr (A.idyll package nm) (symbol l u)) at core [] [] [] in
                        setRef l.defs (V.pushBack (getRef l.defs) d)))
           ()
           (Hm.toVec recs)
@@ -703,7 +703,7 @@ fun toplevel (l : L s) (env : LEnv) (sym : Sym) (rhs : Tm) : Slot ! { St s | e }
   if Ty.isTypeFormer l.tc (scopeOf env) (dataOf l rhs) then Slot.SErased
   else if M.isSome (lambda l rhs) then
     let params = paramsOf l env rhs in
-    let d = defOf l sym env rhs [] [] in
+    let d = defOf l sym env rhs [] [] [] in
     let w = setRef l.defs (V.pushBack (getRef l.defs) d) in
     Slot.SDef sym params
   else
@@ -836,7 +836,19 @@ fun lift (l : L s) (u : Int) (env : LEnv) : Maybe (Sym, [Param], [Int]) ! { St s
                   let allParams = V.append params (paramsOf l at core) in
                   -- known before its body is lowered, which may call it
                   let w = setRef l.lifted (Hm.insert u (sym, allParams, captured) (getRef l.lifted)) in
-                  let w2 = setRef l.defs (V.pushBack (getRef l.defs) (defOf l sym at core repVars binders)) in
+                  -- the enclosing definition's effect variables, which its body may
+                  -- perform through as the enclosing one does: Meadow keeps the
+                  -- continuations of a definition with a `ManyEffect` one on the heap
+                  let effects =
+                    V.foldl
+                      (\evs lv ->
+                        match Ty.effectVar l.tc (scopeOf env) lv with
+                        | Just (x, many) -> V.pushBack evs (name l x, if many then "ManyEffect" else "Effect")
+                        | None -> evs)
+                      []
+                      (V.range top lvl)
+                  in
+                  let w2 = setRef l.defs (V.pushBack (getRef l.defs) (defOf l sym at core repVars binders effects)) in
                   Just (sym, allParams, captured))
        | _ -> None)
 
@@ -845,9 +857,10 @@ fun uniqueSym taken (enclosing : Sym) (nm : String) (sym : Sym) (n : Int) : Sym 
 
 -- A function as a `def`: its leading lambdas are its parameters, after
 -- `outerParams` (with `outerReps`, their representations' variables), what
--- a lifted one is given.
-fun defOf (l : L s) (sym : Sym) (env : LEnv) (c : Tm) (outerReps : [(String, String)]) (outerParams : [Binder]) : (Sym, CutDecl) ! { St s | e } =
-  let (env2, body0, params, repVars, effectVars) = defParams l env c [] [] [] in
+-- a lifted one is given, and `outerEffects`, the effect variables it has
+-- from the definition it was in.
+fun defOf (l : L s) (sym : Sym) (env : LEnv) (c : Tm) (outerReps : [(String, String)]) (outerParams : [Binder]) (outerEffects : [(String, String)]) : (Sym, CutDecl) ! { St s | e } =
+  let (env2, body0, params, repVars, effectVars) = defParams l env c [] [] outerEffects in
   let k = name l "k" in
   let body = term l env2 body0 (kVar l k) in
   defDecl l sym (V.append outerReps repVars) effectVars (V.append outerParams params) [k] body

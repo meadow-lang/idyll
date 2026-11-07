@@ -203,6 +203,11 @@ fun typeFieldsFrom (tc : Tc s) (params : Int) (lvl : Int) (i : Int) (ty : Value)
 -- one: `False` for `Effect`, `True` for `Effect []`.
 @pub fun effectBinderKind (tc : Tc s) (s : Ctx) (ty : Core) : Maybe Bool ! { St s | e } = rowKind tc (eval tc s.env ty)
 
+-- The name and kind of the effect variable at a level, as effectBinderKind
+-- gives it, or None if it binds anything else.
+@pub fun effectVar (tc : Tc s) (s : Ctx) (lvl : Int) : Maybe (String, Bool) ! { St s | e } =
+  M.map (\many -> (X.nameAt s lvl, many)) (rowKind tc (X.typeAt s lvl))
+
 -- Whether a term is a type: what an erased argument for a type parameter is.
 @pub fun isType (tc : Tc s) (s : Ctx) (c : Core) : Bool ! { St s | e } =
   match tyOf tc s c with
