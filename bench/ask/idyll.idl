@@ -1,0 +1,9 @@
+-- Ten million operations through a handler whose clause resumes at once.
+effect Ask where
+  ask : () -> Int
+
+sumAsks : (n : [] Int) -> (acc : [] Int) -> Int ! {Ask, Div}
+sumAsks n acc = if n == 0 then acc else sumAsks (n - 1) (acc + ask ())
+
+handle sumAsks 10000000 0 with
+  ask u k -> k 1

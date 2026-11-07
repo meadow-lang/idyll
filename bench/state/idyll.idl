@@ -1,0 +1,17 @@
+-- Counting ten million down through a state handler that passes the state
+-- along as a function, as `Std.State` does: each clause resumes once, but
+-- not as its last step.
+effect Store where
+  load : () -> Int
+  save : Int -> ()
+
+count : () -> Int ! {Store, Div}
+count u = let n = load () in if n == 0 then n else let v = save (n - 1) in count ()
+
+threaded : (u : ()) -> ((s : Int) -> Int ! Div) ! Div
+threaded u = handle count () with
+  return x -> \(s : Int) -> x
+  load u k -> \(s : Int) -> k s s
+  save t k -> \(s : Int) -> k () t
+
+threaded () 10000000
