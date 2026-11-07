@@ -1507,3 +1507,19 @@ pair : {a : Type} -> a -> a -> Vec (0 + 2) a
 pair x y = Vec.Cons x (Vec.Cons y Vec.Nil)
 
 toInt (next 2)
+%%%
+-- resuming in a function the handler gives back, where nothing gave that
+-- function's type a row: the rest of the computation's effects (Div) are
+-- not allowed there
+effect Store where
+  load : () -> Int
+  save : Int -> ()
+
+count : () -> Int ! {Store, Div}
+count u = let n = load () in if n == 0 then n else let v = save (n - 1) in count ()
+
+run : (n : Int) -> Int ! Div
+run n = (handle count () with
+  return x -> \(s : Int) -> x
+  load u k -> \(s : Int) -> k s s
+  save t k -> \(s : Int) -> k () t) n

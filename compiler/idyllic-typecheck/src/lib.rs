@@ -472,6 +472,11 @@ pub enum TypeErrorKind {
     /// a handler's effect twice over in the body's row, or a row the
     /// resumption cannot be given
     AmbiguousHandler { effect: String, row: Rc<Core> },
+    /// resuming runs the rest of the handled computation, whose effects
+    /// (`row`) the type a clause resumes in does not allow: a clause giving
+    /// back a function that resumes, where nothing gave that function's
+    /// type a row
+    ResumedEffects { effect: String, row: Rc<Core> },
     /// a clause resumes more than once an operation not declared `@many`
     ResumesTooOften { op: String, effect: String },
     /// a row variable of kind `Effect` given effects that may be resumed
@@ -853,6 +858,9 @@ impl TypeError {
             }
             TypeErrorKind::AmbiguousHandler { effect, row } => Diagnostic::error(format!("which {effect}?"))
                 .label(here, format!("the handled computation has the effects {row}")),
+            TypeErrorKind::ResumedEffects { effect, row } => Diagnostic::error(format!("resuming this {effect} handler does what its clauses may not"))
+                .label(here, format!("resuming runs the rest of the handled computation, which has the effects {row}"))
+                .help("a clause that gives back a function and resumes in it needs that function's type to allow them: give the handler a signature, as Std.State's `threaded` has"),
             TypeErrorKind::ManyEffectsInRow { what, row } => Diagnostic::error("these effects may be resumed more than once")
                 .label(here, format!("{what} stands for effects resumed at most once, and {row} has an operation declared @many"))
                 .help("a row variable takes effects resumed at most once unless it says otherwise: bind it as {e : Effect []}"),

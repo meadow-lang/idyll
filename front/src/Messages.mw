@@ -201,6 +201,10 @@ fun worded (sols : [Maybe Core]) (linear : Bool) (at : Meta) (r : Report) : Diag
          else
            let args = clauseArgs (M.unwrapOr 1 (S.toInt (word 1)) - 1) in
            withLabel at "${word 0} ${S.join " " args} k -> .., for its ${if V.len args == 1 then "argument" else "arguments"} and the resumption" (errorAt at "${word 0}'s clause names ${word 1} things"))
+      else if kind == "ResumedEffects" then
+        withNote
+          "a clause that gives back a function and resumes in it needs that function's type to allow them: give the handler a signature, as Std.State's `threaded` has"
+          (withLabel at "resuming runs the rest of the handled computation, which has the effects ${ty 0}" (errorAt at "resuming this ${word 0} handler does what its clauses may not"))
       else if kind == "AmbiguousHandler" then withLabel at "the handled computation has the effects ${ty 0}" (errorAt at "which ${word 0}?")
       else if kind == "BadSeq" then withLabel at (word 1) (errorAt at "${word 0} cannot be built with #[..]")
       else if kind == "MainType" then

@@ -202,7 +202,7 @@ fun handleEffect (tc : Tc s) (ctx : Ctx) (body : HirExpr) (clauses : [Clause]) (
                          -- (a clause may have made resuming more already: one
                          -- giving back a function that resumes and performs
                          -- the handled effect itself; claiming more is sound)
-                         let w = if unify tc ctx.lvl resumed total or effectsFit tc ctx.lvl total resumed then () else T.errorOf tc "AmbiguousHandler" [quote tc ctx.lvl total] [effName] in
+                         let w = if unify tc ctx.lvl resumed total or effectsFit tc ctx.lvl total resumed then () else T.errorOf tc "ResumedEffects" [quote tc ctx.lvl total] [effName] in
                          let usage = U.add (U.add (U.add bodyU (U.withoutEffects retU)) (U.withoutEffects opsU)) (U.performs total) in
                          (Core.Handle bodyC retCore opsCore, result, usage))))
 
