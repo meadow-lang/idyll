@@ -256,6 +256,14 @@ fn an_effect_variable_is_declared_on_its_def() {
     // one that may stand for an effect resumed more than once
     let text = lowered("again : {e : Effect []} -> (f : [2] (() -> Int ! e)) -> Int ! e\nagain f = f () + f ()\n\nagain (\\(u : ()) -> 1)\n");
     has(&text, "def idyll:Main/again <e_N: ManyEffect> (f_N: ptr; k_N: ptr) =");
+    // and a recursive function inside it, lifted to a def of its own, has
+    // it too: it performs through it as the one it was in does
+    let text = lowered(
+        "sumTo : {e : Effect []} -> Int -> (f : [] (() -> Int ! e)) -> Int ! {Div | e}\n\
+         sumTo n f =\n  let go : Int -> Int -> Int ! {Div | e}\n      go i acc = if i == 0 then acc else go (i - 1) (acc + f ())\n  in go n 0\n\n\
+         sumTo 3 (\\(u : ()) -> 1)\n",
+    );
+    has(&text, "def idyll:Main/sumTo.go <e_N: ManyEffect> (");
 }
 
 #[test]
