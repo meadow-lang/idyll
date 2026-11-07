@@ -1019,8 +1019,19 @@ fun checkGroupIn (tc : Tc s) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, May
         else members0
       in
       -- if they terminate they may compute in types from here on; if they may
-      -- not, they must say so, unless `@terminating` says they end after all
-      let terminates = checkTermination tc ctxRec members in
+      -- not, they must say so, unless `@terminating` says they end after all.
+      -- A group it says that of is taken at its word, and not checked: it
+      -- stays opaque (checking normalises each body, which for Std.Json's
+      -- parsers took most of the time Std took). An instance is vouched for
+      -- too, and is checked as ever.
+      let vouched =
+        V.all
+          (\(b : BindOf) ->
+            let u = H.uniqueOf (nameOf b) in
+            V.elem u (getRef tc.terminating) and not (V.elem u (getRef tc.hints)))
+          bs
+      in
+      let terminates = if vouched then False else checkTermination tc ctxRec members in
       let w0 = unfoldInstances tc ctxRec members in
       let w =
         if terminates then ()

@@ -209,7 +209,10 @@ neither does a negative data type. **Done** (`compiler/idyllic/tests/universes.r
 - [x] **`@terminating`**, on a signature, vouches that a recursion ends that
   the checker cannot see ending (an index counting up to a length): it
   needs no `Div`, and stays opaque in types. The standard library's array
-  and vector loops use it.
+  and vector loops use it. Since 2026-11-06 both checkers take it at its
+  word and do not check it, as the tutorial always said: checking
+  normalised each body, which for `Std.Json`'s parsers was most of the time
+  Std took to check.
 - [x] **A definition by matching stays folded** until its case tree can
   choose, as Agda's and Idris's do, even one that never calls itself: it is
   checked as a recursive definition (if it has a signature), so a type

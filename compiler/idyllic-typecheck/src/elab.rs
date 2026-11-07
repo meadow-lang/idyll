@@ -968,8 +968,14 @@ impl Checker {
                 }
                 // 4. if they terminate, they may compute in types from here
                 //    on; if they may not, they have to say so, unless
-                //    `@terminating` says they end after all
-                let terminates = self.check_termination(&ctx_rec, &members);
+                //    `@terminating` says they end after all. A group it says
+                //    that of is taken at its word, and not checked: it stays
+                //    opaque. (Checking it normalises each body, which for
+                //    `Std.Json`'s parsers, combinators unfolded into
+                //    combinators, took most of the time Std took to check.)
+                //    An instance is vouched for too, and is checked as ever.
+                let vouched = bs.iter().all(|b| b.name.unique.is_some_and(|u| self.terminating.contains(&u) && !self.hints.contains(&u)));
+                let terminates = !vouched && self.check_termination(&ctx_rec, &members);
                 self.unfold_instances(&ctx_rec, &members);
                 if !terminates {
                     for (b, ty) in bs.iter().zip(&sigs) {

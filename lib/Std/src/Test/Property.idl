@@ -237,7 +237,6 @@ attempt prop given random from = drawing given random from (\(u : ()) -> failure
 
 -- The first of the cases from `n` on that fails: which, its draws, and
 -- what it said.
-@terminating
 firstFailing : (c : Config) -> (prop : (u : ()) -> () ! {Gen, Test | e}) -> (n : Int) -> Maybe (Int, Vector Int, String) ! e
 firstFailing c prop n =
   if n >= c.runs then Nothing
@@ -298,7 +297,6 @@ lowered prop draws why i left =
 
 -- The first of `values` that, put at `i` of `draws`, still fails and makes
 -- a case before this one: its draws and what it said.
-@terminating
 firstBefore : (prop : (u : ()) -> () ! {Gen, Test | e}) -> (draws : Vector Int) -> (i : Int) -> (values : List Int) -> (left : Int) -> (Maybe (Vector Int, String), Int) ! e
 firstBefore prop draws i values left =
   if left <= 0 then (Nothing, left)

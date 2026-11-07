@@ -139,3 +139,26 @@ fn display_of_operator_terms() {
     let (_, diags) = run("\\(f : [0] Int -> Type) (a b c : [0] Int) (x : f (a + (b + c))) -> (x : f (a + b + c))");
     assert_eq!(diags, ["type mismatch: expected f (a + b + c), but this has type f (a + (b + c))"]);
 }
+
+// A comparison on arithmetic that shares its parts, as `Std.Time.utc`'s
+// does, is checked at once: forcing the stuck sum used to walk it as the
+// tree it spells out, every shared part again each time, which took a
+// second and a half for `utc` and multiplies with each level added here.
+#[test]
+fn a_comparison_on_shared_arithmetic_is_checked_at_once() {
+    let src = "f : (ms : Int) -> Int\n\
+               f ms =\n  \
+                 let z = ms / 86400000 + 719468 in\n  \
+                 let era = z / 146097 in\n  \
+                 let doe = z - era * 146097 in\n  \
+                 let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365 in\n  \
+                 let doy = doe - (365 * yoe + yoe / 4 - yoe / 100) in\n  \
+                 let mp = (5 * doy + 2) / 153 in\n  \
+                 let q = (7 * mp + 1) / 11 in\n  \
+                 let r = (3 * q + 5) / 13 in\n  \
+                 if r < 10 then r + 3 else r - 9\n\n\
+               f 1000\n";
+    let started = std::time::Instant::now();
+    ok(src, "Int");
+    assert!(started.elapsed() < std::time::Duration::from_secs(30), "took {:?}", started.elapsed());
+}
