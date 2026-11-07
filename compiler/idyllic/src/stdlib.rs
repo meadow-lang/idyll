@@ -15,6 +15,8 @@
 
 use crate::pipeline::{self, CompiledPackage, Deps, ModuleFile, Options, PackageSource};
 use std::cell::OnceCell;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::OnceLock;
 
@@ -96,7 +98,8 @@ pub fn source() -> PackageSource {
     PackageSource { name: NAME.to_string(), version: None, linear: false, modules }
 }
 
-/// Std, compiled: once a process, and read back once a thread.
+/// Std, compiled: once a process, and read back once a thread; or, where
+/// [`keep_in`] has said, read from what an earlier run of this binary kept.
 ///
 /// It must compile; one that does not is a bug in the library, and every
 /// diagnostic is in the panic.
@@ -108,13 +111,92 @@ pub fn compiled() -> Rc<CompiledPackage> {
     COPY.with(|copy| {
         copy.get_or_init(|| {
             let bytes = BYTES.get_or_init(|| {
+                let kept = KEPT.get();
+                if let Some(bytes) = kept.and_then(|file| read(file, binary())) {
+                    return bytes;
+                }
                 let package = compile().unwrap_or_else(|errors| panic!("Std does not compile:\n{errors}"));
-                postcard::to_allocvec(&package).expect("a compiled package serializes")
+                let bytes = postcard::to_allocvec(&package).expect("a compiled package serializes");
+                if let Some(file) = kept {
+                    write(file, binary(), &bytes);
+                }
+                bytes
             });
             Rc::new(postcard::from_bytes(bytes).expect("Std reads back as it was written"))
         })
         .clone()
     })
+}
+
+/// Where compiled Std is kept between runs, if anywhere: see [`keep_in`].
+static KEPT: OnceLock<PathBuf> = OnceLock::new();
+
+/// Keep compiled Std in `dir` between runs, and read it from there: a file
+/// for each binary that keeps one, stamped with that binary, so that a
+/// rebuilt compiler never reads what another wrote. Checking Std takes
+/// seconds, which every run of `idyll` and `idyllic` paid before it did
+/// anything else; they say where (`$IDYLL_HOME/cache`). The tests do not,
+/// and check it once a process. A file that cannot be read or written is
+/// simply compiled over.
+pub fn keep_in(dir: &Path) {
+    let mut h = std::hash::DefaultHasher::new();
+    std::env::current_exe().unwrap_or_default().hash(&mut h);
+    let _ = KEPT.set(dir.join(format!("std-{:016x}.ipk", h.finish())));
+}
+
+/// Where Idyll keeps what runs and projects share: `$IDYLL_HOME`, or
+/// `~/.idyll`.
+pub fn home() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("IDYLL_HOME") {
+        return Some(PathBuf::from(dir));
+    }
+    let base = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok()?;
+    Some(PathBuf::from(base).join(".idyll"))
+}
+
+/// What a kept Std starts with, so that some other file is not taken for one.
+const MAGIC: &[u8; 8] = b"IDLSTD\x00\x01";
+
+/// This binary, by version, size and when it was built: what a kept Std was
+/// compiled by, Std's sources and the prelude being in it.
+fn binary() -> u64 {
+    let mut h = std::hash::DefaultHasher::new();
+    env!("CARGO_PKG_VERSION").hash(&mut h);
+    if let Ok(meta) = std::env::current_exe().and_then(std::fs::metadata) {
+        meta.len().hash(&mut h);
+        if let Ok(built) = meta.modified() {
+            built.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().hash(&mut h);
+        }
+    }
+    h.finish()
+}
+
+/// The compiled Std kept at `file`, if `stamp` kept it and it reads back.
+fn read(file: &Path, stamp: u64) -> Option<Vec<u8>> {
+    let bytes = std::fs::read(file).ok()?;
+    let rest = bytes.strip_prefix(MAGIC)?;
+    let (kept, payload) = rest.split_first_chunk::<8>()?;
+    if u64::from_le_bytes(*kept) != stamp {
+        return None;
+    }
+    postcard::from_bytes::<CompiledPackage>(payload).ok()?;
+    Some(payload.to_vec())
+}
+
+fn write(file: &Path, stamp: u64, payload: &[u8]) {
+    let mut bytes = Vec::with_capacity(MAGIC.len() + 8 + payload.len());
+    bytes.extend_from_slice(MAGIC);
+    bytes.extend_from_slice(&stamp.to_le_bytes());
+    bytes.extend_from_slice(payload);
+    if file.parent().is_some_and(|dir| std::fs::create_dir_all(dir).is_err()) {
+        return;
+    }
+    // (written aside and renamed into place, so that two runs at once never
+    // read half a file)
+    let partial = file.with_extension(format!("ipk.{}", std::process::id()));
+    if std::fs::write(&partial, &bytes).is_err() || std::fs::rename(&partial, file).is_err() {
+        let _ = std::fs::remove_file(&partial);
+    }
 }
 
 /// Check Std, as a package depending on nothing: what it compiled to, or
@@ -126,5 +208,27 @@ pub fn compile() -> Result<CompiledPackage, String> {
     match out.checked.and_then(|c| c.compiled) {
         Some(package) if !has_errors => Ok(package),
         _ => Err(idyllic_diagnostics::render_map(&out.diagnostics, &out.sources, opts.style)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_kept_std_is_read_back_only_by_the_binary_that_kept_it() {
+        let dir = std::env::temp_dir().join(format!("idyll-kept-std-{}", std::process::id()));
+        let file = dir.join("std.ipk");
+        let payload = postcard::to_allocvec(&*compiled()).expect("Std serializes");
+        write(&file, 7, &payload);
+        assert_eq!(read(&file, 7).as_deref(), Some(&payload[..]), "what was kept is what is read");
+        // another binary's, or a rebuilt one's
+        assert_eq!(read(&file, 8), None);
+        // and a file that is not one, or is cut short, is compiled over
+        std::fs::write(&file, b"not Std").expect("writes");
+        assert_eq!(read(&file, 7), None);
+        write(&file, 7, &payload[..payload.len() / 2]);
+        assert_eq!(read(&file, 7), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

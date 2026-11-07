@@ -541,11 +541,7 @@ pub fn default_cache() -> Result<PathBuf, String> {
 
 /// Where Idyll keeps what projects share: `$IDYLL_HOME`, or `~/.idyll`.
 pub fn home() -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var("IDYLL_HOME") {
-        return Some(PathBuf::from(dir));
-    }
-    let base = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok()?;
-    Some(PathBuf::from(base).join(".idyll"))
+    idyllic::stdlib::home()
 }
 
 /// `url` with the endings that do not change where it points removed, so that

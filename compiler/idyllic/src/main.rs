@@ -62,6 +62,9 @@ fn main() -> ExitCode {
 
 fn command() -> ExitCode {
     let cli = Cli::parse();
+    if let Some(home) = idyllic::stdlib::home() {
+        idyllic::stdlib::keep_in(&home.join("cache"));
+    }
     let mut style = OutputStyle::detect();
     style.color &= !cli.no_color;
     style.unicode &= !cli.ascii;

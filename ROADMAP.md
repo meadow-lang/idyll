@@ -424,7 +424,9 @@ examples need strings to take apart first (`Std.Yield` is the generators).
   semver requirement (one release shared by everything that can share it;
   two copies, and two types, only where requirements cannot meet), a fetch
   cache in `~/.idyll/git`, `--offline`/`--locked`, `-p`/`--workspace`/
-  `--exclude`, and incremental builds by fingerprint: each package that
+  `--exclude`, compiled Std kept in `~/.idyll/cache` for each compiler
+  binary (2026-11-06: a run no longer checks Std first, which took seconds),
+  and incremental builds by fingerprint: each package that
   compiled cleanly is kept (serde + postcard) under
   `target/<profile>/incremental`, on a slot of uniques of its own so that
   one package growing changes no other. Profiles choose the back end: debug

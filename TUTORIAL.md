@@ -3012,7 +3012,8 @@ network for them; commit the file, and a build on another machine is the
 build you tested. `idyll update` moves dependencies forward to what their
 references name now (`idyll update Json` just that one, `--dry-run` to see
 what would change). Fetched repositories are kept in `~/.idyll/git`
-(`IDYLL_HOME` moves it). `--offline` never fetches; `--locked` refuses any
+(`IDYLL_HOME` moves it), and the standard library, checked once, in
+`~/.idyll/cache`. `--offline` never fetches; `--locked` refuses any
 build that would change the lockfile, which is what CI wants.
 
 ### Workspaces
