@@ -1,0 +1,9 @@
+use Std.Console (println)
+
+effect Ask {
+  ask : () -> Int,
+}
+
+fun sumAsks n acc = if n == 0 then acc else sumAsks (n - 1) (acc + ask ())
+
+fun main () = println (handle sumAsks 10000000 0 with { ask u k -> k 1, })

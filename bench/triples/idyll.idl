@@ -1,0 +1,19 @@
+-- How many triples of distinct numbers up to 300, in falling order, add up
+-- to 300: a search that resumes each choice twice, which `@many` allows.
+effect Choose where
+  @many flip : () -> Bool
+  fail : () -> Int
+
+choice : (n : [] Int) -> Int ! {Choose, Div}
+choice n = if n < 1 then fail () else if flip () then n else choice (n - 1)
+
+triple : (n : [] Int) -> (s : [] Int) -> Int ! {Choose, Div}
+triple n s =
+  let i = choice n in
+  let j = choice (i - 1) in
+  let k = choice (j - 1) in
+  if i + j + k == s then 1 else fail ()
+
+handle triple 300 300 with
+  flip u k -> k True + k False
+  fail u k -> 0

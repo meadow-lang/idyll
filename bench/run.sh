@@ -52,7 +52,7 @@ time_ms() { # command... -> "best median" over RUNS runs
 }
 
 printf '%-6s %-11s %10s %10s   %s\n' bench language best_ms median_ms answer
-for b in fib list map; do
+for b in fib list map ask state triples; do
   build $b
   for lang in idyll meadow_silo meadow c c_pool rust go haskell python js; do
     case $lang in

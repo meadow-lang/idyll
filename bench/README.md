@@ -1,6 +1,6 @@
 # Benchmarks
 
-Three small programs, in Idyll and in Meadow, C, Rust, Go, Haskell, Python
+Small programs, in Idyll and in Meadow, C, Rust, Go, Haskell, Python
 and JavaScript. `./run.sh [RUNS]` builds what the machine has compilers for,
 checks that every language prints the same answer, and reports the best and
 median wall-clock time of `RUNS` runs (default 7), process start-up included.
@@ -12,6 +12,13 @@ the program's Cut to `meadow cut` for Silo to build).
 | `fib` | `fib 35`, the naive doubly recursive one | function calls, and nothing else |
 | `list` | builds a linked list of a million integers, sums it, drops it; 20 times | allocation and reclamation |
 | `map` | the same, mapping a closure over the list in between | calls through a closure |
+| `ask` | ten million operations through a handler whose clause resumes at once, `ask u k -> k 1` | performing, and resuming last |
+| `state` | counting ten million down through a state handler that passes the state on as a function, as `Std.State` does | resuming once, but not last |
+| `triples` | how many triples of falling numbers up to 300 add up to 300, choosing each with an operation resumed twice | `@many`: resuming more than once |
+
+Only Idyll and Meadow have handlers, so the last three are written in those
+alone, and `state` and `triples` in Idyll alone (Meadow resumes at most
+once).
 
 Every language uses a linked list (not an array), so that the work is the
 same. `c_pool` is the C program with `malloc`/`free` replaced by a free list

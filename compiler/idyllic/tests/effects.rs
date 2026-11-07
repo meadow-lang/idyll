@@ -2,6 +2,7 @@
 //! termination checker behind it, the rule that nothing with effects gets
 //! into a type, and matching on erased values their types decide.
 
+use idyllic::meadow::Runtime;
 use idyllic::pipeline::{self, Evaluation, Options};
 use idyllic_diagnostics::OutputStyle;
 
@@ -265,6 +266,31 @@ fn an_operation_is_a_function_with_its_effect() {
 #[test]
 fn a_handler_answers_its_operations() {
     assert_eq!(value(&format!("{ASK}{SUM3}handle sum3 () with\n  ask _ k -> k 10\n")), "30 : Int");
+}
+
+// A handler answering millions of operations keeps to the stack it began
+// with, on both of Meadow's runtimes: each `ask` is answered and the body
+// resumed, and nothing either leaves behind piles up. (On Silo a frame was
+// left behind each time, and the stack ran out between 400 thousand
+// operations and a million.)
+#[test]
+fn a_handler_answers_millions_of_operations_in_the_stack_it_began_with() {
+    let src = format!(
+        "{ASK}sumAsks : (n : [] Int) -> (acc : [] Int) -> Int ! {{Ask, Div}}\n\
+         sumAsks n acc = if n == 0 then acc else sumAsks (n - 1) (acc + ask ())\n\n\
+         handle sumAsks 3000000 0 with\n  ask _ k -> k 1\n"
+    );
+    let package = pipeline::PackageSource::single("Main", "src/Main.idl", &src);
+    let opts = Options { debug: false, style: OutputStyle::PLAIN, live: false };
+    for runtime in [Runtime::Glade, Runtime::Silo] {
+        let out = pipeline::run_package_on(&package, &opts, Vec::new(), runtime);
+        assert!(
+            matches!(&out.evaluation, Some(Evaluation::Value(v)) if v == "3000000"),
+            "on {runtime:?}: {:?} {:?}",
+            out.evaluation,
+            diags(&out)
+        );
+    }
 }
 
 #[test]
