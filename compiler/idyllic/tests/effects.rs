@@ -667,3 +667,20 @@ fn matching_a_resumptions_answer_resumes_it_once() {
         &["tell is resumed more than once: this clause may resume tell more than once, and Tell declares it to be resumed at most once"],
     );
 }
+
+// A clause that gives back a function and resumes in it, with nothing to
+// give that function's type a row, cannot run the rest of the computation
+// there: said as that, not as a question of which handler is meant.
+#[test]
+fn resuming_where_the_rest_of_the_computation_may_not_run_says_so() {
+    let store = "effect Store where\n  load : () -> Int\n  save : Int -> ()\n\n\
+                 count : () -> Int ! {Store, Div}\n\
+                 count u = let n = load () in if n == 0 then n else let v = save (n - 1) in count ()\n\n";
+    let handler = "handle count () with\n  return x -> \\(s : Int) -> x\n  load u k -> \\(s : Int) -> k s s\n  save t k -> \\(s : Int) -> k () t";
+    rejects(
+        &format!("{store}run : (n : Int) -> Int ! Div\nrun n = ({handler}) n\n"),
+        &["resuming this Store handler does what its clauses may not: resuming runs the rest of the handled computation, which has the effects Div"],
+    );
+    // with a signature, as Std.State's `threaded` has, it is fine
+    accepts(&format!("{store}threaded : (u : ()) -> ((s : Int) -> Int ! Div) ! Div\nthreaded u = {handler}\n\nthreaded () 3\n"));
+}

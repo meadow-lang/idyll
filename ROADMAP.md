@@ -1389,7 +1389,7 @@ do yet `(unsupported)`, and the tests count those apart.
   nothing to check them, numbers too large for their type, effects (not
   allowed, unhandled, in a type, in an argument a type depends on), and
   handlers, natives and indexed data, overloaded names (with the candidates
-  they list), and all the rest: every kind of the Rust checker's 76 but
+  they list), and all the rest: every kind of the Rust checker's 77 but
   `TestType` and `NoTestRunner`, which are `idyll test`'s, and front/ has
   no such command yet. The renamer's errors are compared too, each headline as the Rust renamer's
   (a problem's text is its headline, and its label on a line after).

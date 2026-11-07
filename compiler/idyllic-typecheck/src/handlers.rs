@@ -449,7 +449,7 @@ impl Checker {
         // that function's effects; claiming more than it does is sound)
         if !self.unify(ctx.lvl, resumed.clone(), total.clone()) && !self.effects_fit(ctx.lvl, total.clone(), resumed) {
             let row = self.quote(ctx.lvl, total.clone());
-            self.error(nid, TypeErrorKind::AmbiguousHandler { effect: info.name.clone(), row });
+            self.error(nid, TypeErrorKind::ResumedEffects { effect: info.name.clone(), row });
         }
         let usage = body_usage + ret_usage + ops_usage + Usage::effect(total);
         (Rc::new(Core::Handle(body_c, ret_core, Rc::new(ops))), result, usage)
