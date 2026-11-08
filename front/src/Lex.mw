@@ -215,7 +215,7 @@ use Std.Test (assertEq)
 
 -- The tokens of `src`, without the spaces between them.
 fun kinds (src : String) : [Raw] =
-  match lexRaw src with
+  match lexRawAll src with
   | Ok ls -> V.filter (\t -> match t with | Raw.Space -> False | _ -> True) (V.map token ls)
   | Err _ -> []
 
