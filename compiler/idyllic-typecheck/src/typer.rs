@@ -16,7 +16,7 @@
 //! [`Rep::Any`]: boxed, and self-describing at run time.
 
 use super::core::{lit_builtin, CaseAlt, Core, Head, Lvl, Note};
-use super::value::{vvar, Closure, Elim, Poly, Value};
+use super::value::{vvar, Closure, Elim, Poly, Row, Value};
 use super::{BinderInfo, Checker, Ctx, MetaEntry};
 use crate::grade::Grade;
 use idyllic_builtins::{Builtin, Native};
@@ -303,6 +303,19 @@ impl Typer {
     pub fn effect_binder_kind(&mut self, s: &Scope, ty: &Rc<Core>) -> Option<bool> {
         let v = self.chk.eval(&s.ctx.env, ty);
         self.chk.row_kind(&v)
+    }
+
+    /// Move the type of the recursive definition `u`, defined where `at`
+    /// variables were in scope, to where linking put them: the variable at
+    /// each level `l` is now at `moved(l)`.  (A recursive definition inside
+    /// another has a type that may mention the variables of the one it is
+    /// in, and linking puts the packages before it in front of them.)
+    pub fn relocate(&mut self, u: usize, at: Lvl, moved: impl Fn(Lvl) -> Lvl) {
+        let Some(ty) = self.chk.constants.get(&u).cloned() else { return };
+        let c = self.chk.quote(at, ty);
+        let env = (0..at).fold(super::value::Env::empty(), |env, l| env.push(vvar(moved(l), "x")));
+        let ty = self.chk.eval(&env, &c);
+        self.chk.constants.insert(u, ty);
     }
 
     /// The name and kind of the effect variable at `lvl` in `s`, as
@@ -605,6 +618,125 @@ impl Typer {
         inner
     }
 
+    /// What a term (in `s`) may perform when it runs, as the back end names
+    /// a row: the effects, by the uniques of their declarations, and the
+    /// effect variables, by their levels.  `None` if that cannot be worked
+    /// out (a call to a function of a type not known, or an effect it has
+    /// no name for), which the back end takes as anything at all.  `Div`,
+    /// which nothing performs, is left out.
+    pub fn performs(&mut self, s: &Scope, c: &Rc<Core>) -> Option<(Vec<usize>, Vec<Lvl>)> {
+        let row = self.effects(&s.ctx, c, &[])?;
+        self.row_names(&row)
+    }
+
+    /// A row's effects and variables, as [`Typer::performs`] gives them.
+    fn row_names(&self, row: &Row) -> Option<(Vec<usize>, Vec<Lvl>)> {
+        let mut effects = Vec::new();
+        for (_, v) in &row.labels {
+            match &*self.chk.force(v.clone()) {
+                Value::LitTy(Builtin::Div) => {}
+                Value::Opaque(u, _, _) if self.chk.effects.contains_key(u) => {
+                    if !effects.contains(u) {
+                        effects.push(*u);
+                    }
+                }
+                _ => return None,
+            }
+        }
+        let mut vars = Vec::new();
+        for (_, v) in &row.tails {
+            match &*self.chk.force(v.clone()) {
+                Value::Rigid(l, _, sp) if sp.is_empty() => vars.push(*l),
+                _ => return None,
+            }
+        }
+        Some((effects, vars))
+    }
+
+    /// The effects of running `c`, a row.  `resumptions` are the levels of
+    /// the handlers' resumptions in scope: resuming does the rest of the
+    /// handled computation, whose effects the handle has already.  A
+    /// lambda performs nothing until it is called, and an erased term never
+    /// runs.
+    fn effects(&mut self, ctx: &Ctx, c: &Rc<Core>, resumptions: &[Lvl]) -> Option<Row> {
+        let mut row = Row::default();
+        match &**c {
+            Core::Runtime(Note::Erased, _) | Core::Lam(..) => {}
+            Core::Runtime(Note::Binds { .. }, inner) if matches!(**inner, Core::Lam(..)) => {}
+            Core::Runtime(_, inner) | Core::BoxIntro(inner) | Core::Unbox(inner) => return self.effects(ctx, inner, resumptions),
+            Core::App(f, a) => {
+                union(&mut row, self.effects(ctx, f, resumptions)?);
+                union(&mut row, self.effects(ctx, a, resumptions)?);
+                let resumes = matches!(&**f, Core::Var(i, _) if ctx.lvl.checked_sub(i + 1).is_some_and(|l| resumptions.contains(&l)));
+                if !resumes {
+                    let f_ty = self.ty(ctx, f)?;
+                    let Value::Pi { cod, .. } = &*self.chk.force(f_ty) else { return None };
+                    let a_v = self.chk.eval(&ctx.env, a);
+                    let (_, e) = self.chk.split_comp(self.chk.apply(cod, a_v));
+                    union(&mut row, self.chk.row_parts(&e));
+                }
+            }
+            Core::Let(x, rhs, body) => {
+                union(&mut row, self.effects(ctx, rhs, resumptions)?);
+                let ty = self.ty(ctx, rhs).unwrap_or_else(|| Rc::new(Value::Error));
+                let value = self.chk.eval(&ctx.env, rhs);
+                let under = ctx.extend(None, x, ty, BinderInfo::Defined, value);
+                union(&mut row, self.effects(&under, body, resumptions)?);
+            }
+            Core::Case(scrutinee, alts) => {
+                union(&mut row, self.effects(ctx, scrutinee, resumptions)?);
+                for alt in alts.iter() {
+                    let inner = self.alt_ctx(ctx, scrutinee, alt);
+                    union(&mut row, self.effects(&inner, &alt.body, resumptions)?);
+                }
+            }
+            Core::Handle(body, ret, clauses) => {
+                let handled = clauses.first().and_then(|cl| self.chk.ops.get(&cl.op)).map(|o| o.effect);
+                let mut done = self.effects(ctx, body, resumptions)?;
+                if let Some(e) = handled {
+                    let is_it = |this: &Self, v: &Rc<Value>| matches!(&*this.chk.force(v.clone()), Value::Opaque(u, _, _) if *u == e);
+                    // which of two instances of the effect it handles is not
+                    // known here
+                    if done.labels.iter().filter(|(_, v)| is_it(self, v)).count() > 1 {
+                        return None;
+                    }
+                    done.labels.retain(|(_, v)| !is_it(self, v));
+                }
+                union(&mut row, done);
+                union(&mut row, self.under_lambdas(ctx, ret, 1, resumptions, false)?);
+                for cl in clauses.iter() {
+                    union(&mut row, self.under_lambdas(ctx, &cl.body, cl.erased + 2, resumptions, true)?);
+                }
+            }
+            Core::Error => return None,
+            _ => {}
+        }
+        Some(row)
+    }
+
+    /// The effects of the body under `n` lambdas, the last of them a
+    /// resumption if `resumes`.
+    fn under_lambdas(&mut self, ctx: &Ctx, c: &Rc<Core>, n: usize, resumptions: &[Lvl], resumes: bool) -> Option<Row> {
+        let (mut ctx, mut c, mut resumptions) = (ctx.clone(), c.clone(), resumptions.to_vec());
+        for i in 0..n {
+            let (x, dom, body) = match &*c {
+                Core::Runtime(Note::Binds { ty, .. }, inner) => match &**inner {
+                    Core::Lam(x, body) => (x.clone(), ty.clone(), body.clone()),
+                    _ => return None,
+                },
+                Core::Lam(x, body) => (x.clone(), None, body.clone()),
+                _ => return None,
+            };
+            if resumes && i + 1 == n {
+                resumptions.push(ctx.lvl);
+            }
+            let dom = dom.map_or_else(|| Rc::new(Value::Error), |t| self.chk.eval(&ctx.env, &t));
+            ctx = ctx.bind(None, &x, dom);
+            c = body;
+        }
+        self.effects(&ctx, &c, &resumptions)
+    }
+
     fn ty(&mut self, ctx: &Ctx, c: &Rc<Core>) -> Option<Rc<Value>> {
         let erased = |t: Rc<Value>| Some(t);
         Some(match &**c {
@@ -637,7 +769,10 @@ impl Typer {
                     let dom_v = self.chk.eval(&ctx.env, dom);
                     let under = ctx.bind(None, x, dom_v.clone());
                     let body_ty = self.ty(&under, body).unwrap_or_else(|| Rc::new(Value::Error));
-                    let cod = Closure { env: ctx.env.clone(), body: self.chk.quote(under.lvl, body_ty) };
+                    // with what calling it performs: a row of nothing known if
+                    // that is not known
+                    let row = self.effects(&under, body, &[]).map_or_else(|| Rc::new(Value::Error), Row::into_value);
+                    let cod = Closure { env: ctx.env.clone(), body: self.chk.quote(under.lvl, self.chk.comp(body_ty, row)) };
                     let grade = Poly::constant(grade.unwrap_or(Grade::DEFAULT)).into_value();
                     let in_type = Poly::constant(Grade::DEFAULT_IN_TYPE).into_value();
                     Rc::new(Value::Pi { name: x.clone(), icit: idyllic_ast::Icit::Explicit, grade, in_type, dom: dom_v, cod })
@@ -688,5 +823,15 @@ impl Typer {
             }
             Core::Error => return None,
         })
+    }
+}
+
+/// Add `more`'s effects and variables to `row`.
+fn union(row: &mut Row, more: Row) {
+    for (k, v) in more.labels {
+        row.insert(k, v, false);
+    }
+    for (k, v) in more.tails {
+        row.insert(k, v, true);
     }
 }

@@ -388,6 +388,13 @@ pub fn link(root: &mut TypeCheckResult, deps: &[&CompiledPackage]) {
         known.push(&own);
     }
     root.typer.import(&known);
+    // a recursive definition inside another has a type that may mention
+    // the variables of the one it is in, which have moved as its body's have
+    for (p, &offset) in packages.iter().zip(&offsets) {
+        for d in p.rec_defs.iter().filter(|d| d.local && d.lvl >= p.base) {
+            root.typer.relocate(d.unique, d.lvl, |l| if l < p.base { l } else { l - p.base + offset });
+        }
+    }
     // the top-level `let`s: the prelude's, then each package's in order
     let prelude = root.prelude_lets.len();
     root.toplevel = root.toplevel.iter().take(prelude).copied().chain(packages.iter().flat_map(|p| p.lets.iter().map(|(u, ..)| *u))).collect();

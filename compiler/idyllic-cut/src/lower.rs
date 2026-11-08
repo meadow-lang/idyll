@@ -131,6 +131,9 @@ struct Env {
     /// variable passed for it, if there is one, and the representation
     /// variable it is (`typer::Rep::Field`)
     fields: Vec<(usize, usize, Option<String>, String)>,
+    /// the effect variables the `def` being lowered declares, by level, with
+    /// their names in Cut and kinds: what a row may name
+    effect_vars: Vec<(usize, String, Kind)>,
 }
 
 struct Lower<'t> {
@@ -252,7 +255,7 @@ fn lower_with(tc: &mut TypeCheckResult, package: &str, mark: Option<&str>) -> Re
     };
     l.show_int = show_int.and_then(|u| l.symbol(u));
     // the context every program starts in: the builtins, then the primitives
-    let mut env = Env { slots: Vec::new(), scope: l.typer.scope(), fields: Vec::new() };
+    let mut env = Env { slots: Vec::new(), scope: l.typer.scope(), fields: Vec::new(), effect_vars: Vec::new() };
     env.slots.extend(Builtin::ALL.iter().map(|_| Slot::Erased));
     env.slots.extend(Prim::ALL.iter().map(|p| Slot::Prim(*p)));
     // the top-level definitions, and the scope at each level they reach,
@@ -336,7 +339,7 @@ fn lower_with(tc: &mut TypeCheckResult, package: &str, mark: Option<&str>) -> Re
         }
         None => l.term(&env, &c, k_entry),
     };
-    l.defs.push(Def { symbol: entry.clone(), rep_vars: Vec::new(), effect_vars: Vec::new(), params: Vec::new(), conts: vec![k], body });
+    l.defs.push(Def { symbol: entry.clone(), rep_vars: Vec::new(), effect_vars: Vec::new(), params: Vec::new(), conts: vec![k], row: None, body });
     let out = l.declarations(Some(entry), answer);
     if l.errors.is_empty() {
         Ok(out)
@@ -573,7 +576,7 @@ impl Lower<'_> {
             return None;
         }
         // where it was defined, with only what it uses of it
-        let mut at = Env { slots: base.slots.clone(), scope: env.scope.prefix(d.lvl), fields: base.fields.clone() };
+        let mut at = Env { slots: base.slots.clone(), scope: env.scope.prefix(d.lvl), fields: base.fields.clone(), effect_vars: Vec::new() };
         let (mut binders, mut rep_vars, mut params, mut captured) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for lvl in top..d.lvl {
             let slot = match &env.slots[lvl] {
@@ -635,40 +638,62 @@ impl Lower<'_> {
         let params = Rc::new(params);
         // known before its body is lowered, which may call it
         self.lifted.insert(u, (symbol.clone(), params.clone(), captured.clone()));
+        // the enclosing definition's effect variables, which its body may
+        // perform through as the enclosing one does
+        for lvl in top..d.lvl {
+            if let Some((e, many)) = self.typer.effect_var(&env.scope, lvl) {
+                at.effect_vars.push((lvl, self.name(&e), if many { Kind::ManyEffect } else { Kind::Effect }));
+            }
+        }
         let mut def = self.def(&symbol, &at, &d.core);
         binders.append(&mut def.params);
         def.params = binders;
         rep_vars.append(&mut def.rep_vars);
         def.rep_vars = rep_vars;
-        // the enclosing definition's effect variables, which its body may
-        // perform through as the enclosing one does: Meadow keeps the
-        // continuations of a definition with a `ManyEffect` one on the heap
-        let outer: Vec<(String, bool)> = (top..d.lvl).filter_map(|lvl| self.typer.effect_var(&env.scope, lvl)).collect();
-        let mut effect_vars: Vec<(String, Kind)> =
-            outer.into_iter().map(|(e, many)| (self.name(&e), if many { Kind::ManyEffect } else { Kind::Effect })).collect();
-        effect_vars.append(&mut def.effect_vars);
-        def.effect_vars = effect_vars;
         self.defs.push(def);
         Some((symbol, params, captured))
     }
 
-    /// A function as a `def`: its leading lambdas are its parameters.
+    /// A function as a `def`: its leading lambdas are its parameters.  It
+    /// declares the effect variables `env` has, and its own.
     fn def(&mut self, symbol: &Symbol, env: &Env, c: &Rc<Core>) -> Def {
         let mut env = env.clone();
         let (mut params, mut rep_vars) = (Vec::new(), Vec::new());
-        let mut effect_vars = Vec::new();
         let mut c = c.clone();
         while let Some((x, grade, ty, body)) = lambda(&c) {
             // an effect variable: declared, `<e: Effect>`, and erased
             if let Some(many) = ty.as_ref().and_then(|t| self.typer.effect_binder_kind(&env.scope, t)) {
-                effect_vars.push((self.name(&x), if many { Kind::ManyEffect } else { Kind::Effect }));
+                env.effect_vars.push((env.scope.len(), self.name(&x), if many { Kind::ManyEffect } else { Kind::Effect }));
             }
             self.bind_param(&mut env, &x, grade, ty.as_ref(), &mut params, &mut rep_vars);
             c = body;
         }
+        let row = self.row(&env, &c);
         let k = self.name("k");
         let body = self.term(&env, &c, Consumer::Var(k.clone()));
-        Def { symbol: symbol.clone(), rep_vars, effect_vars, params, conts: vec![k], body }
+        let effect_vars = env.effect_vars.iter().map(|(_, e, kind)| (e.clone(), *kind)).collect();
+        Def { symbol: symbol.clone(), rep_vars, effect_vars, params, conts: vec![k], row, body }
+    }
+
+    /// What `c` may perform, as a row in Cut: `None` if that is not known,
+    /// or names an effect variable the `def` does not declare.  An effect a
+    /// row names is declared, whether or not anything performs it.
+    fn row(&mut self, env: &Env, c: &Rc<Core>) -> Option<EffectRow> {
+        let (effects, vars) = self.typer.performs(&env.scope, c)?;
+        let mut names = Vec::new();
+        for u in effects {
+            // (an effect whose operations are not known is not declared)
+            if !self.ops.values().any(|o| o.effect == u) {
+                return None;
+            }
+            names.push(self.symbol(u)?);
+            self.effects.insert(u);
+        }
+        names.sort_by_key(|s| s.to_string());
+        let mut vars: Vec<(usize, String)> =
+            vars.into_iter().map(|l| env.effect_vars.iter().find(|v| v.0 == l).map(|v| (l, v.1.clone()))).collect::<Option<_>>()?;
+        vars.sort();
+        Some(EffectRow { effects: names, vars: vars.into_iter().map(|v| v.1).collect() })
     }
 
     /// Bind a lambda's variable in `env`: a value parameter, a descriptor
@@ -891,9 +916,10 @@ impl Lower<'_> {
                 }
             };
         }
+        let row = self.row(&inner, &body);
         let k = self.name("k");
         let s = self.term(&inner, &body, Consumer::Var(k.clone()));
-        Producer::Cocase(vec![Method { name: "apply".into(), params, conts: vec![k], body: s }])
+        Producer::Cocase(vec![Method { name: "apply".into(), params, conts: vec![k], row, body: s }])
     }
 
     /// An application, or a head applied to nothing: a primitive, a
@@ -1150,7 +1176,10 @@ impl Lower<'_> {
                 cont = outer;
             }
             let binder = Binder { name: n.clone(), rep: rep.clone() };
-            obj = Some(Producer::Cocase(vec![Method { name: "apply".into(), params: vec![binder], conts: vec![cont.clone()], body: body.clone() }]));
+            // each but the last only makes the next object, as a constructor
+            // does; what the last calls is not known here
+            let row = if matches!(body, Statement::Cut(..)) { Some(EffectRow::default()) } else { None };
+            obj = Some(Producer::Cocase(vec![Method { name: "apply".into(), params: vec![binder], conts: vec![cont.clone()], row, body: body.clone() }]));
         }
         obj.unwrap_or(Producer::Mu(cont, Box::new(body)))
     }
@@ -1416,7 +1445,7 @@ impl Lower<'_> {
             let params = info.as_ref().map_or(0, |i| i.params);
             let types = self.typer.alt_types(&env.scope, scrutinee, alt);
             let inner_scope = self.typer.alt_scope(&env.scope, scrutinee, alt);
-            let mut inner = Env { slots: env.slots.clone(), scope: inner_scope, fields: env.fields.clone() };
+            let mut inner = Env { slots: env.slots.clone(), scope: inner_scope, fields: env.fields.clone(), effect_vars: env.effect_vars.clone() };
             let mut fields = Vec::new();
             let held = self.typer.type_fields(u);
             for (i, x) in alt.vars.iter().enumerate() {

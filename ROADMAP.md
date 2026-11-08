@@ -306,7 +306,14 @@ sequence literals.
   clauses (`meadow-seq/src/lower.rs`). `[0]` and `[0..1]` take Meadow's
   one-shot paths; `[0..∞]` needs a continuation that can be resumed twice,
   which Silo's stack segments cannot be, so it is a heap-allocated consumer,
-  as Idyll's AxCut machine has them.
+  as Idyll's AxCut machine has them. Under way with Meadow (2026-11-07):
+  every `def` and closure method says in its Cut what it may perform, a
+  row (`! {Choose | e}`), worked out from its body's calls by both
+  compilers (`Typer::performs`), so that Meadow can keep on the heap only
+  the continuations a `@many` operation may be performed under, and give
+  everything else stack frames, where today one `@many` anywhere puts every
+  continuation of the program on the heap. Emitted once Meadow's reader
+  for rows is in a nightly; Meadow's grading from them follows.
 - [x] **`Div`**, wired to the termination checker: a recursive group it
   cannot prove must declare `! Div` on the arrow its recursion goes round.
   (A case on a stuck comparison used to evaluate to the error value, which

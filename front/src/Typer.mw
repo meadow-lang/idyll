@@ -15,14 +15,14 @@
 
 use Std.St (StRef, newRef, getRef, setRef)
 use Idyll.Hir (Icit)
-use Idyll.Core (Core, Builtin, Prim, Note, Head, CaseAlt)
+use Idyll.Core (Core, Builtin, Prim, Note, Head, CaseAlt, OpClause)
 use Idyll.Core as C
-use Idyll.Value (Value, Elim, Closure)
+use Idyll.Value (Value, Elim, Closure, Row)
 use Idyll.Value as Va
 use Idyll.Grade as G
 use Idyll.Tc (Tc, Meta, MetaInfo, MetaTy, CtorInfo, OpInfo)
 use Idyll.Tc as T
-use Idyll.Eval (force, apply, eval, quote, toPoly, splitComp, unfoldStuck)
+use Idyll.Eval (force, apply, eval, quote, toPoly, splitComp, unfoldStuck, rowParts, comp)
 use Idyll.Unify (unify, rowKind)
 use Idyll.Ctx (Ctx, Info, Entry)
 use Idyll.Ctx as X
@@ -202,6 +202,19 @@ fun typeFieldsFrom (tc : Tc s) (params : Int) (lvl : Int) (i : Int) (ty : Value)
 -- The kind of the effect variable a binder of type `ty` binds, if it binds
 -- one: `False` for `Effect`, `True` for `Effect []`.
 @pub fun effectBinderKind (tc : Tc s) (s : Ctx) (ty : Core) : Maybe Bool ! { St s | e } = rowKind tc (eval tc s.env ty)
+
+-- Move the type of the recursive definition `u`, defined where `at`
+-- variables were in scope, to where linking put them: the variable at each
+-- level `l` is now at `moved l`. (A recursive definition inside another has
+-- a type that may mention the variables of the one it is in, and linking
+-- puts the packages before it in front of them.)
+@pub fun relocate (tc : Tc s) (u : Int) (at : Int) (moved : Int -> Int) : () ! { St s | e } =
+  match Hm.lookup u (getRef tc.constants) with
+  | None -> ()
+  | Just ty ->
+      let c = quote tc at ty in
+      let env = V.foldl (\en l -> Va.push en (Va.vvar (moved l) "x")) (Va.emptyEnv ()) (V.range 0 at) in
+      setRef tc.constants (Hm.insert u (eval tc env c) (getRef tc.constants))
 
 -- The name and kind of the effect variable at a level, as effectBinderKind
 -- gives it, or None if it binds anything else.
@@ -469,6 +482,136 @@ fun primUnique (p : Prim) : Int =
   let order = [Prim.IntAdd, Prim.IntMul, Prim.IntSub, Prim.IntLt, Prim.IntEq, Prim.IntDiv, Prim.IntMod, Prim.StrAppend] in
   V.len C.builtins + V.foldl (\acc i -> if V.getOr Prim.IntAdd order i == p then i else acc) 0 (V.range 0 (V.len order))
 
+-- What a term may perform when it runs, as the back end names a row: the
+-- effects, by the uniques of their declarations, and the effect variables,
+-- by their levels. None if that cannot be worked out (a call to a function
+-- of a type not known, or an effect it has no name for), which the back end
+-- takes as anything at all. `Div`, which nothing performs, is left out.
+@pub fun performs (tc : Tc s) (s : Ctx) (c : Core) : Maybe ([Int], [Int]) ! { St s | e } =
+  match effectsOf tc s c [] with
+  | Just row -> rowNames tc row
+  | None -> None
+
+fun rowNames (tc : Tc s) (row : Row) : Maybe ([Int], [Int]) ! { St s | e } =
+  match row with
+  | Row.Row ls ts ->
+      let effects =
+        V.foldl
+          (\acc kv ->
+            match acc with
+            | None -> None
+            | Just es ->
+                (match force tc (snd kv) with
+                 | Value.LitTy Builtin.Div -> Just es
+                 | Value.Opaque u _ _ ->
+                     if M.isSome (Hm.lookup u (getRef tc.effects)) then Just (if V.elem u es then es else V.pushBack es u) else None
+                 | _ -> None))
+          (Just [])
+          ls
+      in
+      let vars =
+        V.foldl
+          (\acc kv ->
+            match acc with
+            | None -> None
+            | Just vs ->
+                (match force tc (snd kv) with
+                 | Value.Rigid l _ sp -> if V.isEmpty sp then Just (V.pushBack vs l) else None
+                 | _ -> None))
+          (Just [])
+          ts
+      in
+      (match (effects, vars) with
+       | (Just es, Just vs) -> Just (es, vs)
+       | _ -> None)
+
+-- The effects of running a term, a row. `res` are the levels of the
+-- handlers' resumptions in scope: resuming does the rest of the handled
+-- computation, whose effects the handle has already. A lambda performs
+-- nothing until it is called, and an erased term never runs.
+fun effectsOf (tc : Tc s) (ctx : Ctx) (c : Core) (res : [Int]) : Maybe Row ! { St s | e } =
+  let none = Row.Row [] [] in
+  match c with
+  | Core.Runtime Note.Erased _ -> Just none
+  | Core.Lam _ _ -> Just none
+  | Core.Runtime _ inner -> effectsOf tc ctx inner res
+  | Core.BoxIntro inner -> effectsOf tc ctx inner res
+  | Core.Unbox inner -> effectsOf tc ctx inner res
+  | Core.App f a ->
+      (match (effectsOf tc ctx f res, effectsOf tc ctx a res) with
+       | (Just rf, Just ra) ->
+           let both = rowUnion rf ra in
+           let resumes = match f with | Core.Var i _ -> i < ctx.lvl and V.elem (ctx.lvl - i - 1) res | _ -> False in
+           if resumes then Just both
+           else
+             (match M.map (\t -> force tc t) (tyOf tc ctx f) with
+              | Just (Value.Pi _ _ _ _ _ cod) -> Just (rowUnion both (rowParts tc (snd (splitComp tc (apply tc cod (eval tc ctx.env a))))))
+              | _ -> None)
+       | _ -> None)
+  | Core.Let x rhs body ->
+      (match effectsOf tc ctx rhs res with
+       | Just r1 ->
+           let ty = M.unwrapOr Value.Error (tyOf tc ctx rhs) in
+           M.map (\r2 -> rowUnion r1 r2) (effectsOf tc (X.extend ctx None x ty Info.Defined (eval tc ctx.env rhs)) body res)
+       | None -> None)
+  | Core.Case scrut alts ->
+      V.foldl
+        (\acc alt ->
+          match acc with
+          | None -> None
+          | Just r -> M.map (\r2 -> rowUnion r r2) (effectsOf tc (altCtx tc ctx scrut alt) (match alt with | CaseAlt.CaseAlt _ _ _ b -> b) res))
+        (effectsOf tc ctx scrut res)
+        alts
+  | Core.Handle body ret clauses ->
+      let handled =
+        match V.get clauses 0 with
+        | Just (OpClause.OpClause op _ _ _) -> M.map (\o -> match o with | OpInfo.OpInfo _ eff _ _ _ _ -> eff) (Hm.lookup op (getRef tc.ops))
+        | None -> None
+      in
+      let isIt = \eff v -> match force tc v with | Value.Opaque u _ _ -> u == eff | _ -> False in
+      let done =
+        match (effectsOf tc ctx body res, handled) with
+        | (Just (Row.Row ls ts), Just eff) ->
+            -- which of two instances of the effect it handles is not known here
+            if V.len (V.filter (\kv -> isIt eff (snd kv)) ls) > 1 then None
+            else Just (Row.Row (V.filter (\kv -> not (isIt eff (snd kv))) ls) ts)
+        | (r, _) -> r
+      in
+      let withRet = M.andThen (\r -> M.map (\r2 -> rowUnion r r2) (underLambdas tc ctx ret 1 res False)) done in
+      V.foldl
+        (\acc cl ->
+          match (acc, cl) with
+          | (Just r, OpClause.OpClause _ _ erased b) -> M.map (\r2 -> rowUnion r r2) (underLambdas tc ctx b (erased + 2) res True)
+          | _ -> None)
+        withRet
+        clauses
+  | Core.Error -> None
+  | _ -> Just none
+
+-- The effects of the body under `n` lambdas, the last of them a resumption
+-- if `resumes`.
+fun underLambdas (tc : Tc s) (ctx : Ctx) (c : Core) (n : Int) (res : [Int]) (resumes : Bool) : Maybe Row ! { St s | e } =
+  if n == 0 then effectsOf tc ctx c res
+  else
+    let peeled =
+      match c with
+      | Core.Runtime (Note.Binds _ ty) (Core.Lam x body) -> Just (x, ty, body)
+      | Core.Lam x body -> Just (x, None, body)
+      | _ -> None
+    in
+    match peeled with
+    | None -> None
+    | Just (x, ty, body) ->
+        let res2 = if resumes and n == 1 then V.pushBack res ctx.lvl else res in
+        let dom = match ty with | Just t -> eval tc ctx.env t | None -> Value.Error in
+        underLambdas tc (X.bind ctx None x dom) body (n - 1) res2 resumes
+
+fun rowUnion (row : Row) (more : Row) : Row =
+  match more with
+  | Row.Row ls ts ->
+      let withLabels = V.foldl (\r kv -> Va.rowInsert r (fst kv) (snd kv) False) row ls in
+      V.foldl (\r kv -> Va.rowInsert r (fst kv) (snd kv) True) withLabels ts
+
 -- The type of a term in a scope, if it can be worked out.
 @pub fun tyOf (tc : Tc s) (ctx : Ctx) (c : Core) : Maybe Value ! { St s | e } =
   match c with
@@ -504,7 +647,10 @@ fun primUnique (p : Prim) : Int =
            let domV = eval tc ctx.env dom in
            let under = X.bind ctx None x domV in
            let bodyTy = M.unwrapOr Value.Error (tyOf tc under body) in
-           let cod = Closure.Closure ctx.env (quote tc under.lvl bodyTy) in
+           -- with what calling it performs: a row of nothing known if that is
+           -- not known
+           let row = match effectsOf tc under body [] with | Just r -> Va.rowValue r | None -> Value.Error in
+           let cod = Closure.Closure ctx.env (quote tc under.lvl (comp tc bodyTy row)) in
            let g = Va.polyValue (Va.polyConstant (M.unwrapOr G.default grade)) in
            Just (Value.Pi x Icit.Explicit g (Va.polyValue (Va.polyConstant G.defaultInType)) domV cod)
        -- what comes out of the box

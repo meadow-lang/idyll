@@ -64,6 +64,7 @@ impl Lower<'_> {
             effect_vars: Vec::new(),
             params: std::iter::once(Binder { name: d.clone(), rep: Rep::Desc }).chain(params).collect(),
             conts: vec![k.clone()],
+            row: Some(EffectRow::default()),
             body,
         };
         match n {
@@ -190,6 +191,7 @@ impl Lower<'_> {
             effect_vars: Vec::new(),
             params: vec![Binder { name: s, rep: Rep::Str }, Binder { name: i, rep: Rep::I64 }],
             conts: vec![k],
+            row: Some(EffectRow::default()),
             body,
         });
     }

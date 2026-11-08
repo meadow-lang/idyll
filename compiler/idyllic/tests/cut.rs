@@ -40,7 +40,7 @@ fn a_function_is_a_def_and_the_expression_the_entry() {
     let text = lowered("double : Int -> Int\ndouble n = n * 2\n\ndouble 21\n");
     // its value is written out (see `an_answer_is_written_out_as_the_repl_writes_it`)
     has(&text, "cut 0\nentry idyll:Main/\"#entry\"\nanswer str\n");
-    has(&text, "def idyll:Main/double (n_N: i64; k_N: ptr) =\n  prim mul(n_N, 2; k_N)");
+    has(&text, "def idyll:Main/double (n_N: i64; k_N: ptr) ! {} =\n  prim mul(n_N, 2; k_N)");
     has(&text, "def idyll:Main/\"#entry\" (; k_N: ptr) =\n  idyll:Main/double(21; μ̃ answer_N: i64.\n    idyll:Prelude/showInt(answer_N; k_N))");
     // the prelude's effect alias is a type, nothing at run time
     assert!(!text.contains("Eff"), "{text}");
@@ -58,7 +58,7 @@ fn data_is_declared_built_and_taken_apart() {
 #[test]
 fn a_type_parameter_is_a_descriptor() {
     let text = lowered("id : {a : Type} -> a -> a\nid x = x\n\nid 3\n");
-    has(&text, "def idyll:Main/id <'a_N = d_a_N> (d_a_N: desc, x_N: 'a_N; k_N: ptr) =\n  <x_N | k_N>");
+    has(&text, "def idyll:Main/id <'a_N = d_a_N> (d_a_N: desc, x_N: 'a_N; k_N: ptr) ! {} =\n  <x_N | k_N>");
     has(&text, "idyll:Main/id(desc(i64), 3; μ̃ answer_N: i64.");
 }
 
@@ -117,7 +117,7 @@ fn a_recursive_definition_inside_another_is_lifted() {
     let add_all = "addAll : (k : [] Nat) -> List Nat -> Nat\naddAll k xs =\n  let go : List Nat -> Nat\n      go Nil = Z\n      go (x :: rest) = plus k (plus x (go rest))\n  in go xs\n\n";
     let text = lowered(&format!("{nat}{add_all}addAll (S Z) (Z :: S Z :: Nil)\n"));
     // what it uses of where it was, `k`, is its first parameter
-    has(&text, "def idyll:Main/addAll.go (k_N: ptr, x_N: ptr; k_N: ptr) =");
+    has(&text, "def idyll:Main/addAll.go (k_N: ptr, x_N: ptr; k_N: ptr) ! {} =");
     // and every use passes it, the recursive one too
     has(&text, "idyll:Main/addAll.go(k_N, xs_N; k_N)");
     has(&text, "idyll:Main/addAll.go(k_N, rest_N;");
@@ -130,8 +130,8 @@ fn mutually_recursive_definitions_inside_another_pass_on_what_they_capture() {
     let parity = "parity : (flip : [] Bool) -> Nat -> Bool\nparity flip n =\n  let even : Nat -> Bool\n      even Z = flip\n      even (S m) = odd m\n      odd : Nat -> Bool\n      odd Z = if flip then False else True\n      odd (S m) = even m\n  in even n\n\n";
     let text = lowered(&format!("{nat}{parity}parity True (S (S Z))\n"));
     // each uses `flip`, so each takes it, and passes it to the other
-    has(&text, "def idyll:Main/parity.even (flip_N: bool, x_N: ptr; k_N: ptr) =");
-    has(&text, "def idyll:Main/parity.odd (flip_N: bool, x_N: ptr; k_N: ptr) =");
+    has(&text, "def idyll:Main/parity.even (flip_N: bool, x_N: ptr; k_N: ptr) ! {} =");
+    has(&text, "def idyll:Main/parity.odd (flip_N: bool, x_N: ptr; k_N: ptr) ! {} =");
     has(&text, "idyll:Main/parity.odd(flip_N, m_N; k_N)");
     has(&text, "idyll:Main/parity.even(flip_N, m_N; k_N)");
 }
@@ -142,7 +142,7 @@ fn a_lifted_definition_is_told_the_types_it_was_generic_in() {
     let text = lowered(&format!("{rev}rev (1 :: 2 :: Nil)\n"));
     // `a` is the enclosing function's, so its descriptor is passed; `xs`,
     // which only an erased argument mentions, is not
-    has(&text, "def idyll:Main/rev.go <'a_N = d_a_N> (d_a_N: desc, x_N: ptr, acc_N: ptr; k_N: ptr) =");
+    has(&text, "def idyll:Main/rev.go <'a_N = d_a_N> (d_a_N: desc, x_N: ptr, acc_N: ptr; k_N: ptr) ! {} =");
     has(&text, "idyll:Main/rev.go(d_a_N, xs_N, v_N; k_N)");
     has(&text, "idyll:Main/rev.go(d_a_N, rest_N, v_N; k_N)");
 }
@@ -224,7 +224,7 @@ fn an_answer_is_written_out_as_the_repl_writes_it() {
     // Cut, as the REPL shows it, and answered as a string
     let text = lowered("Just (1, True)\n");
     has(&text, "answer str");
-    has(&text, "def idyll:Main/\"#show Maybe (Int, Bool)\" (x_N: ptr; k_N: ptr) =");
+    has(&text, "def idyll:Main/\"#show Maybe (Int, Bool)\" (x_N: ptr; k_N: ptr) ! {} =");
     has(&text, "prim concatStrings([\"Just\", \" \", s_N]; k_N)");
     // a tuple brings its own parentheses, and an integer is the prelude's
     // `showInt`
@@ -240,7 +240,7 @@ fn an_answer_is_written_out_as_the_repl_writes_it() {
     // a string is escaped as the REPL escapes it, `\t` for a tab, byte by
     // byte, with the runtime's string primitives
     let text = lowered("\"a\\tb\"\n");
-    has(&text, "def idyll:Main/\"#escape\" (s_N: str; k_N: ptr) =");
+    has(&text, "def idyll:Main/\"#escape\" (s_N: str; k_N: ptr) ! {} =");
     has(&text, "prim stringByteAt(s_N, i_N;");
     has(&text, "<\"\\\\t\" | k_N>");
     // a function has nothing to show
@@ -252,10 +252,10 @@ fn an_answer_is_written_out_as_the_repl_writes_it() {
 #[test]
 fn an_effect_variable_is_declared_on_its_def() {
     let text = lowered("twice : (f : [] (Int -> Int ! e)) -> Int -> Int ! e\ntwice f x = f (f x)\n\ntwice (\\(n : Int) -> n + 1) 0\n");
-    has(&text, "def idyll:Main/twice <e_N: Effect> (f_N: ptr, x_N: i64; k_N: ptr) =");
+    has(&text, "def idyll:Main/twice <e_N: Effect> (f_N: ptr, x_N: i64; k_N: ptr) ! {| e_N} =");
     // one that may stand for an effect resumed more than once
     let text = lowered("again : {e : Effect []} -> (f : [2] (() -> Int ! e)) -> Int ! e\nagain f = f () + f ()\n\nagain (\\(u : ()) -> 1)\n");
-    has(&text, "def idyll:Main/again <e_N: ManyEffect> (f_N: ptr; k_N: ptr) =");
+    has(&text, "def idyll:Main/again <e_N: ManyEffect> (f_N: ptr; k_N: ptr) ! {| e_N} =");
     // and a recursive function inside it, lifted to a def of its own, has
     // it too: it performs through it as the one it was in does
     let text = lowered(
@@ -264,6 +264,30 @@ fn an_effect_variable_is_declared_on_its_def() {
          sumTo 3 (\\(u : ()) -> 1)\n",
     );
     has(&text, "def idyll:Main/sumTo.go <e_N: ManyEffect> (");
+}
+
+#[test]
+fn a_def_and_a_closure_say_what_they_may_perform() {
+    let choose = "effect Choose where\n  @many flip : () -> Bool\n\n";
+    let text = lowered(&format!(
+        "{choose}twice : (() -> Int ! Choose) -> Int ! Choose\ntwice f = f () + f ()\n\n\
+         count : (() -> Int ! Choose) -> Int\ncount g = handle g () with\n  flip _ k -> k True + k False\n\n\
+         count (\\(u : ()) -> twice (\\(v : ()) -> if flip () then 1 else 2))\n"
+    ));
+    // what a closure it is given performs, though it performs nothing itself
+    has(&text, "def idyll:Main/twice (f_N: ptr; k_N: ptr) ! {idyll:Main/Choose} =");
+    // not what it handles
+    has(&text, "def idyll:Main/count (g_N: ptr; k_N: ptr) ! {} =");
+    // and a closure says what calling it does
+    has(&text, "apply(v_N: unit; k_N: ptr) ! {idyll:Main/Choose} =>");
+    // a lifted definition names the variables it has from the one it was in
+    let text = lowered(
+        "sumTo : {e : Effect []} -> Int -> (f : [] (() -> Int ! e)) -> Int ! {Div | e}\n\
+         sumTo n f =\n  let go : Int -> Int -> Int ! {Div | e}\n      go i acc = if i == 0 then acc else go (i - 1) (acc + f ())\n  in go n 0\n\n\
+         sumTo 3 (\\(u : ()) -> 1)\n",
+    );
+    has(&text, "def idyll:Main/sumTo <e_N: ManyEffect> (n_N: i64, f_N: ptr; k_N: ptr) ! {| e_N} =");
+    has(&text, "(f_N: ptr, i_N: i64, acc_N: i64; k_N: ptr) ! {| e_N} =");
 }
 
 #[test]
@@ -304,12 +328,12 @@ fn the_same_program_is_always_the_same_cut() {
 fn a_native_with_no_primitive_is_a_def_of_the_programs_own() {
     // generic in the element, as a Cut function is: a descriptor for it
     let text = lowered("arrayToList #[1; 2]\n");
-    has(&text, "def idyll:Main/\"#arrayToList\" <'a_N = d_N> (d_N: desc, xs_N: ptr; k_N: ptr) =");
+    has(&text, "def idyll:Main/\"#arrayToList\" <'a_N = d_N> (d_N: desc, xs_N: ptr; k_N: ptr) ! {} =");
     has(&text, "idyll:Main/\"#arrayToList\"(desc(i64), v_N;");
     has(&text, "prim arrayGet(xs_N, i_N; μ̃ e_N: 'a_N.");
     // a list that is not written out is pushed, element by element
     let text = lowered("f : List Int -> Array Int\nf xs = arrayFromList xs\n\nf (1 :: Nil)\n");
-    has(&text, "def idyll:Main/\"#arrayFromList\".go <'a_N = d_N> (d_N: desc, l_N: ptr, acc_N: ptr; k_N: ptr) =");
+    has(&text, "def idyll:Main/\"#arrayFromList\".go <'a_N = d_N> (d_N: desc, l_N: ptr, acc_N: ptr; k_N: ptr) ! {} =");
     // a mutable array is the runtime's mutable one, written in place -- not
     // a persistent array, which a write copies -- and given back by a write
     let text = lowered("Std.Collections.MArray.freeze (Std.Collections.MArray.write (Std.Collections.MArray.new 2 0) 1 5)\n");
@@ -327,7 +351,7 @@ fn a_method_of_a_known_instance_is_what_the_instance_gives() {
         "trait Plus (a : Type) where\n  plus2 : a -> a -> a\n\ninstance Plus Int where\n  plus2 = intAdd\n\n\
          twice : Int -> Int\ntwice n = plus2 n n\n\ntwice 21\n",
     );
-    has(&text, "def idyll:Main/twice (n_N: i64; k_N: ptr) =\n  prim add(n_N, n_N; k_N)");
+    has(&text, "def idyll:Main/twice (n_N: i64; k_N: ptr) ! {} =\n  prim add(n_N, n_N; k_N)");
     // where the instance is not known, the method is called with the record
     let text = lowered(
         "trait Plus (a : Type) where\n  plus2 : a -> a -> a\n\ninstance Plus Int where\n  plus2 = intAdd\n\n\
