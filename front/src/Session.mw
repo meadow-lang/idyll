@@ -72,6 +72,12 @@ database! {
     -- inlay hints (`Server`)
     | query hints (file : Int) : [(Int, String)] =
         hintsIn (querySource file) (M.map (\pc -> (pc, \u -> queryDependencies file)) (queryPackage file)) (queryPrelude 0) (\u -> queryStd 0)
+    -- a file as the HIR and as Cut, for an editor to show beside it
+    -- (`Server`'s `idyll/ir`): kept until it changes, as the cursor moves
+    | query hirShown (file : Int) : String =
+        irIn (querySource file) (M.map (\pc -> (pc, \u -> queryDependencies file)) (queryPackage file)) (queryPrelude 0) (\u -> queryStd 0) "hir"
+    | query cutShown (file : Int) : String =
+        irIn (querySource file) (M.map (\pc -> (pc, \u -> queryDependencies file)) (queryPackage file)) (queryPrelude 0) (\u -> queryStd 0) "cut"
     -- what each name in a file is, for an editor's colours (`Server`)
     | query resolved (file : Int) : [(Int, String)] =
         resolvedIn (querySource file) (M.map (\pc -> (pc, \u -> queryDependencies file)) (queryPackage file)) (queryPrelude 0) (\u -> queryStd 0)
@@ -510,12 +516,13 @@ fun nameKind (name : String) (ty : String) : String =
 -- are handed. A file of a package with other modules or dependencies is
 -- lowered with them, and what its own modules define is what is shown.
 -- Lowering keeps only what the program reaches, so a file that only
--- declares is lowered with an entry that names `name`, the definition to
--- be shown.
-@pub fun irIn (text : String) (package : Maybe (PackageContext, () -> [Dependency] ! e)) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (ir : String) (name : String) : String ! e =
+-- declares is lowered with an entry that names each of its definitions.
+@pub fun irIn (text : String) (package : Maybe (PackageContext, () -> [Dependency] ! e)) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (ir : String) : String ! e =
   let first = irOfText text package prelude std ir in
-  if ir == "cut" and S.startsWith "(not lowered: there is no program" first and not (S.isEmpty name) then
-    irOfText (text ++ "\nlet seen = ${name} in ()\n") package prelude std ir
+  if ir == "cut" and S.startsWith "(not lowered: there is no program" first then
+    let named = V.concatMap (\d -> match d with | (n, k, _) -> if k == "type" then [] else [n]) (symbolsInPackage text package prelude std) in
+    if V.isEmpty named then first
+    else irOfText (text ++ "\n" ++ S.join "" (V.map (\n -> "let seen = ${n} in ") named) ++ "()\n") package prelude std ir
   else first
 
 fun irOfText (text : String) (package : Maybe (PackageContext, () -> [Dependency] ! e)) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (ir : String) : String ! e =

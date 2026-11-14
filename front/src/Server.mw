@@ -256,7 +256,7 @@ fun irAsked db (a : Asked) =
   match around with
   | None -> J.jNull ()
   | Just name ->
-      let whole = answered "(error)" (\() -> irIn a.text (packageIn db a.file) (sessionPrelude db 0) (\u -> sessionStd db 0) ir name) in
+      let whole = answered "(error)" (\() -> if ir == "hir" then sessionHirShown db a.file else sessionCutShown db a.file) in
       let shown = definitionIn ir name whole in
       let word = wordAt a.text a.offset in
       let starts = lineStarts shown in
@@ -269,15 +269,16 @@ fun irAsked db (a : Asked) =
 -- in Cut, each `def` of it (a function lifted out of it among them), in
 -- the HIR its `bind`. All of it if it says nothing of `name`.
 @pub fun definitionIn (ir : String) (name : String) (whole : String) : String =
-  let blocks = S.split "\n\n" whole in
+  -- (the HIR is a line a declaration, Cut a paragraph a def)
+  let sep = if ir == "hir" then "\n" else "\n\n" in
   let mine =
     V.filter
       (\b ->
-        if ir == "hir" then S.contains "(bind ${name}@" b
+        if ir == "hir" then S.startsWith "(bind ${name}@" b or S.contains "(bind ${name}@" b
         else V.any (\l -> S.startsWith "def " l and (S.contains "/${name} " l or S.contains "/${name}." l)) (S.split "\n" b))
-      blocks
+      (S.split sep whole)
   in
-  if V.isEmpty mine then whole else S.join "\n\n" mine
+  if V.isEmpty mine then whole else S.join sep mine
 
 -- The name the byte `at` of `text` is in, if it is in one.
 fun wordAt (text : String) (at : Int) : String =

@@ -1113,11 +1113,13 @@ So far the server:
 - puts a lens above each `@test`, which the extension runs with the Rust
   driver's `idyll test --exact`, by its whole name (`Module.test`);
 - answers `idyll/ir`, of its own: the definition the cursor is in, as HIR
-  or as Cut, and where the name at the cursor is in that text. Lowering
-  keeps only what the program reaches, so a file that only declares is
-  lowered with an entry that names the definition
-  (`let seen = name in ()`). A package's file is lowered against its
-  dependencies without being linked with them (`Lower.cutTextOwn`);
+  or as Cut, and where the name at the cursor is in that text. The file's
+  HIR and Cut are queries (`hirShown`, `cutShown`), kept until it changes,
+  so following the cursor slices what is kept. Lowering keeps only what the
+  program reaches, so a file that only declares is lowered with an entry
+  that names each of its definitions (`let seen = f in .. ()`). A
+  package's file is lowered linked with what it depends on, which its calls
+  need (`Lower.cutTextOwn`);
 - formats a file as `Idyll fmt` does.
 
 What is wrong is said as the Rust checker says it (`Messages.mw`): where
