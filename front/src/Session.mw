@@ -22,9 +22,11 @@ use Idyll.Hir (Visibility)
 use Idyll.Rename as Rename
 use Idyll.Scc (sccModule)
 use Idyll.Check (checkedAgainst, checkedWanting)
+use Idyll.Eval (quote)
 use Idyll.Elab (goalNamed)
 use Idyll.Tc (Tc, CtorInfo, ctorInfo)
 use Std.Collections.HashMap as Hm
+use Std.Char as Ch
 use Idyll.Core as C
 use Idyll.Core (Core)
 use Idyll.Compiled (compiledOf)
@@ -66,6 +68,19 @@ database! {
     | query problems (file : Int) : [Diagnostic] =
         problemsIn (querySource file) (M.map (\pc -> (pc, \u -> queryDependencies file)) (queryPackage file)) (queryPrelude 0) (\u -> queryStd 0)
     | query formatted (file : Int) : String = formattedOf (querySource file)
+    -- the type of each binder of a file with none written, for an editor's
+    -- inlay hints (`Server`)
+    | query hints (file : Int) : [(Int, String)] =
+        hintsIn (querySource file) (M.map (\pc -> (pc, \u -> queryDependencies file)) (queryPackage file)) (queryPrelude 0) (\u -> queryStd 0)
+    -- a file as the HIR and as Cut, for an editor to show beside it
+    -- (`Server`'s `idyll/ir`): kept until it changes, as the cursor moves
+    | query hirShown (file : Int) : String =
+        irIn (querySource file) (M.map (\pc -> (pc, \u -> queryDependencies file)) (queryPackage file)) (queryPrelude 0) (\u -> queryStd 0) "hir"
+    | query cutShown (file : Int) : String =
+        irIn (querySource file) (M.map (\pc -> (pc, \u -> queryDependencies file)) (queryPackage file)) (queryPrelude 0) (\u -> queryStd 0) "cut"
+    -- what each name in a file is, for an editor's colours (`Server`)
+    | query resolved (file : Int) : [(Int, String)] =
+        resolvedIn (querySource file) (M.map (\pc -> (pc, \u -> queryDependencies file)) (queryPackage file)) (queryPrelude 0) (\u -> queryStd 0)
     -- what the prompt's declarations and the prelude declare, each its name,
     -- its type and its type shown: what the finder searches, kept until a
     -- declaration is entered
@@ -429,6 +444,96 @@ fun inFile (m : Meta) (base : Int) (text : String) : Bool =
                | None -> []))
         declared
   | Err _ -> []
+
+-- What each name of `text` is, where the checker knows: the byte its
+-- occurrence starts at, and `type`, `enumMember`, `function` or
+-- `variable`, as an editor colours them. A capital is a type or a
+-- constructor, which its spelling cannot say and its declaration can; a
+-- name the program does not declare (a parameter, a `let`) is left to its
+-- spelling.
+@pub fun resolvedIn (text : String) (package : Maybe (PackageContext, () -> [Dependency] ! e)) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : [(Int, String)] ! e =
+  let (ready, base) = preparedFor text package prelude std in
+  match ready with
+  | Ok (m, deps, _) ->
+      let kinds =
+        runSt (\() ->
+          let c = checkedAgainst (sccModule m) False deps in
+          V.foldl
+            (\acc d -> match d with | (u, name, ty) -> Hm.insert u (nameKind name (C.shown m.linearBody ty)) acc)
+            Hm.empty
+            (St.getRef c.tc.declared))
+      in
+      V.concatMap
+        (\o ->
+          match o with
+          | (us, place) ->
+              if not (inFile place base text) then []
+              else
+                (match metaBack place base with
+                 | Meta.Meta a _ ->
+                     (match V.head (V.concatMap (\u -> match Hm.lookup u kinds with | Just k -> [k] | None -> []) us) with
+                      | Just k -> [(a, k)]
+                      -- (a type is not among what the checker declares: a
+                      -- capital it does not know is one)
+                      | None ->
+                          if not (V.isEmpty us) and (match V.head (S.chars (S.drop text a)) with | Just c -> Ch.isUpper c | None -> False) then [(a, "type")]
+                          else [])))
+        (Rename.occurrencesModule (Rename.hirArena m.hir) (Rename.hirRoot m.hir))
+  | Err _ -> []
+
+-- The type each parameter and `let` of `text` with none written got,
+-- each said after the name: the byte the name ends at, and the type shown.
+@pub fun hintsIn (text : String) (package : Maybe (PackageContext, () -> [Dependency] ! e)) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : [(Int, String)] ! e =
+  let (ready, base) = preparedFor text package prelude std in
+  match ready with
+  | Ok (m, deps, _) ->
+      let typed =
+        runSt (\() ->
+          let c = checkedWanting (sccModule m) False deps (0 - 2) in
+          V.map (\b -> match b with | (u, lvl, ty) -> (u, C.shown m.linearBody (quote c.tc lvl ty))) (St.getRef c.tc.binders))
+      in
+      let own = V.filter (\o -> inFile (snd o) base text) (ownOccurrences m) in
+      V.concatMap
+        (\t ->
+          match t with
+          | (u, shown) ->
+              (match V.head (sortedPlaces (V.concatMap (\o -> if fst o == u then [snd o] else []) own)) with
+               | Just place -> (match metaBack place base with | Meta.Meta _ b -> [(b, shown)])
+               | None -> []))
+        typed
+  | Err _ -> []
+
+-- What a declared name is, to an editor's colours, by its type shown.
+fun nameKind (name : String) (ty : String) : String =
+  let k = kindOf ty in
+  if k == "type" then "type"
+  else if (match V.head (S.chars name) with | Just c -> Ch.isUpper c | None -> False) then "enumMember"
+  else if k == "function" then "function"
+  else "variable"
+
+-- A file of a package as one of the compiler's IRs, for an editor to show
+-- beside it: `hir`, the names resolved, or `cut`, what Meadow's runtimes
+-- are handed. A file of a package with other modules or dependencies is
+-- lowered with them, and what its own modules define is what is shown.
+-- Lowering keeps only what the program reaches, so a file that only
+-- declares is lowered with an entry that names each of its definitions.
+@pub fun irIn (text : String) (package : Maybe (PackageContext, () -> [Dependency] ! e)) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (ir : String) : String ! e =
+  let first = irOfText text package prelude std ir in
+  if ir == "cut" and S.startsWith "(not lowered: there is no program" first then
+    let named = V.concatMap (\d -> match d with | (n, k, _) -> if k == "type" then [] else [n]) (symbolsInPackage text package prelude std) in
+    if V.isEmpty named then first
+    else irOfText (text ++ "\n" ++ S.join "" (V.map (\n -> "let seen = ${n} in ") named) ++ "()\n") package prelude std ir
+  else first
+
+fun irOfText (text : String) (package : Maybe (PackageContext, () -> [Dependency] ! e)) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (ir : String) : String ! e =
+  if ir == "cut" and M.isNone package then cutIn text prelude std
+  else
+    match fst (preparedFor text package prelude std) with
+    | Ok (m, deps, renaming) ->
+        if ir == "hir" then Rename.dumped m
+        else if not (V.isEmpty renaming) then "(error)"
+        else Lo.cutTextOwn (sccModule m) (M.unwrapOr "Main" (M.map (\p -> match p with | ((pc : PackageContext), _) -> pc.name) package)) deps
+    | Err _ -> "(error)"
 
 -- What kind of thing a declaration of type `ty` is, to an editor.
 fun kindOf (ty : String) : String =

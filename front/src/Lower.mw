@@ -262,7 +262,7 @@ fun kHalt (l : L s) : CutCons ! { St s | e } = C.halt l.out C.nowhere
 
 fun kMuT (l : L s) (b : Binder) (body : CutStmt) : CutCons ! { St s | e } =
   match b with
-  | Binder.Binder x r -> C.newCutConsMuT l.out C.nowhere x (A.repText r) body
+  | Binder.Binder x r -> C.newCutConsMuT l.out C.nowhere x (A.repText r) "" "" body
 
 fun kCase (l : L s) arms : CutCons ! { St s | e } = C.caseOf l.out C.nowhere arms
 
@@ -342,6 +342,12 @@ fun writeProgram (l : L s) (entry : Maybe Sym) (answer : Bool) (datas : [CutDecl
       match lowerIn (linked c own (toLink own deps)) package with
       | Ok text -> text
       | Err whys -> "(not lowered: " ++ S.join "; " whys ++ ")")
+
+-- The same, as an editor shows a file of the package beside its source:
+-- linked with what it depends on, which its calls need, though it gives
+-- nothing to a package after it (so what it gives is no matter).
+@pub fun cutTextOwn (m : Renamed) (package : String) (deps : [Compiled]) : String =
+  cutTextLinked m (PackageNames.PackageNames [] [] [] [] [] [] [] []) package False deps
 
 -- A program put together from compiled packages alone: `root`, the one
 -- whose body is run, with `deps`, those it reaches, each after those it

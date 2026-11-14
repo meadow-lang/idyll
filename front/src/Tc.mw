@@ -125,6 +125,9 @@ use Std.Maybe.Maybe.*
   -- holds it, with its type: what hover says
   want : StRef s Int,
   found : StRef s (Maybe (Lang.Meta, Core)),
+  -- with `want` -2: each binder with no type written, by its unique, the
+  -- level it was bound at and the type it got -- an editor's inlay hints
+  binders : StRef s [(Int, Int, Value)],
   holes : StRef s [HoleAt],
   goals : StRef s [GoalAt],
   postponed : StRef s [Postponed],
@@ -269,6 +272,7 @@ use Std.Maybe.Maybe.*
     at = newRef (spanMeta 0 0),
     want = newRef (0 - 1),
     found = newRef None,
+    binders = newRef [],
     holes = newRef [],
     goals = newRef [],
     postponed = newRef [],
@@ -345,6 +349,7 @@ use Std.Maybe.Maybe.*
     at = newRef (getRef tc.at),
     want = newRef (getRef tc.want),
     found = newRef (getRef tc.found),
+    binders = newRef (getRef tc.binders),
     holes = newRef (getRef tc.holes),
     goals = newRef (getRef tc.goals),
     postponed = newRef (getRef tc.postponed),
@@ -417,6 +422,7 @@ use Std.Maybe.Maybe.*
   let w11d = setRef tc.reported (getRef saved.reported) in
   let w11b = setRef tc.at (getRef saved.at) in
   let w11c = setRef tc.found (getRef saved.found) in
+  let w11e = setRef tc.binders (getRef saved.binders) in
   let w12 = setRef tc.holes (getRef saved.holes) in
   let w12a = setRef tc.goals (getRef saved.goals) in
   let w13 = setRef tc.postponed (getRef saved.postponed) in
@@ -502,6 +508,11 @@ use Std.Maybe.Maybe.*
         (match getRef tc.found with
          | Just (Lang.Meta.Meta a0 b0, _) -> if a >= a0 and b <= b0 then setRef tc.found (Just (at, ty)) else ()
          | None -> setRef tc.found (Just (at, ty)))
+
+-- A binder with no type written, and the type it got at level `lvl`,
+-- kept when an editor asks for every binder's type (`want` -2).
+@pub fun noteBinder (tc : Tc s) (unique : Int) (lvl : Int) (ty : Value) =
+  if getRef tc.want != 0 - 2 then () else setRef tc.binders (V.pushBack (getRef tc.binders) (unique, lvl, ty))
 
 -- A goal reported: a warning, said where it is, its kind `Goal` among
 -- the errors the dumps compare.

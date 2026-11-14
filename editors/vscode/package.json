@@ -1,7 +1,7 @@
 {
 	"name": "idyll",
 	"displayName": "Idyll",
-	"description": "Language support for Idyll: syntax highlighting, and, from front/'s language server (`Idyll lsp`), diagnostics, hover, go-to-definition, references, completion, an outline and formatting.",
+	"description": "Language support for Idyll: syntax highlighting, and, from front/'s language server (`Idyll lsp`), semantic highlighting, diagnostics, hover with doc comments, go-to-definition, references, rename, inlay hints, completion, an outline, formatting on save, a test runner and an IR view.",
 	"version": "0.1.0",
 	"publisher": "ChrisMcDearman",
 	"repository": {
@@ -17,6 +17,12 @@
 	"main": "./src/extension.js",
 	"activationEvents": [],
 	"contributes": {
+		"configurationDefaults": {
+			"[idyll]": {
+				"editor.formatOnSave": true,
+				"editor.semanticHighlighting.enabled": true
+			}
+		},
 		"languages": [
 			{
 				"id": "idyll",
@@ -43,7 +49,22 @@
 				"idyll.server.path": {
 					"type": "string",
 					"default": "Idyll",
-					"description": "Path to front/'s executable, `Idyll` (built by `meadow build --release` in front/, at front/target/release/native/silo/Idyll); the extension runs `Idyll lsp`. Left at `Idyll`, it is looked for on your PATH, in $IDYLL_HOME/bin and ~/.idyll/bin, and, in a trusted workspace, at front/target/release/native/silo/Idyll in an open folder."
+					"description": "Path to front/'s executable, `Idyll` (built by `meadow build --release` in front/, at front/target/release/native/silo/Idyll); the extension runs `Idyll lsp`. Left at `Idyll`, it is looked for, as `idyll-front` (the name scripts/install.sh installs it under) or `Idyll`, on your PATH, in $IDYLL_HOME/bin and ~/.idyll/bin, and, in a trusted workspace, at front/target/release/native/silo/Idyll in an open folder."
+				},
+				"idyll.driver.path": {
+					"type": "string",
+					"default": "idyll",
+					"description": "Path to the Rust driver, `idyll`, which runs a test from the \"Test\" lens (`idyll test --exact`). Left at `idyll`, it is looked for on your PATH, in $IDYLL_HOME/bin and ~/.idyll/bin, where scripts/install.sh puts it."
+				},
+				"idyll.test.codeLens": {
+					"type": "boolean",
+					"default": true,
+					"description": "Show a \"Test\" link above each `@test`, which runs that one test with `idyll test --exact`."
+				},
+				"idyll.inlayHints.enabled": {
+					"type": "boolean",
+					"default": true,
+					"description": "Show the types the checker gave parameters and `let` bindings that have none written."
 				},
 				"idyll.trace.server": {
 					"type": "string",
@@ -61,6 +82,44 @@
 			{
 				"command": "idyll.restartServer",
 				"title": "Idyll: Restart Language Server"
+			},
+			{
+				"command": "idyll.testFunction",
+				"title": "Idyll: Run Test",
+				"enablement": "editorLangId == idyll"
+			},
+			{
+				"command": "idyll.showIr",
+				"title": "Idyll: Show IR (HIR, Cut)…",
+				"enablement": "editorLangId == idyll"
+			}
+		],
+		"menus": {
+			"editor/context": [
+				{
+					"command": "idyll.testFunction",
+					"when": "editorLangId == idyll",
+					"group": "idyll@0"
+				},
+				{
+					"command": "idyll.showIr",
+					"when": "editorLangId == idyll",
+					"group": "idyll@1"
+				}
+			]
+		},
+		"taskDefinitions": [
+			{
+				"type": "idyll",
+				"required": [
+					"test"
+				],
+				"properties": {
+					"test": {
+						"type": "string",
+						"description": "The whole name of the test to run: `Module.test`, or the bare name in the package's root module."
+					}
+				}
 			}
 		]
 	},
