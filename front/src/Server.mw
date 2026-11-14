@@ -11,7 +11,7 @@ use Idyll.Session
 use Idyll.Syntax (parseIdyll)
 use Std.Exn (toResult)
 use Std.Result.Result.*
-use Lingua.Lsp (pathOf, Asked, rangeIn, rangeJson, lineStarts, uriOf)
+use Lingua.Lsp (pathOf, Asked, rangeIn, rangeJson, lineStarts, uriOf, positionIn)
 use Lingua.Lang (Meta)
 use Std.String as S
 use Idyll.Driver as D
@@ -179,8 +179,25 @@ fun resolvedOf db file = answered [] (\() -> sessionResolved db file)
 def serverRequests =
   [
     ("textDocument/codeLens", lensesOf),
+    ("textDocument/inlayHint", hintsOf),
     ("idyll/ir", irAsked)
   ]
+
+-- The type each parameter and `let` with none written got, after its
+-- name.
+fun hintsOf db (a : Asked) =
+  J.jArray
+    (V.map
+      (\h ->
+        match h with
+        | (at, shown) ->
+            J.jObject [
+              ("position", positionIn a at),
+              ("label", J.jString ": ${shown}"),
+              ("kind", J.jInt 1),
+              ("paddingLeft", J.jBool False)
+            ])
+      (answered [] (\() -> sessionHints db a.file)))
 
 -- A "Test" lens above each `@test`, which runs that one test, by its whole
 -- name (`Module.test`, a bare name in the package's root module), as
@@ -427,6 +444,11 @@ fun listed (field : String) (reply : Maybe Json) : [Json] =
     (docAbove "-- a\n\n-- Twice n.\n-- (or more)\n@test\ndouble : Int -> Int\ndouble n = n + n\n" 50)
     "Twice n.\n(or more)"
     "the comment above, past the attribute and the signature, not the one before the blank line"
+
+@test fun aParameterSaysTheTypeItGot () =
+  let text = "f : Int -> Int\nf n = let m = n + 1 in m\n" in
+  let said = told [opening "file:///a.idl" text, asking 1 "textDocument/inlayHint" (inFile "file:///a.idl")] serveServer in
+  assertEq (listed "label" (V.get said 1)) [J.jString ": Int", J.jString ": Int"] "n and m are Ints"
 
 @test fun aTestHasALensToRunIt () =
   let text = "x : Int\nx = 1\n\n@test\nones : () -> ()\nones u = ()\n" in

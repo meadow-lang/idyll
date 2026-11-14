@@ -22,6 +22,7 @@ use Idyll.Hir (Visibility)
 use Idyll.Rename as Rename
 use Idyll.Scc (sccModule)
 use Idyll.Check (checkedAgainst, checkedWanting)
+use Idyll.Eval (quote)
 use Idyll.Elab (goalNamed)
 use Idyll.Tc (Tc, CtorInfo, ctorInfo)
 use Std.Collections.HashMap as Hm
@@ -67,6 +68,10 @@ database! {
     | query problems (file : Int) : [Diagnostic] =
         problemsIn (querySource file) (M.map (\pc -> (pc, \u -> queryDependencies file)) (queryPackage file)) (queryPrelude 0) (\u -> queryStd 0)
     | query formatted (file : Int) : String = formattedOf (querySource file)
+    -- the type of each binder of a file with none written, for an editor's
+    -- inlay hints (`Server`)
+    | query hints (file : Int) : [(Int, String)] =
+        hintsIn (querySource file) (M.map (\pc -> (pc, \u -> queryDependencies file)) (queryPackage file)) (queryPrelude 0) (\u -> queryStd 0)
     -- what each name in a file is, for an editor's colours (`Server`)
     | query resolved (file : Int) : [(Int, String)] =
         resolvedIn (querySource file) (M.map (\pc -> (pc, \u -> queryDependencies file)) (queryPackage file)) (queryPrelude 0) (\u -> queryStd 0)
@@ -468,6 +473,28 @@ fun inFile (m : Meta) (base : Int) (text : String) : Bool =
                           if not (V.isEmpty us) and (match V.head (S.chars (S.drop text a)) with | Just c -> Ch.isUpper c | None -> False) then [(a, "type")]
                           else [])))
         (Rename.occurrencesModule (Rename.hirArena m.hir) (Rename.hirRoot m.hir))
+  | Err _ -> []
+
+-- The type each parameter and `let` of `text` with none written got,
+-- each said after the name: the byte the name ends at, and the type shown.
+@pub fun hintsIn (text : String) (package : Maybe (PackageContext, () -> [Dependency] ! e)) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : [(Int, String)] ! e =
+  let (ready, base) = preparedFor text package prelude std in
+  match ready with
+  | Ok (m, deps, _) ->
+      let typed =
+        runSt (\() ->
+          let c = checkedWanting (sccModule m) False deps (0 - 2) in
+          V.map (\b -> match b with | (u, lvl, ty) -> (u, C.shown m.linearBody (quote c.tc lvl ty))) (St.getRef c.tc.binders))
+      in
+      let own = V.filter (\o -> inFile (snd o) base text) (ownOccurrences m) in
+      V.concatMap
+        (\t ->
+          match t with
+          | (u, shown) ->
+              (match V.head (sortedPlaces (V.concatMap (\o -> if fst o == u then [snd o] else []) own)) with
+               | Just place -> (match metaBack place base with | Meta.Meta _ b -> [(b, shown)])
+               | None -> []))
+        typed
   | Err _ -> []
 
 -- What a declared name is, to an editor's colours, by its type shown.

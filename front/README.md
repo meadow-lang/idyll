@@ -1084,7 +1084,8 @@ So far the server:
   renamer's and the checker's, each at the node it was renaming or
   checking when it found the problem (or at the start of the file, for a
   declaration's own);
-- says on hover what a term's type is;
+- says on hover what a term's type is and, of a name the file defines, the
+  `--` comment above its definition (past its signature and attributes);
 - goes to a name's definition (where it is first bound), and finds every
   place it is named, from every name of the renamed program with its place
   (`Rename.occurrences`, a `pass!` fold);
@@ -1099,7 +1100,24 @@ So far the server:
   the package's compiled constants) or of its own. A program that does not
   parse is checked without the line being written;
 - gives an outline of the program's own declarations;
-- colours a file from its tree;
+- colours a file from its tree, and each name by what it resolved to
+  (`lsp!`'s `resolved`, `Session.resolvedIn`): by the type the checker
+  declared it with, a capital is a constructor and a lower-case name a
+  function or a variable. Types are not among what the checker declares,
+  so a capital it does not know is a type;
+- shows inlay hints, the type each parameter and `let` with none written
+  got. With `want` -2 the checker keeps every such binder, its unique, its
+  level and its type (`Tc.noteBinder`, called where a lambda or a local
+  `let` binds), and `Session.hintsIn` quotes each and says it after the
+  name's first place;
+- puts a lens above each `@test`, which the extension runs with the Rust
+  driver's `idyll test --exact`, by its whole name (`Module.test`);
+- answers `idyll/ir`, of its own: the definition the cursor is in, as HIR
+  or as Cut, and where the name at the cursor is in that text. Lowering
+  keeps only what the program reaches, so a file that only declares is
+  lowered with an entry that names the definition
+  (`let seen = name in ()`). A package's file is lowered against its
+  dependencies without being linked with them (`Lower.cutTextOwn`);
 - formats a file as `Idyll fmt` does.
 
 What is wrong is said as the Rust checker says it (`Messages.mw`): where
