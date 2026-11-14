@@ -15,10 +15,11 @@ the program's Cut to `meadow cut` for Silo to build).
 | `ask` | ten million operations through a handler whose clause resumes at once, `ask u k -> k 1` | performing, and resuming last |
 | `state` | counting ten million down through a state handler that passes the state on as a function, as `Std.State` does | resuming once, but not last |
 | `triples` | how many triples of falling numbers up to 300 add up to 300, choosing each with an operation resumed twice | `@many`: resuming more than once |
+| `mixed` | `fib 32` beside a coin tossed with an operation resumed twice | code that cannot reach an `@many` effect in a program that has one |
 
-Only Idyll and Meadow have handlers, so the last three are written in those
-alone, and `state` and `triples` in Idyll alone (Meadow resumes at most
-once).
+Only Idyll and Meadow have handlers, so the last four are written in those
+alone, and `state`, `triples` and `mixed` in Idyll alone (Meadow resumes at
+most once).
 
 Every language uses a linked list (not an array), so that the work is the
 same. `c_pool` is the C program with `malloc`/`free` replaced by a free list
@@ -64,6 +65,37 @@ C and Rust the win is the allocator, not the language: they call the system
 measure of what Idyll's cells cost. Against the collected runtimes (Go,
 Haskell, Node, and Meadow's own Glade) the win is Silo's counting of
 references: a cell is freed as `sum` takes it apart, and nothing is traced.
+
+## Handlers
+
+The same laptop, 2026-11-14; Meadow nightly 2026-11-10 (aa79619). Median of
+7 runs, milliseconds, on Silo. A continuation lives in a stack frame unless
+`MEADOW_CUT_FRAMES=none` puts every one on the heap.
+
+| | ask | state | triples | mixed |
+| --- | ---: | ---: | ---: | ---: |
+| **Idyll**, frames | **68** | 4545 | 379 | **58** |
+| Idyll, all on the heap | 144 | **1022** | **375** | 154 |
+| Meadow, frames | 69 | – | – | – |
+
+**An operation costs what it costs in Meadow.** A loop of ten million with no
+effect takes about 30 ms, so each `ask` costs about 4 ns, in Idyll and in
+Meadow alike. Silo enters a clause that resumes last, `ask u k -> k 1`, where
+`ask` is performed, without capturing the rest, and the perform finds its
+handler without allocating. Before those two (meadow#66, meadow#71), `ask`
+took 2153 ms in frames.
+
+**`@many` keeps only what can reach it on the heap.** Every def and closure
+method in Idyll's Cut says what it may perform (`def fib (n; k) ! {} =`).
+Silo keeps on the heap only the code that can reach an `@many` effect. In
+`mixed`, `fib` cannot, so it runs in frames, nearly three times faster than
+on the heap. In `triples`, every def can perform `Choose`, so frames buy
+nothing.
+
+**`state` is slower in frames.** Its clause gives back a function and resumes
+inside it, so its resumption isn't the last thing it does, and the fast
+path doesn't apply. It waits on handlers that carry a parameter, which Silo
+doesn't have yet.
 
 ## Before Silo
 
