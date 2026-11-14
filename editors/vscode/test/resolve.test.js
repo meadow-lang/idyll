@@ -2,7 +2,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
 const path = require("path");
-const { candidates, pick } = require("../src/resolve");
+const { candidates, pick, driverCandidates, pickDriver } = require("../src/resolve");
 
 // Built with `path.join`, like the code under test: these tests pretend to be
 // other platforms but run on this one, so the separator is the host's.
@@ -84,4 +84,19 @@ test("a candidate is asked only once it is known to exist", () => {
   const probed = [];
   pick("Idyll", { ...opts(), exists: (p) => p === installed, probe: (p) => (probed.push(p), true) });
   assert.deepEqual(probed, [installed]);
+});
+
+// The driver, which runs a test: `idyll`, not front/'s `Idyll`.
+const driverOnPath = path.join("/usr/local/bin", "idyll");
+const driverInstalled = path.join(HOME, ".idyll", "bin", "idyll");
+
+test("the driver is looked for where the server is, by its own name", () => {
+  assert.deepEqual(driverCandidates("idyll", opts()), [driverOnPath, path.join("/usr/bin", "idyll"), driverInstalled]);
+});
+
+test("a driver without `test --exact` is passed over", () => {
+  // (on Windows front/'s Idyll.exe answers to idyll.exe too, and has no `test`)
+  const chosen = pickDriver("idyll", { ...opts(), exists: (p) => p === driverOnPath || p === driverInstalled, probe: (p) => p === driverInstalled });
+  assert.equal(chosen.command, driverInstalled);
+  assert.equal(chosen.tests, true);
 });

@@ -110,4 +110,51 @@ function pick(configured, opts = {}) {
   return { command: found[0], lsp: false, found };
 }
 
-module.exports = { candidates, pick, speaksLsp };
+/// Where the Rust driver, `idyll`, might be: what runs a package's tests
+/// (`idyll test --exact`), which front/'s `Idyll` does not yet. The same
+/// places, in the same order, as the server's.
+function driverCandidates(configured, opts = {}) {
+  if (configured && configured !== "idyll") return [configured];
+
+  const platform = opts.platform || process.platform;
+  const home = opts.home || os.homedir();
+  const env = opts.env || process.env;
+  const exe = "idyll" + (platform === "win32" ? ".exe" : "");
+  const sep = platform === "win32" ? ";" : ":";
+
+  const out = [];
+  const PATH = env.PATH || env.Path || "";
+  for (const dir of PATH.split(sep)) {
+    if (dir) out.push(path.join(dir, exe));
+  }
+  for (const bin of [env.IDYLL_HOME && path.join(env.IDYLL_HOME, "bin"), path.join(home, ".idyll", "bin")]) {
+    if (bin) out.push(path.join(bin, exe));
+  }
+  return [...new Set(out)];
+}
+
+/// Does this `idyll` run one test by its whole name? front/'s `Idyll`, which
+/// on Windows answers to the same name, has no `test`, and an old driver no
+/// `--exact`.
+function speaksExactTest(exe) {
+  try {
+    const r = cp.spawnSync(exe, ["test", "--help"], { timeout: 5000, windowsHide: true, encoding: "utf8" });
+    return r.status === 0 && /--exact/.test(r.stdout || "");
+  } catch {
+    return false;
+  }
+}
+
+/// Choose the driver to run tests with, as `pick` chooses the server.
+function pickDriver(configured, opts = {}) {
+  const exists = opts.exists || executable;
+  const probe = opts.probe || speaksExactTest;
+
+  const found = driverCandidates(configured, opts).filter((c) => path.isAbsolute(c) && exists(c));
+  for (const c of found) {
+    if (probe(c)) return { command: c, tests: true, found };
+  }
+  return { command: found[0], tests: false, found };
+}
+
+module.exports = { candidates, pick, speaksLsp, driverCandidates, pickDriver, speaksExactTest };

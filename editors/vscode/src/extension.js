@@ -1,6 +1,7 @@
 // The VS Code client: it starts front/'s `Idyll lsp` and lets the server do
 // the work.
 //
+// The test runner (`testing.js`) and the IR view (`ir.js`) are beside it.
 // Everything else the extension contributes is declarative -- the language
 // id, the TextMate grammar and the indentation rules in `package.json` and
 // `language-configuration.json`. Those apply as soon as a `.idl` file opens,
@@ -10,6 +11,8 @@
 const { workspace, window, commands } = require("vscode");
 const { LanguageClient, TransportKind } = require("vscode-languageclient/node");
 const { pick } = require("./resolve");
+const { registerTesting } = require("./testing");
+const { registerIr } = require("./ir");
 
 let client;
 
@@ -42,7 +45,25 @@ function start() {
   };
   const clientOptions = {
     documentSelector: [{ scheme: "file", language: "idyll" }],
+    // A sibling module, a manifest or the lockfile a build writes: told to
+    // the server when one changes on disk.
+    synchronize: {
+      fileEvents: workspace.createFileSystemWatcher("**/{*.idl,Idyll.toml,idyll.lock}"),
+    },
     outputChannelName: "Idyll Language Server",
+    middleware: {
+      // The "Test" lens above each `@test`, unless its setting turns it off.
+      provideCodeLenses: async (document, token, next) => {
+        if (!workspace.getConfiguration("idyll").get("test.codeLens", true)) return [];
+        return (await next(document, token)) || [];
+      },
+      // The types after parameters and `let`s, unless their setting turns
+      // them off.
+      provideInlayHints: async (document, range, token, next) => {
+        if (!workspace.getConfiguration("idyll").get("inlayHints.enabled", true)) return [];
+        return (await next(document, range, token)) || [];
+      },
+    },
   };
   client = new LanguageClient("idyll", "Idyll Language Server", serverOptions, clientOptions);
   return client.start().catch((err) => {
@@ -75,6 +96,8 @@ async function stop() {
 
 function activate(context) {
   start();
+  registerTesting(context);
+  registerIr(context, () => (client && client.isRunning && client.isRunning() ? client : undefined));
   context.subscriptions.push(
     commands.registerCommand("idyll.restartServer", async () => {
       await stop();
