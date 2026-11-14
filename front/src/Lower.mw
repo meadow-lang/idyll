@@ -343,6 +343,18 @@ fun writeProgram (l : L s) (entry : Maybe Sym) (answer : Bool) (datas : [CutDecl
       | Ok text -> text
       | Err whys -> "(not lowered: " ++ S.join "; " whys ++ ")")
 
+-- The same, not linked: what the package itself defines, lowered, as an
+-- editor shows a file of it beside its source.
+@pub fun cutTextOwn (m : Renamed) (package : String) (deps : [Compiled]) : String =
+  runSt (\() ->
+    let c = checkedWith m False deps in
+    if not (V.isEmpty (getRef c.tc.unsupported)) then "(unsupported)"
+    else if not (V.isEmpty (getRef c.tc.errors)) then "(error)"
+    else
+      match lowerIn c package with
+      | Ok text -> text
+      | Err whys -> "(not lowered: " ++ S.join "; " whys ++ ")")
+
 -- A program put together from compiled packages alone: `root`, the one
 -- whose body is run, with `deps`, those it reaches, each after those it
 -- depends on; `context` is a module of nothing but the prelude, checked

@@ -1,21 +1,27 @@
 -- Idyll's language server (`lsp!`), `Idyll lsp`: on standard input and
 -- output, over a session of the compiler's queries (`Session`), which
 -- works out again only what an edit changed. It publishes what is wrong
--- with each open file, colours a file from its tree, and sets a file out
--- as `Idyll fmt` does.
+-- with each open file, colours a file from its tree and from what each
+-- name resolved to, and sets a file out as `Idyll fmt` does. Of its own it
+-- answers a lens above each `@test`, to run it, and `idyll/ir`, a
+-- definition in one of the compiler's IRs.
 
 use Lingua (lsp!)
 use Idyll.Session
 use Idyll.Syntax (parseIdyll)
 use Std.Exn (toResult)
 use Std.Result.Result.*
-use Lingua.Lsp (pathOf)
+use Lingua.Lsp (pathOf, Asked, rangeIn, rangeJson, lineStarts, uriOf)
+use Lingua.Lang (Meta)
+use Std.String as S
 use Idyll.Driver as D
 use Idyll.Workspace as Ws
 use Std.Path as Path
 use Std.Fs (exists, readToString, readToStringOr, createDirAll, writeString)
 use Std.Maybe as M
 use Std.Collections.Vector as V
+use Std.Char as Ch
+use Std.Json as J
 
 lsp! {
   pub Server "idyll" for Session
@@ -29,6 +35,8 @@ lsp! {
     | completion = completionAt
     | symbols = symbolsOf
     | opened = openedIn
+    | resolved = resolvedOf
+    | requests = serverRequests
 }
 
 -- A file the editor opened: the package it is a module of found (an
@@ -93,12 +101,43 @@ fun diagnosticsOf db file = answered [] (\() -> sessionProblems db file)
 
 fun treeOf db file = answered (fst (parseIdyll "")) (\() -> fst (sessionParsed db file))
 
--- What the term at a place is: its type, as the checker found it.
+-- What the term at a place is: its type, as the checker found it, and,
+-- of a name the file defines, the `--` comment above its definition.
 fun hoverAt db file at =
   answered None (\() ->
-    match typeAtIn (sessionSource db file) (packageIn db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at with
-    | Just (place, ty) -> Just (place, "```idyll\n${ty}\n```")
+    let text = sessionSource db file in
+    match typeAtIn text (packageIn db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at with
+    | Just (place, ty) ->
+        let doc =
+          answered "" (\() ->
+            match namedAtIn text (packageIn db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at with
+            | Just (Meta.Meta d _, _) -> docAbove text d
+            | None -> "")
+        in
+        Just (place, "```idyll\n${ty}\n```" ++ (if S.isEmpty doc then "" else "\n\n" ++ doc))
     | None -> None)
+
+-- The `--` comment just above the line byte `at` is on, its markers taken
+-- off: what a definition says of itself. Attributes (`@test`) between the
+-- comment and the definition are passed over.
+fun docAbove (text : String) (at : Int) : String =
+  let lines = S.split "\n" (S.take text at) in
+  let above0 = V.reverse (V.take lines (V.len lines - 1)) in
+  -- (a definition is bound at its equation: its signature is passed over)
+  let above = if isSignature (V.getOr "" above0 0) then V.drop above0 1 else above0 in
+  let kept =
+    V.foldl
+      (\acc l ->
+        match acc with
+        | (ks, going) ->
+            let t = S.trim l in
+            if not going then acc
+            else if S.startsWith "--" t then (V.pushBack ks (S.trim (S.drop t 2)), True)
+            else if S.startsWith "@" t then acc
+            else (ks, False))
+      ([], True)
+      above
+  in S.join "\n" (V.reverse (fst kept))
 
 -- Where the name at a place is defined: where the program first binds it,
 -- its equation or its binder.
@@ -124,8 +163,133 @@ fun completionAt db file at =
 fun symbolsOf db file =
   answered [] (\() -> symbolsInPackage (sessionSource db file) (packageIn db file) (sessionPrelude db 0) (\u -> sessionStd db 0))
 
+-- Whether a line is a signature, `name : type`.
+fun isSignature (line : String) : Bool =
+  let words = S.split " " line in
+  not (S.startsWith " " line) and V.len words > 1 and V.getOr "" words 1 == ":"
+
 -- The file set out; as it is, if it cannot be.
 fun formatOf db file = answered (answered "" (\() -> sessionSource db file)) (\() -> sessionFormatted db file)
+
+-- What each name in the file resolved to, for its colours.
+fun resolvedOf db file = answered [] (\() -> sessionResolved db file)
+
+-- What Idyll's server answers itself: a lens above each `@test`, and a
+-- definition in one of the compiler's IRs.
+def serverRequests =
+  [
+    ("textDocument/codeLens", lensesOf),
+    ("idyll/ir", irAsked)
+  ]
+
+-- A "Test" lens above each `@test`, which runs that one test, by its whole
+-- name (`Module.test`, a bare name in the package's root module), as
+-- `idyll test --exact` takes it.
+fun lensesOf db (a : Asked) =
+  let own = answered [] (\() -> M.unwrapOr [] (M.map (\(pc : PackageContext) -> pc.own) (sessionPackage db a.file))) in
+  J.jArray
+    (V.map
+      (\t ->
+        match t with
+        | (name, from, upto) ->
+            let whole = if V.isEmpty own then name else S.join "." (V.pushBack own name) in
+            J.jObject [
+              ("range", rangeIn a (Meta.Meta from upto)),
+              ("command", J.jObject [
+                ("title", J.jString "\u{25B6} Test"),
+                ("command", J.jString "idyll.testFunction"),
+                ("arguments", J.jArray [J.jObject [("uri", J.jString (uriOf a.docs a.file)), ("test", J.jString whole)]])
+              ])
+            ])
+      (testsIn a.text))
+
+-- Each `@test` of a file: the name the definition after it binds, and the
+-- bytes of that definition's first line.
+@pub fun testsIn (text : String) : [(String, Int, Int)] =
+  let lines = S.split "\n" text in
+  let starts = V.foldl (\acc l -> V.pushBack acc (M.unwrapOr 0 (V.last acc) + S.byteLength l + 1)) [0] lines in
+  V.concatMap
+    (\i ->
+      let l = S.trim (V.getOr "" lines i) in
+      if l == "@test" or S.startsWith "@test " l then
+        (match declarationAfter lines (i + 1) with
+         | Just j ->
+             let line = V.getOr "" lines j in
+             let name = V.getOr "" (S.split ":" (V.getOr "" (S.split " " (S.trim line)) 0)) 0 in
+             if S.isEmpty name then [] else [(name, V.getOr 0 starts j, V.getOr 0 starts j + S.byteLength line)]
+         | None -> [])
+      else [])
+    (V.range 0 (V.len lines))
+
+-- The first line from `i` that is neither blank, nor a comment, nor an
+-- attribute.
+fun declarationAfter (lines : [String]) (i : Int) : Maybe Int =
+  if i >= V.len lines then None
+  else
+    let t = S.trim (V.getOr "" lines i) in
+    if S.isEmpty t or S.startsWith "--" t or S.startsWith "@" t then declarationAfter lines (i + 1) else Just i
+
+-- `idyll/ir`: the definition the cursor is in, as `ir` (`hir` or `cut`)
+-- makes it, and where the name the cursor is on is in that text -- what an
+-- editor shows beside the source, and marks.
+fun irAsked db (a : Asked) =
+  let ir = M.unwrapOr "cut" (M.andThen J.asString (J.get "ir" a.params)) in
+  let defs = symbolsOf db a.file in
+  let around = V.foldl (\best d -> match d with | (n, _, Meta.Meta s _) -> if s <= a.offset then Just n else best) None defs in
+  match around with
+  | None -> J.jNull ()
+  | Just name ->
+      let whole = answered "(error)" (\() -> irIn a.text (packageIn db a.file) (sessionPrelude db 0) (\u -> sessionStd db 0) ir name) in
+      let shown = definitionIn ir name whole in
+      let word = wordAt a.text a.offset in
+      let starts = lineStarts shown in
+      J.jObject [
+        ("text", J.jString shown),
+        ("focus", J.jArray (V.map (\m -> rangeJson shown starts m) (if S.isEmpty word then [] else namedIn shown word)))
+      ]
+
+-- What of `whole`, the file as one IR, is the top-level definition `name`:
+-- in Cut, each `def` of it (a function lifted out of it among them), in
+-- the HIR its `bind`. All of it if it says nothing of `name`.
+@pub fun definitionIn (ir : String) (name : String) (whole : String) : String =
+  let blocks = S.split "\n\n" whole in
+  let mine =
+    V.filter
+      (\b ->
+        if ir == "hir" then S.contains "(bind ${name}@" b
+        else V.any (\l -> S.startsWith "def " l and (S.contains "/${name} " l or S.contains "/${name}." l)) (S.split "\n" b))
+      blocks
+  in
+  if V.isEmpty mine then whole else S.join "\n\n" mine
+
+-- The name the byte `at` of `text` is in, if it is in one.
+fun wordAt (text : String) (at : Int) : String =
+  let before = V.reverse (S.chars (S.take text at)) in
+  let after = S.chars (S.drop text at) in
+  let left = V.reverse (V.takeWhile isWordChar before) in
+  let right = V.takeWhile isWordChar after in
+  S.fromChars (V.append left right)
+
+fun isWordChar (c : Char) : Bool = Ch.isAlphaNum c or c == '_' or c == '\''
+
+-- Where `word` is named in an IR's text: on its own, or as Cut and the HIR
+-- write a variable, `word_12` and `word@12`.
+@pub fun namedIn (text : String) (word : String) : [Meta] =
+  let n = S.byteLength word in
+  V.concatMap
+    (\at ->
+      let before = V.last (S.chars (S.take text at)) in
+      let next = V.head (S.chars (S.drop text (at + n))) in
+      let startsHere = match before with | Just c -> not (isWordChar c) | None -> True in
+      let endsHere = match next with | Just c -> not (isWordChar c) or c == '_' | None -> True in
+      if startsHere and endsHere then [Meta.Meta at (at + n)] else [])
+    (indicesOf word text 0)
+
+-- Every byte of `text` from `from` that `word` starts at.
+fun indicesOf (word : String) (text : String) (from : Int) : [Int] =
+  match S.indexOfFrom word text from with
+  | Just at -> V.pushFront (indicesOf word text (at + 1)) at
+  | None -> []
 
 -- --- the server, told what an editor would tell it --------------------------------
 
@@ -249,6 +413,75 @@ fun listed (field : String) (reply : Maybe Json) : [Json] =
 @test fun theOutlineIsTheProgramsOwnDeclarations () =
   let said = told [opening "file:///a.idl" "double : Int -> Int\ndouble n = n + n\n", asking 1 "textDocument/documentSymbol" (inFile "file:///a.idl")] serveServer in
   assertEq (listed "name" (V.get said 1)) [J.jString "double"] "double, and nothing of the prelude's"
+
+@test fun hoverSaysWhatADefinitionSaysOfItself () =
+  let text = "-- Twice n.\ndouble : Int -> Int\ndouble n = n + n\n\nx = double 1\n" in
+  let said = told [opening "file:///a.idl" text, hovering 1 "file:///a.idl" 4 5] serveServer in
+  assertEq
+    (M.andThen (J.path ["result", "contents", "value"]) (V.get said 1))
+    (Just (J.jString "```idyll\nInt -> Int\n```\n\nTwice n."))
+    "its type, then its comment"
+
+@test fun aCommentIsTheDefinitionsOwn () =
+  assertEq
+    (docAbove "-- a\n\n-- Twice n.\n-- (or more)\n@test\ndouble : Int -> Int\ndouble n = n + n\n" 50)
+    "Twice n.\n(or more)"
+    "the comment above, past the attribute and the signature, not the one before the blank line"
+
+@test fun aTestHasALensToRunIt () =
+  let text = "x : Int\nx = 1\n\n@test\nones : () -> ()\nones u = ()\n" in
+  let said = told [opening "file:///a.idl" text, asking 1 "textDocument/codeLens" (inFile "file:///a.idl")] serveServer in
+  let lens = M.andThen (\r -> match r with | J.Json.Array xs -> V.get xs 0 | _ -> None) (M.andThen (J.get "result") (V.get said 1)) in
+  assertEq
+    (M.andThen (J.path ["command", "arguments"]) lens, M.andThen (J.path ["range", "start", "line"]) lens)
+    (Just (J.jArray [J.jObject [("uri", J.jString "file:///a.idl"), ("test", J.jString "ones")]]), Just (J.jInt 4))
+    "above the definition after the @test, by its whole name"
+
+@test fun theTestsOfAFileAreTheDefinitionsAfterTest () =
+  assertEq
+    (V.map (\t -> match t with | (n, _, _) -> n) (testsIn "@test\na : () -> ()\na u = ()\n\n@test\n-- why\nb : () -> ()\nb u = ()\nc = 1\n"))
+    ["a", "b"]
+    "a and b, not c"
+
+fun irAt (id : Int) (uri : String) (line : Int) (column : Int) (ir : String) : Json =
+  asking id "idyll/ir" (J.jObject [
+    ("textDocument", J.jObject [("uri", J.jString uri)]),
+    ("position", J.jObject [("line", J.jInt line), ("character", J.jInt column)]),
+    ("ir", J.jString ir)
+  ])
+
+@test fun aDefinitionIsShownInCut () =
+  let text = "double : Int -> Int\ndouble n = n + n\n\nx : Int\nx = double 21\n" in
+  let said = told [opening "file:///a.idl" text, irAt 1 "file:///a.idl" 1 7 "cut"] serveServer in
+  let shown = M.unwrapOr "" (M.andThen J.asString (M.andThen (J.path ["result", "text"]) (V.get said 1))) in
+  let focus = M.andThen (J.path ["result", "focus"]) (V.get said 1) in
+  assertEq
+    (S.startsWith "def " shown and S.contains "/double " shown and not (S.contains "/x " shown), M.map (\f -> match f with | J.Json.Array xs -> V.len xs > 0 | _ -> False) focus)
+    (True, Just True)
+    "double's def and not x's, with n marked in it"
+
+@test fun aNameIsFoundInAnIrAsItIsWritten () =
+  assertEq
+    (namedIn "def a/f (n_75: i64; k_76: ptr) = <n_75 | k_76> nn n" "n")
+    [Meta.Meta 9 10, Meta.Meta 34 35, Meta.Meta 50 51]
+    "n_75 twice and n alone, not nn"
+
+-- Each token's class in what the server says to colour, as the protocol
+-- encodes them: five numbers a token, its class the fourth.
+fun classes (reply : Maybe Json) : [Int] =
+  match M.andThen (J.path ["result", "data"]) reply with
+  | Just (J.Json.Array xs) ->
+      V.concatMap
+        (\i -> if i % 5 == 3 then (match V.get xs i with | Just j -> M.unwrapOr [] (M.map (\n -> [n]) (J.asInt j)) | None -> []) else [])
+        (V.range 0 (V.len xs))
+  | _ -> []
+
+@test fun aTypeAndAConstructorAreColouredApart () =
+  let text = "f : Maybe Int -> Int\nf m = case m of\n  Just x -> x\n  Nothing -> 0\n" in
+  let said = told [opening "file:///a.idl" text, asking 1 "textDocument/semanticTokens/full" (inFile "file:///a.idl")] serveServer in
+  let cs = classes (V.get said 1) in
+  -- (`type` is the protocol's class 1, `enumMember` 2, `function` 3)
+  assertEq (V.elem 1 cs, V.elem 2 cs, V.elem 3 cs) (True, True, True) "Maybe a type, Just a constructor, f a function"
 
 @test fun aTypeErrorIsPublished () =
   assertEq (M.map (\n -> n > 0) (published (told [opening "file:///a.idl" "x : Bool\nx = 1\n"] serveServer))) (Just True) "what the checker said"
