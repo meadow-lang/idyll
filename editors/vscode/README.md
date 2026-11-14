@@ -8,7 +8,16 @@ Syntax highlighting for Idyll (`.idl`), and, from front/'s language server
 - go to definition, and find references;
 - completion of names, with their types;
 - an outline of a file's declarations;
-- formatting, as `Idyll fmt` does.
+- formatting, as `Idyll fmt` does, on save and on Format Document. It sets
+  out what is in the editor, unsaved changes and all, and a file that does
+  not parse is left as it is.
+
+Format on save is on for Idyll files through VS Code's own setting, so it is
+turned off as any other is, in your settings:
+
+```json
+"[idyll]": { "editor.formatOnSave": false }
+```
 
 ## The server
 
