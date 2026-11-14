@@ -455,15 +455,22 @@ fun inFile (m : Meta) (base : Int) (text : String) : Bool =
   let (ready, base) = preparedFor text package prelude std in
   match ready with
   | Ok (m, deps, _) ->
-      let kinds =
+      let declared =
         runSt (\() ->
           let c = checkedAgainst (sccModule m) False deps in
-          V.foldl
-            (\acc d -> match d with | (u, name, ty) -> Hm.insert u (nameKind name (C.shown m.linearBody ty)) acc)
-            Hm.empty
-            (St.getRef c.tc.declared))
+          V.map (\d -> match d with | (u, name, ty) -> (u, name, C.shown m.linearBody ty)) (St.getRef c.tc.declared))
       in
-      V.concatMap
+      let kinds = V.foldl (\acc d -> match d with | (u, name, ty) -> Hm.insert u (nameKind name ty) acc) Hm.empty declared in
+      let declaredHere = V.filter (\d -> match d with | (u, _, _) -> u >= m.first) declared in
+      -- (a definition's name is one occurrence, but its signature and each
+      -- of its equations begin with it: each is coloured as it is)
+      let byName = V.foldl (\acc d -> match d with | (u, name, _) -> (match Hm.lookup u kinds with | Just k -> Hm.insert name k acc | None -> acc)) Hm.empty declaredHere in
+      let heads =
+        V.concatMap
+          (\l -> match l with | (at, word) -> (match Hm.lookup word byName with | Just k -> [(at, k)] | None -> []))
+          (lineHeads text)
+      in
+      V.append heads (V.concatMap
         (\o ->
           match o with
           | (us, place) ->
@@ -478,7 +485,7 @@ fun inFile (m : Meta) (base : Int) (text : String) : Bool =
                       | None ->
                           if not (V.isEmpty us) and (match V.head (S.chars (S.drop text a)) with | Just c -> Ch.isUpper c | None -> False) then [(a, "type")]
                           else [])))
-        (Rename.occurrencesModule (Rename.hirArena m.hir) (Rename.hirRoot m.hir))
+        (Rename.occurrencesModule (Rename.hirArena m.hir) (Rename.hirRoot m.hir)))
   | Err _ -> []
 
 -- The type each parameter and `let` of `text` with none written got,
@@ -502,6 +509,49 @@ fun inFile (m : Meta) (base : Int) (text : String) : Bool =
                | None -> []))
         typed
   | Err _ -> []
+
+-- Each line of `text` that starts with a name, where it starts and the
+-- name: a signature's or an equation's.
+fun lineHeads (text : String) : [(Int, String)] =
+  let lines = S.split "\n" text in
+  let starts = V.foldl (\acc l -> V.pushBack acc (M.unwrapOr 0 (V.last acc) + S.byteLength l + 1)) [0] lines in
+  V.concatMap
+    (\i ->
+      let l = V.getOr "" lines i in
+      let word = S.fromChars (V.takeWhile (\c -> Ch.isAlphaNum c or c == '_' or c == '\'') (S.chars l)) in
+      if S.isEmpty word then [] else [(V.getOr 0 starts i, word)])
+    (V.range 0 (V.len lines))
+
+-- The declared name `text` names at byte `at`, and its type: what a
+-- signature says it is, `name : type`, and where that occurrence is. Only
+-- where the name is written (`word`, what the editor is on): a definition's
+-- name stands for the whole definition, which holds more than its name.
+@pub fun declaredAtIn (text : String) (package : Maybe (PackageContext, () -> [Dependency] ! e)) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (at : Int) (word : String) : Maybe (Meta, String) ! e =
+  let (ready, base) = preparedFor text package prelude std in
+  match ready with
+  | Ok (m, deps, _) ->
+      let declared =
+        runSt (\() ->
+          let c = checkedAgainst (sccModule m) False deps in
+          V.map (\d -> match d with | (u, name, ty) -> (u, name, C.shown m.linearBody ty)) (St.getRef c.tc.declared))
+      in
+      let holding =
+        V.filter
+          (\o -> match o with | (us, place) -> not (V.isEmpty us) and inFile place base text and contains place (at + base))
+          (Rename.occurrencesModule (Rename.hirArena m.hir) (Rename.hirRoot m.hir))
+      in
+      let named =
+        V.concatMap
+          (\o ->
+            match o with
+            | (us, place) ->
+                V.concatMap (\d -> match d with | (u, name, ty) -> if V.elem u us and name == word then [(place, name, ty)] else []) declared)
+          holding
+      in
+      (match V.foldl (\best x -> match (best, x) with | (Just (p0, _, _), (p, _, _)) -> (if width p < width p0 then Just x else best) | (None, _) -> Just x) None named with
+       | Just (place, name, ty) -> Just (metaBack place base, "${name} : ${ty}")
+       | None -> None)
+  | Err _ -> None
 
 -- What a declared name is, to an editor's colours, by its type shown.
 fun nameKind (name : String) (ty : String) : String =
