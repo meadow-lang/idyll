@@ -113,6 +113,39 @@ program's syntax tree. `compiler/idyllic/tests/front.rs` checks it against
 the Rust compiler. [front/README.md](front/README.md) explains how it works,
 pass by pass.
 
+**Building from source.** There is no release build yet, so
+`scripts/install.sh` is how to install Idyll. It builds three binaries from
+the checkout it is in and installs them in `~/.idyll/bin`: `idyll`, the
+driver; `idyllic`, the compiler; and front/'s compiler as `idyll-front`,
+which is also the language server the VS Code extension runs. front/'s
+binary is called `Idyll` where it is built, and is renamed because on
+Windows and macOS file names ignore case, so `Idyll` and `idyll` cannot
+share a directory. You need a Rust toolchain, and Meadow on your `PATH` for
+`idyll-front`, which is skipped without it; the build takes a few minutes.
+It runs on macOS, Linux, and Windows from Git Bash.
+
+```sh
+git clone https://github.com/meadow-lang/idyll && cd idyll
+scripts/install.sh                     # build and install this checkout
+scripts/install.sh --with-extension    # ...and the VS Code extension
+scripts/install.sh --version <tag>     # fetch that tag into ~/.idyll/src and build it
+scripts/install.sh --local <path>      # build the checkout at <path> instead
+scripts/install.sh --no-modify-path    # leave shell profiles and PATH alone
+scripts/install.sh --uninstall
+```
+
+The `PATH` is edited as Meadow's installer edits it: `~/.idyll/env` adds
+`~/.idyll/bin`, and each shell profile that exists (`~/.profile`,
+`~/.bashrc`, `~/.zshrc`, `~/.bash_profile`) gets a line that sources it, under
+a marker comment, so running the script again adds nothing. On Windows the
+directory also joins the user `PATH` in the registry, which terminals other
+than Git Bash read. `--uninstall` removes the three binaries and undoes both
+edits; the rest of `~/.idyll` (shared git checkouts, the compiled Std cache)
+stays.
+
+`IDYLL_HOME` overrides the install directory, and cargo builds into
+`CARGO_TARGET_DIR` when it is set.
+
 ## AI disclosure
 
 Idyll is written with AI coding agents: Anthropic's Claude, through Claude Code.

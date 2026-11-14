@@ -8,8 +8,11 @@ const { candidates, pick } = require("../src/resolve");
 // other platforms but run on this one, so the separator is the host's.
 const HOME = "/home/u";
 const installed = path.join(HOME, ".idyll", "bin", "Idyll");
+const installedFront = path.join(HOME, ".idyll", "bin", "idyll-front");
 const onPath = path.join("/usr/local/bin", "Idyll");
+const onPathFront = path.join("/usr/local/bin", "idyll-front");
 const alsoOnPath = path.join("/usr/bin", "Idyll");
+const alsoOnPathFront = path.join("/usr/bin", "idyll-front");
 const checkout = path.join("/src/idyll", "front", "target", "release", "native", "silo", "Idyll");
 
 /// A fixed environment, so the tests do not depend on the machine.
@@ -22,8 +25,15 @@ test("a setting is tried alone", () => {
 
 test("PATH comes first, then the install directory, then a checkout's build", () => {
   const c = candidates("Idyll", opts({ folders: ["/src/idyll"] }));
-  assert.deepEqual(c, [onPath, alsoOnPath, installed, checkout]);
+  assert.deepEqual(c, [onPathFront, onPath, alsoOnPathFront, alsoOnPath, installedFront, installed, checkout]);
   assert.deepEqual(candidates(undefined, opts({ folders: ["/src/idyll"] })), c);
+});
+
+test("what install.sh installs, idyll-front, is tried before an Idyll beside it", () => {
+  // there an Idyll is likely the driver's idyll, on a system that ignores case
+  const chosen = pick("Idyll", { ...opts(), exists: (p) => p === installed || p === installedFront, probe: (p) => p === installedFront });
+  assert.equal(chosen.command, installedFront);
+  assert.deepEqual(chosen.found, [installedFront, installed]);
 });
 
 test("IDYLL_HOME is searched before the default install directory", () => {
@@ -35,13 +45,14 @@ test("IDYLL_HOME is searched before the default install directory", () => {
 
 test("no folder is searched unless one is given", () => {
   // the extension gives the workspace's folders only when it is trusted
-  assert.ok(!candidates("Idyll", opts()).some((p) => p.includes("front")));
+  assert.ok(!candidates("Idyll", opts()).some((p) => p.includes(path.join("front", "target"))));
 });
 
-test("windows looks for Idyll.exe and splits PATH on ;", () => {
+test("windows looks for Idyll.exe and idyll-front.exe and splits PATH on ;", () => {
   const c = candidates("Idyll", { home: "C:\\Users\\u", platform: "win32", env: { PATH: "C:\\bin;C:\\other" } });
-  assert.ok(c.every((p) => p.endsWith("Idyll.exe")), c.join(","));
+  assert.ok(c.every((p) => p.endsWith("Idyll.exe") || p.endsWith("idyll-front.exe")), c.join(","));
   assert.ok(c.includes(path.join("C:\\bin", "Idyll.exe")), c.join(","));
+  assert.ok(c.includes(path.join("C:\\Users\\u", ".idyll", "bin", "idyll-front.exe")), c.join(","));
 });
 
 test("a build without the server is passed over for one with it", () => {

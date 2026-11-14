@@ -8,10 +8,10 @@
 //
 //  1. **Not finding it.** A VS Code started from a desktop does not inherit
 //     the shell's `PATH`. So the places an `Idyll` is put are searched too:
-//     `$IDYLL_HOME/bin` and `~/.idyll/bin`, where an installer would put it,
-//     as meadowup puts `meadow` in `~/.meadow/bin`; and a checkout of the
-//     repository open in the editor, whose front/ builds it at
-//     `front/target/release/native/silo/Idyll`.
+//     `$IDYLL_HOME/bin` and `~/.idyll/bin`, where scripts/install.sh puts it
+//     as `idyll-front`, as meadowup puts `meadow` in `~/.meadow/bin`; and a
+//     checkout of the repository open in the editor, whose front/ builds it
+//     at `front/target/release/native/silo/Idyll`.
 //
 //  2. **Finding the wrong one.** On Windows, where names are not told apart
 //     by case, the Rust driver's `idyll.exe` is an `Idyll.exe` too, and it has
@@ -35,19 +35,26 @@ function candidates(configured, opts = {}) {
   const home = opts.home || os.homedir();
   const env = opts.env || process.env;
   const folders = opts.folders || [];
-  const exe = platform === "win32" ? "Idyll.exe" : "Idyll";
+  const suffix = platform === "win32" ? ".exe" : "";
+  const exe = "Idyll" + suffix;
+  // What scripts/install.sh calls front/'s `Idyll` once it is installed: it
+  // shares a directory with the driver's `idyll`, which on Windows and macOS
+  // is the same name. Tried first in a directory, since there an `Idyll` is
+  // likely to be the driver.
+  const installed = "idyll-front" + suffix;
   const sep = platform === "win32" ? ";" : ":";
 
   const out = [];
   // `PATH` first: what was put there is what was meant.
   const PATH = env.PATH || env.Path || "";
   for (const dir of PATH.split(sep)) {
-    if (dir) out.push(path.join(dir, exe));
+    if (dir) out.push(path.join(dir, installed), path.join(dir, exe));
   }
   // Then where an installer puts it, which a desktop editor's `PATH` may not
   // mention; `IDYLL_HOME` says where, if it is set.
-  if (env.IDYLL_HOME) out.push(path.join(env.IDYLL_HOME, "bin", exe));
-  out.push(path.join(home, ".idyll", "bin", exe));
+  for (const bin of [env.IDYLL_HOME && path.join(env.IDYLL_HOME, "bin"), path.join(home, ".idyll", "bin")]) {
+    if (bin) out.push(path.join(bin, installed), path.join(bin, exe));
+  }
   // Then a checkout's own, built in front/ (`meadow build --release`).
   for (const folder of folders) {
     out.push(path.join(folder, "front", "target", "release", "native", "silo", exe));
