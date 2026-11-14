@@ -74,14 +74,17 @@ function executable(p) {
 
 /// Does this build serve the language server, with the arguments it will be
 /// started with? `vscode-languageclient` adds `--stdio` for a server on
-/// standard input and output, so that is asked about too; `--help` on the end
-/// has it answer and exit (0 if every flag is known) rather than serve.
+/// standard input and output, so it is started just so, with nothing to read:
+/// a server says goodbye (exit 0) when the editor has gone, and one that does
+/// not take the arguments exits otherwise. (`--help` would be answered before
+/// the arguments are looked at, by a build that then refuses `--stdio`.)
 function speaksLsp(exe) {
   try {
-    const r = cp.spawnSync(exe, ["lsp", "--stdio", "--help"], {
-      timeout: 5000,
+    const r = cp.spawnSync(exe, ["lsp", "--stdio"], {
+      timeout: 10000,
       windowsHide: true,
-      stdio: "ignore",
+      input: "",
+      stdio: ["pipe", "ignore", "ignore"],
     });
     return r.status === 0;
   } catch {

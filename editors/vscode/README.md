@@ -68,8 +68,8 @@ The extension looks for it, as Meadow's looks for `meadow`
 `~/.idyll/bin`, then, in a workspace you trust, a checkout's own build at
 `front/target/release/native/silo/Idyll` in a folder you opened. In each
 directory it looks for `idyll-front` first, then `Idyll`. Each it
-finds is asked whether it serves (`Idyll lsp --stdio --help`) before it is
-chosen, so the Rust driver's `idyll`, which has no `lsp`, is passed over.
+finds is started as the editor starts it, `Idyll lsp --stdio`, with nothing
+to read, and must take that and stop before it is chosen, so the Rust driver's `idyll`, which has no `lsp`, is passed over.
 `idyll.server.path` names one instead. Without one, the extension
 highlights and does nothing else.
 
