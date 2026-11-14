@@ -102,20 +102,66 @@ fun diagnosticsOf db file = answered [] (\() -> sessionProblems db file)
 fun treeOf db file = answered (fst (parseIdyll "")) (\() -> fst (sessionParsed db file))
 
 -- What the term at a place is: its type, as the checker found it, and,
--- of a name the file defines, the `--` comment above its definition.
+-- of a name the file defines at the start of a line, the `--` comment above
+-- its definition. A binder (a parameter, a `let`) is no term: on one, it is
+-- the type the binder got, as its inlay hint says.
 fun hoverAt db file at =
   answered None (\() ->
     let text = sessionSource db file in
-    match typeAtIn text (packageIn db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at with
-    | Just (place, ty) ->
-        let doc =
-          answered "" (\() ->
-            match namedAtIn text (packageIn db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at with
-            | Just (Meta.Meta d _, _) -> docAbove text d
-            | None -> "")
-        in
-        Just (place, "```idyll\n${ty}\n```" ++ (if S.isEmpty doc then "" else "\n\n" ++ doc))
-    | None -> None)
+    let named = answered None (\() -> namedAtIn text (packageIn db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at) in
+    let bound =
+      match named with
+      | Just (Meta.Meta d e, _) ->
+          if d <= at and at <= e then M.map (\h -> (Meta.Meta d e, snd h)) (V.find (\h -> fst h == e) (answered [] (\() -> sessionHints db file)))
+          else None
+      | None -> None
+    in
+    -- a name the program or the prelude declares: its signature, as the file
+    -- writes it if it does, else as the checker has it; a signature's own
+    -- name, which is no occurrence, too
+    let word = wordAt text at in
+    let written = signatureIn text word in
+    let declared =
+      match bound with
+      | Just _ -> None
+      | None ->
+          if S.isEmpty word then None
+          else
+            (match answered None (\() -> declaredAtIn text (packageIn db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at word) with
+             | Just (place, shown) -> Just (place, M.unwrapOr shown written)
+             | None ->
+                 (match (written, wordStart text at) with
+                  | (Just sig, Just from) -> if startsLine text from then Just (Meta.Meta from (from + S.byteLength word), sig) else None
+                  | _ -> None))
+    in
+    let typed =
+      match (bound, declared) with
+      | (Just b, _) -> Just b
+      | (_, Just d) -> Just d
+      | _ -> typeAtIn text (packageIn db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at
+    in
+    let doc = match named with | Just (Meta.Meta d _, _) -> if startsLine text d then docAbove text d else "" | None -> "" in
+    M.map (\p -> match p with | (place, ty) -> (place, "```idyll\n${ty}\n```" ++ (if S.isEmpty doc then "" else "\n\n" ++ doc))) typed)
+
+-- The signature `text` gives `name`, as it is written: its line, and the
+-- lines after it that go on with it (indented).
+fun signatureIn (text : String) (name : String) : Maybe String =
+  if S.isEmpty name then None
+  else
+    let lines = V.map (\l -> S.trimEnd l) (S.split "\n" text) in
+    match V.find (\i -> S.startsWith "${name} :" (V.getOr "" lines i)) (V.range 0 (V.len lines)) with
+    | Just i ->
+        let more = V.takeWhile (\l -> S.startsWith " " l or S.startsWith "\t" l) (V.drop lines (i + 1)) in
+        Just (S.join "\n" (V.pushFront more (V.getOr "" lines i)))
+    | None -> None
+
+-- Where the name byte `at` of `text` is in starts, if it is in one.
+fun wordStart (text : String) (at : Int) : Maybe Int =
+  let left = V.takeWhile isWordChar (V.reverse (S.chars (S.take text at))) in
+  if S.isEmpty (wordAt text at) then None else Just (at - S.byteLength (S.fromChars left))
+
+-- Whether byte `at` of `text` starts a line: where a declaration is.
+fun startsLine (text : String) (at : Int) : Bool = at == 0 or S.drop (S.take text at) (at - 1) == "\n"
 
 -- The `--` comment just above the line byte `at` is on, its markers taken
 -- off: what a definition says of itself. Attributes (`@test`) between the
@@ -437,8 +483,38 @@ fun listed (field : String) (reply : Maybe Json) : [Json] =
   let said = told [opening "file:///a.idl" text, hovering 1 "file:///a.idl" 4 5] serveServer in
   assertEq
     (M.andThen (J.path ["result", "contents", "value"]) (V.get said 1))
-    (Just (J.jString "```idyll\nInt -> Int\n```\n\nTwice n."))
+    (Just (J.jString "```idyll\ndouble : Int -> Int\n```\n\nTwice n."))
     "its type, then its comment"
+
+@test fun aParameterIsTheTypeItGot () =
+  let text = "-- Twice n.\ndouble : Int -> Int\ndouble n = n + n\n" in
+  let said = told [opening "file:///a.idl" text, hovering 1 "file:///a.idl" 2 7] serveServer in
+  assertEq
+    (M.andThen (J.path ["result", "contents", "value"]) (V.get said 1), M.andThen (J.path ["result", "range", "start", "character"]) (V.get said 1))
+    (Just (J.jString "```idyll\nInt\n```"), Just (J.jInt 7))
+    "n is an Int, and says nothing of double's comment"
+
+@test fun aDefinedNameIsWhatItsSignatureSays () =
+  let text = "f : (n : Int) -> Int\nf n = n + 1\n\nx : Int\nx = f 2\n" in
+  let said = told [opening "file:///a.idl" text, hovering 1 "file:///a.idl" 4 4, hovering 2 "file:///a.idl" 0 0] serveServer in
+  assertEq
+    (M.andThen (J.path ["result", "contents", "value"]) (V.get said 1), M.andThen (J.path ["result", "contents", "value"]) (V.get said 2))
+    (Just (J.jString "```idyll\nf : (n : Int) -> Int\n```"), Just (J.jString "```idyll\nf : (n : Int) -> Int\n```"))
+    "f where it is used and where it is declared"
+
+@test fun everyLineOfADefinitionColoursItsName () =
+  let text = "o : Bool -> Int\no True = 1\no False = 0\n" in
+  let said = told [opening "file:///a.idl" text, asking 1 "textDocument/semanticTokens/full" (inFile "file:///a.idl")] serveServer in
+  -- (each line's first token, deltaLine 1 or the first: its class)
+  let firsts =
+    match M.andThen (J.path ["result", "data"]) (V.get said 1) with
+    | Just (J.Json.Array xs) ->
+        V.concatMap
+          (\i -> if i % 5 == 0 and (i == 0 or J.asInt (V.getOr (J.jInt 0) xs i) == Just 1) then M.unwrapOr [] (M.map (\c -> [c]) (M.andThen J.asInt (V.get xs (i + 3)))) else [])
+          (V.range 0 (V.len xs))
+    | _ -> []
+  in
+  assertEq firsts [3, 3, 3] "o a function on each line"
 
 @test fun aCommentIsTheDefinitionsOwn () =
   assertEq
@@ -548,4 +624,4 @@ fun classes (reply : Maybe Json) : [Int] =
   let d = assertEq (published fine) (Just 0) "Helper is a module of the package" in
   let e = assertEq (firstAt wrong) (Just (J.jInt 3, J.jInt 4)) "where it is in Main.idl" in
   let hovered = told [opening uri "use Helper (double)\n\nx : Int\nx = double 2\n", hovering 1 uri 3 4] serveServer in
-  assertEq (M.andThen (J.path ["result", "contents", "value"]) (V.get hovered 1)) (Just (J.jString "```idyll\nInt -> Int\n```")) "Helper's double, on hover"
+  assertEq (M.andThen (J.path ["result", "contents", "value"]) (V.get hovered 1)) (Just (J.jString "```idyll\ndouble : Int -> Int\n```")) "Helper's double, on hover: its signature"

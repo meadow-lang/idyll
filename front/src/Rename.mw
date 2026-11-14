@@ -864,9 +864,9 @@ fun recordUpdate out (m : Meta) (r : Rn s) e (values : [(String, HirExpr)]) =
 -- --- terms and patterns: the pass --------------------------------------------------
 
 -- A binder, its name bound in the innermost scope after its annotation is
--- renamed. An unboxing one, `[x]`, also has the box it receives, which
--- nothing can name.
-data BoundParam g t = BoundParam Ident (Maybe Ident) (Maybe g) (Maybe t)
+-- renamed, and where it is written. An unboxing one, `[x]`, also has the box
+-- it receives, which nothing can name.
+data BoundParam g t = BoundParam Meta Ident (Maybe Ident) (Maybe g) (Maybe t)
 
 -- `resolve`: `Surface` to `Hir`, each name made the binder it means, carried
 -- down with the renamer, `r`, whose scopes are what is bound where. A
@@ -908,7 +908,7 @@ pass! {
         (let ty2 = M.map (\f -> asType r (\u -> f r)) ty in
          let x = bindName r name in
          let boxed = if unbox then Just (Ident.Ident [fresh r] name) else None in
-         BoundParam.BoundParam x boxed grade ty2)
+         BoundParam.BoundParam here x boxed grade ty2)
     | LetBox { value, name, later body } ->
         scoped r (\u -> (let x = bindName r name in LetBox { name = idNode out here x, value, body = body r }))
     | Let { raw decls, later body } ->
@@ -997,12 +997,14 @@ pass! {
 }
 
 -- `\x -> body`, or `\[x] -> body`, which is `\b -> let [x] = b in body`.
+-- The name is where the parameter is written (`at`), so that an editor
+-- finds it there, and not at the whole lambda or equation.
 fun wrapParam out (m : Meta) p body =
   match p with
-  | BoundParam.BoundParam name boxed grade ty ->
+  | BoundParam.BoundParam at name boxed grade ty ->
       (match boxed with
-       | None -> newHirExprLam out m (idNode out m name) grade ty body
-       | Just b -> newHirExprLam out m (idNode out m b) None None (newHirExprLetBox out m (idNode out m name) (newHirExprVar out m (idNode out m b)) body))
+       | None -> newHirExprLam out m (idNode out at name) grade ty body
+       | Just b -> newHirExprLam out m (idNode out m b) None None (newHirExprLetBox out m (idNode out at name) (newHirExprVar out m (idNode out m b)) body))
 
 -- A signature: the lower-case names it mentions that nothing binds are bound
 -- in front of it, implicitly, in order of appearance, their types left to
@@ -1335,7 +1337,7 @@ fun renameDefBody src out (r : Rn s) (m : Meta) (dfn : Def) ty params rhs result
                   (\p ->
                     match (src, p) with
                     | SurfacePatBind q -> resolveParam src out r q
-                    | _ -> BoundParam.BoundParam (bindName r "_") None None None)
+                    | _ -> BoundParam.BoundParam m (bindName r "_") None None None)
                   params
               in
               let b = resolveExpr src out r (surfaceRhsPlainBody src rhs) in
