@@ -262,7 +262,7 @@ fun kHalt (l : L s) : CutCons ! { St s | e } = C.halt l.out C.nowhere
 
 fun kMuT (l : L s) (b : Binder) (body : CutStmt) : CutCons ! { St s | e } =
   match b with
-  | Binder.Binder x r -> C.newCutConsMuT l.out C.nowhere x (A.repText r) body
+  | Binder.Binder x r -> C.newCutConsMuT l.out C.nowhere x (A.repText r) "" "" body
 
 fun kCase (l : L s) arms : CutCons ! { St s | e } = C.caseOf l.out C.nowhere arms
 
