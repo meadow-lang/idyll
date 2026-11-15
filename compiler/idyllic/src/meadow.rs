@@ -89,6 +89,20 @@ fn scratch() -> PathBuf {
 
 const NO_MEADOW: &str = "Idyll runs programs on Meadow's runtimes, so it needs `meadow` (install it with meadowup, or name one with IDYLL_MEADOW)";
 
+/// What Meadow said of the Cut it was given, and, when it could not read it,
+/// why that likely is: Cut grows with Idyll, and a `meadow` older than this
+/// Idyll does not know what is new in it (as an effect row's `!` once was).
+fn refused(why: &str) -> String {
+    let unread = why.lines().any(|l| l.contains(".cut:") && (l.contains("expected ") || l.contains("unknown ")));
+    if !unread {
+        return why.to_string();
+    }
+    format!(
+        "{why}\nnote: Meadow could not read the Cut this Idyll wrote, so `{}` is likely older than this Idyll; bring it up to date with `meadowup update`, or name a newer one with IDYLL_MEADOW",
+        meadow().display()
+    )
+}
+
 /// Whether a line Meadow writes to standard error is its own account of a
 /// build (Silo's `Lowering ..`, `Linking ..`), not the program's.
 fn build_line(line: &str) -> bool {
@@ -197,7 +211,7 @@ pub fn run(cut: &str, how: &Running) -> Ran {
             // the runtime's own account of an error is its last line
             match lines.last().and_then(|l| l.strip_prefix("error: ")) {
                 // (Meadow's, about the Cut, names the file)
-                Some(why) if why.contains("program.cut") => Outcome::Failed(why.to_string()),
+                Some(why) if why.contains("program.cut") => Outcome::Failed(refused(why)),
                 Some(why) if code == 1 => {
                     let why = why.to_string();
                     lines.pop();
@@ -234,7 +248,7 @@ pub fn build(cut: &str, runtime: Runtime, dir: &Path, name: &str) -> Result<Path
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         let why: Vec<&str> = err.lines().filter(|l| !build_line(l)).collect();
-        return Err(why.join("\n"));
+        return Err(refused(&why.join("\n")));
     }
     let made = match runtime {
         Runtime::Silo => dir.join("target/release/native/silo").join(format!("{name}{}", std::env::consts::EXE_SUFFIX)),
@@ -262,7 +276,25 @@ fn emitted(cut: &str, what: &str) -> Result<String, String> {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
         let err = String::from_utf8_lossy(&out.stderr);
-        Err(err.lines().filter(|l| !build_line(l)).collect::<Vec<_>>().join("\n"))
+        Err(refused(&err.lines().filter(|l| !build_line(l)).collect::<Vec<_>>().join("\n")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::refused;
+
+    #[test]
+    fn cut_meadow_cannot_read_says_meadow_may_be_old() {
+        let said = refused("C:\\t\\program.cut:67:77: expected `=`, found `!`");
+        assert!(said.starts_with("C:\\t\\program.cut:67:77: expected `=`, found `!`\nnote: "), "{said}");
+        assert!(said.contains("meadowup update"), "{said}");
+    }
+
+    #[test]
+    fn any_other_refusal_is_as_meadow_said() {
+        assert_eq!(refused("program.cut: `main` is not defined"), "program.cut: `main` is not defined");
+        assert_eq!(refused("linking failed"), "linking failed");
     }
 }
 
