@@ -1,0 +1,189 @@
+cut 0
+entry idyll:Main/"#entry"
+answer str
+
+data idyll:Prelude/DigitFuel { Spent; More(ptr) }
+
+val idyll:Prelude/digitFuel : ptr =
+  <idyll:Prelude/DigitFuel.Spent | μ̃ v_20: ptr.
+    <idyll:Prelude/DigitFuel.More(v_20) | μ̃ v_19: ptr.
+      <idyll:Prelude/DigitFuel.More(v_19) | μ̃ v_18: ptr.
+        <idyll:Prelude/DigitFuel.More(v_18) | μ̃ v_17: ptr.
+          <idyll:Prelude/DigitFuel.More(v_17) | μ̃ v_16: ptr.
+            <idyll:Prelude/DigitFuel.More(v_16) | μ̃ v_15: ptr.
+              <idyll:Prelude/DigitFuel.More(v_15) | μ̃ v_14: ptr.
+                <idyll:Prelude/DigitFuel.More(v_14) | μ̃ v_13: ptr.
+                  <idyll:Prelude/DigitFuel.More(v_13) | μ̃ v_12: ptr.
+                    <idyll:Prelude/DigitFuel.More(v_12) | μ̃ v_11: ptr.
+                      <idyll:Prelude/DigitFuel.More(v_11) | μ̃ v_10: ptr.
+                        <idyll:Prelude/DigitFuel.More(v_10) | μ̃ v_9: ptr.
+                          <idyll:Prelude/DigitFuel.More(v_9) | μ̃ v_8: ptr.
+                            <idyll:Prelude/DigitFuel.More(v_8) | μ̃ v_7: ptr.
+                              <idyll:Prelude/DigitFuel.More(v_7) | μ̃ v_6: ptr.
+                                <idyll:Prelude/DigitFuel.More(v_6) | μ̃ v_5: ptr.
+                                  <idyll:Prelude/DigitFuel.More(v_5) | μ̃ v_4: ptr.
+                                    <idyll:Prelude/DigitFuel.More(v_4) | μ̃ v_3: ptr.
+                                      <idyll:Prelude/DigitFuel.More(v_3) | μ̃ v_2: ptr.
+                                        <idyll:Prelude/DigitFuel.More(v_2) | μ̃ v_1: ptr.
+                                          <idyll:Prelude/DigitFuel.More(v_1) | halt>>>>>>>>>>>>>>>>>>>>>
+
+def idyll:Prelude/digitString (d_22: i64; k_23: ptr) ! {} =
+  prim eq(d_22, 0; μ̃ v__24: bool.
+    prim if(v__24; μ̃ u_49: unit.
+      prim eq(d_22, 1; μ̃ v__25: bool.
+        prim if(v__25; μ̃ u_47: unit.
+          prim eq(d_22, 2; μ̃ v__26: bool.
+            prim if(v__26; μ̃ u_45: unit.
+              prim eq(d_22, 3; μ̃ v__27: bool.
+                prim if(v__27; μ̃ u_43: unit.
+                  prim eq(d_22, 4; μ̃ v__28: bool.
+                    prim if(v__28; μ̃ u_41: unit.
+                      prim eq(d_22, 5; μ̃ v__29: bool.
+                        prim if(v__29; μ̃ u_39: unit.
+                          prim eq(d_22, 6; μ̃ v__30: bool.
+                            prim if(v__30; μ̃ u_37: unit.
+                              prim eq(d_22, 7; μ̃ v__31: bool.
+                                prim if(v__31; μ̃ u_35: unit.
+                                  prim eq(d_22, 8; μ̃ v__32: bool.
+                                    prim if(v__32; μ̃ u_33: unit.
+                                      <"9" | k_23>, μ̃ u_34: unit.
+                                      <"8" | k_23>)), μ̃ u_36: unit.
+                                  <"7" | k_23>)), μ̃ u_38: unit.
+                              <"6" | k_23>)), μ̃ u_40: unit.
+                          <"5" | k_23>)), μ̃ u_42: unit.
+                      <"4" | k_23>)), μ̃ u_44: unit.
+                  <"3" | k_23>)), μ̃ u_46: unit.
+              <"2" | k_23>)), μ̃ u_48: unit.
+          <"1" | k_23>)), μ̃ u_50: unit.
+      <"0" | k_23>))
+
+def idyll:Prelude/showInt (n_52: i64; k_53: ptr) ! {} =
+  prim lt(n_52, 0; μ̃ v__54: bool.
+    prim if(v__54; μ̃ u_59: unit.
+      prim sub(0, n_52; μ̃ v_57: i64.
+        idyll:Prelude/negativeDigits(idyll:Prelude/digitFuel, v_57; k_53)), μ̃ u_60: unit.
+      idyll:Prelude/negativeDigits(idyll:Prelude/digitFuel, n_52; μ̃ v_58: str.
+        prim concatStrings(["-", v_58]; k_53))))
+
+def idyll:Main/word (s_62: str; k_63: ptr) ! {} =
+  prim stringCompare(s_62, "rock"; μ̃ v_71: i64.
+    prim eq(v_71, 0; μ̃ v_70: bool.
+      prim if(v_70; μ̃ u_68: unit.
+        prim stringCompare(s_62, "paper"; μ̃ v_67: i64.
+          prim eq(v_67, 0; μ̃ v_66: bool.
+            prim if(v_66; μ̃ u_64: unit.
+              <0 | k_63>, μ̃ u_65: unit.
+              <2 | k_63>))), μ̃ u_69: unit.
+        <1 | k_63>)))
+
+def idyll:Prelude/negativeDigits (fuel_72: ptr, n_73: i64; k_74: ptr) ! {} =
+  <fuel_72 | case {
+    idyll:Prelude/DigitFuel.Spent =>
+      <"" | k_74>;
+    idyll:Prelude/DigitFuel.More(fuel_75: ptr) =>
+      prim sub(0, 10; μ̃ v_85: i64.
+        prim lt(v_85, n_73; μ̃ v__76: bool.
+          prim if(v__76; μ̃ u_83: unit.
+            prim div(n_73, 10; μ̃ v_81: i64.
+              idyll:Prelude/negativeDigits(fuel_75, v_81; μ̃ v_77: str.
+                prim mod(n_73, 10; μ̃ v_80: i64.
+                  prim sub(0, v_80; μ̃ v_79: i64.
+                    idyll:Prelude/digitString(v_79; μ̃ v_78: str.
+                      prim concatStrings([v_77, v_78]; k_74)))))), μ̃ u_84: unit.
+            prim sub(0, n_73; μ̃ v_82: i64.
+              idyll:Prelude/digitString(v_82; k_74)))))
+  }>
+
+def idyll:Main/op (x_86: str; k_87: ptr) ! {} =
+  prim stringCompare(x_86, "+"; μ̃ v_99: i64.
+    prim eq(v_99, 0; μ̃ v_98: bool.
+      prim if(v_98; μ̃ u_96: unit.
+        prim stringCompare(x_86, "-"; μ̃ v_95: i64.
+          prim eq(v_95, 0; μ̃ v_94: bool.
+            prim if(v_94; μ̃ u_92: unit.
+              prim stringCompare(x_86, ""; μ̃ v_91: i64.
+                prim eq(v_91, 0; μ̃ v_90: bool.
+                  prim if(v_90; μ̃ u_88: unit.
+                    <0 | k_87>, μ̃ u_89: unit.
+                    <3 | k_87>))), μ̃ u_93: unit.
+              <2 | k_87>))), μ̃ u_97: unit.
+        <1 | k_87>)))
+
+def idyll:Main/letter (x_100: char; k_101: ptr) ! {} =
+  prim charCode(x_100; μ̃ v_109: i64.
+    prim eq(v_109, 97; μ̃ v_108: bool.
+      prim if(v_108; μ̃ u_106: unit.
+        prim charCode(x_100; μ̃ v_105: i64.
+          prim eq(v_105, 233; μ̃ v_104: bool.
+            prim if(v_104; μ̃ u_102: unit.
+              <0 | k_101>, μ̃ u_103: unit.
+              <2 | k_101>))), μ̃ u_107: unit.
+        <1 | k_101>)))
+
+def idyll:Main/half (x_110: f64; k_111: ptr) ! {} =
+  prim eq(x_110, 0.5; μ̃ v_114: bool.
+    prim if(v_114; μ̃ u_112: unit.
+      <0 | k_111>, μ̃ u_113: unit.
+      <1 | k_111>))
+
+def idyll:Main/half32 (x_115: f32; k_116: ptr) ! {} =
+  prim toFloat32(0.5; μ̃ v_120: f32.
+    prim eq(x_115, v_120; μ̃ v_119: bool.
+      prim if(v_119; μ̃ u_117: unit.
+        <0 | k_116>, μ̃ u_118: unit.
+        <1 | k_116>)))
+
+def idyll:Main/small (x_121: i8; k_122: ptr) ! {} =
+  prim toInt8(5; μ̃ v_126: i8.
+    prim eq(x_121, v_126; μ̃ v_125: bool.
+      prim if(v_125; μ̃ u_123: unit.
+        <0 | k_122>, μ̃ u_124: unit.
+        <1 | k_122>)))
+
+def idyll:Main/unit (x_127: unit; k_128: ptr) ! {} =
+  <1 | k_128>
+
+def idyll:Main/"#entry" (; k_129: ptr) =
+  idyll:Main/op("-"; μ̃ v_175: i64.
+    idyll:Main/op("+"; μ̃ v_177: i64.
+      prim mul(v_177, 10; μ̃ v_176: i64.
+        prim add(v_175, v_176; μ̃ v_172: i64.
+          idyll:Main/op(""; μ̃ v_174: i64.
+            prim mul(v_174, 100; μ̃ v_173: i64.
+              prim add(v_172, v_173; μ̃ v_168: i64.
+                idyll:Main/op("x"; μ̃ v_170: i64.
+                  prim mul(v_170, 1000; μ̃ v_169: i64.
+                    prim add(v_168, v_169; μ̃ v_165: i64.
+                      idyll:Main/letter('\u{e9}'; μ̃ v_167: i64.
+                        prim mul(v_167, 10000; μ̃ v_166: i64.
+                          prim add(v_165, v_166; μ̃ v_162: i64.
+                            idyll:Main/letter('\u{61}'; μ̃ v_164: i64.
+                              prim mul(v_164, 100000; μ̃ v_163: i64.
+                                prim add(v_162, v_163; μ̃ v_159: i64.
+                                  idyll:Main/letter('\u{7a}'; μ̃ v_160: i64.
+                                    prim add(v_159, v_160; μ̃ v_156: i64.
+                                      idyll:Main/half(0.5; μ̃ v_158: i64.
+                                        prim mul(v_158, 1000000; μ̃ v_157: i64.
+                                          prim add(v_156, v_157; μ̃ v_153: i64.
+                                            idyll:Main/half(1.0; μ̃ v_154: i64.
+                                              prim add(v_153, v_154; μ̃ v_148: i64.
+                                                prim toFloat32(0.5; μ̃ v_152: f32.
+                                                  idyll:Main/half32(v_152; μ̃ v_150: i64.
+                                                    prim mul(v_150, 10000000; μ̃ v_149: i64.
+                                                      prim add(v_148, v_149; μ̃ v_144: i64.
+                                                        prim toInt8(5; μ̃ v_147: i8.
+                                                          idyll:Main/small(v_147; μ̃ v_146: i64.
+                                                            prim mul(v_146, 100000000; μ̃ v_145: i64.
+                                                              prim add(v_144, v_145; μ̃ v_140: i64.
+                                                                prim toInt8(6; μ̃ v_143: i8.
+                                                                  idyll:Main/small(v_143; μ̃ v_141: i64.
+                                                                    prim add(v_140, v_141; μ̃ v_136: i64.
+                                                                      idyll:Main/unit(unit; μ̃ v_138: i64.
+                                                                        prim mul(v_138, 1000000000; μ̃ v_137: i64.
+                                                                          prim add(v_136, v_137; μ̃ v_133: i64.
+                                                                            idyll:Main/word("paper"; μ̃ v_135: i64.
+                                                                              prim mul(v_135, 10000000000; μ̃ v_134: i64.
+                                                                                prim add(v_133, v_134; μ̃ v_131: i64.
+                                                                                  idyll:Main/word("scissors"; μ̃ v_132: i64.
+                                                                                    prim add(v_131, v_132; μ̃ answer_130: i64.
+                                                                                      idyll:Prelude/showInt(answer_130; k_129)))))))))))))))))))))))))))))))))))))))))))

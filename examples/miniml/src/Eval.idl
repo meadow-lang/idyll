@@ -45,17 +45,16 @@ asBool (Value.Bool b) = b
 asBool other = throw ("expected a boolean, got " ++ showValue other)
 
 applyOp : (op : String) -> (l : Value) -> (r : Value) -> Value ! Exn String
-applyOp op l r =
-  if op == "+" then Value.Int (asInt l + asInt r)
-  else if op == "-" then Value.Int (asInt l - asInt r)
-  else if op == "*" then Value.Int (asInt l * asInt r)
-  else if op == "/" then (if asInt r == 0 then throw "division by zero" else Value.Int (asInt l / asInt r))
-  else if op == "==" then Value.Bool (asInt l == asInt r)
-  else if op == "<" then Value.Bool (asInt l < asInt r)
-  else if op == ">" then Value.Bool (asInt l > asInt r)
-  else if op == "<=" then Value.Bool (asInt l <= asInt r)
-  else if op == ">=" then Value.Bool (asInt l >= asInt r)
-  else throw ("unknown operator: " ++ op)
+applyOp "+" l r = Value.Int (asInt l + asInt r)
+applyOp "-" l r = Value.Int (asInt l - asInt r)
+applyOp "*" l r = Value.Int (asInt l * asInt r)
+applyOp "/" l r = if asInt r == 0 then throw "division by zero" else Value.Int (asInt l / asInt r)
+applyOp "==" l r = Value.Bool (asInt l == asInt r)
+applyOp "<" l r = Value.Bool (asInt l < asInt r)
+applyOp ">" l r = Value.Bool (asInt l > asInt r)
+applyOp "<=" l r = Value.Bool (asInt l <= asInt r)
+applyOp ">=" l r = Value.Bool (asInt l >= asInt r)
+applyOp op _ _ = throw ("unknown operator: " ++ op)
 
 eval : (env : List (String, Ref Value)) -> (e : Expr) -> Value ! Runs
 eval env (Expr.Int n) = Value.Int n

@@ -113,13 +113,13 @@ val idyll:Std/Random.mixA : i64 =
 val idyll:Std/Random.mixB : i64 =
   prim sub(0, 7723592293110705685; halt)
 
-def idyll:Prelude/debug <'a_5 = d_a_4> (d_a_4: desc, self_6: ptr; k_7: ptr) =
+def idyll:Prelude/debug <'a_5 = d_a_4> (d_a_4: desc, self_6: ptr; k_7: ptr) ! {} =
   idyll:Prelude/Debug.debug(d_a_4, self_6; k_7)
 
-def idyll:Prelude/"==" <'a_15 = d_a_14> (d_a_14: desc, self_16: ptr; k_17: ptr) =
+def idyll:Prelude/"==" <'a_15 = d_a_14> (d_a_14: desc, self_16: ptr; k_17: ptr) ! {} =
   idyll:Prelude/PartialEq."=="(d_a_14, self_16; k_17)
 
-def idyll:Prelude/PartialEq."#!=" <'a_27 = d_a_26> (d_a_26: desc, self_28: ptr, x_29: 'a_27, y_30: 'a_27; k_31: ptr) =
+def idyll:Prelude/PartialEq."#!=" <'a_27 = d_a_26> (d_a_26: desc, self_28: ptr, x_29: 'a_27, y_30: 'a_27; k_31: ptr) ! {} =
   idyll:Prelude/"=="(d_a_26, self_28; μ̃ r_35: ptr.
     <r_35 | apply(x_29; μ̃ g_36: ptr.
       <g_36 | apply(y_30; μ̃ v__32: bool.
@@ -127,28 +127,28 @@ def idyll:Prelude/PartialEq."#!=" <'a_27 = d_a_26> (d_a_26: desc, self_28: ptr, 
           <true | k_31>, μ̃ u_34: unit.
           <false | k_31>))>)>)
 
-def idyll:Prelude/intNe (x_39: i64, y_40: i64; k_41: ptr) =
+def idyll:Prelude/intNe (x_39: i64, y_40: i64; k_41: ptr) ! {} =
   prim eq(x_39, y_40; μ̃ v__42: bool.
     prim if(v__42; μ̃ u_43: unit.
       <true | k_41>, μ̃ u_44: unit.
       <false | k_41>))
 
-def idyll:Prelude/intGt (x_47: i64, y_48: i64; k_49: ptr) =
+def idyll:Prelude/intGt (x_47: i64, y_48: i64; k_49: ptr) ! {} =
   prim lt(y_48, x_47; k_49)
 
-def idyll:Prelude/intLe (x_52: i64, y_53: i64; k_54: ptr) =
+def idyll:Prelude/intLe (x_52: i64, y_53: i64; k_54: ptr) ! {} =
   prim lt(y_53, x_52; μ̃ v__55: bool.
     prim if(v__55; μ̃ u_56: unit.
       <true | k_54>, μ̃ u_57: unit.
       <false | k_54>))
 
-def idyll:Prelude/intGe (x_60: i64, y_61: i64; k_62: ptr) =
+def idyll:Prelude/intGe (x_60: i64, y_61: i64; k_62: ptr) ! {} =
   prim lt(x_60, y_61; μ̃ v__63: bool.
     prim if(v__63; μ̃ u_64: unit.
       <true | k_62>, μ̃ u_65: unit.
       <false | k_62>))
 
-def idyll:Prelude/digitString (d_87: i64; k_88: ptr) =
+def idyll:Prelude/digitString (d_87: i64; k_88: ptr) ! {} =
   prim eq(d_87, 0; μ̃ v__89: bool.
     prim if(v__89; μ̃ u_114: unit.
       prim eq(d_87, 1; μ̃ v__90: bool.
@@ -178,7 +178,7 @@ def idyll:Prelude/digitString (d_87: i64; k_88: ptr) =
           <"1" | k_88>)), μ̃ u_115: unit.
       <"0" | k_88>))
 
-def idyll:Prelude/showInt (n_117: i64; k_118: ptr) =
+def idyll:Prelude/showInt (n_117: i64; k_118: ptr) ! {} =
   prim lt(n_117, 0; μ̃ v__119: bool.
     prim if(v__119; μ̃ u_124: unit.
       prim sub(0, n_117; μ̃ v_122: i64.
@@ -186,57 +186,57 @@ def idyll:Prelude/showInt (n_117: i64; k_118: ptr) =
       idyll:Prelude/negativeDigits(idyll:Prelude/digitFuel, n_117; μ̃ v_123: str.
         prim concatStrings(["-", v_123]; k_118))))
 
-def idyll:Std/Test.assertEq <'a_134 = d_a_133> (d_a_133: desc, e_135: ptr, d_136: ptr, actual_137: 'a_134, expected_138: 'a_134, msg_139: str; k_140: ptr) =
-  idyll:Prelude/"=="(d_a_133, e_135; μ̃ r_152: ptr.
-    <r_152 | apply(actual_137; μ̃ g_153: ptr.
-      <g_153 | apply(expected_138; μ̃ v__141: bool.
-        prim if(v__141; μ̃ u_150: unit.
-          idyll:Prelude/debug(d_a_133, d_136; μ̃ r_149: ptr.
-            <r_149 | apply(expected_138; μ̃ v_145: str.
-              idyll:Prelude/debug(d_a_133, d_136; μ̃ r_148: ptr.
-                <r_148 | apply(actual_137; μ̃ v_147: str.
-                  prim concatStrings([", got ", v_147]; μ̃ v_146: str.
-                    prim concatStrings([v_145, v_146]; μ̃ v_144: str.
-                      prim concatStrings([": expected ", v_144]; μ̃ v_143: str.
-                        prim concatStrings([msg_139, v_143]; μ̃ v_142: str.
-                          perform idyll:Prelude/Test.fail(v_142; k_140))))))>))>), μ̃ u_151: unit.
-          <unit | k_140>))>)>)
+def idyll:Std/String.byteLength (s_127: str; k_128: ptr) ! {} =
+  prim stringByteLength(s_127; k_128)
 
-def idyll:Std/Test.outcome <'a_159 = d_a_158; e_157: Effect> (d_a_158: desc, act_160: ptr; k_161: ptr) =
+def idyll:Std/String.fromInt (n_130: i64; k_131: ptr) ! {} =
+  idyll:Prelude/showInt(n_130; k_131)
+
+def idyll:Std/Test.assertEq <'a_140 = d_a_139> (d_a_139: desc, e_141: ptr, d_142: ptr, actual_143: 'a_140, expected_144: 'a_140, msg_145: str; k_146: ptr) ! {idyll:Prelude/Test} =
+  idyll:Prelude/"=="(d_a_139, e_141; μ̃ r_158: ptr.
+    <r_158 | apply(actual_143; μ̃ g_159: ptr.
+      <g_159 | apply(expected_144; μ̃ v__147: bool.
+        prim if(v__147; μ̃ u_156: unit.
+          idyll:Prelude/debug(d_a_139, d_142; μ̃ r_155: ptr.
+            <r_155 | apply(expected_144; μ̃ v_151: str.
+              idyll:Prelude/debug(d_a_139, d_142; μ̃ r_154: ptr.
+                <r_154 | apply(actual_143; μ̃ v_153: str.
+                  prim concatStrings([", got ", v_153]; μ̃ v_152: str.
+                    prim concatStrings([v_151, v_152]; μ̃ v_150: str.
+                      prim concatStrings([": expected ", v_150]; μ̃ v_149: str.
+                        prim concatStrings([msg_145, v_149]; μ̃ v_148: str.
+                          perform idyll:Prelude/Test.fail(v_148; k_146))))))>))>), μ̃ u_157: unit.
+          <unit | k_146>))>)>)
+
+def idyll:Std/Test.outcome <'a_165 = d_a_164; e_163: Effect> (d_a_164: desc, act_166: ptr; k_167: ptr) ! {| e_163} =
   handle {
-    idyll:Prelude/Test.fail(msg_162: str; r_163: ptr, k_164: ptr) =>
-      <idyll:Prelude/Result.Err(msg_162) | k_164>;
-    return(x_165: 'a_159; k_166: ptr) =>
-      <idyll:Prelude/Result.Ok(x_165) | k_166>
-  } in μ b_168.
-    <act_160 | apply(unit; b_168)>
-  ; k_161
+    idyll:Prelude/Test.fail(msg_168: str; r_169: ptr, k_170: ptr) =>
+      <idyll:Prelude/Result.Err(msg_168) | k_170>;
+    return(x_171: 'a_165; k_172: ptr) =>
+      <idyll:Prelude/Result.Ok(x_171) | k_172>
+  } in μ b_174.
+    <act_166 | apply(unit; b_174)>
+  ; k_167
 
-def idyll:Std/Test.failure <'a_174 = d_a_173; e_172: Effect> (d_a_173: desc, act_175: ptr; k_176: ptr) =
-  idyll:Std/Test.outcome(d_a_173, act_175; μ̃ v__177: ptr.
-    <v__177 | case {
-      idyll:Prelude/Result.Err(msg_178: str) =>
-        <idyll:Prelude/Pair.Pair(true, msg_178) | k_176>;
-      idyll:Prelude/Result.Ok(x_179: 'a_174) =>
-        <idyll:Prelude/Pair.Pair(false, "") | k_176>
+def idyll:Std/Test.failure <'a_180 = d_a_179; e_178: Effect> (d_a_179: desc, act_181: ptr; k_182: ptr) ! {| e_178} =
+  idyll:Std/Test.outcome(d_a_179, act_181; μ̃ v__183: ptr.
+    <v__183 | case {
+      idyll:Prelude/Result.Err(msg_184: str) =>
+        <idyll:Prelude/Pair.Pair(true, msg_184) | k_182>;
+      idyll:Prelude/Result.Ok(x_185: 'a_180) =>
+        <idyll:Prelude/Pair.Pair(false, "") | k_182>
     }>)
 
-def idyll:Std/Collections.Array.range (lo_182: i64, hi_183: i64; k_184: ptr) =
-  <[] | μ̃ v_188: ptr.
-    idyll:Std/Collections.Array.rangeFrom(lo_182, hi_183, v_188; k_184)>
+def idyll:Std/Collections.Array.range (lo_188: i64, hi_189: i64; k_190: ptr) ! {} =
+  <[] | μ̃ v_194: ptr.
+    idyll:Std/Collections.Array.rangeFrom(lo_188, hi_189, v_194; k_190)>
 
-def idyll:Std/String.byteLength (s_190: str; k_191: ptr) =
-  prim stringByteLength(s_190; k_191)
-
-def idyll:Std/String.fromInt (n_193: i64; k_194: ptr) =
-  idyll:Prelude/showInt(n_193; k_194)
-
-def idyll:Main/"#arrayToList" <'a_203 = d_202> (d_202: desc, xs_205: ptr; k_204: ptr) =
+def idyll:Main/"#arrayToList" <'a_203 = d_202> (d_202: desc, xs_205: ptr; k_204: ptr) ! {} =
   prim arrayLen(xs_205; μ̃ n_206: i64.
     prim sub(n_206, 1; μ̃ i_207: i64.
       idyll:Main/"#arrayToList".go(d_202, xs_205, i_207, idyll:Prelude/List.Nil; k_204)))
 
-def idyll:Main/"#arrayToList".go <'a_203 = d_202> (d_202: desc, xs_209: ptr, i_210: i64, acc_211: ptr; k_208: ptr) =
+def idyll:Main/"#arrayToList".go <'a_203 = d_202> (d_202: desc, xs_209: ptr, i_210: i64, acc_211: ptr; k_208: ptr) ! {} =
   prim lt(i_210, 0; μ̃ u_215: unit.
     prim arrayGet(xs_209, i_210; μ̃ e_212: 'a_203.
       <idyll:Prelude/List."::"(e_212, acc_211) | μ̃ c_213: ptr.
@@ -244,17 +244,17 @@ def idyll:Main/"#arrayToList".go <'a_203 = d_202> (d_202: desc, xs_209: ptr, i_2
           idyll:Main/"#arrayToList".go(d_202, xs_209, j_214, c_213; k_208))>), μ̃ u_216: unit.
     <acc_211 | k_208>)
 
-def idyll:Std/Collections.Vector.toList <'a_199 = d_a_198> (d_a_198: desc, v_200: ptr; k_201: ptr) =
+def idyll:Std/Collections.Vector.toList <'a_199 = d_a_198> (d_a_198: desc, v_200: ptr; k_201: ptr) ! {} =
   idyll:Std/Collections.Vector.toArray(d_a_198, v_200; μ̃ v_217: ptr.
     idyll:Main/"#arrayToList"(d_a_198, v_217; k_201))
 
-def idyll:Std/Collections.Vector.aLast <'a_225 = d_a_224> (d_a_224: desc, xs_226: ptr; k_227: ptr) =
+def idyll:Std/Collections.Vector.aLast <'a_225 = d_a_224> (d_a_224: desc, xs_226: ptr; k_227: ptr) ! {} =
   prim arrayLen(xs_226; μ̃ v_230: i64.
     prim sub(v_230, 1; μ̃ v_228: i64.
       prim arrayGet(xs_226, v_228; μ̃ x_229: 'a_225.
         <x_229 | k_227>)))
 
-def idyll:Std/Collections.Vector.within (sizes_234: ptr, i_235: i64, slot_236: i64; k_237: ptr) =
+def idyll:Std/Collections.Vector.within (sizes_234: ptr, i_235: i64, slot_236: i64; k_237: ptr) ! {} =
   prim eq(slot_236, 0; μ̃ v__238: bool.
     prim if(v__238; μ̃ u_241: unit.
       prim sub(slot_236, 1; μ̃ v_240: i64.
@@ -262,40 +262,40 @@ def idyll:Std/Collections.Vector.within (sizes_234: ptr, i_235: i64, slot_236: i
           prim sub(i_235, v_239; k_237))), μ̃ u_242: unit.
       <i_235 | k_237>))
 
-def idyll:Std/Collections.Vector.chunkEnd (i_245: i64, n_246: i64; k_247: ptr) =
+def idyll:Std/Collections.Vector.chunkEnd (i_245: i64, n_246: i64; k_247: ptr) ! {} =
   prim add(i_245, idyll:Std/Collections.Vector.width; μ̃ v_251: i64.
     prim lt(v_251, n_246; μ̃ v__248: bool.
       prim if(v__248; μ̃ u_249: unit.
         <n_246 | k_247>, μ̃ u_250: unit.
         prim add(i_245, idyll:Std/Collections.Vector.width; k_247))))
 
-def idyll:Std/Collections.Vector.leavesOf <'a_256 = d_a_255> (d_a_255: desc, xs_257: ptr; k_258: ptr) =
+def idyll:Std/Collections.Vector.leavesOf <'a_256 = d_a_255> (d_a_255: desc, xs_257: ptr; k_258: ptr) ! {} =
   <[] | μ̃ v_264: ptr.
     idyll:Std/Collections.Vector.leavesFrom(d_a_255, xs_257, 0, v_264; k_258)>
 
-def idyll:Std/Collections.Vector.group <'a_269 = d_a_268> (d_a_268: desc, nodes_270: ptr; k_271: ptr) =
+def idyll:Std/Collections.Vector.group <'a_269 = d_a_268> (d_a_268: desc, nodes_270: ptr; k_271: ptr) ! {} =
   <[] | μ̃ v_277: ptr.
     idyll:Std/Collections.Vector.groupFrom(d_a_268, nodes_270, 0, v_277; k_271)>
 
-def idyll:Std/Collections.Vector.buildNode <'a_282 = d_a_281> (d_a_281: desc, xs_283: ptr; k_284: ptr) =
+def idyll:Std/Collections.Vector.buildNode <'a_282 = d_a_281> (d_a_281: desc, xs_283: ptr; k_284: ptr) ! {} =
   idyll:Std/Collections.Vector.leavesOf(d_a_281, xs_283; μ̃ v_288: ptr.
     idyll:Std/Collections.Vector.buildUp(d_a_281, v_288; k_284))
 
-def idyll:Std/Collections.Vector.buildShift <'a_293 = d_a_292> (d_a_292: desc, xs_294: ptr; k_295: ptr) =
+def idyll:Std/Collections.Vector.buildShift <'a_293 = d_a_292> (d_a_292: desc, xs_294: ptr; k_295: ptr) ! {} =
   idyll:Std/Collections.Vector.leavesOf(d_a_292, xs_294; μ̃ v_300: ptr.
     idyll:Std/Collections.Vector.buildLevel(d_a_292, idyll:Std/Collections.Vector.bits, v_300; k_295))
 
-def idyll:Std/Collections.Vector.wholeCount <'a_305 = d_a_304> (d_a_304: desc, xs_306: ptr; k_307: ptr) =
+def idyll:Std/Collections.Vector.wholeCount <'a_305 = d_a_304> (d_a_304: desc, xs_306: ptr; k_307: ptr) ! {} =
   prim arrayLen(xs_306; μ̃ v_308: i64.
     prim arrayLen(xs_306; μ̃ v_310: i64.
       prim mod(v_310, idyll:Std/Collections.Vector.width; μ̃ v_309: i64.
         prim sub(v_308, v_309; k_307))))
 
-def idyll:Std/Collections.Vector.wholeOf <'a_315 = d_a_314> (d_a_314: desc, xs_316: ptr; k_317: ptr) =
+def idyll:Std/Collections.Vector.wholeOf <'a_315 = d_a_314> (d_a_314: desc, xs_316: ptr; k_317: ptr) ! {} =
   idyll:Std/Collections.Vector.wholeCount(d_a_314, xs_316; μ̃ v_318: i64.
     prim arraySlice(xs_316, 0, v_318; k_317))
 
-def idyll:Std/Collections.Vector.fromArray <'a_323 = d_a_322> (d_a_322: desc, xs_324: ptr; k_325: ptr) =
+def idyll:Std/Collections.Vector.fromArray <'a_323 = d_a_322> (d_a_322: desc, xs_324: ptr; k_325: ptr) ! {} =
   prim arrayLen(xs_324; μ̃ v_345: i64.
     prim eq(v_345, 0; μ̃ v__326: bool.
       prim if(v__326; μ̃ u_343: unit.
@@ -318,7 +318,7 @@ def idyll:Std/Collections.Vector.fromArray <'a_323 = d_a_322> (d_a_322: desc, xs
                 <idyll:Std/Collections.Vector.Vector.Single(xs_324) | k_325>)))), μ̃ u_344: unit.
         <idyll:Std/Collections.Vector.Vector.Empty | k_325>)))
 
-def idyll:Std/Collections.Vector.getBack <'a_352 = d_a_351> (d_a_351: desc, iB_353: ptr, oB_354: ptr, i_355: i64; k_356: ptr) =
+def idyll:Std/Collections.Vector.getBack <'a_352 = d_a_351> (d_a_351: desc, iB_353: ptr, oB_354: ptr, i_355: i64; k_356: ptr) ! {} =
   prim arrayLen(iB_353; μ̃ v_364: i64.
     prim lt(i_355, v_364; μ̃ v__357: bool.
       prim if(v__357; μ̃ u_362: unit.
@@ -329,7 +329,7 @@ def idyll:Std/Collections.Vector.getBack <'a_352 = d_a_351> (d_a_351: desc, iB_3
         prim arrayGet(iB_353, i_355; μ̃ x_361: 'a_352.
           <x_361 | k_356>))))
 
-def idyll:Std/Collections.Vector.getMid <'a_373 = d_a_372> (d_a_372: desc, sh_374: i64, mid_375: ptr, iB_376: ptr, oB_377: ptr, i_378: i64; k_379: ptr) =
+def idyll:Std/Collections.Vector.getMid <'a_373 = d_a_372> (d_a_372: desc, sh_374: i64, mid_375: ptr, iB_376: ptr, oB_377: ptr, i_378: i64; k_379: ptr) ! {} =
   idyll:Std/Collections.Vector.nodeLen(d_a_372, sh_374, mid_375; μ̃ v_394: i64.
     prim lt(i_378, v_394; μ̃ v__380: bool.
       prim if(v__380; μ̃ u_392: unit.
@@ -338,7 +338,7 @@ def idyll:Std/Collections.Vector.getMid <'a_373 = d_a_372> (d_a_372: desc, sh_37
             idyll:Std/Collections.Vector.getBack(d_a_372, iB_376, oB_377, v_381; k_379))), μ̃ u_393: unit.
         idyll:Std/Collections.Vector.nodeIndex(d_a_372, sh_374, mid_375, i_378; k_379))))
 
-def idyll:Std/Collections.Vector.getInnerF <'a_404 = d_a_403> (d_a_403: desc, sh_405: i64, iF_406: ptr, mid_407: ptr, iB_408: ptr, oB_409: ptr, i_410: i64; k_411: ptr) =
+def idyll:Std/Collections.Vector.getInnerF <'a_404 = d_a_403> (d_a_403: desc, sh_405: i64, iF_406: ptr, mid_407: ptr, iB_408: ptr, oB_409: ptr, i_410: i64; k_411: ptr) ! {} =
   prim arrayLen(iF_406; μ̃ v_418: i64.
     prim lt(i_410, v_418; μ̃ v__412: bool.
       prim if(v__412; μ̃ u_416: unit.
@@ -348,7 +348,7 @@ def idyll:Std/Collections.Vector.getInnerF <'a_404 = d_a_403> (d_a_403: desc, sh
         prim arrayGet(iF_406, i_410; μ̃ x_415: 'a_404.
           <x_415 | k_411>))))
 
-def idyll:Std/Collections.Vector.getOuterF <'a_429 = d_a_428> (d_a_428: desc, sh_430: i64, oF_431: ptr, iF_432: ptr, mid_433: ptr, iB_434: ptr, oB_435: ptr, i_436: i64; k_437: ptr) =
+def idyll:Std/Collections.Vector.getOuterF <'a_429 = d_a_428> (d_a_428: desc, sh_430: i64, oF_431: ptr, iF_432: ptr, mid_433: ptr, iB_434: ptr, oB_435: ptr, i_436: i64; k_437: ptr) ! {} =
   prim arrayLen(oF_431; μ̃ v_444: i64.
     prim lt(i_436, v_444; μ̃ v__438: bool.
       prim if(v__438; μ̃ u_442: unit.
@@ -358,21 +358,21 @@ def idyll:Std/Collections.Vector.getOuterF <'a_429 = d_a_428> (d_a_428: desc, sh
         prim arrayGet(oF_431, i_436; μ̃ x_441: 'a_429.
           <x_441 | k_437>))))
 
-def idyll:Std/Collections.Vector.inRange <'a_450 = d_a_449> (d_a_449: desc, v_451: ptr, i_452: i64; k_453: ptr) =
+def idyll:Std/Collections.Vector.inRange <'a_450 = d_a_449> (d_a_449: desc, v_451: ptr, i_452: i64; k_453: ptr) ! {} =
   prim lt(i_452, 0; μ̃ v__454: bool.
     prim if(v__454; μ̃ u_459: unit.
       idyll:Std/Collections.Vector.len(d_a_449, v_451; μ̃ v_455: i64.
         prim lt(i_452, v_455; k_453)), μ̃ u_460: unit.
       <false | k_453>))
 
-def idyll:Std/Collections.Vector.get <'a_466 = d_a_465> (d_a_465: desc, v_467: ptr, i_468: i64; k_469: ptr) =
+def idyll:Std/Collections.Vector.get <'a_466 = d_a_465> (d_a_465: desc, v_467: ptr, i_468: i64; k_469: ptr) ! {} =
   idyll:Std/Collections.Vector.inRange(d_a_465, v_467, i_468; μ̃ v__470: bool.
     prim if(v__470; μ̃ u_476: unit.
       <idyll:Prelude/Maybe.Nothing | k_469>, μ̃ u_477: unit.
       idyll:Std/Collections.Vector.getU(d_a_465, v_467, i_468; μ̃ v_471: 'a_466.
         <idyll:Prelude/Maybe.Just(v_471) | k_469>)))
 
-def idyll:Std/Collections.Vector.setBack <'a_490 = d_a_489> (d_a_489: desc, n_491: i64, sh_492: i64, oF_493: ptr, iF_494: ptr, mid_495: ptr, iB_496: ptr, oB_497: ptr, i_498: i64, x_499: 'a_490; k_500: ptr) =
+def idyll:Std/Collections.Vector.setBack <'a_490 = d_a_489> (d_a_489: desc, n_491: i64, sh_492: i64, oF_493: ptr, iF_494: ptr, mid_495: ptr, iB_496: ptr, oB_497: ptr, i_498: i64, x_499: 'a_490; k_500: ptr) ! {} =
   prim arrayLen(iB_496; μ̃ v_508: i64.
     prim lt(i_498, v_508; μ̃ v__501: bool.
       prim if(v__501; μ̃ u_506: unit.
@@ -383,7 +383,7 @@ def idyll:Std/Collections.Vector.setBack <'a_490 = d_a_489> (d_a_489: desc, n_49
         prim arraySet(iB_496, i_498, x_499; μ̃ v_505: ptr.
           <idyll:Std/Collections.Vector.Vector.Full(n_491, sh_492, oF_493, iF_494, mid_495, v_505, oB_497) | k_500>))))
 
-def idyll:Std/Collections.Vector.setMid <'a_521 = d_a_520> (d_a_520: desc, n_522: i64, sh_523: i64, oF_524: ptr, iF_525: ptr, mid_526: ptr, iB_527: ptr, oB_528: ptr, i_529: i64, x_530: 'a_521; k_531: ptr) =
+def idyll:Std/Collections.Vector.setMid <'a_521 = d_a_520> (d_a_520: desc, n_522: i64, sh_523: i64, oF_524: ptr, iF_525: ptr, mid_526: ptr, iB_527: ptr, oB_528: ptr, i_529: i64, x_530: 'a_521; k_531: ptr) ! {} =
   idyll:Std/Collections.Vector.nodeLen(d_a_520, sh_523, mid_526; μ̃ v_544: i64.
     prim lt(i_529, v_544; μ̃ v__532: bool.
       prim if(v__532; μ̃ u_542: unit.
@@ -393,7 +393,7 @@ def idyll:Std/Collections.Vector.setMid <'a_521 = d_a_520> (d_a_520: desc, n_522
         idyll:Std/Collections.Vector.nodeUpdate(d_a_520, sh_523, mid_526, i_529, x_530; μ̃ v_535: ptr.
           <idyll:Std/Collections.Vector.Vector.Full(n_522, sh_523, oF_524, iF_525, v_535, iB_527, oB_528) | k_531>))))
 
-def idyll:Std/Collections.Vector.setInnerF <'a_557 = d_a_556> (d_a_556: desc, n_558: i64, sh_559: i64, oF_560: ptr, iF_561: ptr, mid_562: ptr, iB_563: ptr, oB_564: ptr, i_565: i64, x_566: 'a_557; k_567: ptr) =
+def idyll:Std/Collections.Vector.setInnerF <'a_557 = d_a_556> (d_a_556: desc, n_558: i64, sh_559: i64, oF_560: ptr, iF_561: ptr, mid_562: ptr, iB_563: ptr, oB_564: ptr, i_565: i64, x_566: 'a_557; k_567: ptr) ! {} =
   prim arrayLen(iF_561; μ̃ v_574: i64.
     prim lt(i_565, v_574; μ̃ v__568: bool.
       prim if(v__568; μ̃ u_572: unit.
@@ -403,17 +403,17 @@ def idyll:Std/Collections.Vector.setInnerF <'a_557 = d_a_556> (d_a_556: desc, n_
         prim arraySet(iF_561, i_565, x_566; μ̃ v_571: ptr.
           <idyll:Std/Collections.Vector.Vector.Full(n_558, sh_559, oF_560, v_571, mid_562, iB_563, oB_564) | k_567>))))
 
-def idyll:Std/Collections.Vector.set <'a_581 = d_a_580> (d_a_580: desc, v_582: ptr, i_583: i64, x_584: 'a_581; k_585: ptr) =
+def idyll:Std/Collections.Vector.set <'a_581 = d_a_580> (d_a_580: desc, v_582: ptr, i_583: i64, x_584: 'a_581; k_585: ptr) ! {} =
   idyll:Std/Collections.Vector.inRange(d_a_580, v_582, i_583; μ̃ v__586: bool.
     prim if(v__586; μ̃ u_592: unit.
       <v_582 | k_585>, μ̃ u_593: unit.
       idyll:Std/Collections.Vector.setU(d_a_580, v_582, i_583, x_584; k_585)))
 
-def idyll:Std/Collections.Vector.range (lo_596: i64, hi_597: i64; k_598: ptr) =
+def idyll:Std/Collections.Vector.range (lo_596: i64, hi_597: i64; k_598: ptr) ! {} =
   idyll:Std/Collections.Array.range(lo_596, hi_597; μ̃ v_599: ptr.
     idyll:Std/Collections.Vector.fromArray(desc(i64), v_599; k_598))
 
-def idyll:Std/Time.padTo (width_603: i64, n_604: i64; k_605: ptr) =
+def idyll:Std/Time.padTo (width_603: i64, n_604: i64; k_605: ptr) ! {} =
   idyll:Std/String.fromInt(n_604; μ̃ s_606: str.
     idyll:Std/String.byteLength(s_606; μ̃ v_614: i64.
       prim sub(width_603, v_614; μ̃ short_607: i64.
@@ -423,13 +423,13 @@ def idyll:Std/Time.padTo (width_603: i64, n_604: i64; k_605: ptr) =
             idyll:Std/String.repeat("0", short_607; μ̃ v_609: str.
               prim concatStrings([v_609, s_606]; k_605)))))))
 
-def idyll:Std/Time.pad2 (n_616: i64; k_617: ptr) =
+def idyll:Std/Time.pad2 (n_616: i64; k_617: ptr) ! {} =
   idyll:Std/Time.padTo(2, n_616; k_617)
 
-def idyll:Std/Time.pad3 (n_619: i64; k_620: ptr) =
+def idyll:Std/Time.pad3 (n_619: i64; k_620: ptr) ! {} =
   idyll:Std/Time.padTo(3, n_619; k_620)
 
-def idyll:Std/Time.formatMinutes (mins_622: i64; k_623: ptr) =
+def idyll:Std/Time.formatMinutes (mins_622: i64; k_623: ptr) ! {} =
   prim div(mins_622, 1440; μ̃ v_635: i64.
     idyll:Std/Time.groupDigits(v_635; μ̃ v_624: str.
       prim mod(mins_622, 1440; μ̃ v_633: i64.
@@ -443,7 +443,7 @@ def idyll:Std/Time.formatMinutes (mins_622: i64; k_623: ptr) =
                       prim concatStrings(["d ", v_626]; μ̃ v_625: str.
                         prim concatStrings([v_624, v_625]; k_623))))))))))))
 
-def idyll:Std/Time.threeFigures (ns_638: i64, unit_639: i64; k_640: ptr) =
+def idyll:Std/Time.threeFigures (ns_638: i64, unit_639: i64; k_640: ptr) ! {} =
   prim mul(ns_638, 100; μ̃ v_666: i64.
     prim div(unit_639, 2; μ̃ v_667: i64.
       prim add(v_666, v_667; μ̃ v_665: i64.
@@ -473,7 +473,7 @@ def idyll:Std/Time.threeFigures (ns_638: i64, unit_639: i64; k_640: ptr) =
                       prim concatStrings([".", v_660]; μ̃ v_659: str.
                         prim concatStrings([v_658, v_659]; k_640))))))))))))
 
-def idyll:Std/Time.roundDiv (n_670: i64, d_671: i64; k_672: ptr) =
+def idyll:Std/Time.roundDiv (n_670: i64, d_671: i64; k_672: ptr) ! {} =
   prim div(n_670, d_671; μ̃ v_673: i64.
     prim mod(n_670, d_671; μ̃ v_679: i64.
       prim mod(n_670, d_671; μ̃ v_681: i64.
@@ -485,18 +485,18 @@ def idyll:Std/Time.roundDiv (n_670: i64, d_671: i64; k_672: ptr) =
                 <1 | j_676>) | μ̃ v_674: i64.
               prim add(v_673, v_674; k_672)>)))))
 
-def idyll:Std/Time.ticking <'a_688 = d_a_687; e_686: Effect> (d_a_687: desc, tick_689: i64, act_690: ptr; k_691: ptr) =
+def idyll:Std/Time.ticking <'a_688 = d_a_687; e_686: Effect> (d_a_687: desc, tick_689: i64, act_690: ptr; k_691: ptr) ! {| e_686} =
   handle {
     idyll:Prelude/Time.now(u_692: unit; r_693: ptr, k_694: ptr) =>
       <cocase {
-        apply(s_695: i64; k_696: ptr) =>
+        apply(s_695: i64; k_696: ptr) ! {| e_686} =>
           <r_693 | apply(s_695; μ̃ g_697: ptr.
             prim add(s_695, tick_689; μ̃ v_698: i64.
               <g_697 | apply(v_698; k_696)>))>
       } | k_694>;
     idyll:Prelude/Time.monotonic(u_699: unit; r_700: ptr, k_701: ptr) =>
       <cocase {
-        apply(s_702: i64; k_703: ptr) =>
+        apply(s_702: i64; k_703: ptr) ! {| e_686} =>
           prim mul(s_702, 1000000; μ̃ v_704: i64.
             <r_700 | apply(v_704; μ̃ g_705: ptr.
               prim add(s_702, tick_689; μ̃ v_706: i64.
@@ -504,25 +504,25 @@ def idyll:Std/Time.ticking <'a_688 = d_a_687; e_686: Effect> (d_a_687: desc, tic
       } | k_701>;
     idyll:Prelude/Time.sleep(ms_707: i64; r_708: ptr, k_709: ptr) =>
       <cocase {
-        apply(s_710: i64; k_711: ptr) =>
+        apply(s_710: i64; k_711: ptr) ! {| e_686} =>
           <r_708 | apply(unit; μ̃ g_712: ptr.
             prim add(s_710, ms_707; μ̃ v_713: i64.
               <g_712 | apply(v_713; k_711)>))>
       } | k_709>;
     return(x_714: 'a_688; k_715: ptr) =>
       <cocase {
-        apply(s_716: i64; k_717: ptr) =>
+        apply(s_716: i64; k_717: ptr) ! {} =>
           <x_714 | k_717>
       } | k_715>
   } in μ b_719.
     <act_690 | apply(unit; b_719)>
   ; k_691
 
-def idyll:Std/Time.withTickingClock <'a_727 = d_a_726; e_725: Effect> (d_a_726: desc, t_728: i64, tick_729: i64, act_730: ptr; k_731: ptr) =
+def idyll:Std/Time.withTickingClock <'a_727 = d_a_726; e_725: Effect> (d_a_726: desc, t_728: i64, tick_729: i64, act_730: ptr; k_731: ptr) ! {| e_725} =
   idyll:Std/Time.ticking(d_a_726, tick_729, act_730; μ̃ r_732: ptr.
     <r_732 | apply(t_728; k_731)>)
 
-def idyll:Std/Time.floorDiv (a_735: i64, b_736: i64; k_737: ptr) =
+def idyll:Std/Time.floorDiv (a_735: i64, b_736: i64; k_737: ptr) ! {} =
   prim div(a_735, b_736; μ̃ q_738: i64.
     prim mod(a_735, b_736; μ̃ v_751: i64.
       idyll:Prelude/intNe(v_751, 0; μ̃ v__739: bool.
@@ -539,12 +539,12 @@ def idyll:Std/Time.floorDiv (a_735: i64, b_736: i64; k_737: ptr) =
                   <q_738 | k_737>, μ̃ u_746: unit.
                   prim sub(q_738, 1; k_737)))))))))
 
-def idyll:Std/Time.floorMod (a_754: i64, b_755: i64; k_756: ptr) =
+def idyll:Std/Time.floorMod (a_754: i64, b_755: i64; k_756: ptr) ! {} =
   idyll:Std/Time.floorDiv(a_754, b_755; μ̃ v_758: i64.
     prim mul(v_758, b_755; μ̃ v_757: i64.
       prim sub(a_754, v_757; k_756)))
 
-def idyll:Std/Time.utc (ms_760: i64; k_761: ptr) =
+def idyll:Std/Time.utc (ms_760: i64; k_761: ptr) ! {} =
   idyll:Std/Time.floorDiv(ms_760, idyll:Std/Time.millisPerDay; μ̃ d_762: i64.
     prim mul(d_762, idyll:Std/Time.millisPerDay; μ̃ v_811: i64.
       prim sub(ms_760, v_811; μ̃ inDay_763: i64.
@@ -597,7 +597,7 @@ def idyll:Std/Time.utc (ms_760: i64; k_761: ptr) =
                                                                                         prim add(v_778, 1; μ̃ v_777: i64.
                                                                                           <idyll:Std/Time.DateTime.DateTime(v_771, mo_770, v_772, v_773, v_774, v_775, v_776, v_777) | k_761>)))))))))))))))>)))>))))))))))))))))))))))))
 
-def idyll:Std/Time.yearOf (y_813: i64; k_814: ptr) =
+def idyll:Std/Time.yearOf (y_813: i64; k_814: ptr) ! {} =
   prim lt(y_813, 0; μ̃ v__815: bool.
     prim if(v__815; μ̃ u_818: unit.
       idyll:Std/Time.padTo(4, y_813; k_814), μ̃ u_819: unit.
@@ -605,7 +605,7 @@ def idyll:Std/Time.yearOf (y_813: i64; k_814: ptr) =
         idyll:Std/Time.padTo(4, v_817; μ̃ v_816: str.
           prim concatStrings(["-", v_816]; k_814)))))
 
-def idyll:Std/Time.dateOf (t_821: ptr; k_822: ptr) =
+def idyll:Std/Time.dateOf (t_821: ptr; k_822: ptr) ! {} =
   idyll:Std/Time.DateTime.year(t_821; μ̃ v_833: i64.
     idyll:Std/Time.yearOf(v_833; μ̃ v_823: str.
       idyll:Std/Time.DateTime.month(t_821; μ̃ v_831: i64.
@@ -617,7 +617,7 @@ def idyll:Std/Time.dateOf (t_821: ptr; k_822: ptr) =
                   prim concatStrings(["-", v_825]; μ̃ v_824: str.
                     prim concatStrings([v_823, v_824]; k_822))))))))))
 
-def idyll:Std/Time.clockOf (t_836: ptr; k_837: ptr) =
+def idyll:Std/Time.clockOf (t_836: ptr; k_837: ptr) ! {} =
   idyll:Std/Time.DateTime.hour(t_836; μ̃ v_853: i64.
     idyll:Std/Time.pad2(v_853; μ̃ v_838: str.
       idyll:Std/Time.DateTime.minute(t_836; μ̃ v_851: i64.
@@ -633,7 +633,7 @@ def idyll:Std/Time.clockOf (t_836: ptr; k_837: ptr) =
                           prim concatStrings([":", v_840]; μ̃ v_839: str.
                             prim concatStrings([v_838, v_839]; k_837))))))))))))))
 
-def idyll:Std/Time.formatTimestamp (ms_856: i64; k_857: ptr) =
+def idyll:Std/Time.formatTimestamp (ms_856: i64; k_857: ptr) ! {} =
   idyll:Std/Time.utc(ms_856; μ̃ t_858: ptr.
     idyll:Std/Time.dateOf(t_858; μ̃ v_859: str.
       idyll:Std/Time.clockOf(t_858; μ̃ v_862: str.
@@ -641,7 +641,7 @@ def idyll:Std/Time.formatTimestamp (ms_856: i64; k_857: ptr) =
           prim concatStrings(["T", v_861]; μ̃ v_860: str.
             prim concatStrings([v_859, v_860]; k_857))))))
 
-def idyll:Std/Random.mix (z0_864: i64; k_865: ptr) =
+def idyll:Std/Random.mix (z0_864: i64; k_865: ptr) ! {} =
   prim ushr(z0_864, 30; μ̃ v_872: i64.
     prim bitXor(z0_864, v_872; μ̃ v_871: i64.
       prim mul(v_871, idyll:Std/Random.mixA; μ̃ z1_866: i64.
@@ -651,22 +651,22 @@ def idyll:Std/Random.mix (z0_864: i64; k_865: ptr) =
               prim ushr(z2_867, 31; μ̃ v_868: i64.
                 prim bitXor(z2_867, v_868; k_865))))))))
 
-def idyll:Std/Random.step (s_874: i64; k_875: ptr) =
+def idyll:Std/Random.step (s_874: i64; k_875: ptr) ! {} =
   prim add(s_874, idyll:Std/Random.gamma; μ̃ s2_876: i64.
     idyll:Std/Random.mix(s2_876; μ̃ v_877: i64.
       <idyll:Prelude/Pair.Pair(v_877, s2_876) | k_875>))
 
-def idyll:Std/Random.seed (n_879: i64; k_880: ptr) =
+def idyll:Std/Random.seed (n_879: i64; k_880: ptr) ! {} =
   prim bitOr(n_879, 1; k_880)
 
-def idyll:Std/Random.posMod (v_883: i64, m_884: i64; k_885: ptr) =
+def idyll:Std/Random.posMod (v_883: i64, m_884: i64; k_885: ptr) ! {} =
   prim mod(v_883, m_884; μ̃ r_886: i64.
     prim lt(r_886, 0; μ̃ v__887: bool.
       prim if(v__887; μ̃ u_888: unit.
         <r_886 | k_885>, μ̃ u_889: unit.
         prim add(r_886, m_884; k_885))))
 
-def idyll:Std/Random.stepBetween (lo_893: i64, hi_894: i64, s_895: i64; k_896: ptr) =
+def idyll:Std/Random.stepBetween (lo_893: i64, hi_894: i64, s_895: i64; k_896: ptr) ! {} =
   idyll:Std/Random.step(s_895; μ̃ v__897: ptr.
     <v__897 | case {
       idyll:Prelude/Pair.Pair(v_898: i64, s2_899: i64) =>
@@ -679,11 +679,11 @@ def idyll:Std/Random.stepBetween (lo_893: i64, hi_894: i64, s_895: i64; k_896: p
             <idyll:Prelude/Pair.Pair(lo_893, s2_899) | k_896>))
     }>)
 
-def idyll:Std/Random.seeded <'a_911 = d_a_910; e_909: Effect> (d_a_910: desc, act_912: ptr; k_913: ptr) =
+def idyll:Std/Random.seeded <'a_911 = d_a_910; e_909: Effect> (d_a_910: desc, act_912: ptr; k_913: ptr) ! {| e_909} =
   handle {
     idyll:Prelude/Random.nextInt(u_914: unit; r_915: ptr, k_916: ptr) =>
       <cocase {
-        apply(st_917: i64; k_918: ptr) =>
+        apply(st_917: i64; k_918: ptr) ! {| e_909} =>
           idyll:Std/Random.step(st_917; μ̃ v__919: ptr.
             <v__919 | case {
               idyll:Prelude/Pair.Pair(v_920: i64, s2_921: i64) =>
@@ -693,7 +693,7 @@ def idyll:Std/Random.seeded <'a_911 = d_a_910; e_909: Effect> (d_a_910: desc, ac
       } | k_916>;
     idyll:Prelude/Random.intBetween(lo_923: i64, hi_924: i64; r_925: ptr, k_926: ptr) =>
       <cocase {
-        apply(st_927: i64; k_928: ptr) =>
+        apply(st_927: i64; k_928: ptr) ! {| e_909} =>
           idyll:Std/Random.stepBetween(lo_923, hi_924, st_927; μ̃ v__929: ptr.
             <v__929 | case {
               idyll:Prelude/Pair.Pair(v_930: i64, s2_931: i64) =>
@@ -703,7 +703,7 @@ def idyll:Std/Random.seeded <'a_911 = d_a_910; e_909: Effect> (d_a_910: desc, ac
       } | k_926>;
     idyll:Prelude/Random.nextSeed(u_933: unit; r_934: ptr, k_935: ptr) =>
       <cocase {
-        apply(st_936: i64; k_937: ptr) =>
+        apply(st_936: i64; k_937: ptr) ! {| e_909} =>
           idyll:Std/Random.step(st_936; μ̃ v__938: ptr.
             <v__938 | case {
               idyll:Prelude/Pair.Pair(v_939: i64, s2_940: i64) =>
@@ -713,22 +713,22 @@ def idyll:Std/Random.seeded <'a_911 = d_a_910; e_909: Effect> (d_a_910: desc, ac
       } | k_935>;
     return(x_942: 'a_911; k_943: ptr) =>
       <cocase {
-        apply(st_944: i64; k_945: ptr) =>
+        apply(st_944: i64; k_945: ptr) ! {} =>
           <x_942 | k_945>
       } | k_943>
   } in μ b_947.
     <act_912 | apply(unit; b_947)>
   ; k_913
 
-def idyll:Std/Random.withSeed <'a_954 = d_a_953; e_952: Effect> (d_a_953: desc, n_955: i64, act_956: ptr; k_957: ptr) =
+def idyll:Std/Random.withSeed <'a_954 = d_a_953; e_952: Effect> (d_a_953: desc, n_955: i64, act_956: ptr; k_957: ptr) ! {| e_952} =
   idyll:Std/Random.seeded(d_a_953, act_956; μ̃ r_958: ptr.
     idyll:Std/Random.seed(n_955; μ̃ v_959: i64.
       <r_958 | apply(v_959; k_957)>))
 
-def idyll:Std/Random.between (lo_962: i64, hi_963: i64; k_964: ptr) =
+def idyll:Std/Random.between (lo_962: i64, hi_963: i64; k_964: ptr) ! {idyll:Prelude/Random} =
   perform idyll:Prelude/Random.intBetween(lo_962, hi_963; k_964)
 
-def idyll:Std/Random.swapAt <'a_971 = d_a_970> (d_a_970: desc, v_972: ptr, i_973: i64, j_974: i64; k_975: ptr) =
+def idyll:Std/Random.swapAt <'a_971 = d_a_970> (d_a_970: desc, v_972: ptr, i_973: i64, j_974: i64; k_975: ptr) ! {} =
   idyll:Std/Collections.Vector.get(d_a_970, v_972, i_973; μ̃ v_982: ptr.
     idyll:Std/Collections.Vector.get(d_a_970, v_972, j_974; μ̃ v_983: ptr.
       <idyll:Prelude/Pair.Pair(v_982, v_983) | μ̃ v__976: ptr.
@@ -748,18 +748,18 @@ def idyll:Std/Random.swapAt <'a_971 = d_a_970> (d_a_970: desc, v_972: ptr, i_973
             }>
         }>>))
 
-def idyll:Std/Random.shuffle <'a_988 = d_a_987> (d_a_987: desc, v_989: ptr; k_990: ptr) =
+def idyll:Std/Random.shuffle <'a_988 = d_a_987> (d_a_987: desc, v_989: ptr; k_990: ptr) ! {idyll:Prelude/Random} =
   idyll:Std/Collections.Vector.len(d_a_987, v_989; μ̃ v_996: i64.
     prim sub(v_996, 1; μ̃ v_995: i64.
       idyll:Std/Random.shuffleFrom(d_a_987, v_995, v_989; k_990)))
 
-def idyll:Std/Stream.folding <'a_1005 = d_a_1004, 'b_1007 = d_b_1006; e_1003: Effect> (d_a_1004: desc, d_b_1006: desc, f_1008: ptr, producer_1009: ptr; k_1010: ptr) =
+def idyll:Std/Stream.folding <'a_1005 = d_a_1004, 'b_1007 = d_b_1006; e_1003: Effect> (d_a_1004: desc, d_b_1006: desc, f_1008: ptr, producer_1009: ptr; k_1010: ptr) ! {| e_1003} =
   handle {
     idyll:Std/Yield.Yield.yield(b_1012: ptr; r_1013: ptr, k_1014: ptr) =>
       <b_1012 | case {
         idyll:Prelude/"#Box".Box(x_1011: 'a_1005) =>
           <cocase {
-            apply(acc_1015: 'b_1007; k_1016: ptr) =>
+            apply(acc_1015: 'b_1007; k_1016: ptr) ! {| e_1003} =>
               <r_1013 | apply(unit; μ̃ g_1017: ptr.
                 <f_1008 | apply(acc_1015; μ̃ g_1019: ptr.
                   <g_1019 | apply(x_1011; μ̃ v_1018: 'b_1007.
@@ -768,27 +768,27 @@ def idyll:Std/Stream.folding <'a_1005 = d_a_1004, 'b_1007 = d_b_1006; e_1003: Ef
       }>;
     return(u_1020: unit; k_1021: ptr) =>
       <cocase {
-        apply(acc_1022: 'b_1007; k_1023: ptr) =>
+        apply(acc_1022: 'b_1007; k_1023: ptr) ! {} =>
           <acc_1022 | k_1023>
       } | k_1021>
   } in μ b_1025.
     <producer_1009 | apply(unit; b_1025)>
   ; k_1010
 
-def idyll:Std/Stream.fold <'a_1035 = d_a_1034, 'b_1037 = d_b_1036; e_1033: Effect> (d_a_1034: desc, d_b_1036: desc, f_1038: ptr, z_1039: 'b_1037, producer_1040: ptr; k_1041: ptr) =
+def idyll:Std/Stream.fold <'a_1035 = d_a_1034, 'b_1037 = d_b_1036; e_1033: Effect> (d_a_1034: desc, d_b_1036: desc, f_1038: ptr, z_1039: 'b_1037, producer_1040: ptr; k_1041: ptr) ! {| e_1033} =
   idyll:Std/Stream.folding(d_a_1034, d_b_1036, f_1038, producer_1040; μ̃ r_1042: ptr.
     <r_1042 | apply(z_1039; k_1041)>)
 
-def idyll:Std/Stream.sum <e_1044: Effect> (producer_1045: ptr; k_1046: ptr) =
+def idyll:Std/Stream.sum <e_1044: Effect> (producer_1045: ptr; k_1046: ptr) ! {| e_1044} =
   idyll:Std/Stream.fold(desc(i64), desc(i64), cocase {
-    apply(n_1047: i64; k_1048: ptr) =>
+    apply(n_1047: i64; k_1048: ptr) ! {} =>
       <cocase {
-        apply(x_1049: i64; k_1050: ptr) =>
+        apply(x_1049: i64; k_1050: ptr) ! {} =>
           prim add(n_1047, x_1049; k_1050)
       } | k_1048>
   }, 0, producer_1045; k_1046)
 
-def idyll:Std/Stream.map <'a_1059 = d_a_1058, 'b_1061 = d_b_1060; e_1057: Effect> (d_a_1058: desc, d_b_1060: desc, f_1062: ptr, producer_1063: ptr; k_1064: ptr) =
+def idyll:Std/Stream.map <'a_1059 = d_a_1058, 'b_1061 = d_b_1060; e_1057: Effect> (d_a_1058: desc, d_b_1060: desc, f_1062: ptr, producer_1063: ptr; k_1064: ptr) ! {idyll:Std/Yield.Yield | e_1057} =
   handle {
     idyll:Std/Yield.Yield.yield(b_1066: ptr; r_1067: ptr, k_1068: ptr) =>
       <b_1066 | case {
@@ -803,22 +803,22 @@ def idyll:Std/Stream.map <'a_1059 = d_a_1058, 'b_1061 = d_b_1060; e_1057: Effect
     <producer_1063 | apply(unit; b_1074)>
   ; k_1064
 
-def idyll:Prelude/PartialEq."==" <'a_1076 = d_a_1075> (d_a_1075: desc, self_1077: ptr; k_1078: ptr) =
+def idyll:Prelude/PartialEq."==" <'a_1076 = d_a_1075> (d_a_1075: desc, self_1077: ptr; k_1078: ptr) ! {} =
   <self_1077 | case {
     idyll:Prelude/PartialEq.PartialEq(v___1079: ptr, v___1080: ptr) =>
       <v___1079 | k_1078>
   }>
 
-def idyll:Prelude/"#instance@1281" (; k_1081: ptr) =
+def idyll:Prelude/"#instance@1281" (; k_1081: ptr) ! {} =
   <cocase {
-    apply(a_1088: i64; k_1091: ptr) =>
+    apply(a_1088: i64; k_1091: ptr) ! {} =>
       <cocase {
         apply(a_1089: i64; k_1090: ptr) =>
           prim eq(a_1088, a_1089; k_1090)
       } | k_1091>
   } | μ̃ v_1082: ptr.
     <cocase {
-      apply(a_1084: i64; k_1087: ptr) =>
+      apply(a_1084: i64; k_1087: ptr) ! {} =>
         <cocase {
           apply(a_1085: i64; k_1086: ptr) =>
             idyll:Prelude/intNe(a_1084, a_1085; k_1086)
@@ -826,11 +826,11 @@ def idyll:Prelude/"#instance@1281" (; k_1081: ptr) =
     } | μ̃ v_1083: ptr.
       <idyll:Prelude/PartialEq.PartialEq(v_1082, v_1083) | k_1081>>>
 
-def idyll:Prelude/"#instance@2042" <'a_1093 = d_a_1092> (d_a_1092: desc, v__1094: ptr; k_1095: ptr) =
+def idyll:Prelude/"#instance@2042" <'a_1093 = d_a_1092> (d_a_1092: desc, v__1094: ptr; k_1095: ptr) ! {} =
   <idyll:Prelude/PartialEq.PartialEq(cocase {
-    apply(xs_1096: ptr; k_1097: ptr) =>
+    apply(xs_1096: ptr; k_1097: ptr) ! {} =>
       <cocase {
-        apply(ys_1098: ptr; k_1099: ptr) =>
+        apply(ys_1098: ptr; k_1099: ptr) ! {} =>
           <xs_1096 | case {
             idyll:Prelude/List.Nil =>
               <ys_1098 | case {
@@ -857,7 +857,7 @@ def idyll:Prelude/"#instance@2042" <'a_1093 = d_a_1092> (d_a_1092: desc, v__1094
           }>
       } | k_1097>
   }, cocase {
-    apply(v_d_1117: ptr; k_1118: ptr) =>
+    apply(v_d_1117: ptr; k_1118: ptr) ! {} =>
       idyll:Prelude/"#instance@2042"(d_a_1092, v__1094; μ̃ v_1119: ptr.
         <cocase {
           apply(a_1120: ptr; k_1121: ptr) =>
@@ -865,27 +865,27 @@ def idyll:Prelude/"#instance@2042" <'a_1093 = d_a_1092> (d_a_1092: desc, v__1094
         } | k_1118>)
   }) | k_1095>
 
-def idyll:Prelude/Debug.debug <'a_1123 = d_a_1122> (d_a_1122: desc, self_1124: ptr; k_1125: ptr) =
+def idyll:Prelude/Debug.debug <'a_1123 = d_a_1122> (d_a_1122: desc, self_1124: ptr; k_1125: ptr) ! {} =
   <self_1124 | case {
     idyll:Prelude/Debug.Debug(debug_1126: ptr) =>
       <debug_1126 | k_1125>
   }>
 
-def idyll:Prelude/"#instance@3119" (; k_1127: ptr) =
+def idyll:Prelude/"#instance@3119" (; k_1127: ptr) ! {} =
   <idyll:Prelude/Debug.Debug(cocase {
-    apply(n_1128: i64; k_1129: ptr) =>
+    apply(n_1128: i64; k_1129: ptr) ! {} =>
       idyll:Prelude/showInt(n_1128; k_1129)
   }) | k_1127>
 
-def idyll:Prelude/"#instance@3638" <'a_1131 = d_a_1130> (d_a_1130: desc, v__1132: ptr; k_1133: ptr) =
+def idyll:Prelude/"#instance@3638" <'a_1131 = d_a_1130> (d_a_1130: desc, v__1132: ptr; k_1133: ptr) ! {} =
   <idyll:Prelude/Debug.Debug(cocase {
-    apply(xs_1134: ptr; k_1135: ptr) =>
+    apply(xs_1134: ptr; k_1135: ptr) ! {} =>
       idyll:Prelude/debugItems(d_a_1130, v__1132, xs_1134; μ̃ v_1137: str.
         prim concatStrings([v_1137, "]"]; μ̃ v_1136: str.
           prim concatStrings(["#[", v_1136]; k_1135)))
   }) | k_1133>
 
-def idyll:Prelude/debugItems <'a_1143 = d_a_1142> (d_a_1142: desc, d_1144: ptr, xs_1145: ptr; k_1146: ptr) =
+def idyll:Prelude/debugItems <'a_1143 = d_a_1142> (d_a_1142: desc, d_1144: ptr, xs_1145: ptr; k_1146: ptr) ! {} =
   <xs_1145 | case {
     idyll:Prelude/List.Nil =>
       <"" | k_1146>;
@@ -903,7 +903,7 @@ def idyll:Prelude/debugItems <'a_1143 = d_a_1142> (d_a_1142: desc, d_1144: ptr, 
       }>
   }>
 
-def idyll:Prelude/negativeDigits (fuel_1156: ptr, n_1157: i64; k_1158: ptr) =
+def idyll:Prelude/negativeDigits (fuel_1156: ptr, n_1157: i64; k_1158: ptr) ! {} =
   <fuel_1156 | case {
     idyll:Prelude/DigitFuel.Spent =>
       <"" | k_1158>;
@@ -921,23 +921,23 @@ def idyll:Prelude/negativeDigits (fuel_1156: ptr, n_1157: i64; k_1158: ptr) =
               idyll:Prelude/digitString(v_1166; k_1158)))))
   }>
 
-def idyll:Std/Collections.Array.rangeFrom (i_1170: i64, hi_1171: i64, acc_1172: ptr; k_1173: ptr) =
-  prim lt(i_1170, hi_1171; μ̃ v__1174: bool.
-    prim if(v__1174; μ̃ u_1177: unit.
-      <acc_1172 | k_1173>, μ̃ u_1178: unit.
-      prim add(i_1170, 1; μ̃ v_1175: i64.
-        prim arrayPush(acc_1172, i_1170; μ̃ v_1176: ptr.
-          idyll:Std/Collections.Array.rangeFrom(v_1175, hi_1171, v_1176; k_1173)))))
+def idyll:Std/String.repeat (s_1170: str, n_1171: i64; k_1172: ptr) ! {} =
+  prim lt(n_1171, 1; μ̃ v__1173: bool.
+    prim if(v__1173; μ̃ u_1176: unit.
+      prim sub(n_1171, 1; μ̃ v_1175: i64.
+        idyll:Std/String.repeat(s_1170, v_1175; μ̃ v_1174: str.
+          prim concatStrings([s_1170, v_1174]; k_1172))), μ̃ u_1177: unit.
+      <"" | k_1172>))
 
-def idyll:Std/String.repeat (s_1179: str, n_1180: i64; k_1181: ptr) =
-  prim lt(n_1180, 1; μ̃ v__1182: bool.
+def idyll:Std/Collections.Array.rangeFrom (i_1178: i64, hi_1179: i64, acc_1180: ptr; k_1181: ptr) ! {} =
+  prim lt(i_1178, hi_1179; μ̃ v__1182: bool.
     prim if(v__1182; μ̃ u_1185: unit.
-      prim sub(n_1180, 1; μ̃ v_1184: i64.
-        idyll:Std/String.repeat(s_1179, v_1184; μ̃ v_1183: str.
-          prim concatStrings([s_1179, v_1183]; k_1181))), μ̃ u_1186: unit.
-      <"" | k_1181>))
+      <acc_1180 | k_1181>, μ̃ u_1186: unit.
+      prim add(i_1178, 1; μ̃ v_1183: i64.
+        prim arrayPush(acc_1180, i_1178; μ̃ v_1184: ptr.
+          idyll:Std/Collections.Array.rangeFrom(v_1183, hi_1179, v_1184; k_1181)))))
 
-def idyll:Std/Collections.Vector.pow2 (n_1187: i64; k_1188: ptr) =
+def idyll:Std/Collections.Vector.pow2 (n_1187: i64; k_1188: ptr) ! {} =
   prim lt(n_1187, 1; μ̃ v__1189: bool.
     prim if(v__1189; μ̃ u_1193: unit.
       prim sub(n_1187, 1; μ̃ v_1192: i64.
@@ -945,7 +945,7 @@ def idyll:Std/Collections.Vector.pow2 (n_1187: i64; k_1188: ptr) =
           prim mul(2, v_1190; k_1188))), μ̃ u_1194: unit.
       <1 | k_1188>))
 
-def idyll:Std/Collections.Vector.nodeLen <'a_1196 = d_a_1195> (d_a_1195: desc, shift_1197: i64, node_1198: ptr; k_1199: ptr) =
+def idyll:Std/Collections.Vector.nodeLen <'a_1196 = d_a_1195> (d_a_1195: desc, shift_1197: i64, node_1198: ptr; k_1199: ptr) ! {} =
   <node_1198 | case {
     idyll:Std/Collections.Vector.VNode.Leaf(xs_1200: ptr) =>
       prim arrayLen(xs_1200; k_1199);
@@ -973,7 +973,7 @@ def idyll:Std/Collections.Vector.nodeLen <'a_1196 = d_a_1195> (d_a_1195: desc, s
       }>
   }>
 
-def idyll:Std/Collections.Vector.findSlot (sizes_1219: ptr, i_1220: i64, k_1221: i64; k_1222: ptr) =
+def idyll:Std/Collections.Vector.findSlot (sizes_1219: ptr, i_1220: i64, k_1221: i64; k_1222: ptr) ! {} =
   prim arrayGet(sizes_1219, k_1221; μ̃ v_1230: i64.
     prim lt(i_1220, v_1230; μ̃ v__1223: bool.
       prim if(v__1223; μ̃ u_1228: unit.
@@ -981,7 +981,7 @@ def idyll:Std/Collections.Vector.findSlot (sizes_1219: ptr, i_1220: i64, k_1221:
           idyll:Std/Collections.Vector.findSlot(sizes_1219, i_1220, v_1227; k_1222)), μ̃ u_1229: unit.
         <k_1221 | k_1222>)))
 
-def idyll:Std/Collections.Vector.nodeIndex <'a_1232 = d_a_1231> (d_a_1231: desc, shift_1233: i64, node_1234: ptr, i_1235: i64; k_1236: ptr) =
+def idyll:Std/Collections.Vector.nodeIndex <'a_1232 = d_a_1231> (d_a_1231: desc, shift_1233: i64, node_1234: ptr, i_1235: i64; k_1236: ptr) ! {} =
   <node_1234 | case {
     idyll:Std/Collections.Vector.VNode.Leaf(xs_1237: ptr) =>
       prim arrayGet(xs_1237, i_1235; μ̃ x_1238: 'a_1232.
@@ -1005,7 +1005,7 @@ def idyll:Std/Collections.Vector.nodeIndex <'a_1232 = d_a_1231> (d_a_1231: desc,
       }>
   }>
 
-def idyll:Std/Collections.Vector.nodeUpdate <'a_1253 = d_a_1252> (d_a_1252: desc, shift_1254: i64, node_1255: ptr, i_1256: i64, x_1257: 'a_1253; k_1258: ptr) =
+def idyll:Std/Collections.Vector.nodeUpdate <'a_1253 = d_a_1252> (d_a_1252: desc, shift_1254: i64, node_1255: ptr, i_1256: i64, x_1257: 'a_1253; k_1258: ptr) ! {} =
   <node_1255 | case {
     idyll:Std/Collections.Vector.VNode.Leaf(xs_1259: ptr) =>
       prim arraySet(xs_1259, i_1256, x_1257; μ̃ v_1260: ptr.
@@ -1035,7 +1035,7 @@ def idyll:Std/Collections.Vector.nodeUpdate <'a_1253 = d_a_1252> (d_a_1252: desc
       }>
   }>
 
-def idyll:Std/Collections.Vector.leavesFrom <'a_1281 = d_a_1280> (d_a_1280: desc, xs_1282: ptr, i_1283: i64, acc_1284: ptr; k_1285: ptr) =
+def idyll:Std/Collections.Vector.leavesFrom <'a_1281 = d_a_1280> (d_a_1280: desc, xs_1282: ptr, i_1283: i64, acc_1284: ptr; k_1285: ptr) ! {} =
   prim arrayLen(xs_1282; μ̃ v_1296: i64.
     prim lt(i_1283, v_1296; μ̃ v__1286: bool.
       prim if(v__1286; μ̃ u_1294: unit.
@@ -1049,7 +1049,7 @@ def idyll:Std/Collections.Vector.leavesFrom <'a_1281 = d_a_1280> (d_a_1280: desc
                     prim arrayPush(acc_1284, v_1289; μ̃ v_1288: ptr.
                       idyll:Std/Collections.Vector.leavesFrom(d_a_1280, xs_1282, v_1287, v_1288; k_1285))>))))))))
 
-def idyll:Std/Collections.Vector.groupFrom <'a_1298 = d_a_1297> (d_a_1297: desc, nodes_1299: ptr, i_1300: i64, acc_1301: ptr; k_1302: ptr) =
+def idyll:Std/Collections.Vector.groupFrom <'a_1298 = d_a_1297> (d_a_1297: desc, nodes_1299: ptr, i_1300: i64, acc_1301: ptr; k_1302: ptr) ! {} =
   prim arrayLen(nodes_1299; μ̃ v_1314: i64.
     prim lt(i_1300, v_1314; μ̃ v__1303: bool.
       prim if(v__1303; μ̃ u_1312: unit.
@@ -1064,7 +1064,7 @@ def idyll:Std/Collections.Vector.groupFrom <'a_1298 = d_a_1297> (d_a_1297: desc,
                       prim arrayPush(acc_1301, v_1306; μ̃ v_1305: ptr.
                         idyll:Std/Collections.Vector.groupFrom(d_a_1297, nodes_1299, v_1304, v_1305; k_1302))>)))>)))))
 
-def idyll:Std/Collections.Vector.buildUp <'a_1316 = d_a_1315> (d_a_1315: desc, nodes_1317: ptr; k_1318: ptr) =
+def idyll:Std/Collections.Vector.buildUp <'a_1316 = d_a_1315> (d_a_1315: desc, nodes_1317: ptr; k_1318: ptr) ! {} =
   prim arrayLen(nodes_1317; μ̃ v_1324: i64.
     prim add(idyll:Std/Collections.Vector.width, 1; μ̃ v_1325: i64.
       prim lt(v_1324, v_1325; μ̃ v__1319: bool.
@@ -1074,7 +1074,7 @@ def idyll:Std/Collections.Vector.buildUp <'a_1316 = d_a_1315> (d_a_1315: desc, n
           <idyll:Prelude/Maybe.Nothing | μ̃ v_1321: ptr.
             <idyll:Std/Collections.Vector.VNode.Branch(v_1321, nodes_1317) | k_1318>>))))
 
-def idyll:Std/Collections.Vector.buildLevel <'a_1327 = d_a_1326> (d_a_1326: desc, level_1328: i64, nodes_1329: ptr; k_1330: ptr) =
+def idyll:Std/Collections.Vector.buildLevel <'a_1327 = d_a_1326> (d_a_1326: desc, level_1328: i64, nodes_1329: ptr; k_1330: ptr) ! {} =
   prim arrayLen(nodes_1329; μ̃ v_1336: i64.
     prim add(idyll:Std/Collections.Vector.width, 1; μ̃ v_1337: i64.
       prim lt(v_1336, v_1337; μ̃ v__1331: bool.
@@ -1084,7 +1084,7 @@ def idyll:Std/Collections.Vector.buildLevel <'a_1327 = d_a_1326> (d_a_1326: desc
               idyll:Std/Collections.Vector.buildLevel(d_a_1326, v_1332, v_1333; k_1330))), μ̃ u_1335: unit.
           <level_1328 | k_1330>))))
 
-def idyll:Std/Collections.Vector.nodeToArray <'a_1339 = d_a_1338> (d_a_1338: desc, node_1340: ptr; k_1341: ptr) =
+def idyll:Std/Collections.Vector.nodeToArray <'a_1339 = d_a_1338> (d_a_1338: desc, node_1340: ptr; k_1341: ptr) ! {} =
   <node_1340 | case {
     idyll:Std/Collections.Vector.VNode.Leaf(xs_1342: ptr) =>
       <xs_1342 | k_1341>;
@@ -1093,7 +1093,7 @@ def idyll:Std/Collections.Vector.nodeToArray <'a_1339 = d_a_1338> (d_a_1338: des
         idyll:Std/Collections.Vector.nodesToArray(d_a_1338, kids_1344, 0, v_1350; k_1341)>
   }>
 
-def idyll:Std/Collections.Vector.nodesToArray <'a_1352 = d_a_1351> (d_a_1351: desc, kids_1353: ptr, i_1354: i64, acc_1355: ptr; k_1356: ptr) =
+def idyll:Std/Collections.Vector.nodesToArray <'a_1352 = d_a_1351> (d_a_1351: desc, kids_1353: ptr, i_1354: i64, acc_1355: ptr; k_1356: ptr) ! {} =
   prim arrayLen(kids_1353; μ̃ v_1367: i64.
     prim lt(i_1354, v_1367; μ̃ v__1357: bool.
       prim if(v__1357; μ̃ u_1365: unit.
@@ -1104,7 +1104,7 @@ def idyll:Std/Collections.Vector.nodesToArray <'a_1352 = d_a_1351> (d_a_1351: de
               prim arrayConcat(acc_1355, v_1360; μ̃ v_1359: ptr.
                 idyll:Std/Collections.Vector.nodesToArray(d_a_1351, kids_1353, v_1358, v_1359; k_1356))))))))
 
-def idyll:Std/Collections.Vector.len <'a_1369 = d_a_1368> (d_a_1368: desc, v_1370: ptr; k_1371: ptr) =
+def idyll:Std/Collections.Vector.len <'a_1369 = d_a_1368> (d_a_1368: desc, v_1370: ptr; k_1371: ptr) ! {} =
   <v_1370 | case {
     idyll:Std/Collections.Vector.Vector.Empty =>
       <0 | k_1371>;
@@ -1114,7 +1114,7 @@ def idyll:Std/Collections.Vector.len <'a_1369 = d_a_1368> (d_a_1368: desc, v_137
       <n_1373 | k_1371>
   }>
 
-def idyll:Std/Collections.Vector.getU <'a_1381 = d_a_1380> (d_a_1380: desc, v_1382: ptr, i_1383: i64; k_1384: ptr) =
+def idyll:Std/Collections.Vector.getU <'a_1381 = d_a_1380> (d_a_1380: desc, v_1382: ptr, i_1383: i64; k_1384: ptr) ! {} =
   <v_1382 | case {
     idyll:Std/Collections.Vector.Vector.Empty =>
       <[] | μ̃ v_1385: ptr.
@@ -1127,7 +1127,7 @@ def idyll:Std/Collections.Vector.getU <'a_1381 = d_a_1380> (d_a_1380: desc, v_13
       idyll:Std/Collections.Vector.getOuterF(d_a_1380, sh_1390, oF_1391, iF_1392, mid_1393, iB_1394, oB_1395, i_1383; k_1384)
   }>
 
-def idyll:Std/Collections.Vector.setU <'a_1397 = d_a_1396> (d_a_1396: desc, v_1398: ptr, i_1399: i64, x_1400: 'a_1397; k_1401: ptr) =
+def idyll:Std/Collections.Vector.setU <'a_1397 = d_a_1396> (d_a_1396: desc, v_1398: ptr, i_1399: i64, x_1400: 'a_1397; k_1401: ptr) ! {} =
   <v_1398 | case {
     idyll:Std/Collections.Vector.Vector.Empty =>
       <idyll:Std/Collections.Vector.Vector.Empty | k_1401>;
@@ -1145,7 +1145,7 @@ def idyll:Std/Collections.Vector.setU <'a_1397 = d_a_1396> (d_a_1396: desc, v_13
               <idyll:Std/Collections.Vector.Vector.Full(n_1404, sh_1405, v_1414, iF_1407, mid_1408, iB_1409, oB_1410) | k_1401>))))
   }>
 
-def idyll:Std/Collections.Vector.toArray <'a_1419 = d_a_1418> (d_a_1418: desc, v_1420: ptr; k_1421: ptr) =
+def idyll:Std/Collections.Vector.toArray <'a_1419 = d_a_1418> (d_a_1418: desc, v_1420: ptr; k_1421: ptr) ! {} =
   <v_1420 | case {
     idyll:Std/Collections.Vector.Vector.Empty =>
       <[] | k_1421>;
@@ -1159,7 +1159,7 @@ def idyll:Std/Collections.Vector.toArray <'a_1419 = d_a_1418> (d_a_1418: desc, v
               prim arrayConcat(v_1430, oB_1429; k_1421)))))
   }>
 
-def idyll:Std/Time.formatNanos (ns_1434: i64; k_1435: ptr) =
+def idyll:Std/Time.formatNanos (ns_1434: i64; k_1435: ptr) ! {} =
   prim lt(ns_1434, 0; μ̃ v__1436: bool.
     prim if(v__1436; μ̃ u_1493: unit.
       prim lt(ns_1434, 1000; μ̃ v__1437: bool.
@@ -1220,49 +1220,49 @@ def idyll:Std/Time.formatNanos (ns_1434: i64; k_1435: ptr) =
           idyll:Std/Time.formatNanos(v_1488; μ̃ v_1486: str.
             prim concatStrings(["-", v_1486]; k_1435))>)))
 
-def idyll:Std/Time.DateTime.year (self_1495: ptr; k_1496: ptr) =
+def idyll:Std/Time.DateTime.year (self_1495: ptr; k_1496: ptr) ! {} =
   <self_1495 | case {
     idyll:Std/Time.DateTime.DateTime(year_1497: i64, month_1498: i64, day_1499: i64, hour_1500: i64, minute_1501: i64, second_1502: i64, millis_1503: i64, weekday_1504: i64) =>
       <year_1497 | k_1496>
   }>
 
-def idyll:Std/Time.DateTime.month (self_1505: ptr; k_1506: ptr) =
+def idyll:Std/Time.DateTime.month (self_1505: ptr; k_1506: ptr) ! {} =
   <self_1505 | case {
     idyll:Std/Time.DateTime.DateTime(year_1507: i64, month_1508: i64, day_1509: i64, hour_1510: i64, minute_1511: i64, second_1512: i64, millis_1513: i64, weekday_1514: i64) =>
       <month_1508 | k_1506>
   }>
 
-def idyll:Std/Time.DateTime.day (self_1515: ptr; k_1516: ptr) =
+def idyll:Std/Time.DateTime.day (self_1515: ptr; k_1516: ptr) ! {} =
   <self_1515 | case {
     idyll:Std/Time.DateTime.DateTime(year_1517: i64, month_1518: i64, day_1519: i64, hour_1520: i64, minute_1521: i64, second_1522: i64, millis_1523: i64, weekday_1524: i64) =>
       <day_1519 | k_1516>
   }>
 
-def idyll:Std/Time.DateTime.hour (self_1525: ptr; k_1526: ptr) =
+def idyll:Std/Time.DateTime.hour (self_1525: ptr; k_1526: ptr) ! {} =
   <self_1525 | case {
     idyll:Std/Time.DateTime.DateTime(year_1527: i64, month_1528: i64, day_1529: i64, hour_1530: i64, minute_1531: i64, second_1532: i64, millis_1533: i64, weekday_1534: i64) =>
       <hour_1530 | k_1526>
   }>
 
-def idyll:Std/Time.DateTime.minute (self_1535: ptr; k_1536: ptr) =
+def idyll:Std/Time.DateTime.minute (self_1535: ptr; k_1536: ptr) ! {} =
   <self_1535 | case {
     idyll:Std/Time.DateTime.DateTime(year_1537: i64, month_1538: i64, day_1539: i64, hour_1540: i64, minute_1541: i64, second_1542: i64, millis_1543: i64, weekday_1544: i64) =>
       <minute_1541 | k_1536>
   }>
 
-def idyll:Std/Time.DateTime.second (self_1545: ptr; k_1546: ptr) =
+def idyll:Std/Time.DateTime.second (self_1545: ptr; k_1546: ptr) ! {} =
   <self_1545 | case {
     idyll:Std/Time.DateTime.DateTime(year_1547: i64, month_1548: i64, day_1549: i64, hour_1550: i64, minute_1551: i64, second_1552: i64, millis_1553: i64, weekday_1554: i64) =>
       <second_1552 | k_1546>
   }>
 
-def idyll:Std/Time.DateTime.millis (self_1555: ptr; k_1556: ptr) =
+def idyll:Std/Time.DateTime.millis (self_1555: ptr; k_1556: ptr) ! {} =
   <self_1555 | case {
     idyll:Std/Time.DateTime.DateTime(year_1557: i64, month_1558: i64, day_1559: i64, hour_1560: i64, minute_1561: i64, second_1562: i64, millis_1563: i64, weekday_1564: i64) =>
       <millis_1563 | k_1556>
   }>
 
-def idyll:Std/Time.groupDigits (n_1565: i64; k_1566: ptr) =
+def idyll:Std/Time.groupDigits (n_1565: i64; k_1566: ptr) ! {} =
   prim lt(n_1565, 0; μ̃ v__1567: bool.
     prim if(v__1567; μ̃ u_1578: unit.
       prim lt(n_1565, 1000; μ̃ v__1568: bool.
@@ -1278,7 +1278,7 @@ def idyll:Std/Time.groupDigits (n_1565: i64; k_1566: ptr) =
         idyll:Std/Time.groupDigits(v_1577; μ̃ v_1576: str.
           prim concatStrings(["-", v_1576]; k_1566)))))
 
-def idyll:Std/Random.shuffleFrom <'a_1581 = d_a_1580> (d_a_1580: desc, i_1582: i64, v_1583: ptr; k_1584: ptr) =
+def idyll:Std/Random.shuffleFrom <'a_1581 = d_a_1580> (d_a_1580: desc, i_1582: i64, v_1583: ptr; k_1584: ptr) ! {idyll:Prelude/Random} =
   idyll:Prelude/intLe(i_1582, 0; μ̃ v__1585: bool.
     prim if(v__1585; μ̃ u_1590: unit.
       prim add(i_1582, 1; μ̃ v_1589: i64.
@@ -1288,7 +1288,7 @@ def idyll:Std/Random.shuffleFrom <'a_1581 = d_a_1580> (d_a_1580: desc, i_1582: i
               idyll:Std/Random.shuffleFrom(d_a_1580, v_1587, v_1588; k_1584))))), μ̃ u_1591: unit.
       <v_1583 | k_1584>))
 
-def idyll:Std/Stream.range (lo_1592: i64, hi_1593: i64; k_1594: ptr) =
+def idyll:Std/Stream.range (lo_1592: i64, hi_1593: i64; k_1594: ptr) ! {idyll:Std/Yield.Yield} =
   idyll:Prelude/intGe(lo_1592, hi_1593; μ̃ v__1595: bool.
     prim if(v__1595; μ̃ u_1600: unit.
       perform idyll:Std/Yield.Yield.yield(idyll:Prelude/"#Box".Box(lo_1592); μ̃ u_1596: unit.
@@ -1296,11 +1296,11 @@ def idyll:Std/Stream.range (lo_1592: i64, hi_1593: i64; k_1594: ptr) =
           idyll:Std/Stream.range(v_1599, hi_1593; k_1594))), μ̃ u_1601: unit.
       <unit | k_1594>))
 
-def idyll:Main/"#escape" (s_1632: str; k_1634: ptr) =
+def idyll:Main/"#escape" (s_1632: str; k_1634: ptr) ! {} =
   prim stringByteLength(s_1632; μ̃ n_1633: i64.
     idyll:Main/"#escape".go(s_1632, 0, 0, n_1633, ""; k_1634))
 
-def idyll:Main/"#escape".go (s_1635: str, start_1636: i64, i_1637: i64, n_1638: i64, acc_1639: str; k_1640: ptr) =
+def idyll:Main/"#escape".go (s_1635: str, start_1636: i64, i_1637: i64, n_1638: i64, acc_1639: str; k_1640: ptr) ! {} =
   prim eq(i_1637, n_1638; μ̃ u_1650: unit.
     prim stringByteAt(s_1635, i_1637; μ̃ b_1641: i64.
       idyll:Main/"#escape".byte(b_1641; μ̃ e_1642: str.
@@ -1314,7 +1314,7 @@ def idyll:Main/"#escape".go (s_1635: str, start_1636: i64, i_1637: i64, n_1638: 
     prim stringSlice(s_1635, start_1636, n_1638; μ̃ run_1647: str.
       prim concatStrings([acc_1639, run_1647]; k_1640)))
 
-def idyll:Main/"#escape".byte (b_1652: i64; k_1653: ptr) =
+def idyll:Main/"#escape".byte (b_1652: i64; k_1653: ptr) ! {} =
   prim eq(b_1652, 34; μ̃ u_1676: unit.
     prim eq(b_1652, 92; μ̃ u_1674: unit.
       prim eq(b_1652, 10; μ̃ u_1672: unit.
@@ -1349,7 +1349,7 @@ def idyll:Main/"#escape".byte (b_1652: i64; k_1653: ptr) =
       <"\\\\" | k_1653>), μ̃ u_1677: unit.
     <"\\\"" | k_1653>)
 
-def idyll:Main/"#items (Bool, String)" (x_1626: ptr; k_1627: ptr) =
+def idyll:Main/"#items (Bool, String)" (x_1626: ptr; k_1627: ptr) ! {} =
   <x_1626 | case {
     idyll:Prelude/Pair.Pair(f_1628: bool, f_1629: str) =>
       prim if(f_1628; μ̃ u_1679: unit.
@@ -1363,11 +1363,11 @@ def idyll:Main/"#items (Bool, String)" (x_1626: ptr; k_1627: ptr) =
               prim concatStrings([s_1630, ", ", s_1631]; k_1627)))>)
   }>
 
-def idyll:Main/"#show (Bool, String)" (x_1681: ptr; k_1682: ptr) =
+def idyll:Main/"#show (Bool, String)" (x_1681: ptr; k_1682: ptr) ! {} =
   idyll:Main/"#items (Bool, String)"(x_1681; μ̃ s_1683: str.
     prim concatStrings(["(", s_1683, ")"]; k_1682))
 
-def idyll:Main/"#items ((Bool, String), Int)" (x_1620: ptr; k_1621: ptr) =
+def idyll:Main/"#items ((Bool, String), Int)" (x_1620: ptr; k_1621: ptr) ! {} =
   <x_1620 | case {
     idyll:Prelude/Pair.Pair(f_1622: ptr, f_1623: i64) =>
       idyll:Main/"#show (Bool, String)"(f_1622; μ̃ s_1624: str.
@@ -1375,11 +1375,11 @@ def idyll:Main/"#items ((Bool, String), Int)" (x_1620: ptr; k_1621: ptr) =
           prim concatStrings([s_1624, ", ", s_1625]; k_1621)))
   }>
 
-def idyll:Main/"#show ((Bool, String), Int)" (x_1684: ptr; k_1685: ptr) =
+def idyll:Main/"#show ((Bool, String), Int)" (x_1684: ptr; k_1685: ptr) ! {} =
   idyll:Main/"#items ((Bool, String), Int)"(x_1684; μ̃ s_1686: str.
     prim concatStrings(["(", s_1686, ")"]; k_1685))
 
-def idyll:Main/"#items (String, (Bool, String), Int)" (x_1616: ptr; k_1617: ptr) =
+def idyll:Main/"#items (String, (Bool, String), Int)" (x_1616: ptr; k_1617: ptr) ! {} =
   <x_1616 | case {
     idyll:Prelude/Pair.Pair(f_1618: str, f_1619: ptr) =>
       idyll:Main/"#escape"(f_1618; μ̃ e_1689: str.
@@ -1388,11 +1388,11 @@ def idyll:Main/"#items (String, (Bool, String), Int)" (x_1616: ptr; k_1617: ptr)
             prim concatStrings([s_1687, ", ", s_1688]; k_1617))))
   }>
 
-def idyll:Main/"#show (String, (Bool, String), Int)" (x_1690: ptr; k_1691: ptr) =
+def idyll:Main/"#show (String, (Bool, String), Int)" (x_1690: ptr; k_1691: ptr) ! {} =
   idyll:Main/"#items (String, (Bool, String), Int)"(x_1690; μ̃ s_1692: str.
     prim concatStrings(["(", s_1692, ")"]; k_1691))
 
-def idyll:Main/"#items (String, String, (Bool, String), Int)" (x_1612: ptr; k_1613: ptr) =
+def idyll:Main/"#items (String, String, (Bool, String), Int)" (x_1612: ptr; k_1613: ptr) ! {} =
   <x_1612 | case {
     idyll:Prelude/Pair.Pair(f_1614: str, f_1615: ptr) =>
       idyll:Main/"#escape"(f_1614; μ̃ e_1695: str.
@@ -1401,11 +1401,11 @@ def idyll:Main/"#items (String, String, (Bool, String), Int)" (x_1612: ptr; k_16
             prim concatStrings([s_1693, ", ", s_1694]; k_1613))))
   }>
 
-def idyll:Main/"#show (String, String, (Bool, String), Int)" (x_1696: ptr; k_1697: ptr) =
+def idyll:Main/"#show (String, String, (Bool, String), Int)" (x_1696: ptr; k_1697: ptr) ! {} =
   idyll:Main/"#items (String, String, (Bool, String), Int)"(x_1696; μ̃ s_1698: str.
     prim concatStrings(["(", s_1698, ")"]; k_1697))
 
-def idyll:Main/"#show List Int" (x_1701: ptr; k_1702: ptr) =
+def idyll:Main/"#show List Int" (x_1701: ptr; k_1702: ptr) ! {} =
   <x_1701 | case {
     idyll:Prelude/List.Nil =>
       <"Nil" | k_1702>;
@@ -1415,7 +1415,7 @@ def idyll:Main/"#show List Int" (x_1701: ptr; k_1702: ptr) =
           prim concatStrings([s_1705, " :: ", s_1706]; k_1702)))
   }>
 
-def idyll:Main/"#items (List Int, String, String, (Bool, String), Int)" (x_1608: ptr; k_1609: ptr) =
+def idyll:Main/"#items (List Int, String, String, (Bool, String), Int)" (x_1608: ptr; k_1609: ptr) ! {} =
   <x_1608 | case {
     idyll:Prelude/Pair.Pair(f_1610: ptr, f_1611: ptr) =>
       idyll:Main/"#show List Int"(f_1610; μ̃ s_1699: str.
@@ -1423,11 +1423,11 @@ def idyll:Main/"#items (List Int, String, String, (Bool, String), Int)" (x_1608:
           prim concatStrings([s_1699, ", ", s_1700]; k_1609)))
   }>
 
-def idyll:Main/"#show (List Int, String, String, (Bool, String), Int)" (x_1707: ptr; k_1708: ptr) =
+def idyll:Main/"#show (List Int, String, String, (Bool, String), Int)" (x_1707: ptr; k_1708: ptr) ! {} =
   idyll:Main/"#items (List Int, String, String, (Bool, String), Int)"(x_1707; μ̃ s_1709: str.
     prim concatStrings(["(", s_1709, ")"]; k_1708))
 
-def idyll:Main/"#items (Int, List Int, String, String, (Bool, String), Int)" (x_1604: ptr; k_1605: ptr) =
+def idyll:Main/"#items (Int, List Int, String, String, (Bool, String), Int)" (x_1604: ptr; k_1605: ptr) ! {} =
   <x_1604 | case {
     idyll:Prelude/Pair.Pair(f_1606: i64, f_1607: ptr) =>
       idyll:Prelude/showInt(f_1606; μ̃ s_1710: str.
@@ -1435,30 +1435,30 @@ def idyll:Main/"#items (Int, List Int, String, String, (Bool, String), Int)" (x_
           prim concatStrings([s_1710, ", ", s_1711]; k_1605)))
   }>
 
-def idyll:Main/"#show (Int, List Int, String, String, (Bool, String), Int)" (x_1712: ptr; k_1713: ptr) =
+def idyll:Main/"#show (Int, List Int, String, String, (Bool, String), Int)" (x_1712: ptr; k_1713: ptr) ! {} =
   idyll:Main/"#items (Int, List Int, String, String, (Bool, String), Int)"(x_1712; μ̃ s_1714: str.
     prim concatStrings(["(", s_1714, ")"]; k_1713))
 
 def idyll:Main/"#entry" (; k_1602: ptr) =
   idyll:Std/Random.withSeed(desc(i64), 42, cocase {
-    apply(u_1752: unit; k_1753: ptr) =>
+    apply(u_1752: unit; k_1753: ptr) ! {idyll:Prelude/Random} =>
       idyll:Std/Random.between(1, 7; k_1753)
   }; μ̃ v_1715: i64.
     idyll:Std/Random.withSeed(desc(ptr), 11, cocase {
-      apply(u_1749: unit; k_1750: ptr) =>
+      apply(u_1749: unit; k_1750: ptr) ! {idyll:Prelude/Random} =>
         idyll:Std/Collections.Vector.range(1, 6; μ̃ v_1751: ptr.
           idyll:Std/Random.shuffle(desc(i64), v_1751; k_1750))
     }; μ̃ v_1748: ptr.
       idyll:Std/Collections.Vector.toList(desc(i64), v_1748; μ̃ v_1717: ptr.
         idyll:Std/Time.withTickingClock(desc(str), 1789405445123, 1000, cocase {
-          apply(u_1744: unit; k_1745: ptr) =>
+          apply(u_1744: unit; k_1745: ptr) ! {idyll:Prelude/Time} =>
             perform idyll:Prelude/Time.now(unit; μ̃ a_1746: i64.
               perform idyll:Prelude/Time.now(unit; μ̃ v_1747: i64.
                 idyll:Std/Time.formatTimestamp(v_1747; k_1745)))
         }; μ̃ v_1719: str.
           idyll:Std/Time.formatNanos(999600; μ̃ v_1721: str.
             idyll:Std/Test.failure(desc(unit), cocase {
-              apply(u_1731: unit; k_1732: ptr) =>
+              apply(u_1731: unit; k_1732: ptr) ! {idyll:Prelude/Test} =>
                 idyll:Prelude/"#instance@1281"(; μ̃ v_1743: ptr.
                   idyll:Prelude/"#instance@2042"(desc(i64), v_1743; μ̃ v_1733: ptr.
                     idyll:Prelude/"#instance@3119"(; μ̃ v_1742: ptr.
@@ -1470,12 +1470,12 @@ def idyll:Main/"#entry" (; k_1602: ptr) =
                                 idyll:Std/Test.assertEq(desc(ptr), v_1733, v_1734, v_1735, v_1736, "lists"; k_1732)>>>>))))
             }; μ̃ v_1723: ptr.
               idyll:Std/Stream.sum(cocase {
-                apply(u_1725: unit; k_1726: ptr) =>
+                apply(u_1725: unit; k_1726: ptr) ! {idyll:Std/Yield.Yield} =>
                   idyll:Std/Stream.map(desc(i64), desc(i64), cocase {
-                    apply(x_1727: i64; k_1728: ptr) =>
+                    apply(x_1727: i64; k_1728: ptr) ! {} =>
                       prim mul(x_1727, x_1727; k_1728)
                   }, cocase {
-                    apply(v_1729: unit; k_1730: ptr) =>
+                    apply(v_1729: unit; k_1730: ptr) ! {idyll:Std/Yield.Yield} =>
                       idyll:Std/Stream.range(1, 4; k_1730)
                   }; k_1726)
               }; μ̃ v_1724: i64.

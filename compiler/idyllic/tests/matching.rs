@@ -201,11 +201,31 @@ fn equations_agree_on_how_many_arguments() {
     rejects("f : Int -> Int\nf 1 2 = 3\n", &["too many patterns: what is left to match has type Int, which is not a function"]);
 }
 
+/// Every literal is a pattern: a string, a character, a float, a sized
+/// integer, `()`, in an equation or a `case`.
 #[test]
-fn strings_are_not_patterns_yet() {
+fn every_literal_is_a_pattern() {
+    let src = "op : String -> Int\nop \"+\" = 1\nop \"-\" = 2\nop \"\" = 3\nop _ = 0\n\n\
+               letter : Char -> Int\nletter 'a' = 1\nletter 'é' = 2\nletter _ = 0\n\n\
+               half : Float -> Int\nhalf 0.5 = 1\nhalf _ = 0\n\n\
+               half32 : Float32 -> Int\nhalf32 0.5 = 1\nhalf32 _ = 0\n\n\
+               small : Int8 -> Int\nsmall 5 = 1\nsmall _ = 0\n\n\
+               unit : () -> Int\nunit () = 1\n\n\
+               word : (s : String) -> Int\nword s = case s of\n  \"rock\" -> 1\n  \"paper\" -> 2\n  _ -> 0\n\n\
+               op \"-\" + op \"+\" * 10 + op \"\" * 100 + op \"x\" * 1000 + letter 'é' * 10000 + letter 'a' * 100000 \
+               + letter 'z' + half 0.5 * 1000000 + half 1.0 + half32 0.5 * 10000000 + small 5 * 100000000 + small 6 \
+               + unit () * 1000000000 + word \"paper\" * 10000000000 + word \"scissors\"\n";
+    assert_eq!(result(src), "21111120312 : Int");
+}
+
+/// A string is one of infinitely many: the strings matched never cover
+/// every case, and an equation after a string it matches is unreachable.
+#[test]
+fn strings_matched_need_a_case_for_the_rest() {
+    rejects("f : String -> Int\nf \"a\" = 1\nf \"b\" = 2\n", &["the patterns do not cover every case: missing: _"]);
     rejects(
-        "f : String -> Int\nf \"a\" = 1\nf _ = 2\n",
-        &["strings cannot be matched on yet: use a guard with a comparison instead"],
+        "f : String -> Int\nf \"a\" = 1\nf \"a\" = 2\nf _ = 3\n",
+        &["unreachable: the cases before this one cover everything it matches"],
     );
 }
 

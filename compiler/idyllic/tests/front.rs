@@ -223,7 +223,6 @@ const PORTED: &[&str] = &[
     "* does not fit in an *",
     "not impossible",
     "no implicit argument is here to match",
-    "strings cannot be matched on yet",
     "a universe level is a number",
     "one handler, one effect",
     "this handler handles nothing",

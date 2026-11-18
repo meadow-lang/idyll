@@ -488,9 +488,6 @@ fun settleFirst (tc : Tc s) (ctx : Ctx) (p : Problem) : (Step, Problem) ! { St s
             | HirPatternWild -> again rest bindings dots
             | HirPatternAs x q -> again (V.append [(q, target)] rest) (V.pushBack bindings (identOf hir x, target)) dots
             | HirPatternDot e -> again rest bindings (V.pushBack dots (e, target))
-            | HirPatternLit (Literal.Str _) ->
-                let w = T.errorOf tc "StringPattern" [] [] in
-                (Step.Failed, p)
             | HirPatternLit written ->
                 let ty = targetType ctx target in
                 -- a number is read at the type of what it is matched
@@ -733,11 +730,19 @@ fun split (tc : Tc s) (m : Matcher s) (ctx : Ctx) (problems : [Problem]) (goal :
   let used = splitUse tc ctx k in
   match how with
   | How.ByLit lit ->
-      -- a character is compared by its code point
-      let codeNative = V.find (\kv -> match kv with | (_, (n, _)) -> n == "charCode") (Hm.toVec (getRef tc.nativeInfo)) in
+      -- a character is compared by its code point, and a string by
+      -- `stringCompare`, which is 0 for the same string
+      let nativeNamed = \name -> V.find (\kv -> match kv with | (_, (n, _)) -> n == name) (Hm.toVec (getRef tc.nativeInfo)) in
       let tested =
-        match (lit, codeNative) with
-        | (Literal.Char c, Just (u, _)) -> (Core.App (Core.Opaque u "charCode") scrutinee, Literal.Int (charCode c))
+        match lit with
+        | Literal.Char c ->
+            (match nativeNamed "charCode" with
+             | Just (u, _) -> (Core.App (Core.Opaque u "charCode") scrutinee, Literal.Int (charCode c))
+             | None -> (scrutinee, lit))
+        | Literal.Str _ ->
+            (match nativeNamed "stringCompare" with
+             | Just (u, _) -> (Core.App (Core.App (Core.Opaque u "stringCompare") scrutinee) (Core.Lit lit), Literal.Int 0)
+             | None -> (scrutinee, lit))
         | _ -> (scrutinee, lit)
       in
       -- a sized integer or a float by its type's own equality

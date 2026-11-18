@@ -1847,6 +1847,21 @@ fact : Int -> Int ! Div
 3628800 : Int
 ```
 
+Any literal is a pattern: a string, a character or a float, as well as a
+number. There are more of these than equations can list, so a match on one
+ends with a case for the rest.
+
+```
+> greeting : String -> String
+greeting "en" = "hello"
+greeting "fr" = "bonjour"
+greeting _ = "hi"
+
+greeting : String -> String
+> greeting "fr"
+"bonjour" : String
+```
+
 Looking at an argument is a use of it, so `fact` uses `n` once to see
 whether it is `0` and then twice more, which `n`, saying nothing, allows. (And it recurs on an
 `Int`, hence `! Div`: see [Div](#div).)
