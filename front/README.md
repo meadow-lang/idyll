@@ -791,7 +791,10 @@ a placeholder, as an auto argument does, and is read when `Auto.settleAutos`
 runs: after an application, so `1 + x` at `Int8` checks, or at the end of
 its definition, where an unknown type is taken to be `Int` or `Float`. A
 literal pattern is read at the type of what it is matched against, and a
-sized or float one compared with its type's `Eq` native. At a type variable, a
+sized or float one compared with its type's `Eq` native, a character by
+its code (`charCode`), and a string by `stringCompare`, which is 0 for the
+same string. Every literal is a pattern; one of a type with more values
+than can be listed (all but `()`) leaves a case for the rest. At a type variable, a
 literal is read through its `Integer` instance (`Floating`'s for one with
 a point): `fromInt 0`, the prelude's method applied as any function is,
 its instance searched for (`Elab.literalThrough`; the settling of a

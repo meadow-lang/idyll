@@ -27,7 +27,7 @@ val idyll:Prelude/digitFuel : ptr =
                                         <idyll:Prelude/DigitFuel.More(v_2) | μ̃ v_1: ptr.
                                           <idyll:Prelude/DigitFuel.More(v_1) | halt>>>>>>>>>>>>>>>>>>>>>
 
-def idyll:Prelude/digitString (d_22: i64; k_23: ptr) =
+def idyll:Prelude/digitString (d_22: i64; k_23: ptr) ! {} =
   prim eq(d_22, 0; μ̃ v__24: bool.
     prim if(v__24; μ̃ u_49: unit.
       prim eq(d_22, 1; μ̃ v__25: bool.
@@ -57,7 +57,7 @@ def idyll:Prelude/digitString (d_22: i64; k_23: ptr) =
           <"1" | k_23>)), μ̃ u_50: unit.
       <"0" | k_23>))
 
-def idyll:Prelude/showInt (n_52: i64; k_53: ptr) =
+def idyll:Prelude/showInt (n_52: i64; k_53: ptr) ! {} =
   prim lt(n_52, 0; μ̃ v__54: bool.
     prim if(v__54; μ̃ u_59: unit.
       prim sub(0, n_52; μ̃ v_57: i64.
@@ -65,11 +65,11 @@ def idyll:Prelude/showInt (n_52: i64; k_53: ptr) =
       idyll:Prelude/negativeDigits(idyll:Prelude/digitFuel, n_52; μ̃ v_58: str.
         prim concatStrings(["-", v_58]; k_53))))
 
-def idyll:Main/twice <'a_66 = d_a_65> (d_a_65: desc, f_67: ptr, x_68: 'a_66; k_69: ptr) =
+def idyll:Main/twice <'a_66 = d_a_65> (d_a_65: desc, f_67: ptr, x_68: 'a_66; k_69: ptr) ! {} =
   <f_67 | apply(x_68; μ̃ v_70: 'a_66.
     <f_67 | apply(v_70; k_69)>)>
 
-def idyll:Prelude/negativeDigits (fuel_71: ptr, n_72: i64; k_73: ptr) =
+def idyll:Prelude/negativeDigits (fuel_71: ptr, n_72: i64; k_73: ptr) ! {} =
   <fuel_71 | case {
     idyll:Prelude/DigitFuel.Spent =>
       <"" | k_73>;
@@ -89,7 +89,7 @@ def idyll:Prelude/negativeDigits (fuel_71: ptr, n_72: i64; k_73: ptr) =
 
 def idyll:Main/"#entry" (; k_85: ptr) =
   idyll:Main/twice(desc(i64), cocase {
-    apply(n_87: i64; k_88: ptr) =>
+    apply(n_87: i64; k_88: ptr) ! {} =>
       prim add(n_87, 1; k_88)
   }, 0; μ̃ answer_86: i64.
     idyll:Prelude/showInt(answer_86; k_85))

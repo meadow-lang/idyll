@@ -34,7 +34,7 @@ val idyll:Prelude/digitFuel : ptr =
                                         <idyll:Prelude/DigitFuel.More(v_2) | μ̃ v_1: ptr.
                                           <idyll:Prelude/DigitFuel.More(v_1) | halt>>>>>>>>>>>>>>>>>>>>>
 
-def idyll:Prelude/digitString (d_22: i64; k_23: ptr) =
+def idyll:Prelude/digitString (d_22: i64; k_23: ptr) ! {} =
   prim eq(d_22, 0; μ̃ v__24: bool.
     prim if(v__24; μ̃ u_49: unit.
       prim eq(d_22, 1; μ̃ v__25: bool.
@@ -64,7 +64,7 @@ def idyll:Prelude/digitString (d_22: i64; k_23: ptr) =
           <"1" | k_23>)), μ̃ u_50: unit.
       <"0" | k_23>))
 
-def idyll:Prelude/showInt (n_52: i64; k_53: ptr) =
+def idyll:Prelude/showInt (n_52: i64; k_53: ptr) ! {} =
   prim lt(n_52, 0; μ̃ v__54: bool.
     prim if(v__54; μ̃ u_59: unit.
       prim sub(0, n_52; μ̃ v_57: i64.
@@ -72,16 +72,16 @@ def idyll:Prelude/showInt (n_52: i64; k_53: ptr) =
       idyll:Prelude/negativeDigits(idyll:Prelude/digitFuel, n_52; μ̃ v_58: str.
         prim concatStrings(["-", v_58]; k_53))))
 
-def idyll:Main/table (xs_63: ptr, ys_64: ptr; k_65: ptr) =
+def idyll:Main/table (xs_63: ptr, ys_64: ptr; k_65: ptr) ! {} =
   idyll:Std/Collections.List.map(desc(i64), desc(ptr), cocase {
-    apply(x_72: i64; k_73: ptr) =>
+    apply(x_72: i64; k_73: ptr) ! {} =>
       idyll:Std/Collections.List.map(desc(i64), desc(i64), cocase {
-        apply(y_74: i64; k_75: ptr) =>
+        apply(y_74: i64; k_75: ptr) ! {} =>
           prim mul(x_72, y_74; k_75)
       }, ys_64; k_73)
   }, xs_63; k_65)
 
-def idyll:Prelude/negativeDigits (fuel_76: ptr, n_77: i64; k_78: ptr) =
+def idyll:Prelude/negativeDigits (fuel_76: ptr, n_77: i64; k_78: ptr) ! {} =
   <fuel_76 | case {
     idyll:Prelude/DigitFuel.Spent =>
       <"" | k_78>;
@@ -99,7 +99,7 @@ def idyll:Prelude/negativeDigits (fuel_76: ptr, n_77: i64; k_78: ptr) =
               idyll:Prelude/digitString(v_86; k_78)))))
   }>
 
-def idyll:Std/Collections.List.map <'a_92 = d_a_91, 'b_94 = d_b_93; e_90: Effect> (d_a_91: desc, d_b_93: desc, f_95: ptr, xs_96: ptr; k_97: ptr) =
+def idyll:Std/Collections.List.map <'a_92 = d_a_91, 'b_94 = d_b_93; e_90: Effect> (d_a_91: desc, d_b_93: desc, f_95: ptr, xs_96: ptr; k_97: ptr) ! {| e_90} =
   <xs_96 | case {
     idyll:Prelude/List.Nil =>
       <idyll:Prelude/List.Nil | k_97>;
@@ -109,7 +109,7 @@ def idyll:Std/Collections.List.map <'a_92 = d_a_91, 'b_94 = d_b_93; e_90: Effect
           <idyll:Prelude/List."::"(v_100, v_101) | k_97>))>
   }>
 
-def idyll:Main/"#show List Int" (x_110: ptr; k_111: ptr) =
+def idyll:Main/"#show List Int" (x_110: ptr; k_111: ptr) ! {} =
   <x_110 | case {
     idyll:Prelude/List.Nil =>
       <"Nil" | k_111>;
@@ -119,7 +119,7 @@ def idyll:Main/"#show List Int" (x_110: ptr; k_111: ptr) =
           prim concatStrings([s_114, " :: ", s_115]; k_111)))
   }>
 
-def idyll:Main/"#atom List Int" (x_116: ptr; k_117: ptr) =
+def idyll:Main/"#atom List Int" (x_116: ptr; k_117: ptr) ! {} =
   <x_116 | case {
     idyll:Prelude/List.Nil =>
       idyll:Main/"#show List Int"(x_116; k_117);
@@ -128,7 +128,7 @@ def idyll:Main/"#atom List Int" (x_116: ptr; k_117: ptr) =
         prim concatStrings(["(", s_120, ")"]; k_117))
   }>
 
-def idyll:Main/"#show List (List Int)" (x_104: ptr; k_105: ptr) =
+def idyll:Main/"#show List (List Int)" (x_104: ptr; k_105: ptr) ! {} =
   <x_104 | case {
     idyll:Prelude/List.Nil =>
       <"Nil" | k_105>;

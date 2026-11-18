@@ -29,10 +29,10 @@ val idyll:Prelude/digitFuel : ptr =
                                         <idyll:Prelude/DigitFuel.More(v_12) | μ̃ v_11: ptr.
                                           <idyll:Prelude/DigitFuel.More(v_11) | halt>>>>>>>>>>>>>>>>>>>>>
 
-def idyll:Prelude/display <'a_5 = d_a_4> (d_a_4: desc, self_6: ptr; k_7: ptr) =
+def idyll:Prelude/display <'a_5 = d_a_4> (d_a_4: desc, self_6: ptr; k_7: ptr) ! {} =
   idyll:Prelude/Display.display(d_a_4, self_6; k_7)
 
-def idyll:Prelude/digitString (d_32: i64; k_33: ptr) =
+def idyll:Prelude/digitString (d_32: i64; k_33: ptr) ! {} =
   prim eq(d_32, 0; μ̃ v__34: bool.
     prim if(v__34; μ̃ u_59: unit.
       prim eq(d_32, 1; μ̃ v__35: bool.
@@ -62,7 +62,7 @@ def idyll:Prelude/digitString (d_32: i64; k_33: ptr) =
           <"1" | k_33>)), μ̃ u_60: unit.
       <"0" | k_33>))
 
-def idyll:Prelude/showInt (n_62: i64; k_63: ptr) =
+def idyll:Prelude/showInt (n_62: i64; k_63: ptr) ! {} =
   prim lt(n_62, 0; μ̃ v__64: bool.
     prim if(v__64; μ̃ u_69: unit.
       prim sub(0, n_62; μ̃ v_67: i64.
@@ -70,19 +70,19 @@ def idyll:Prelude/showInt (n_62: i64; k_63: ptr) =
       idyll:Prelude/negativeDigits(idyll:Prelude/digitFuel, n_62; μ̃ v_68: str.
         prim concatStrings(["-", v_68]; k_63))))
 
-def idyll:Prelude/Display.display <'a_72 = d_a_71> (d_a_71: desc, self_73: ptr; k_74: ptr) =
+def idyll:Prelude/Display.display <'a_72 = d_a_71> (d_a_71: desc, self_73: ptr; k_74: ptr) ! {} =
   <self_73 | case {
     idyll:Prelude/Display.Display(display_75: ptr) =>
       <display_75 | k_74>
   }>
 
-def idyll:Prelude/"#instance@2686" (; k_76: ptr) =
+def idyll:Prelude/"#instance@2686" (; k_76: ptr) ! {} =
   <idyll:Prelude/Display.Display(cocase {
-    apply(n_77: i64; k_78: ptr) =>
+    apply(n_77: i64; k_78: ptr) ! {} =>
       idyll:Prelude/showInt(n_77; k_78)
   }) | k_76>
 
-def idyll:Prelude/negativeDigits (fuel_79: ptr, n_80: i64; k_81: ptr) =
+def idyll:Prelude/negativeDigits (fuel_79: ptr, n_80: i64; k_81: ptr) ! {} =
   <fuel_79 | case {
     idyll:Prelude/DigitFuel.Spent =>
       <"" | k_81>;
@@ -100,11 +100,11 @@ def idyll:Prelude/negativeDigits (fuel_79: ptr, n_80: i64; k_81: ptr) =
               idyll:Prelude/digitString(v_89; k_81)))))
   }>
 
-def idyll:Main/"#escape" (s_95: str; k_97: ptr) =
+def idyll:Main/"#escape" (s_95: str; k_97: ptr) ! {} =
   prim stringByteLength(s_95; μ̃ n_96: i64.
     idyll:Main/"#escape".go(s_95, 0, 0, n_96, ""; k_97))
 
-def idyll:Main/"#escape".go (s_98: str, start_99: i64, i_100: i64, n_101: i64, acc_102: str; k_103: ptr) =
+def idyll:Main/"#escape".go (s_98: str, start_99: i64, i_100: i64, n_101: i64, acc_102: str; k_103: ptr) ! {} =
   prim eq(i_100, n_101; μ̃ u_113: unit.
     prim stringByteAt(s_98, i_100; μ̃ b_104: i64.
       idyll:Main/"#escape".byte(b_104; μ̃ e_105: str.
@@ -118,7 +118,7 @@ def idyll:Main/"#escape".go (s_98: str, start_99: i64, i_100: i64, n_101: i64, a
     prim stringSlice(s_98, start_99, n_101; μ̃ run_110: str.
       prim concatStrings([acc_102, run_110]; k_103)))
 
-def idyll:Main/"#escape".byte (b_115: i64; k_116: ptr) =
+def idyll:Main/"#escape".byte (b_115: i64; k_116: ptr) ! {} =
   prim eq(b_115, 34; μ̃ u_139: unit.
     prim eq(b_115, 92; μ̃ u_137: unit.
       prim eq(b_115, 10; μ̃ u_135: unit.

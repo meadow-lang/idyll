@@ -411,8 +411,6 @@ pub enum TypeErrorKind {
     NotImpossible,
     /// a dot pattern that is not what matching worked out
     DotMismatch { expected: Rc<Core>, given: Rc<Core> },
-    /// a string literal as a pattern
-    StringPattern,
     /// `{p}` or `@{p}` where no implicit (or auto) argument is to be had
     MisplacedImplicitPattern,
     /// a data type whose kind does not end in `Type`
@@ -771,8 +769,6 @@ impl TypeError {
             TypeErrorKind::MisplacedImplicitPattern => Diagnostic::error("no implicit argument is here to match")
                 .label(here, "`{p}` matches an implicit argument, and `@{p}` an auto one, where the type has one next")
                 .help("an implicit pattern goes where its binder is, in the order the type gives them"),
-            TypeErrorKind::StringPattern => Diagnostic::error("strings cannot be matched on yet")
-                .label(here, "use a guard with a comparison instead"),
             TypeErrorKind::DataKindNotType(kind) => Diagnostic::error("a data type's kind ends in Type")
                 .label(here, format!("this is {kind}")),
             TypeErrorKind::CtorResult { ctor, data } => Diagnostic::error(format!("{ctor} does not build a {data}"))

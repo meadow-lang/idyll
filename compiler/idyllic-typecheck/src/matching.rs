@@ -486,10 +486,6 @@ impl Checker {
                     p.dots.push((e, target));
                     p.constraints.remove(i);
                 }
-                PatKind::Lit(Lit::Str(_)) => {
-                    self.error(pat.id, TypeErrorKind::StringPattern);
-                    return Step::Failed;
-                }
                 PatKind::Lit(lit) => {
                     let ty = self.target_type(ctx, &target);
                     // a number is read at the type of what it is matched
@@ -767,8 +763,19 @@ impl Checker {
         let mut join = |u: Usage| parts.push(u);
         match how {
             Split::Lit(lit) => {
-                // a character is compared by its code point
+                // a character is compared by its code point, and a string by
+                // `stringCompare`, which is 0 for the same string
                 let (scrutinee, against) = match &lit {
+                    Lit::Str(_) => match self.native_unique(idyllic_builtins::Native::StringCompare) {
+                        Some(u) => (
+                            Rc::new(Core::App(
+                                Rc::new(Core::App(Rc::new(Core::Opaque(u, "stringCompare".into())), scrutinee)),
+                                Rc::new(Core::Lit(lit.clone())),
+                            )),
+                            Lit::Int(0),
+                        ),
+                        None => (scrutinee, lit.clone()),
+                    },
                     Lit::Char(c) => match self.native_unique(idyllic_builtins::Native::CharCode) {
                         Some(u) => (
                             Rc::new(Core::App(Rc::new(Core::Opaque(u, "charCode".into())), scrutinee)),
