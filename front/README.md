@@ -1101,10 +1101,18 @@ So far the server:
   parse is checked without the line being written;
 - gives an outline of the program's own declarations;
 - colours a file from its tree, and each name by what it resolved to
-  (`lsp!`'s `resolved`, `Session.resolvedIn`): by the type the checker
-  declared it with, a capital is a constructor and a lower-case name a
-  function or a variable. Types are not among what the checker declares,
-  so a capital it does not know is a type;
+  (`lsp!`'s `resolved`, `Session.resolvedIn`). A unique the checker has as
+  a data type or an effect is a type, one it has as a constructor a
+  constructor, and an operation a function; anything else is what the type
+  it was declared with makes it (the program's declarations, and each
+  dependency's compiled constants). The names are the program's own
+  (`Rename.programNamed`): the prelude is renamed with the file, but its
+  places are in its own text, and would land on whatever bytes of the file
+  are there. A name's place is often its whole declaration (`data Choice =
+  ..`), so its colour goes on the name where it is written in it, and a
+  qualified name's on its token, `S.trim`. A `use` is read off the text: its
+  module and its alias are namespaces, `as` a keyword, and a name it brings
+  in what the file uses it as;
 - shows inlay hints, the type each parameter and `let` with none written
   got. With `want` -2 the checker keeps every such binder, its unique, its
   level and its type (`Tc.noteBinder`, called where a lambda or a local
