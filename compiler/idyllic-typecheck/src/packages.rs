@@ -97,6 +97,11 @@ pub struct CompiledPackage {
     /// a constant or a primitive (see [`Checker::specialize`])
     #[serde(default)]
     pub instance_fields: Vec<(usize, Vec<Option<Rc<Core>>>)>,
+    /// the fixities its own files declare, which hold in the packages that
+    /// depend on it (the pipeline's to fill in: they are read before
+    /// anything is parsed)
+    #[serde(default)]
+    pub fixities: Vec<(String, idyllic_ast::Fixity)>,
 }
 
 impl Checker {
@@ -275,6 +280,7 @@ impl Checker {
                 fields.sort_by_key(|(u, _)| *u);
                 fields
             },
+            fixities: Vec::new(),
         }
     }
 }
@@ -462,6 +468,7 @@ pub fn merge(parts: Vec<CompiledPackage>) -> CompiledPackage {
         out.hints.extend(p.hints.iter().copied());
         out.traits.extend(p.traits.iter().copied());
         out.instance_fields.extend(instance_fields);
+        out.fixities.extend(p.fixities.iter().cloned());
     }
     out.symbols.sort();
     out

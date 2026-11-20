@@ -11,9 +11,8 @@
 //!
 //! **How this differs from Haskell's rule.**  Haskell closes a layout block
 //! purely by dedentation, plus the celebrated parse-error side condition.
-//! Here, `let` and `do` instead record the keyword that closes them — `in` and
-//! `where` respectively — and that keyword closes the block wherever it turns
-//! up (see [`closes`]).  It is a much simpler rule to implement, but it is a
+//! Here, `let` instead records the keyword that closes it — `in` — and that
+//! keyword closes the block wherever it turns up (see [`closes`]).  It is a much simpler rule to implement, but it is a
 //! genuine restriction: because `in` closes the *innermost* block that is
 //! waiting for one, a `let` cannot appear inside a `case` alternative without
 //! explicit braces.  The `in` would be matched against the wrong block.
@@ -69,7 +68,7 @@ impl LayoutError {
 
 /// What sort of block a keyword opens.
 enum Herald {
-    /// `let` and `do`: closed by dedenting *or* by an explicit keyword.
+    /// `let`: closed by dedenting *or* by an explicit keyword.
     ClosedBy(Token),
     /// `where` and `of`: closed only by dedenting.
     OpenEnded,
@@ -88,16 +87,15 @@ impl Herald {
 fn herald_of(t: &Token) -> Option<Herald> {
     match t {
         Token::Let => Some(Herald::ClosedBy(Token::Let)),
-        Token::Do => Some(Herald::ClosedBy(Token::Do)),
         Token::Where | Token::Of | Token::With => Some(Herald::OpenEnded),
         _ => None,
     }
 }
 
-/// `in` closes a `let`; `where` closes a `do`.  This is the token-driven half
+/// `in` closes a `let`.  This is the token-driven half
 /// of the algorithm described at the top of the module.
 fn closes(t: &Token, closer: &Token) -> bool {
-    matches!((t, closer), (Token::In, Token::Let) | (Token::Where, Token::Do))
+    matches!((t, closer), (Token::In, Token::Let))
 }
 
 // ---------------------------------------------------------------------------
@@ -137,7 +135,7 @@ fn mark_blocks(li: &LineIndex, toks: &[Spanned<Token>]) -> Vec<Marked> {
         i += 1;
         let Some(herald) = herald_of(&t.node) else { continue };
         // An explicit '{' means the block is written out by hand, so layout
-        // keeps out of it.  At end of input only 'let'/'do' open a
+        // keeps out of it.  At end of input only 'let' opens a
         // (necessarily empty) block; a trailing 'where'/'of' opens nothing.
         let opens = match toks.get(i) {
             None => matches!(herald, Herald::ClosedBy(_)),
@@ -163,8 +161,8 @@ fn mark_blocks(li: &LineIndex, toks: &[Spanned<Token>]) -> Vec<Marked> {
                     closer,
                     span: t.span,
                 });
-                // 'let'/'do' re-examine the block's first token, which may
-                // itself be a herald ("let x = do .."); 'where'/'of' take it
+                // 'let' re-examines the block's first token, which may
+                // itself be a herald ("let x = let .."); 'where'/'of' take it
                 // as read.
                 match herald {
                     Herald::ClosedBy(_) => i = j,
@@ -355,7 +353,7 @@ impl Layouter {
             // Nothing further right: the block is empty, as in Haskell, and
             // what follows is a new line of the enclosing one (`data Void
             // where` with the next declaration under it).  Except for a
-            // `let` or `do`, whose block must hold something.
+            // `let`, whose block must hold something.
             Some(_) if closer.is_none() => {
                 self.emit(Token::VLBrace, sp);
                 self.emit(Token::VRBrace, sp);
@@ -388,7 +386,7 @@ impl Layouter {
         if t.node == Token::RBrace {
             return self.close_explicit(t, ms, i);
         }
-        // 'let {' / 'do {': the user opens the block, but we still record
+        // 'let {': the user opens the block, but we still record
         // which keyword closes it so a later 'in' can be matched up
         if let Some(closer) = herald_of(&t.node).and_then(|h| h.closer()) {
             if let Some(Marked::Token(lb)) = ms.get(i + 1) {

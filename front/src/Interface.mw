@@ -12,6 +12,7 @@ use Idyll.Core (Core)
 use Idyll.Rename (PackageNames)
 use Idyll.Tc (CtorInfo, EffectInfo, OpInfo)
 use Std.Macro (Reflect)
+use Idyll.Fixity (Declared)
 
 -- How many arguments a recursive definition takes before it can compute,
 -- and its case tree under them, closed: what unfolds in types.
@@ -105,7 +106,10 @@ use Std.Macro (Reflect)
   instanceFields : [Fields],
   -- which fields of each constructor a type may read off a known
   -- instance (`Checker::opened`)
-  opens : [OpensEntry]
+  opens : [OpensEntry],
+  -- the fixities its own files declare, which hold in the packages that
+  -- depend on it (see `Fixity`)
+  fixities : [Declared]
 }
 
 -- A constructor's fields a type may read off a known instance.

@@ -287,7 +287,11 @@ fun binder (linear : Bool) (x : String) (g : Core) (inType : Core) (default : Gr
     else if isGrade g G.any then "[] "
     else "[" ++ go linear g 0 ++ "] "
   in
-  x ++ " : " ++ grades ++ go linear dom 0
+  (if sectionParam x then "_" else x) ++ " : " ++ grades ++ go linear dom 0
+
+-- Whether a binder is a section's parameter (see `Surface`), whose name no
+-- program can write, and which a type is shown without.
+fun sectionParam (x : String) : Bool = S.startsWith "#section@" x
 
 fun infixed (linear : Bool) (a : Core) (op : String) (b : Core) (level : Int) (prec : Int) : String =
   paren (prec > level) (go linear a level ++ op ++ go linear b (level + 1))
@@ -371,7 +375,7 @@ fun go (linear : Bool) (c : Core) (prec : Int) : String =
       if name == "_" and isGrade gr G.default then paren (prec > 0) (g dom 1 ++ " => " ++ g cod 0)
       else paren (prec > 0) ("{auto " ++ binder linear name gr inType G.default dom ++ "} -> " ++ g cod 0)
   | Core.Pi name _ gr inType dom cod ->
-      if name == "_" and isGrade gr (printedDefault linear) and isGrade inType G.defaultInType then
+      if (name == "_" or sectionParam name) and isGrade gr (printedDefault linear) and isGrade inType G.defaultInType then
         -- an anonymous, default-graded binder is just an arrow
         paren (prec > 0) (g dom 1 ++ " -> " ++ g cod 0)
       else paren (prec > 0) ("(" ++ binder linear name gr inType (printedDefault linear) dom ++ ") -> " ++ g cod 0)

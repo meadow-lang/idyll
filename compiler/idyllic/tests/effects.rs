@@ -263,6 +263,16 @@ fn an_operation_is_a_function_with_its_effect() {
     assert!(out.decls.contains(&("put".into(), "{s : Type} -> s -> () ! State s".into())), "{:?}", out.decls);
 }
 
+// `let _ = e in body` runs `e` for what it does, in order, and names
+// nothing: there is no `do`, as an effect is no monad to bind through.
+#[test]
+fn let_underscore_runs_an_operation_for_what_it_does() {
+    let tick = "effect Tick where\n  tick : Int -> ()\n\n";
+    let three = "three : () -> () ! Tick\nthree u =\n  let _ = tick 1\n      _ = tick 2\n  in let _ = tick 3 in ()\n\n";
+    let run = "(handle three () with\n  return _ -> \\(s : Int) -> s\n  tick n k -> \\(s : Int) -> k () (s * 10 + n)) 0\n";
+    assert_eq!(value(&format!("{tick}{three}{run}")), "123 : Int");
+}
+
 #[test]
 fn a_handler_answers_its_operations() {
     assert_eq!(value(&format!("{ASK}{SUM3}handle sum3 () with\n  ask _ k -> k 10\n")), "30 : Int");

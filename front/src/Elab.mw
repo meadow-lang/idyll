@@ -1032,7 +1032,7 @@ fun checkGroupIn (tc : Tc s) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, May
             V.elem u (getRef tc.terminating) and not (V.elem u (getRef tc.hints)))
           bs
       in
-      let terminates = if vouched then False else checkTermination tc ctxRec members in
+      let (terminates, countedDown) = if vouched then (False, False) else checkTermination tc ctxRec members in
       let w0 = unfoldInstances tc ctxRec members in
       let w =
         if terminates then ()
@@ -1044,7 +1044,7 @@ fun checkGroupIn (tc : Tc s) (ctx : Ctx) (group : HirGroup) : (Ctx, Pending, May
                   let u = H.uniqueOf (nameOf b) in
                   if V.elem u (getRef tc.terminating) then ()
                   else if declaresDiv tc ctxRec.lvl ty (arity core) then ()
-                  else T.errorAt tc (placeOf b) "MayNotTerminate" [] [H.textOf (nameOf b)])
+                  else T.errorAt tc (placeOf b) "MayNotTerminate" [] [H.textOf (nameOf b), if countedDown then "counted down" else ""])
             ()
             (V.zip (V.zip bs sigs) checked)
       in

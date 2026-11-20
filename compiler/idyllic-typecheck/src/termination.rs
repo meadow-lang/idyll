@@ -12,6 +12,19 @@
 //! That covers structural recursion on any argument, mutual recursion, and
 //! lexicographic orders like Ackermann's.
 //!
+//! A recursion on an `Int` has no constructor to take apart, so it is seen
+//! to end by a measure instead, where a test bounds it: each `Int` parameter
+//! `n` has three, each a parameter of its own to the size-change test (see
+//! [`Slot`]). Counting down, `f (n - 1)` under a test that `n` is above a
+//! number (`if n <= 0 then .. else`, `| n > 0`) makes `n` smaller; counting
+//! up, `f (i + 1)` under a test that `i` is below a number, or below another
+//! parameter `n` passed on as it is (`if i < n then`), makes `n - i` smaller.
+//! Up and down are measures apart: a loop that counts down and then up
+//! again does not end. `f 0 = ..; f n = f (n - 1)` is not seen to end, as it
+//! does not for a negative `n`. The measures are only looked for when the
+//! group is not seen to end without them, so a group that never counts
+//! costs nothing more.
+//!
 //! A group that terminates becomes **transparent**: its members unfold when
 //! applied to enough arguments, so `S n + m` computes to `S (n + m)` inside a
 //! type.  They unfold only when that makes progress — when the case tree
@@ -85,8 +98,64 @@ impl Rel {
 }
 
 /// A call's summary: for each of the caller's parameters and each of the
-/// callee's, how the argument passed relates to the parameter.
+/// callee's, how the argument passed relates to the parameter. With
+/// measures, each "parameter" is a [`Slot`].
 type Matrix = Vec<Vec<Rel>>;
+
+/// What the size-change test compares, of a definition of `n` parameters:
+/// the parameters themselves, and with measures (see the module docs) each
+/// one counted down, each counted up to a number, and each counted up to
+/// another, `Gap(q, p)` being `q - p`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Slot {
+    Param(usize),
+    Down(usize),
+    Up(usize),
+    Gap(usize, usize),
+}
+
+/// The most parameters a definition may have for its gaps to be measured:
+/// there are as many as pairs of them.
+const MOST_GAPS: usize = 6;
+
+fn slots(n: usize, measured: bool) -> usize {
+    match (measured, n <= MOST_GAPS) {
+        (false, _) => n,
+        (true, true) => 3 * n + n * n,
+        (true, false) => 3 * n,
+    }
+}
+
+fn slot(i: usize, n: usize, measured: bool) -> Slot {
+    match () {
+        _ if !measured || i < n => Slot::Param(i),
+        _ if i < 2 * n => Slot::Down(i - n),
+        _ if i < 3 * n => Slot::Up(i - 2 * n),
+        _ => Slot::Gap((i - 3 * n) / n, (i - 3 * n) % n),
+    }
+}
+
+/// A variable, or a number, in a comparison.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Atom {
+    Var(Lvl),
+    Lit,
+}
+
+/// What a branch knows, of a test it is under: `lo < hi`, or `lo <= hi`.
+#[derive(Clone, Copy, Debug)]
+struct Fact {
+    lo: Atom,
+    hi: Atom,
+}
+
+/// How a recursive group's termination came out: whether it ends, and if
+/// not, whether one of its calls counts an `Int` down with nothing to stop
+/// it, `f 0 = ..; f n = f (n - 1)`.
+pub(super) struct Ends {
+    pub(super) ends: bool,
+    pub(super) counted_down: bool,
+}
 
 fn compose(a: &Matrix, b: &Matrix, callee_params: usize) -> Matrix {
     a.iter()
@@ -102,40 +171,58 @@ impl Checker {
     /// After a recursive group has been checked: whether every loop of calls
     /// in it makes something smaller.  If so, and it is not inside a
     /// function, its members unfold from now on.
-    pub(super) fn check_termination(&mut self, ctx: &Ctx, members: &[(usize, Rc<Core>)]) -> bool {
+    pub(super) fn check_termination(&mut self, ctx: &Ctx, members: &[(usize, Rc<Core>)]) -> Ends {
         let index: HashMap<usize, usize> = members.iter().enumerate().map(|(i, (u, _))| (*u, i)).collect();
         // with metavariables solved and definitions inlined, so that calls
         // made through them are seen
         let bodies: Vec<Rc<Core>> =
             members.iter().map(|(_, core)| self.quote(ctx.lvl, self.eval(&ctx.env, core))).collect();
         let arities: Vec<usize> = members.iter().map(|(_, core)| lambdas_of(core).0).collect();
-        let mut calls: HashSet<(usize, usize, Matrix)> = HashSet::new();
-        for (f, body) in bodies.iter().enumerate() {
-            let (n, inner) = lambdas(body, arities[f]);
-            let mut walk = Walk {
-                base: ctx.lvl,
-                origin: (0..n).map(|p| Some((p, Rel::Same))).collect(),
-                splits: Vec::new(),
-                index: &index,
-                arities: &arities,
-                from: f,
-                calls: &mut calls,
-            };
-            walk.term(inner, ctx.lvl + n);
+        // the parameters alone, and then, if a call counts, with measures
+        let walked = |measured: bool| {
+            let mut calls: HashSet<(usize, usize, Matrix)> = HashSet::new();
+            let mut counts = false;
+            let mut counted_down = false;
+            for (f, body) in bodies.iter().enumerate() {
+                let (n, inner) = lambdas(body, arities[f]);
+                let mut walk = Walk {
+                    base: ctx.lvl,
+                    origin: (0..n).map(|p| Some((p, Rel::Same))).collect(),
+                    splits: Vec::new(),
+                    facts: Vec::new(),
+                    measured,
+                    counts: false,
+                    counted_down: false,
+                    index: &index,
+                    arities: &arities,
+                    from: f,
+                    calls: &mut calls,
+                };
+                walk.term(inner, ctx.lvl + n);
+                counts |= walk.counts;
+                counted_down |= walk.counted_down;
+            }
+            let sizes: Vec<usize> = arities.iter().map(|&n| slots(n, measured)).collect();
+            (terminates(calls, &sizes), counts, counted_down)
+        };
+        let (mut ends, counts, _) = walked(false);
+        let mut counted_down = false;
+        if !ends && counts {
+            (ends, _, counted_down) = walked(true);
         }
-        if !terminates(calls, &arities) {
-            return false;
+        if !ends {
+            return Ends { ends: false, counted_down };
         }
         // only a group with no enclosing variables (see the module docs); a
         // definition with effects is not one, since it is not a parameter
         if ctx.binders.iter().any(|b| b.info == BinderInfo::Bound) {
-            return true;
+            return Ends { ends: true, counted_down: false };
         }
         for (u, core) in members {
             let (arity, body) = lambdas_of(core);
             self.transparent.insert(*u, Unfold { env: ctx.env.clone(), arity, body: body.clone(), on_case: false });
         }
-        true
+        Ends { ends: true, counted_down: false }
     }
 
     /// The instances of a recursive group checked at the top level that do
@@ -312,6 +399,14 @@ struct Walk<'a> {
     /// constructor applied to those variables is the variable again, so
     /// `ack (S m) n` passes `ack`'s own first argument back.
     splits: Vec<(usize, Vec<Lvl>, Origin)>,
+    /// what the tests around here say (with measures)
+    facts: Vec<Fact>,
+    /// whether calls are summarised with measures
+    measured: bool,
+    /// whether a call passes a parameter plus or minus a number
+    counts: bool,
+    /// whether one counts down with no test to stop it
+    counted_down: bool,
     index: &'a HashMap<usize, usize>,
     arities: &'a [usize],
     from: usize,
@@ -341,6 +436,125 @@ impl Walk<'_> {
         })
     }
 
+    /// The parameter a variable is, as it is.
+    fn param(&self, c: &Core, lvl: Lvl) -> Option<usize> {
+        match c {
+            Core::Runtime(_, inner) => self.param(inner, lvl),
+            Core::Var(..) => match self.origin_of(c, lvl) {
+                Some((p, Rel::Same)) => Some(p),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// A parameter plus or minus a number: which, and by how much.
+    fn stepped(&self, c: &Core, lvl: Lvl) -> Option<(usize, i64)> {
+        let Core::App(f, b) = c else {
+            return match c {
+                Core::Runtime(_, inner) => self.stepped(inner, lvl),
+                _ => None,
+            };
+        };
+        let Core::App(op, a) = &**f else { return None };
+        let number = |c: &Core| match c {
+            Core::Lit(idyllic_ast::Lit::Int(k)) if *k >= 1 => Some(*k),
+            _ => None,
+        };
+        match &**op {
+            Core::Prim(idyllic_builtins::Prim::IntSub) => Some((self.param(a, lvl)?, -number(b)?)),
+            Core::Prim(idyllic_builtins::Prim::IntAdd) => match (self.param(a, lvl), number(b), number(a), self.param(b, lvl)) {
+                (Some(p), Some(k), ..) | (.., Some(k), Some(p)) => Some((p, k)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The parameter a fact's variable is, as it is.
+    fn fact_param(&self, a: Atom) -> Option<usize> {
+        match a {
+            Atom::Var(l) => match self.origin.get(l.checked_sub(self.base)?) {
+                Some(Some((p, Rel::Same))) => Some(*p),
+                _ => None,
+            },
+            Atom::Lit => None,
+        }
+    }
+
+    /// A variable or a number, in a comparison.
+    fn atom(c: &Core, lvl: Lvl) -> Option<Atom> {
+        match c {
+            Core::Runtime(_, inner) => Self::atom(inner, lvl),
+            Core::Var(i, _) => Some(Atom::Var(lvl - i - 1)),
+            Core::Lit(idyllic_ast::Lit::Int(_)) => Some(Atom::Lit),
+            _ => None,
+        }
+    }
+
+    /// What a test says where it is true, and where it is false: `a < b`,
+    /// or else `b <= a`; `not t` (a `case` of `t` giving the other `Bool`)
+    /// the other way round.
+    fn condition(c: &Core, lvl: Lvl) -> Option<(Fact, Fact)> {
+        match c {
+            Core::Runtime(_, inner) => Self::condition(inner, lvl),
+            Core::App(f, b) => match &**f {
+                Core::App(op, a) if matches!(**op, Core::Prim(idyllic_builtins::Prim::IntLt)) => {
+                    let (a, b) = (Self::atom(a, lvl)?, Self::atom(b, lvl)?);
+                    Some((Fact { lo: a, hi: b }, Fact { lo: b, hi: a }))
+                }
+                _ => None,
+            },
+            Core::Case(scrutinee, alts) => {
+                let (yes, no) = Self::condition(scrutinee, lvl)?;
+                let gives = |b: bool| {
+                    alts.iter().find(|a| a.head == super::core::Head::Bool(b)).and_then(|a| match &*a.body {
+                        Core::Lit(idyllic_ast::Lit::Bool(v)) => Some(*v),
+                        _ => None,
+                    })
+                };
+                match (gives(true)?, gives(false)?) {
+                    (true, false) => Some((yes, no)),
+                    (false, true) => Some((no, yes)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// How argument `arg` relates to slot `to` of the callee, from slot
+    /// `from` of the caller, the callee's other arguments being `args`.
+    fn related(&self, from: Slot, to: Slot, args: &[&Core], lvl: Lvl) -> Rel {
+        let param = |j: usize| args.get(j).and_then(|a| self.param(a, lvl));
+        let stepped = |j: usize| args.get(j).and_then(|a| self.stepped(a, lvl));
+        let below = |p: usize| self.facts.iter().any(|f| f.lo == Atom::Lit && self.fact_param(f.hi) == Some(p));
+        let above = |p: usize| self.facts.iter().any(|f| self.fact_param(f.lo) == Some(p) && f.hi == Atom::Lit);
+        let under = |p: usize, q: usize| self.facts.iter().any(|f| self.fact_param(f.lo) == Some(p) && self.fact_param(f.hi) == Some(q));
+        match (from, to) {
+            (Slot::Param(p), Slot::Param(j)) => match args.get(j).and_then(|a| self.origin_of(a, lvl)) {
+                Some((q, rel)) if q == p => rel,
+                _ => Rel::Unknown,
+            },
+            (Slot::Down(p), Slot::Down(j)) => match (param(j), stepped(j)) {
+                (Some(q), _) if q == p => Rel::Same,
+                (_, Some((q, k))) if q == p && k < 0 && below(p) => Rel::Smaller,
+                _ => Rel::Unknown,
+            },
+            (Slot::Up(p), Slot::Up(j)) => match (param(j), stepped(j)) {
+                (Some(q), _) if q == p => Rel::Same,
+                (_, Some((q, k))) if q == p && k > 0 && above(p) => Rel::Smaller,
+                _ => Rel::Unknown,
+            },
+            (Slot::Gap(q, p), Slot::Gap(jq, jp)) if q != p && param(jq) == Some(q) => match (param(jp), stepped(jp)) {
+                (Some(r), _) if r == p => Rel::Same,
+                (_, Some((r, k))) if r == p && k > 0 && under(p, q) => Rel::Smaller,
+                _ => Rel::Unknown,
+            },
+            _ => Rel::Unknown,
+        }
+    }
+
     fn under(&mut self, n: usize, origin: Origin, body: &Core, lvl: Lvl) {
         self.origin.extend(std::iter::repeat_n(origin, n));
         self.term(body, lvl + n);
@@ -361,16 +575,27 @@ impl Walk<'_> {
                 let o = self.origin_of(e, lvl);
                 self.under(1, o, body, lvl);
             }
-            // what comes out of a split is smaller than what went in
+            // what comes out of a split is smaller than what went in; and a
+            // branch of a test knows what the test said
             Core::Case(scrutinee, alts) => {
                 self.term(scrutinee, lvl);
                 let whole = self.origin_of(scrutinee, lvl);
                 let o = whole.map(|(p, _)| (p, Rel::Smaller));
+                let test = if self.measured { Self::condition(scrutinee, lvl) } else { None };
                 for alt in alts.iter() {
                     if let super::core::Head::Con(c) = alt.head {
                         self.splits.push((c, (lvl..lvl + alt.vars.len()).collect(), whole));
                     }
+                    let fact = match (alt.head, test) {
+                        (super::core::Head::Bool(true), Some((yes, _))) => Some(yes),
+                        (super::core::Head::Bool(false), Some((_, no))) => Some(no),
+                        _ => None,
+                    };
+                    self.facts.extend(fact);
                     self.under(alt.vars.len(), o, &alt.body, lvl);
+                    if fact.is_some() {
+                        self.facts.pop();
+                    }
                     if let super::core::Head::Con(_) = alt.head {
                         self.splits.pop();
                     }
@@ -386,17 +611,22 @@ impl Walk<'_> {
                 args.reverse();
                 if let Core::Opaque(u, _) = head {
                     if let Some(&to) = self.index.get(u) {
-                        let params = self.arities[self.from];
-                        let matrix = (0..params)
-                            .map(|p| {
-                                (0..self.arities[to])
-                                    .map(|j| match args.get(j).and_then(|a| self.origin_of(a, lvl)) {
-                                        Some((q, rel)) if q == p => rel,
-                                        _ => Rel::Unknown,
-                                    })
+                        let (n, m) = (self.arities[self.from], self.arities[to]);
+                        let measured = self.measured;
+                        let matrix: Matrix = (0..slots(n, measured))
+                            .map(|r| {
+                                (0..slots(m, measured))
+                                    .map(|c| self.related(slot(r, n, measured), slot(c, m, measured), &args, lvl))
                                     .collect()
                             })
                             .collect();
+                        for j in 0..m {
+                            if let Some((p, k)) = args.get(j).and_then(|a| self.stepped(a, lvl)) {
+                                self.counts = true;
+                                let below = self.facts.iter().any(|f| f.lo == Atom::Lit && self.fact_param(f.hi) == Some(p));
+                                self.counted_down |= k < 0 && measured && !below;
+                            }
+                        }
                         self.calls.insert((self.from, to, matrix));
                     }
                 } else {
@@ -431,7 +661,8 @@ impl Walk<'_> {
 
 /// The size-change test: close the calls under composition, and look at
 /// every call from a definition to itself that composing with itself does
-/// not change.  Each must make some parameter smaller.
+/// not change.  Each must make some parameter smaller. `arities` are how
+/// many each definition's matrices have (its [`Slot`]s, with measures).
 fn terminates(calls: HashSet<(usize, usize, Matrix)>, arities: &[usize]) -> bool {
     let mut all = calls.clone();
     let mut fresh: Vec<(usize, usize, Matrix)> = calls.iter().cloned().collect();

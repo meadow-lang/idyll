@@ -74,7 +74,7 @@ eval env (Expr.Let name rhs body) = eval ((name, newRef (eval env rhs)) :: env) 
 eval env (Expr.LetRec name param rhs body) =
   let cell = newRef (Value.Int 0) in
   let inner = (name, cell) :: env in
-  let ignored = setRef cell (Value.Closure param rhs inner) in
+  let _ = setRef cell (Value.Closure param rhs inner) in
   eval inner body
 eval env (Expr.If c t f) = if asBool (eval env c) then eval env t else eval env f
 eval env (Expr.Bin op l r) = applyOp op (eval env l) (eval env r)
@@ -82,4 +82,4 @@ eval env (Expr.Bin op l r) = applyOp op (eval env l) (eval env r)
 -- Run an expression. `Err` is whatever was thrown.
 @pub
 run : (e : Expr) -> Result String String ! {Mut, Div}
-run e = toResult (\(u : ()) -> showValue (eval Nil e))
+run e = toResult (\_ -> showValue (eval Nil e))

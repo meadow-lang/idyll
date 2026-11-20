@@ -1557,3 +1557,115 @@ word s = case s of
   _ -> 0
 
 op "-" + op "+" * 10 + op "" * 100 + op "x" * 1000 + letter 'é' * 10000 + letter 'a' * 100000 + letter 'z' + half 0.5 * 1000000 + half 1.0 + half32 0.5 * 10000000 + small 5 * 100000000 + small 6 + unit () * 1000000000 + word "paper" * 10000000000 + word "scissors"
+%%%
+effect Tick where
+  tick : Int -> ()
+
+type : Int
+type = 1
+
+Point : Type
+Point = (Int, Int)
+
+three : () -> () ! Tick
+three u =
+  let _ = tick 1
+      _ = tick 2
+      do = type + 1
+  in tick do
+
+(handle three () with
+  return _ -> \(s : Int) -> s
+  tick n k -> \(s : Int) -> k () (s * 10 + n)) 0
+%%%
+infixl 6 <+>
+infixr 5 <:>
+infix 4 ===
+
+(<+>) : Int -> Int -> Int
+a <+> b = a * 10 + b
+
+(<:>) : Int -> List Int -> List Int
+x <:> xs = x :: xs
+
+(===) : Int -> Int -> Bool
+a === b = a == b
+
+double : (n : Int) -> Int
+double n = n * 2
+
+(1 <+> 2 <+> 3, 1 <+> 2 * 3, 1 <:> 2 <:> Nil, 1 + 1 === 2, 3 |> double |> (+ 1), double <| 1 + 2, (+ 1) 2, (10 -) 3, (- 1) 10, (* 2 + 3) 4, (1 <+>) 5, (:: Nil) 7)
+%%%
+record Point = { x : Int, y : Int }
+
+sum : (p : Point) -> Int
+sum (Point { x, y }) = x + y
+
+make : (x : Int) -> (y : Int) -> Point
+make x y = Point { x, y }
+
+moved : (p : Point) -> (x : Int) -> Point
+moved p x = { p | x, y = 10 }
+
+swapped : (p : Point) -> Point
+swapped p = let x = p.y; y = p.x in { p | x, y }
+
+(sum (make 1 2), (moved (make 1 2) 5).y, sum (moved (make 1 2) 5), (swapped (make 1 2)).x, sum (Point { x = 3, y = 4 }))
+%%%
+area : (w : Int) -> (h : Int) -> Int
+area w h = inner * 2
+  where inner = w * h
+
+sign : (n : Int) -> Int
+sign n
+  | m < 0 = 0 - 1
+  | m == 0 = 0
+  | otherwise = 1
+  where
+    m = n * 3
+
+hyp : (a : Int) -> (b : Int) -> Int
+hyp a b = sq a + sq b
+  where
+    sq : Int -> Int
+    sq x = x * x
+
+(area 2 3, sign (0 - 4), sign 0, sign 5, hyp 3 4)
+%%%
+down : (n : Int) -> Int
+down n = if n <= 0 then 0 else down (n - 1)
+
+sumTo : (n : Int) -> (acc : Int) -> Int
+sumTo n acc
+  | n < 1 = acc
+  | otherwise = sumTo (n - 1) (acc + n)
+
+up : (i : Int) -> (n : Int) -> Int
+up i n = if i < n then up (i + 1) n else i
+
+upTo : (i : Int) -> Int
+upTo i = if i >= 10 then i else upTo (i + 2)
+
+halves : (n : Int) -> Int
+halves n = if n > 0 then 1 + halves (n - 2) else 0
+
+(down 3, sumTo 4 0, up 0 5, upTo 3, halves 7)
+%%%
+infixl 7 `times`
+
+times : Int -> Int -> Int
+a `times` b = a * b
+
+plus : Int -> Int -> Int
+plus a b = a + b
+
+loop : (n : Int) -> Bool ! Div
+loop n = loop n
+
+safe : (n : Int) -> Bool ! Div
+safe n = n > 0 or loop n
+
+careful : (n : Int) -> Bool ! Div
+careful n = n < 0 and loop n
+
+(safe 1, careful 1, True and False or True, 1 < 2 and 2 < 3, 1 `plus` 2 `times` 3, (`plus` 10) 5, (10 `plus`) 1)

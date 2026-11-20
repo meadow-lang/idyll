@@ -23,6 +23,9 @@ use Lingua.Diagnostic (renderAll)
 use Lingua.Resolve (Dep, GitRef, reqOf, resolve)
 use Idyll.Surface (SurfaceProgram)
 use Idyll.Surface as Surface
+use Idyll.Fixity (Declared)
+use Idyll.Fixity as F
+use Idyll.Layout (layout)
 use Idyll.Rename (renamePackageWith, PackageNames, Exported, namesExports)
 use Idyll.Hir (Visibility)
 use Idyll.Scc (sccModule)
@@ -486,7 +489,11 @@ fun compileScc (o : UnitsOptions) (x : Part Interface PartOut) : Result String P
     let visibility = V.any (\m -> S.contains "@pub" (snd m)) own or V.any (\b -> visibleIn (builtNames b)) siblings in
     if not (V.isEmpty clash) then Err "${S.join " and " clash} name their things in the same room: one needs another name"
     else
-    match (Surface.parsed prelude, parsedModules (rootFirst (dependencyFirst name own))) with
+    -- how its operators group: as the packages it reaches and the parts it
+    -- imports declare, and every module of the part
+    let elsewhere = V.concatMap (\b -> (builtCompiled b).fixities) (V.append packages siblings) in
+    let declaredHere = V.concatMap (\m -> F.declared (layout (snd m)).tokens) own in
+    match (Surface.parsed prelude, parsedModules elsewhere (rootFirst (dependencyFirst name own))) with
     | (Err _, _) -> Err "the prelude does not parse"
     | (_, Err why) -> Err why
     | (Ok pre, Ok modules) ->
@@ -505,7 +512,7 @@ fun compileScc (o : UnitsOptions) (x : Part Interface PartOut) : Result String P
                  let c = checkedAgainst grouped root against in
                  if not (V.isEmpty (St.getRef c.tc.errors)) then refused ()
                  else
-                   let compiled = compiledOf c grouped names in
+                   let compiled = { (compiledOf c grouped names) | fixities = F.own declaredHere } in
                    if compiled.high > first + slot then Err "${name}: a part has more names than its room, ${show slot}"
                    else Ok (PartOut.PartOut (V.pushBack siblings (Built.Built (S.join "+" (V.map fst own)) names compiled)))))
 
@@ -659,20 +666,28 @@ fun dependencyFirst (name : String) (modules : [(String, String)]) : [(String, S
 fun rootFirst (modules : [(String, String)]) : [(String, String)] =
   V.append (V.filter (\m -> fst m == "") modules) (V.filter (\m -> fst m != "") modules)
 
--- A package's modules parsed, or what is wrong with them, drawn.
-fun parsedModules (modules : [(String, String)]) : Result String [([String], SurfaceProgram)] =
+-- A package's modules parsed, or what is wrong with them, drawn: each with
+-- the fixities declared `elsewhere` and by every module of the part, of
+-- which two that disagree are wrong where the later is.
+fun parsedModules (elsewhere : [Declared]) (modules : [(String, String)]) : Result String [([String], SurfaceProgram)] =
+  let declared = V.map (\m -> F.declared (layout (snd m)).tokens) modules in
+  let all = V.append elsewhere (F.own (V.concat declared)) in
   V.foldl
-    (\acc m ->
-      match m with
-      | (p, text) ->
+    (\acc i ->
+      match V.get modules i with
+      | None -> acc
+      | Just (p, text) ->
           let path = if p == "" then [] else S.split "." p in
-          (match (acc, Surface.parsed text) with
+          let before = V.append elsewhere (F.own (V.concat (V.take declared i))) in
+          let clash = snd (F.table (V.append (F.fromElsewhere before) (V.getOr [] declared i))) in
+          let read = if V.isEmpty clash then Surface.parsedWith all text else Err clash in
+          (match (acc, read) with
            | (Ok done, Ok prog) -> Ok (V.pushBack done (path, prog))
            | (Ok _, Err ds) -> Err (renderAll (if p == "" then "Main" else p) text ds)
            | (Err e, Ok _) -> Err e
            | (Err e, Err ds) -> Err (e ++ renderAll p text ds)))
     (Ok [])
-    modules
+    (V.range 0 (V.len modules))
 
 -- --- what this program holds ------------------------------------------------------
 
@@ -696,6 +711,7 @@ def compilerSources : [String] =
     includeStr "Elaborated.mw",
     includeStr "Eval.mw",
     includeStr "Find.mw",
+    includeStr "Fixity.mw",
     includeStr "Format.mw",
     includeStr "Grade.mw",
     includeStr "Handlers.mw",

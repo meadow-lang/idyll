@@ -43,15 +43,19 @@ pub enum Token {
     QualLower(String),
     #[regex(r"[_a-z][A-Za-z0-9_']*", crate::text, priority = 1)]
     LowerIdent(String),
-    #[regex(r"[!$%&*+./<=>?@|\\~:^`\-]+", crate::text, priority = 1)]
+    #[regex(r"[!$%&*+./<=>?@|\\~:^\-]+", crate::text, priority = 1)]
     OpIdent(String),
+    /// A name in backticks, `` `div` ``, written between its arguments as an
+    /// operator is. Its name, without the backticks.
+    #[regex(r"`[A-Za-z_][A-Za-z0-9_']*(\.[A-Za-z_][A-Za-z0-9_']*)*`", crate::backticked)]
+    BacktickIdent(String),
     /// A named hole, `?name`: a goal left for later. Its name, without the
     /// `?`. (Longer than the `?` an operator would take, so it wins.)
     #[regex(r"\?[_a-z][A-Za-z0-9_']*", crate::goal)]
     Goal(String),
     /// A `:`-headed operator is a constructor operator; the priority breaks
     /// the tie with `OpIdent` on inputs like `::`.
-    #[regex(r":[!$%&*+./<=>?@|\\~:^`\-]+", crate::text, priority = 3)]
+    #[regex(r":[!$%&*+./<=>?@|\\~:^\-]+", crate::text, priority = 3)]
     ConOpIdent(String),
 
     #[regex(r"0b[01]+", crate::binary)]
@@ -137,7 +141,6 @@ pub enum Token {
     Use,
     #[token("data")]
     Data,
-    #[token("type")]
     #[token("Type")]
     Type,
     #[token("let")]
@@ -152,10 +155,14 @@ pub enum Token {
     Handle,
     #[token("with")]
     With,
-    #[token("do")]
-    Do,
     #[token("case")]
     Case,
+    /// `a and b`, `a or b`: short-circuiting, and so not operators a program
+    /// can define
+    #[token("and")]
+    And,
+    #[token("or")]
+    Or,
     #[token("of")]
     Of,
     #[token("if")]
@@ -175,6 +182,9 @@ impl fmt::Display for Token {
             Newline => write!(f, "<newline>"),
             UpperIdent(s) | LowerIdent(s) | QualUpper(s) | QualLower(s) | OpIdent(s) | ConOpIdent(s) => write!(f, "{s}"),
             Goal(s) => write!(f, "?{s}"),
+            BacktickIdent(s) => write!(f, "`{s}`"),
+            And => write!(f, "and"),
+            Or => write!(f, "or"),
             Int(n) => write!(f, "{n}"),
             Float(x) => write!(f, "{}", f64::from_bits(*x)),
             Str(s) => write!(f, "{s:?}"),
@@ -215,7 +225,6 @@ impl fmt::Display for Token {
             Effect => write!(f, "effect"),
             Handle => write!(f, "handle"),
             With => write!(f, "with"),
-            Do => write!(f, "do"),
             Case => write!(f, "case"),
             Of => write!(f, "of"),
             If => write!(f, "if"),

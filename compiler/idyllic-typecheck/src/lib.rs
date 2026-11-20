@@ -445,7 +445,9 @@ pub enum TypeErrorKind {
     EffectfulLetEscapes(String),
     /// a recursive definition the termination checker cannot see ending,
     /// whose type does not say `! Div`
-    MayNotTerminate(String),
+    /// a recursion not seen to end, and whether it counts an `Int` down
+    /// with no test to stop it
+    MayNotTerminate(String, bool),
     /// `b ! e` anywhere but after an arrow or as a definition's type
     EffectOutsideArrow,
     /// effects left over at the top of the program
@@ -818,11 +820,18 @@ impl TypeError {
             TypeErrorKind::EffectfulLetEscapes(name) => Diagnostic::error("a type cannot depend on this")
                 .label(here, format!("the type of this depends on {name}, whose definition has effects"))
                 .help("give the whole a type annotation that does not mention it"),
-            TypeErrorKind::MayNotTerminate(name) => {
-                Diagnostic::error(format!("{name} may not terminate")).label(
+            TypeErrorKind::MayNotTerminate(name, counted_down) => {
+                let d = Diagnostic::error(format!("{name} may not terminate")).label(
                     here,
                     "no argument gets smaller on every round of its recursion, so it has the effect Div",
-                ).help(format!("say so in its type, as in {name} : .. -> .. ! Div"))
+                );
+                if *counted_down {
+                    d.help(format!(
+                        "an Int counted down ends where a test stops it, as `if n <= 0 then .. else {name} (n - 1)` does; `n == 0` lets a negative n go on for ever. Or say so in its type, as in {name} : .. -> .. ! Div"
+                    ))
+                } else {
+                    d.help(format!("say so in its type, as in {name} : .. -> .. ! Div"))
+                }
             }
             TypeErrorKind::EffectOutsideArrow => Diagnostic::error("effects belong to a function type")
                 .label(here, "write this after an arrow, as in a -> b ! e"),

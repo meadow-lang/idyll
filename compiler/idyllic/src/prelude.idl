@@ -876,6 +876,18 @@ effect Console where
 putStrLn : String -> () ! Console
 putStrLn s = putStr (s ++ "\n")
 
+-- `x |> f` is `f x`, so that a pipeline reads in the order it runs; `f <| x`
+-- is `f x` too, and saves a pair of parentheses. Both are looser than every
+-- other operator, as Meadow's are.
+infixl 1 |>
+infixr 0 <|
+
+(|>) : {a b : Type} -> (x : a) -> (f : a -> b ! e) -> b ! e
+x |> f = f x
+
+(<|) : {a b : Type} -> (f : a -> b ! e) -> (x : a) -> b ! e
+f <| x = f x
+
 printInt : (n : [] Int) -> () ! Console
 printInt n = putStrLn (showInt n)
 

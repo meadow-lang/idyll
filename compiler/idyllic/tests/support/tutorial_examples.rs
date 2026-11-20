@@ -47,6 +47,10 @@ fn declares(source: &str) -> bool {
     let mut words = first.split_whitespace();
     match (words.next(), words.next()) {
         (Some("data" | "effect"), _) => true,
+        // `infixl 6 <+>`, before what it is for
+        (Some("infixl" | "infixr" | "infix"), Some(level)) if level.parse::<u8>().is_ok() => true,
+        // `(<+>) : ..`, an operator's signature
+        (Some(op), Some(":")) if op.starts_with('(') && op.ends_with(')') => true,
         // an attribute, before a declaration
         (Some(attribute), _) if attribute.starts_with('@') => true,
         (Some("let" | "if" | "case"), _) => false,
@@ -91,7 +95,9 @@ fn is_definition_report(line: &str) -> bool {
         chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
             && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '\'')
     };
-    (qualifier.is_empty() || qualifier.split('.').all(word)) && (word(last) || last == "::")
+    // an operator's name is its symbols: `::`, `<+>`
+    let operator = |w: &str| !w.is_empty() && w.chars().all(|c| "!$%&*+/<=>?@|~:^-".contains(c));
+    (qualifier.is_empty() || qualifier.split('.').all(word)) && (word(last) || operator(last))
 }
 
 pub fn examples(markdown: &str) -> Vec<Example> {

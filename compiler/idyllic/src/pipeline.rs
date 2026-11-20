@@ -293,9 +293,15 @@ fn collect_modules(
 /// be (`docs/CUT.md` in Meadow).
 pub const PRELUDE: &str = include_str!("prelude.idl");
 
-/// Lex, lay out and parse one file, added to `map`, so that its spans are
-/// where it is there.
-fn read(map: &mut SourceMap, name: &str, text: &str, diagnostics: &mut Vec<Diagnostic>) -> Option<idyllic_ast::Program> {
+/// One file lexed and laid out, added to `map`, so that its spans are where
+/// it is there: what is parsed once every file's fixities are known.
+struct Lexed {
+    base: usize,
+    end: usize,
+    tokens: Vec<Spanned<idyllic_lexer::token::Token>>,
+}
+
+fn lex(map: &mut SourceMap, name: &str, text: &str, diagnostics: &mut Vec<Diagnostic>) -> Lexed {
     let file = map.add(name, text);
     let base = map.file(file).base;
     let lexed = lexer::tokenize(text);
@@ -307,13 +313,84 @@ fn read(map: &mut SourceMap, name: &str, text: &str, diagnostics: &mut Vec<Diagn
         .into_iter()
         .map(|t| Spanned::new(t.node, Span::new(t.span.start + base, t.span.end + base)))
         .collect();
-    match parser::parse_file(base, base + text.len(), &tokens) {
+    Lexed { base, end: base + text.len(), tokens }
+}
+
+/// Parse a file lexed, its operators grouped by `fixities`.
+fn parse(lexed: &Lexed, fixities: &parser::Fixities, diagnostics: &mut Vec<Diagnostic>) -> Option<idyllic_ast::Program> {
+    match parser::parse_file_with(lexed.base, lexed.end, &lexed.tokens, fixities) {
         Ok(program) => Some(program),
         Err(errs) => {
             diagnostics.extend(errs);
             None
         }
     }
+}
+
+/// How a package's operators group (see `idyllic_parser::fixity`): a
+/// fixity holds in the module that declares it, the modules of its package
+/// that import it, and the packages that depend on its package. So a file
+/// is parsed with what the packages it depends on, the prelude, and the
+/// modules of its part and of the parts that part imports declare (as
+/// front/, which builds a part from its own files, sees them); a package
+/// read whole, with what all its modules do. Its own, once each, go with it
+/// to the packages that depend on it. Two that disagree are an error, where
+/// the later is declared.
+struct PackageFixities {
+    whole: parser::Fixities,
+    parts: Vec<parser::Fixities>,
+    own: Vec<(String, idyllic_ast::Fixity)>,
+}
+
+fn fixities(deps: &[&CompiledPackage], prelude: &Lexed, files: &[Lexed], parts: &[crate::parts::Part], diagnostics: &mut Vec<Diagnostic>) -> PackageFixities {
+    let nowhere = Span::new(0, 0);
+    let mut elsewhere: Vec<(idyllic_ast::Ident, idyllic_ast::Fixity)> =
+        deps.iter().flat_map(|p| p.fixities.iter().map(|(op, f)| (Spanned::new(op.clone(), nowhere), *f))).collect();
+    elsewhere.extend(parser::fixity::declared(&prelude.tokens));
+    let declared: Vec<Vec<(idyllic_ast::Ident, idyllic_ast::Fixity)>> = files.iter().map(|f| parser::fixity::declared(&f.tokens)).collect();
+    let all = |modules: &mut dyn Iterator<Item = usize>| {
+        let mut ds = elsewhere.clone();
+        for i in modules {
+            ds.extend(declared[i].iter().cloned());
+        }
+        ds
+    };
+    let (whole, errors) = parser::fixity::table(&all(&mut (0..files.len())));
+    diagnostics.extend(errors);
+    // each part, with every part it imports, near or far
+    let parts = (0..parts.len())
+        .map(|p| {
+            let mut reached = vec![p];
+            let mut i = 0;
+            while i < reached.len() {
+                for &j in &parts[reached[i]].imports {
+                    if !reached.contains(&j) {
+                        reached.push(j);
+                    }
+                }
+                i += 1;
+            }
+            reached.sort();
+            parser::fixity::table(&all(&mut reached.iter().flat_map(|&q| parts[q].modules.iter().copied()))).0
+        })
+        .collect();
+    let mut own: Vec<(String, idyllic_ast::Fixity)> = Vec::new();
+    for (op, f) in declared.into_iter().flatten() {
+        if parser::fixity::builtin(&op.node).is_none() && !own.iter().any(|(o, _)| *o == op.node) {
+            own.push((op.node, f));
+        }
+    }
+    PackageFixities { whole, parts, own }
+}
+
+/// A fingerprint of a fixity table, for what a part is compiled from.
+fn fixity_salt(table: &parser::Fixities) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut entries: Vec<_> = table.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    entries.hash(&mut h);
+    h.finish()
 }
 
 /// How long a program run with its output kept (a test's), or a REPL
@@ -650,9 +727,20 @@ pub(crate) fn front(package: &PackageSource, deps: Deps<'_>, opts: &Options, ent
     let _ = opts;
     let mut diagnostics = Vec::new();
     let mut sources = SourceMap::default();
+    let files: Vec<Lexed> = package.modules.iter().map(|m| lex(&mut sources, &m.file, &m.text, &mut diagnostics)).collect();
+    let prelude_file = lex(&mut sources, "<prelude>", PRELUDE, &mut diagnostics);
+    let paths: Vec<Vec<String>> = package.modules.iter().map(|m| m.path.clone()).collect();
+    let texts: Vec<&str> = package.modules.iter().map(|m| m.text.as_str()).collect();
+    let parts = crate::parts::parts(&package.name, &paths, &texts);
+    let before = diagnostics.len();
+    let fixity = fixities(deps.all, &prelude_file, &files, &parts, &mut diagnostics);
+    let fixities_wrong = diagnostics.len() > before;
+    // each module with its part's fixities, as it is read if the package is
+    // built in parts
+    let part_of: Vec<usize> = (0..files.len()).map(|i| parts.iter().position(|p| p.modules.contains(&i)).unwrap_or(0)).collect();
     let programs: Vec<Option<idyllic_ast::Program>> =
-        package.modules.iter().map(|m| read(&mut sources, &m.file, &m.text, &mut diagnostics)).collect();
-    let programs: Option<Vec<idyllic_ast::Program>> = programs.into_iter().collect();
+        files.iter().enumerate().map(|(i, f)| parse(f, fixity.parts.get(part_of[i]).unwrap_or(&fixity.whole), &mut diagnostics)).collect();
+    let programs: Option<Vec<idyllic_ast::Program>> = if fixities_wrong { None } else { programs.into_iter().collect() };
     let asts = match programs {
         Some(asts) => asts,
         None => {
@@ -675,17 +763,25 @@ pub(crate) fn front(package: &PackageSource, deps: Deps<'_>, opts: &Options, ent
     };
 
     // name resolution -> HIR, then SCC / retopologize, then type check
-    let Some(prelude) = read(&mut sources, "<prelude>", PRELUDE, &mut diagnostics) else {
+    let Some(prelude) = parse(&prelude_file, &fixity.whole, &mut diagnostics) else {
         panic!("the prelude does not parse: {diagnostics:#?}")
     };
-    let paths: Vec<Vec<String>> = package.modules.iter().map(|m| m.path.clone()).collect();
-    let texts: Vec<&str> = package.modules.iter().map(|m| m.text.as_str()).collect();
-    let parts = crate::parts::parts(&package.name, &paths, &texts);
     // (a module written inside a file whose path another module has is
     // the renamer's to report, which it can only with both in one part)
     if parts.len() > 1 && deps.tests.is_none() && !crate::parts::clash(&paths, &asts) {
-        return Ok(parted(package, deps, &asts, &prelude, &parts, entry, diagnostics, sources));
+        let salts = fixity.parts.iter().map(fixity_salt).collect();
+        return Ok(parted(package, deps, &asts, &prelude, &parts, entry, diagnostics, sources, (salts, fixity.own)));
     }
+    // read whole: every module with every module's fixities
+    let asts: Vec<idyllic_ast::Program> = if parts.len() > 1 {
+        match files.iter().map(|f| parse(f, &fixity.whole, &mut diagnostics)).collect::<Option<Vec<_>>>() {
+            Some(asts) => asts,
+            None => asts,
+        }
+    } else {
+        asts
+    };
+    let own_fixities = fixity.own;
     // (in the one part's order: each module after those it uses)
     let order: Vec<usize> = match &parts[..] {
         [one] if one.modules.len() == package.modules.len() => one.modules.clone(),
@@ -710,7 +806,10 @@ pub(crate) fn front(package: &PackageSource, deps: Deps<'_>, opts: &Options, ent
         let chosen: Vec<usize> = module.tests.iter().copied().filter(|&u| selection.selects(&test_name(&module, u))).collect();
         module.tests = chosen;
     }
-    let checked = typecheck::check_module(&module, renamed.spans.len(), entry, deps.all);
+    let mut checked = typecheck::check_module(&module, renamed.spans.len(), entry, deps.all);
+    if let Some(compiled) = checked.compiled.as_mut() {
+        compiled.fixities = own_fixities;
+    }
     diagnostics.extend(
         checked
             .errors
@@ -777,6 +876,8 @@ fn parted(
     entry: bool,
     mut diagnostics: Vec<Diagnostic>,
     sources: SourceMap,
+    // how each part's operators group is part of what it is read with
+    (fixity_salts, own_fixities): (Vec<u64>, Vec<(String, idyllic_ast::Fixity)>),
 ) -> Front {
     let programs: Vec<&idyllic_ast::Program> = asts.iter().collect();
     let visibility_mentioned = rename::package_mentions_visibility(&programs);
@@ -788,7 +889,8 @@ fn parted(
     let mut next = deps.first_unique.max(idyllic_builtins::FIRST_USER_UNIQUE);
     let mut last = None;
     let mut keys: Vec<u64> = Vec::new();
-    for part in parts {
+    for (index, part) in parts.iter().enumerate() {
+        let fixity_salt = fixity_salts.get(index).copied().unwrap_or(0);
         // a part that imports one that did not check is not checked
         let imported: Option<Vec<&CompiledPackage>> = part.imports.iter().map(|&j| compiled[j].as_ref()).collect();
         let Some(imported) = imported else {
@@ -797,7 +899,7 @@ fn parted(
             continue;
         };
         // one compiled before from just these inputs is read back
-        let (id, key) = part_key(package, part, next, visibility_mentioned, &keys, deps.parts.map_or(0, |s| s.salt()));
+        let (id, key) = part_key(package, part, next, visibility_mentioned, &keys, deps.parts.map_or(0, |s| s.salt()) ^ fixity_salt);
         keys.push(key);
         let kept = if part.root { None } else { deps.parts.and_then(|s| s.load(&id, key)) };
         if let Some(kept) = kept {
@@ -843,7 +945,9 @@ fn parted(
     if whole {
         // the package, whole: what is stored, imported and linked
         let parts = compiled.into_iter().map(|c| c.expect("every part checked")).collect();
-        checked.compiled = Some(typecheck::packages::merge(parts));
+        let mut merged = typecheck::packages::merge(parts);
+        merged.fixities = own_fixities;
+        checked.compiled = Some(merged);
     }
     decls.sort_by_key(|(at, ..)| *at);
     let decls = decls.into_iter().map(|(_, x, ty)| (x, ty)).collect();

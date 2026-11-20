@@ -40,7 +40,7 @@ effect Infers = {Mut, Exn String, Div}
 newTv : (counter : Ref Int) -> (level : Int) -> Ty ! Mut
 newTv counter level =
   let n = getRef counter in
-  let ignored = setRef counter (n + 1) in
+  let _ = setRef counter (n + 1) in
   Ty.Var (newRef (Tv.Unbound n level))
 
 -- Links followed to what a type is now. Not path compression, which a toy
@@ -77,7 +77,7 @@ occursAdjust id level t = case force t of
       else ()
     Tv.Link inner -> occursAdjust id level inner
   Ty.Fun a b ->
-    let ignored = occursAdjust id level a in
+    let _ = occursAdjust id level a in
     occursAdjust id level b
   other -> ()
 
@@ -87,11 +87,11 @@ unify : (a : Ty) -> (b : Ty) -> () ! Infers
 unify a b = case (force a, force b) of
   (Ty.Int, Ty.Int) -> ()
   (Ty.Bool, Ty.Bool) -> ()
-  (Ty.Fun a1 b1, Ty.Fun a2 b2) -> let ignored = unify a1 a2 in unify b1 b2
+  (Ty.Fun a1 b1, Ty.Fun a2 b2) -> let _ = unify a1 a2 in unify b1 b2
   (Ty.Var r1, Ty.Var r2) -> case (getRef r1, getRef r2) of
     (Tv.Unbound n1 l1, Tv.Unbound n2 l2) ->
       if n1 == n2 then ()
-      else let ignored = occursAdjust n1 l1 (Ty.Var r2) in setRef r1 (Tv.Link (Ty.Var r2))
+      else let _ = occursAdjust n1 l1 (Ty.Var r2) in setRef r1 (Tv.Link (Ty.Var r2))
     other -> bind r1 (Ty.Var r2)
   (Ty.Var r, other) -> bind r other
   (other, Ty.Var r) -> bind r other
@@ -102,7 +102,7 @@ unify a b = case (force a, force b) of
 bind : (r : Ref Tv) -> (t : Ty) -> () ! Infers
 bind r t = case getRef r of
   Tv.Unbound n l ->
-    let ignored = occursAdjust n l t in
+    let _ = occursAdjust n l t in
     setRef r (Tv.Link t)
   Tv.Link inner -> unify inner t
 
@@ -174,7 +174,7 @@ infer counter env level (Expr.App f a) =
   let fT = infer counter env level f in
   let aT = infer counter env level a in
   let resT = newTv counter level in
-  let ignored = unify fT (Ty.Fun aT resT) in
+  let _ = unify fT (Ty.Fun aT resT) in
   resT
 -- The right-hand side is checked a level deeper, so the variables it
 -- invents are marked as its own. Whatever escaped into the environment was
@@ -191,23 +191,23 @@ infer counter env level (Expr.LetRec name param rhs body) =
   let argT = newTv counter (level + 1) in
   let resT = newTv counter (level + 1) in
   let inner = (param, Scheme.Forall V.empty argT) :: (name, Scheme.Forall V.empty fT) :: env in
-  let ignored = unify fT (Ty.Fun argT resT) in
+  let _ = unify fT (Ty.Fun argT resT) in
   let bodyT = infer counter inner (level + 1) rhs in
-  let ignored2 = unify resT bodyT in
+  let _ = unify resT bodyT in
   infer counter ((name, generalize level fT) :: env) level body
 infer counter env level (Expr.If c t f) =
   let cT = infer counter env level c in
-  let ignored = unify cT Ty.Bool in
+  let _ = unify cT Ty.Bool in
   let tT = infer counter env level t in
   let fT = infer counter env level f in
-  let ignored2 = unify tT fT in
+  let _ = unify tT fT in
   tT
 infer counter env level (Expr.Bin op l r) = case binOpType op of
   (lWant, rWant, out) ->
     let lT = infer counter env level l in
-    let ignored = unify lT lWant in
+    let _ = unify lT lWant in
     let rT = infer counter env level r in
-    let ignored2 = unify rT rWant in
+    let _ = unify rT rWant in
     out
 
 -- The type of a whole expression. `Err` is what a failed unification or an

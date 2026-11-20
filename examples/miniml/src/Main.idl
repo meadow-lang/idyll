@@ -51,7 +51,7 @@ answer : (line : String) -> () ! {Console, Mut, Div}
 answer line =
   if line == "" then loop ()
   else if line == ":q" then ()
-  else let ignored = println (replLine line) in loop ()
+  else let _ = println (replLine line) in loop ()
 
 -- A session of every kind of answer, typed by `withInput`.
 demo : Vector String
@@ -71,7 +71,7 @@ demo = V.fromList (
 
 main : () -> () ! Eff
 main () =
-  let ignored = println "mini-ml. An expression a line, `:q` or Ctrl-D to stop." in
+  let _ = println "mini-ml. An expression a line, `:q` or Ctrl-D to stop." in
   if demoAsked (args ()) then withInput demo loop else loop ()
 
 demoAsked : (given : List String) -> Bool
@@ -121,9 +121,9 @@ keywordsAreNotIdentifiers u = assertEq (parse "letter") (Ok (Expr.Var "letter"))
 @test
 infersSimpleTypes : () -> () ! {Test, Mut, Div}
 infersSimpleTypes u =
-  let a = assertEq (typeOfSource "1 + 1") (Ok "Int") "a sum" in
-  let b = assertEq (typeOfSource "1 < 2") (Ok "Bool") "a comparison" in
-  let c = assertEq (typeOfSource "fun x -> x + 1") (Ok "(Int -> Int)") "a function" in
+  let _ = assertEq (typeOfSource "1 + 1") (Ok "Int") "a sum" in
+  let _ = assertEq (typeOfSource "1 < 2") (Ok "Bool") "a comparison" in
+  let _ = assertEq (typeOfSource "fun x -> x + 1") (Ok "(Int -> Int)") "a function" in
   assertEq (typeOfSource "if true then 1 else 2") (Ok "Int") "an if"
 
 @test
@@ -160,9 +160,9 @@ recursiveFunctionsType u = assertEq (typeOfSource "let rec fact n = if n < 2 the
 @test
 evaluatesArithmetic : () -> () ! {Test, Mut, Div}
 evaluatesArithmetic u =
-  let a = assertEq (runSource "1 + 2 * 3") (Ok "7") "precedence" in
-  let b = assertEq (runSource "(1 + 2) * 3") (Ok "9") "parentheses" in
-  let c = assertEq (runSource "7 / 2") (Ok "3") "division" in
+  let _ = assertEq (runSource "1 + 2 * 3") (Ok "7") "precedence" in
+  let _ = assertEq (runSource "(1 + 2) * 3") (Ok "9") "parentheses" in
+  let _ = assertEq (runSource "7 / 2") (Ok "3") "division" in
   assertEq (runSource "1 < 2") (Ok "true") "a comparison"
 
 @test
@@ -188,15 +188,15 @@ replReportsTypeAndValue u = assertEq (replLine "let rec fact n = if n < 2 then 1
 @test
 replReportsEachKindOfFailure : () -> () ! {Test, Mut, Div}
 replReportsEachKindOfFailure u =
-  let a = assertTrue (S.contains ":" (replLine "1 +")) "a parse error" in
-  let b = assertTrue (S.contains ":" (replLine "1 + true")) "a type error" in
+  let _ = assertTrue (S.contains ":" (replLine "1 +")) "a parse error" in
+  let _ = assertTrue (S.contains ":" (replLine "1 + true")) "a type error" in
   assertTrue (S.contains ":" (replLine "1 / 0")) "a run-time error"
 
 -- `main`'s own loop, driven by the `Console` effect: no terminal involved.
 @test
 replRunsUnderWithInput : () -> () ! {Test, Console, Mut, Div}
 replRunsUnderWithInput u =
-  case withOutput (\(v : ()) -> withInput (V.fromList ("1 + 1" :: "let id = fun x -> x in id 41" :: ":q" :: Nil)) loop) of
+  case withOutput (\_ -> withInput (V.fromList #["1 + 1", "let id = fun x -> x in id 41", ":q"]) loop) of
     (x, transcript) -> assertEq transcript "> 2 : Int\n> 41 : Int\n> " "a session plays through"
 
 -- `g`'s type comes from the lambda-bound `f`, so the `let` must not

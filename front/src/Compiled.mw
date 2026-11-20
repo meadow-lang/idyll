@@ -191,5 +191,7 @@ fun bindsOf (h : HirArena) (g : HirGroup) : [HirBind] =
     hints = sortOn (\u -> u) (V.filter own (getRef tc.hints)),
     traits = V.filter own (getRef tc.traits),
     instanceFields = sortOn (\f -> match f with | Fields.Fields u _ -> u) (V.concatMap (\kv -> if own (fst kv) then [Fields.Fields (fst kv) (snd kv)] else []) (Hm.toVec (getRef tc.instanceFields))),
-    opens = sortOn (\f -> match f with | OpensEntry.OpensEntry u _ -> u) (V.concatMap (\kv -> if own (fst kv) then [OpensEntry.OpensEntry (fst kv) (snd kv)] else []) (Hm.toVec (getRef tc.opens)))
+    opens = sortOn (\f -> match f with | OpensEntry.OpensEntry u _ -> u) (V.concatMap (\kv -> if own (fst kv) then [OpensEntry.OpensEntry (fst kv) (snd kv)] else []) (Hm.toVec (getRef tc.opens))),
+    -- read before anything is parsed: the driver's to fill in
+    fixities = []
   }

@@ -242,7 +242,8 @@ fun mentions (own : Compiled) (dep : Compiled) (c : Core) : Bool =
     hints = all (\(p : Compiled) -> p.hints),
     traits = all (\(p : Compiled) -> p.traits),
     instanceFields = all fields,
-    opens = all (\(p : Compiled) -> p.opens)
+    opens = all (\(p : Compiled) -> p.opens),
+    fixities = all (\(p : Compiled) -> p.fixities)
   }
 
 -- What several parts' modules give, as one package's.
@@ -280,5 +281,6 @@ fun mentions (own : Compiled) (dep : Compiled) (c : Core) : Bool =
     hints = [],
     traits = [],
     instanceFields = [],
-    opens = []
+    opens = [],
+    fixities = []
   }

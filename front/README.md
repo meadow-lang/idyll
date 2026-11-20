@@ -54,7 +54,10 @@ cd examples/hello
 The command line is one `cli!` (Lingua's command line) in `Main.mw`: these
 commands, and the passes' dumps below, theirs a named group of options
 (`--prelude`, `--std`). The commands are `Driver.mw`'s, over a `make!`
-(Lingua's build), each package a unit. A package's `[dependencies]` are
+(Lingua's build), each package a unit. A part of a package is parsed with
+the fixities its own modules declare and those of the parts it imports and
+the packages it depends on, each of which carries its own
+(`Compiled.fixities`). A package's `[dependencies]` are
 the units it depends on, read as the Rust driver reads them: by `path`, or
 by `git`, at a `version` (the newest release tag it allows), a `tag`, a
 `branch` or a `rev`. Lingua's resolver (`Lingua.Resolve`, the `lock`,
@@ -287,7 +290,8 @@ characters no source has; the lexer makes them itself.)
 `Layout.mw` is the offside rule, ported from `compiler/idyllic-layout`:
 
 - `where`, `of` and `with` open a block that dedenting closes. `let` opens
-  one that `in` also closes, and `do` one that `where` does.
+  one that `in` also closes. (`do` and `type` are names: one effect follows
+  another with `let _ =`, and an alias is a definition.)
 - A line starting at the block's column is a new item (a virtual `;`).
   Further right, it continues the line before. Further left, it closes
   blocks.
@@ -325,12 +329,20 @@ one form and then another, this grammar reads one form that covers both, and
 - **Patterns and binders are read as terms**, and read again as what they
   are: `Cons x xs`, `(a, b)`, `(x y : [2] a)`.
 - **Operators are read as flat chains** (`a + b * c`) and grouped afterwards
-  by the Rust parser's levels. This is how MeadowBoot reads Meadow too.
-- **`{ … }` in a term** is one form for an effect row, a record update and an
-  implicit binder.
+  by their fixities (`Fixity.mw`). This is how MeadowBoot reads Meadow too.
+- **`{ … }` in a term** is one form for an effect row, a record update, an
+  implicit argument or binder, and a record's fields: each item is a term,
+  perhaps with `= e` after it, and after its `|` comes either a field with
+  its `=` or a term (a row's tail, or with more fields after it, a field
+  alone). A capitalised name and the braces after it are a record when
+  every item is a name, perhaps with `= e`: `Point { x, y = 2 }`. Only `P
+  {}` is a `RecordLit` of its own.
+- **A section** is `(+ 1)`, an `OpName` with an operand, or `(1 +)`, a
+  `Paren` with an operator after its term.
 
 `record` is a keyword only before a capital letter (Lingua's `context`
-section); anywhere else it is a name, as it is to the Rust lexer.
+section); anywhere else it is a name, as it is to the Rust lexer. So are
+`infixl`, `infixr` and `infix` before a number.
 
 ### Lingua's languages and passes
 
@@ -369,6 +381,24 @@ What the Rust parser does on the way is done here too, writing new nodes,
 each at the place it was made from:
 
 - curried telescopes, lambdas and dependent function types;
+- operator chains grouped by fixity (`Fixity.mw`, `idyllic_parser::
+  fixity`): the language's own (`*` `/` `%` `infixl 7`, ..., the prelude's
+  `|>` `infixl 1` and `<|` `infixr 0`), a file's `infixl 6 <+>`, and what
+  the driver hands `parsedWith` (the packages it depends on and the parts
+  it imports), or `infixl 9`. Two operators of one level that do not group
+  alike are an error. A fixity declaration is read off the tokens first
+  (`Fixity.declared`) and is nothing to the program;
+- `a and b` and `a or b`, short-circuiting, as a `case` on `a`
+  (`if a then b else False`, `if a then True else b`), grouped with the
+  other operators (`infixr 3`, `infixr 2`); and a name in backticks,
+  ``a `plus` b``, an operator by its name (`infixl 9` unless declared);
+- a section, `(+ 1)` or `(1 +)`, as a lambda whose parameter is named
+  `#section@<offset>` (a type is shown without it);
+- `_ = e` in a block, a definition named `#_@<offset>`;
+- `where` after an equation, as a `let` around its body, or around each
+  guard and what it chooses, read again for each;
+- a field alone, `Point { x }`, `{ p | x, y = 2 }`, as `x = x` (a
+  pattern's binds `x`);
 - `if` as a `case` on `Bool`;
 - tuples as pairs;
 - a record as its data type and one projection per field. A field's type
@@ -758,6 +788,16 @@ choose a right-hand side (`Eval.unfold`), so `first (Sigma x y)` is `x` in
 vouched for with `@terminating` (`MayNotTerminate` otherwise). A group
 that `@terminating` vouches for is taken at its word and not checked, so it
 stays opaque; an instance, which is vouched for too, is checked as ever.
+A recursion on an `Int` has nothing a split takes apart, so where the
+parameters alone do not show a group ends, and a call passes a parameter
+plus or minus a number, it is looked at again with measures (`Slot`): each
+`Int` parameter counted down, under a test (`intLt`, or its negation) that
+it is above a number; counted up, under one that it is below a number; and
+counted up to another parameter passed on as it is (`q - p`). Each measure
+is a parameter of its own to the size-change test, so a loop that counts
+up and then down again does not end. `f 0 = ..; f n = f (n - 1)` does not
+(a negative `n` goes on for ever), and `MayNotTerminate` then says how to
+bound it.
 
 **Handlers** (`Handlers.mw`, `handlers.rs`). `handle e with clauses` takes
 care of every operation of one effect in `e`'s row. The effect's

@@ -2,7 +2,16 @@ cut 0
 entry idyll:Main/"#entry"
 answer str
 
+data idyll:Prelude/List <'a0> { Nil; "::"('a0, ptr) }
+
+data idyll:Prelude/Pair <'a0, 'a1> { Pair('a0, 'a1) }
+
 data idyll:Prelude/DigitFuel { Spent; More(ptr) }
+
+roles {
+  nil = idyll:Prelude/List.Nil
+  cons = idyll:Prelude/List."::"
+}
 
 val idyll:Prelude/digitFuel : ptr =
   <idyll:Prelude/DigitFuel.Spent | μ̃ v_20: ptr.
@@ -83,13 +92,72 @@ def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) ! {} =
               idyll:Prelude/digitString(v_71; k_63)))))
   }>
 
-def idyll:Main/countdown (n_75: i64; k_76: ptr) ! {} =
-  prim lt(n_75, 1; μ̃ v__77: bool.
-    prim if(v__77; μ̃ u_80: unit.
-      prim sub(n_75, 1; μ̃ v_79: i64.
-        idyll:Main/countdown(v_79; k_76)), μ̃ u_81: unit.
-      <0 | k_76>))
+def idyll:Main/"#show List Int" (x_91: ptr; k_92: ptr) ! {} =
+  <x_91 | case {
+    idyll:Prelude/List.Nil =>
+      <"Nil" | k_92>;
+    idyll:Prelude/List."::"(f_93: i64, f_94: ptr) =>
+      idyll:Prelude/showInt(f_93; μ̃ s_95: str.
+        idyll:Main/"#show List Int"(f_94; μ̃ s_96: str.
+          prim concatStrings([s_95, " :: ", s_96]; k_92)))
+  }>
 
-def idyll:Main/"#entry" (; k_82: ptr) =
-  idyll:Main/countdown(3; μ̃ answer_83: i64.
-    idyll:Prelude/showInt(answer_83; k_82))
+def idyll:Main/"#items (Int, List Int)" (x_85: ptr; k_86: ptr) ! {} =
+  <x_85 | case {
+    idyll:Prelude/Pair.Pair(f_87: i64, f_88: ptr) =>
+      idyll:Prelude/showInt(f_87; μ̃ s_89: str.
+        idyll:Main/"#show List Int"(f_88; μ̃ s_90: str.
+          prim concatStrings([s_89, ", ", s_90]; k_86)))
+  }>
+
+def idyll:Main/"#show (Int, List Int)" (x_97: ptr; k_98: ptr) ! {} =
+  idyll:Main/"#items (Int, List Int)"(x_97; μ̃ s_99: str.
+    prim concatStrings(["(", s_99, ")"]; k_98))
+
+def idyll:Main/"#items (Int, Int, List Int)" (x_81: ptr; k_82: ptr) ! {} =
+  <x_81 | case {
+    idyll:Prelude/Pair.Pair(f_83: i64, f_84: ptr) =>
+      idyll:Prelude/showInt(f_83; μ̃ s_100: str.
+        idyll:Main/"#items (Int, List Int)"(f_84; μ̃ s_101: str.
+          prim concatStrings([s_100, ", ", s_101]; k_82)))
+  }>
+
+def idyll:Main/"#show (Int, Int, List Int)" (x_102: ptr; k_103: ptr) ! {} =
+  idyll:Main/"#items (Int, Int, List Int)"(x_102; μ̃ s_104: str.
+    prim concatStrings(["(", s_104, ")"]; k_103))
+
+def idyll:Main/"#items (Int, Int, Int, List Int)" (x_77: ptr; k_78: ptr) ! {} =
+  <x_77 | case {
+    idyll:Prelude/Pair.Pair(f_79: i64, f_80: ptr) =>
+      idyll:Prelude/showInt(f_79; μ̃ s_105: str.
+        idyll:Main/"#items (Int, Int, List Int)"(f_80; μ̃ s_106: str.
+          prim concatStrings([s_105, ", ", s_106]; k_78)))
+  }>
+
+def idyll:Main/"#show (Int, Int, Int, List Int)" (x_107: ptr; k_108: ptr) ! {} =
+  idyll:Main/"#items (Int, Int, Int, List Int)"(x_107; μ̃ s_109: str.
+    prim concatStrings(["(", s_109, ")"]; k_108))
+
+def idyll:Main/"#entry" (; k_75: ptr) =
+  <cocase {
+    apply(v_section_1_124: i64; k_125: ptr) ! {} =>
+      prim add(v_section_1_124, 1; k_125)
+  } | apply(2; μ̃ v_110: i64.
+    <cocase {
+      apply(v_section_10_122: i64; k_123: ptr) ! {} =>
+        prim sub(10, v_section_10_122; k_123)
+    } | apply(3; μ̃ v_112: i64.
+      <cocase {
+        apply(v_section_20_119: i64; k_120: ptr) ! {} =>
+          prim add(2, 3; μ̃ v_121: i64.
+            prim mul(v_section_20_119, v_121; k_120))
+      } | apply(4; μ̃ v_114: i64.
+        <cocase {
+          apply(v_section_33_116: i64; k_117: ptr) ! {} =>
+            <idyll:Prelude/List.Nil | μ̃ v_118: ptr.
+              <idyll:Prelude/List."::"(v_section_33_116, v_118) | k_117>>
+        } | apply(7; μ̃ v_115: ptr.
+          <idyll:Prelude/Pair.Pair(v_114, v_115) | μ̃ v_113: ptr.
+            <idyll:Prelude/Pair.Pair(v_112, v_113) | μ̃ v_111: ptr.
+              <idyll:Prelude/Pair.Pair(v_110, v_111) | μ̃ answer_76: ptr.
+                idyll:Main/"#show (Int, Int, Int, List Int)"(answer_76; k_75)>>>)>)>)>)>

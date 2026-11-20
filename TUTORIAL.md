@@ -488,6 +488,19 @@ True : Bool
 `()` is the unit value, the only one of its type, and as in Haskell the
 type is written the same way: `()`. (It is also called `Unit`.)
 
+`and` and `or` are built in, and **short-circuit**: `a and b` is `if a
+then b else False`, and `a or b` is `if a then True else b`, so the right
+one is computed only if it has to be. `and` binds tighter than `or`, and
+both looser than a comparison. `not` is an ordinary function, in
+`Std.Bool`.
+
+```
+> 1 < 2 and 2 < 3
+True : Bool
+> True or False and False
+True : Bool
+```
+
 ### Types are values too
 
 Types are ordinary terms, so they have types as well. The built-in types
@@ -516,6 +529,18 @@ one too, so an `Int` will do wherever a `Type 1` is wanted:
 A function type lives in the larger of the universes its two sides live
 in. So a type that quantifies over types is a universe up from them, as
 you'll see when you get to polymorphism.
+
+So a name for a type is a definition like any other, and there is no
+`type` keyword for it. An alias is what it stands for wherever it is used,
+and a type is shown with it worked out:
+
+```
+Point : Type
+Point = (Int, Int)
+
+Pair : Type -> Type
+Pair a = (a, a)
+```
 
 ## Functions
 
@@ -562,6 +587,83 @@ to the right, so `Int -> Int -> Bool` means `Int -> (Int -> Bool)`.
 ```
 > Int -> Bool
 : Type
+```
+
+### Operators
+
+An operator is a function whose name is made of symbols, written between
+its two arguments. It is defined like any function, with its name in
+parentheses in the signature and between its parameters in the equation.
+How it groups with other operators is its **fixity**:
+
+```
+> infixl 6 <+>
+(<+>) : Int -> Int -> Int
+a <+> b = a * 10 + b
+
+<+> : (_ : [1] Int) -> (_ : [1] Int) -> Int
+> 1 <+> 2 <+> 3
+123 : Int
+> 1 <+> 2 * 3
+16 : Int
+```
+
+`infixl 6` says that `<+>` groups to the left, `(1 <+> 2) <+> 3`, and
+binds as tightly as `+`: looser than `*`, so `1 <+> 2 * 3` is `1 <+> (2 *
+3)`. `infixr` groups to the right, and `infix` neither way, so that `a ==
+b == c` asks for parentheses. A level is from 0, the loosest, to 9, and
+application is tighter than any. One declaration can name several
+operators, `infixl 6 <+>, <->`. The language's own operators have these:
+
+| Operators | Fixity |
+| --- | --- |
+| `*` `/` `%` | `infixl 7` |
+| `+` `-` | `infixl 6` |
+| `::` `++` | `infixr 5` |
+| `==` `!=` `<` `>` `<=` `>=` | `infix 4` |
+| `and` | `infixr 3` |
+| `or` | `infixr 2` |
+| `\|>` | `infixl 1` |
+| `<\|` | `infixr 0` |
+| an operator nothing declares, or a name in backticks | `infixl 9` |
+
+A fixity belongs to an operator's spelling, not to one definition of it.
+It holds in the module that declares it, in the modules of its package
+that import that one, and in the packages that depend on its package. A
+declaration may repeat a built-in operator's fixity but not change it.
+`infixl`, `infixr` and `infix` are keywords only before a number, and
+names anywhere else.
+
+A name in backticks is written between its arguments as an operator is,
+as in Haskell: ``a `plus` b`` is `plus a b`. It can be given a fixity,
+defined between its parameters, and made a section:
+
+```
+> infixl 7 `times`
+times : Int -> Int -> Int
+a `times` b = a * b
+
+times : (_ : [1] Int) -> (_ : [1] Int) -> Int
+> (2 `times` 3 + 1, (`times` 10) 5)
+(7, 50) : (Int, Int)
+```
+
+`x |> f` is `f x`, so that a pipeline reads in the order it runs. `f <| x`
+is `f x` too, and saves a pair of parentheses:
+
+```
+> 3 |> (\(n : Int) -> n * 2) |> (\(n : Int) -> n + 1)
+7 : Int
+```
+
+A **section** is an operator waiting for one of its operands: `(+ 1)` is
+`\x -> x + 1`, and `(10 -)` is `\x -> 10 - x`. The operand a section has
+is everything on its side of the operator, so `(* 2 + 3)` is `\x -> x *
+(2 + 3)`:
+
+```
+> ((+ 1) 2, (10 -) 3, (* 2 + 3) 4, (:: Nil) 7)
+(3, 7, 20, 7 :: Nil) : (Int, Int, Int, List Int)
 ```
 
 ## Type annotations
@@ -1356,6 +1458,23 @@ can go on a line of its own, as at the top level:
 2 : Int
 ```
 
+### One thing after another
+
+`let _ = e in body` runs `e` for what it does, then `body`, and names
+nothing. That is how one effect follows another. There is no `do`: an
+effect is not a monad, so there is nothing to bind through.
+
+```
+> let _ = putStrLn "one"
+    _ = putStrLn "two"
+ in putStrLn "three"
+
+one
+two
+three
+() : ()
+```
+
 ## Layout
 
 Like Haskell, Idyll uses indentation to group things. After `let`, the
@@ -1752,6 +1871,27 @@ moved : Point -> Point
 Point 11 2 : Point
 ```
 
+A field whose value is a variable of its own name can be written as the
+name alone: `Point { x, y }` is `Point { x = x, y = y }`, the pattern
+`Point { x, y }` binds `x` and `y`, and `{ p | x, y = 2 }` is `{ p | x =
+x, y = 2 }`. The one place this does not reach is an update of one field,
+`{ p | x }`, which is a row, as `{Log | e}` is; write it `{ p | x = x }`.
+
+```
+> record Point = { x : Int, y : Int }
+
+Point : Type
+Point.Point : (x : [1] Int) -> (y : [1] Int) -> Point
+Point.x : (self : [0..1] Point) -> Int
+Point.y : (self : [0..1] Point) -> Int
+> flipped : Point -> Point
+flipped (Point { x, y }) = Point { x = y, y = x }
+
+flipped : (_ : [1] Point) -> Point
+> (flipped (Point { x = 1, y = 2 })).x
+2 : Int
+```
+
 A field's type may mention the fields before it, which makes a record a
 dependent pair with names, and keeps its fields consistent by its type:
 
@@ -1927,6 +2067,25 @@ classify xs = case xs of
 classify : List Int -> Int
 > classify (0 - 1 :: Nil)
 1 : Int
+```
+
+### `where`
+
+`where` after an equation defines what its right-hand side uses, as a
+`let` does, but after it rather than before. With guards, what it
+defines is in scope in each guard and in what the guard chooses:
+
+```
+> sign : Int -> Int
+sign n
+  | m < 0 = 0 - 1
+  | m == 0 = 0
+  | otherwise = 1
+  where m = n * 3
+
+sign : Int -> Int
+> sign (0 - 2) + 10 * sign 5
+9 : Int
 ```
 
 ### Coverage
@@ -2257,10 +2416,30 @@ count : Int -> Int ! Div
 0 : Int
 ```
 
-(`count` does always stop, but on an `Int`, which no match takes apart,
-the checker can't tell.) Calling a function with `Div` has `Div` too, so
-it spreads to whatever uses one, and a program may have it at the top:
-that is what running it might do.
+`count (0 - 1)` goes on for ever: a negative `n` is never `0`. An `Int`
+has no constructor a match could take apart, so a recursion on one is
+seen to end where a test bounds what it counts. Counting down, a call on
+`n - 1` (or `n` less any number) ends where a test says `n` is above a
+number, as `n <= 0` does for the branch after it; counting up, a call on
+`i + 1` ends where a test says `i` is below a number, or below another
+parameter passed on as it is:
+
+```
+> countdown : Int -> Int
+countdown n = if n <= 0 then 0 else countdown (n - 1)
+
+countdown : Int -> Int
+> up : Int -> Int -> Int
+up i n = if i < n then up (i + 1) n else i
+
+up : Int -> Int -> Int
+> (countdown 3, up 0 5)
+(0, 5) : (Int, Int)
+```
+
+Calling a function with `Div` has `Div` too, so it spreads to whatever
+uses one, and a program may have it at the top: that is what running it
+might do.
 
 A definition that isn't a function says it with its type,
 `total : Int ! Div`.
@@ -2270,19 +2449,17 @@ attribute `@terminating` says so, on the line before its signature:
 
 ```
 > @terminating
-countdown : Int -> Int
-countdown n = if n < 1 then 0 else countdown (n - 1)
+halve : Int -> Int
+halve n = if n <= 1 then 0 else 1 + halve (n / 2)
 
-countdown : Int -> Int
-> countdown 3
-0 : Int
+halve : Int -> Int
+> halve 8
+3 : Int
 ```
 
 That is a promise, and nothing checks it: a `@terminating` definition
 that loops loops without `Div` to say it might. Such a definition still
-isn't computed inside a type, which only a recursion seen to end is. The
-standard library uses it for its loops over arrays, which count an index
-up to a length.
+isn't computed inside a type, which only a recursion seen to end is.
 
 ### Types are total
 
@@ -3891,13 +4068,20 @@ input can still be checked.
 | `(a, b)`, `(a, b, c)` | a tuple: the prelude's `Pair a b`, nesting to the right; in a term, a pattern or a type |
 | `record P = { x : Int, y : Int }` | a record: a type of one constructor with named fields, each of which may mention those before it |
 | `P { x = 1, y = 2 }`, `p.x`, `{ p \| x = 3 }`, `P { x = a }` | a record built, read, updated, and matched |
+| `P { x, y }`, `{ p \| x, y = 2 }` | a field alone is `x = x` |
 | `case e of C x -> a; D -> b` | take a value apart; alternatives in a column, or in braces |
 | `case e of p \| g -> a` | an alternative with a guard |
 | `f (C x) 0 = e` <br> `f _ n = e` | a definition by equations, tried in order |
 | `f x \| g = e \| otherwise = e` | guards |
+| `f x = e where y = ..` | definitions an equation's right-hand side sees |
 | `C p q`, `x :: xs`, `_`, `3`, `x@p`, `.e` | patterns: constructor, list cell, anything, literal, as-pattern, dot pattern |
 | `f p impossible` | an equation for a case that can't happen |
 | `(+) : t`, `Z + m = m` | defining an operator |
+| `infixl 6 <+>`, `infixr 5 ++`, `infix 4 ==` | how operators group: see [Operators](#operators) |
+| `(+ 1)`, `(1 +)` | a section: `\x -> x + 1`, `\x -> 1 + x` |
+| ``a `f` b`` | `f a b`: a name in backticks, written as an operator |
+| `a and b`, `a or b` | short-circuiting: `if a then b else False`, `if a then True else b` |
+| `x \|> f`, `f <\| x` | `f x`, in a pipeline |
 | `x :: xs`, `Nil` | lists: `::` is an infix constructor, in expressions and patterns |
 | `#[a, b, c]`, `#[]` | a sequence: a `List`, or whatever `@seq` type is wanted; also a pattern |
 | `@seq(nil = Nil, cons = (::))` | before a `data`: the constructors `#[..]` builds it with |
@@ -3930,6 +4114,7 @@ input can still be checked.
 | `let f (x : a) : b = e in body` | function definition |
 | `let x = 1; y = 2 in body` | several bindings |
 | `let { x = 1; y = 2 } in body` | several bindings, explicit braces |
+| `let _ = e in body` | `e` run for what it does, then `body` |
 | `-- ...` | comment, to the end of the line |
 
 **Names.** Variables start with a lower-case letter or `_`, followed by
@@ -3937,9 +4122,10 @@ letters, digits, `_` or `'` (so `x'` and `go_2` are fine). Names you bind
 must be lower-case.
 
 **Reserved words.** `let`, `in`, `data`, `where`, `case`, `of`, `if`,
-`then`, `else`, `effect`, `handle`, `with`, `use`, `inf` and `Type` are
-used today. `mod`, `type` and `do` are reserved for features still to
-come and can't be used as names.
+`then`, `else`, `effect`, `handle`, `with`, `use`, `module`, `and`, `or`,
+`inf` and `Type` are used today. `mod` is reserved and can't be used as a name.
+`type` and `do` are ordinary names: an alias is a definition, and one
+effect follows another with `let _ =`.
 `impossible` and `otherwise` mean something only where an equation's
 right-hand side or a guard would be.
 
@@ -3956,16 +4142,9 @@ These aren't implemented yet. This section shrinks as they land.
   is specialised, and an `Int` still takes two words. There is no `BigInt`
   yet, for integers bigger than 64 bits.
 - **Arithmetic and operators.** `+`, `-`, `*`, `/`, `%`, `<` and `==` on
-  `Int`, and `++` on `String`, are the only built-in operations; there is
-  nothing on `Bool`. Any operator can be defined, but only those can be
-  written infix: there are no fixity declarations, so `xs <> ys` has to be
-  `(<>) xs ys`. And without type classes, defining `+` hides the `Int`
-  one. No arithmetic laws are applied when comparing types that mention
+  `Int`, `++` on `String`, and `and` and `or` on `Bool`, are the only
+  built-in operations. No arithmetic laws are applied when comparing types that mention
   `Int`s (grades are another matter).
-- **Character literals.** `'a'` is recognised but can't be used in an
-  expression.
-- **`do`, `where` clauses.** `do` is reserved but has no meaning yet;
-  `where` only introduces constructors.
 - **More of modules.** A package is the unit of reuse: changing one module
   checks its whole package again. The REPL is one module, and can't load a
   package. Modules can't be declared inside a file (`module M where`), only
@@ -3975,7 +4154,7 @@ These aren't implemented yet. This section shrinks as they land.
   repository.
 - **More of pattern matching.** A definition of several equations can't
   annotate or grade its patterns, or open a box with `[x]` (a single
-  equation of variables can). Strings can't be matched on. There are no
+  equation of variables can). There are no
   implicit patterns (`f {n} ..`); a signature's implicit variables are in
   scope in its equations, which covers most uses. A `case` with no
   annotation to check it against has a result type that doesn't depend on
@@ -3986,8 +4165,10 @@ These aren't implemented yet. This section shrinks as they land.
   array patterns. A value is shown with its constructors, `1 :: 2 :: Nil`,
   not as the literal that built it. Natively, an array or a vector as a
   program's answer is shown as `<value>`, as any structure is.
-- **Termination on `Int`s.** A recursion counting an `Int` down is not
-  seen to end, and needs `! Div`, or `@terminating` to vouch for it. Only top-level definitions compute in
+- **Termination on `Int`s.** A recursion on an `Int` is seen to end only
+  where a test bounds what it counts by a number or, counting up, by a
+  parameter passed on as it is; any other bound (`n / 2`, a length worked
+  out) needs `! Div`, or `@terminating` to vouch for it. Only top-level definitions compute in
   types: one defined in a `let` inside a function stays put.
 - **More of effects.** Natively, a program with a handler keeps every
   continuation on the heap, even where its grade says it is resumed once

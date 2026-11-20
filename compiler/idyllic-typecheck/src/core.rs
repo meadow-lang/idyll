@@ -23,6 +23,10 @@ use crate::grade::Grade;
 use std::fmt;
 use std::rc::Rc;
 
+/// What a section's parameter is named from (see `idyllic-parser`): a name
+/// a type is shown without.
+const SECTION: &str = "#section@";
+
 /// de Bruijn index: 0 is the innermost binder.  Used in [`Core`].
 pub type Idx = usize;
 /// de Bruijn level: 0 is the outermost binder.  Used in values.
@@ -299,6 +303,9 @@ impl fmt::Display for Core {
             dom: &Core,
             f: &mut fmt::Formatter<'_>,
         ) -> fmt::Result {
+            // a section's parameter has a name no program can write, and
+            // none to show
+            let x = if x.starts_with(SECTION) { "_" } else { x };
             write!(f, "{x} : ")?;
             if !in_type.is_grade(Grade::DEFAULT_IN_TYPE) {
                 write!(f, "(")?;
@@ -488,7 +495,7 @@ impl fmt::Display for Core {
                 }),
                 // an anonymous, default-graded binder is just an arrow
                 Core::Pi { name, grade, in_type, dom, cod, .. }
-                    if name == "_"
+                    if (name == "_" || name.starts_with(SECTION))
                         && grade.is_grade(printed_default())
                         && in_type.is_grade(Grade::DEFAULT_IN_TYPE) =>
                 {

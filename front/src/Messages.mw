@@ -235,7 +235,10 @@ fun worded (sols : [Maybe Core]) (linear : Bool) (at : Meta) (r : Report) : Diag
       else if kind == "MissingCases" then withLabel at "missing: ${S.join ", " words}" (errorAt at "the patterns do not cover every case")
       else if kind == "UnreachableClause" then withLabel at "the cases before this one cover everything it matches" (warningAt at "unreachable")
       else if kind == "MayNotTerminate" then
-        withNote "say so in its type, as in ${word 0} : .. -> .. ! Div"
+        withNote
+          (if word 1 == "counted down" then
+             "an Int counted down ends where a test stops it, as `if n <= 0 then .. else ${word 0} (n - 1)` does; `n == 0` lets a negative n go on for ever. Or say so in its type, as in ${word 0} : .. -> .. ! Div"
+           else "say so in its type, as in ${word 0} : .. -> .. ! Div")
           (withLabel at "no argument gets smaller on every round of its recursion, so it has the effect Div" (errorAt at "${word 0} may not terminate"))
       else errorAt at (said kind)
 
