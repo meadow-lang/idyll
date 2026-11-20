@@ -371,6 +371,39 @@ fn recursion_that_may_not_terminate_has_to_say_so_and_stays_out_of_types() {
     rejects(&src, &["a type must be pure: computing this type has the effects Div"]);
 }
 
+// An `Int` has no constructor to take apart, so a recursion on one ends
+// where a test bounds what it counts: down, while above a number; up, while
+// below a number or another parameter passed on as it is.
+#[test]
+fn a_recursion_on_an_int_ends_where_a_test_bounds_it() {
+    let src = "down : (n : Int) -> Int\ndown n = if n <= 0 then 0 else down (n - 1)\n\n\
+               sumTo : (n : Int) -> (acc : Int) -> Int\nsumTo n acc\n  | n < 1 = acc\n  | otherwise = sumTo (n - 1) (acc + n)\n\n\
+               up : (i : Int) -> (n : Int) -> Int\nup i n = if i < n then up (i + 1) n else i\n\n\
+               upTo : (i : Int) -> Int\nupTo i = if i >= 10 then i else upTo (i + 2)\n\n\
+               (down 3, sumTo 4 0, up 0 5, upTo 3)\n";
+    assert_eq!(result(src), "(0, 10, 5, 11) : (Int, Int, Int, Int)");
+    // and so it computes in types
+    let ieq = "data IEq : Int -> Int -> Type where\n  IRefl : IEq x x\n\nuse IEq.*\n\n";
+    accepts(&format!("{ieq}down : (n : Int) -> Int\ndown n = if n <= 0 then 7 else down (n - 1)\n\nt : IEq (down 3) 7\nt = IRefl\n"));
+}
+
+#[test]
+fn counting_an_int_down_to_zero_by_equality_may_not_end() {
+    // `count (0 - 1)` goes on for ever, and the error says how to stop it
+    let out = run("count : (n : Int) -> Int\ncount 0 = 0\ncount n = count (n - 1)\n\ncount 3\n");
+    assert_eq!(diags(&out), ["count may not terminate: no argument gets smaller on every round of its recursion, so it has the effect Div"]);
+    let help = out.diagnostics[0].help.join(" ");
+    assert!(help.contains("if n <= 0 then .. else count (n - 1)"), "{help}");
+}
+
+#[test]
+fn counting_up_and_then_down_again_may_not_end() {
+    rejects(
+        "zigzag : (i : Int) -> Int\nzigzag i = if i < 10 then zigzag (i + 1) else if i > 0 then zigzag (i - 1) else 0\n\nzigzag 0\n",
+        &["zigzag may not terminate: no argument gets smaller on every round of its recursion, so it has the effect Div"],
+    );
+}
+
 #[test]
 fn a_case_on_a_stuck_comparison_is_stuck_not_anything() {
     // it used to evaluate to the error value, which unifies with anything

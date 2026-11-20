@@ -1,7 +1,9 @@
 //! Records (phase 4 of the roadmap): `record Point = { x : Int, y : Int }`,
 //! a data type of one constructor whose fields have names, each of which
 //! may mention the fields before it. Built `Point { x = 1, y = 2 }`, read
-//! `p.x`, matched `Point { x = a }`, and updated `{ p | x = 3 }`.
+//! `p.x`, matched `Point { x = a }`, and updated `{ p | x = 3 }`. A field
+//! alone, `x`, is `x = x`: `Point { x, y }`, built or matched, and `{ p | x,
+//! y = 2 }`.
 
 use idyllic::pipeline::{self, CompiledPackage, Deps, Evaluation, ModuleFile, Options, PackageSource};
 use idyllic_diagnostics::OutputStyle;
@@ -142,3 +144,22 @@ fn a_record_from_another_module_or_package() {
     assert!(out.diagnostics.is_empty(), "{:#?}", diags(&out));
     assert_eq!(out.printed, "4\n");
 }
+
+#[test]
+fn a_field_alone_is_a_field_named_by_a_variable_of_its_name() {
+    let src = "record Point = { x : Int, y : Int }\n\n\
+               sum : (p : Point) -> Int\nsum (Point { x, y }) = x + y\n\n\
+               make : (x : Int) -> (y : Int) -> Point\nmake x y = Point { x, y }\n\n\
+               moved : (p : Point) -> (x : Int) -> Point\nmoved p x = { p | x, y = 10 }\n\n\
+               swapped : (p : Point) -> Point\nswapped p = let x = p.y; y = p.x in { p | x, y }\n\n\
+               (sum (make 1 2), sum (moved (make 1 2) 5), (swapped (make 1 2)).x, sum (Point { x = 3, y = 4 }))\n";
+    assert_eq!(result(src), "(3, 15, 2, 7) : (Int, Int, Int, Int)");
+}
+
+#[test]
+fn an_update_of_one_field_by_a_pun_is_a_rows_tail_and_not_an_update() {
+    // `{ p | x }` is a row, as `{Log | e}` is: an update says what a field becomes
+    let out = rejects("record Point = { x : Int, y : Int }\n\nmoved : (p : Point) -> (x : Int) -> Point\nmoved p x = { p | x }\n");
+    assert!(!out.is_empty());
+}
+

@@ -210,6 +210,12 @@ pub(crate) fn text(lex: &mut Lex) -> String {
     lex.slice().to_string()
 }
 
+/// A name in backticks: what is between them.
+pub(crate) fn backticked(lex: &mut Lex) -> String {
+    let s = lex.slice();
+    s[1..s.len() - 1].to_string()
+}
+
 /// A named hole's name: what follows its `?`.
 pub(crate) fn goal(lex: &mut Lex) -> String {
     lex.slice()[1..].to_string()

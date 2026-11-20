@@ -1,6 +1,6 @@
 cut 0
 entry idyll:Main/"#entry"
-answer none
+answer str
 
 data idyll:Prelude/DigitFuel { Spent; More(ptr) }
 
@@ -65,26 +65,29 @@ def idyll:Prelude/showInt (n_52: i64; k_53: ptr) ! {} =
       idyll:Prelude/negativeDigits(idyll:Prelude/digitFuel, n_52; μ̃ v_58: str.
         prim concatStrings(["-", v_58]; k_53))))
 
-def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) ! {} =
-  <fuel_61 | case {
+def idyll:Main/"<+>" (a_63: i64, b_64: i64; k_65: ptr) ! {} =
+  prim mul(a_63, 10; μ̃ v_66: i64.
+    prim add(v_66, b_64; k_65))
+
+def idyll:Prelude/negativeDigits (fuel_67: ptr, n_68: i64; k_69: ptr) ! {} =
+  <fuel_67 | case {
     idyll:Prelude/DigitFuel.Spent =>
-      <"" | k_63>;
-    idyll:Prelude/DigitFuel.More(fuel_64: ptr) =>
-      prim sub(0, 10; μ̃ v_74: i64.
-        prim lt(v_74, n_62; μ̃ v__65: bool.
-          prim if(v__65; μ̃ u_72: unit.
-            prim div(n_62, 10; μ̃ v_70: i64.
-              idyll:Prelude/negativeDigits(fuel_64, v_70; μ̃ v_66: str.
-                prim mod(n_62, 10; μ̃ v_69: i64.
-                  prim sub(0, v_69; μ̃ v_68: i64.
-                    idyll:Prelude/digitString(v_68; μ̃ v_67: str.
-                      prim concatStrings([v_66, v_67]; k_63)))))), μ̃ u_73: unit.
-            prim sub(0, n_62; μ̃ v_71: i64.
-              idyll:Prelude/digitString(v_71; k_63)))))
+      <"" | k_69>;
+    idyll:Prelude/DigitFuel.More(fuel_70: ptr) =>
+      prim sub(0, 10; μ̃ v_80: i64.
+        prim lt(v_80, n_68; μ̃ v__71: bool.
+          prim if(v__71; μ̃ u_78: unit.
+            prim div(n_68, 10; μ̃ v_76: i64.
+              idyll:Prelude/negativeDigits(fuel_70, v_76; μ̃ v_72: str.
+                prim mod(n_68, 10; μ̃ v_75: i64.
+                  prim sub(0, v_75; μ̃ v_74: i64.
+                    idyll:Prelude/digitString(v_74; μ̃ v_73: str.
+                      prim concatStrings([v_72, v_73]; k_69)))))), μ̃ u_79: unit.
+            prim sub(0, n_68; μ̃ v_77: i64.
+              idyll:Prelude/digitString(v_77; k_69)))))
   }>
 
-def idyll:Main/"#entry" (; k_75: ptr) =
-  <cocase {
-    apply(x_77: i64; k_78: ptr) ! {} =>
-      prim add(x_77, x_77; k_78)
-  } | k_75>
+def idyll:Main/"#entry" (; k_81: ptr) =
+  idyll:Main/"<+>"(1, 2; μ̃ v_83: i64.
+    idyll:Main/"<+>"(v_83, 3; μ̃ answer_82: i64.
+      idyll:Prelude/showInt(answer_82; k_81)))

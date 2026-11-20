@@ -2,14 +2,9 @@ cut 0
 entry idyll:Main/"#entry"
 answer str
 
-data idyll:Prelude/List <'a0> { Nil; "::"('a0, ptr) }
-
 data idyll:Prelude/DigitFuel { Spent; More(ptr) }
 
-roles {
-  nil = idyll:Prelude/List.Nil
-  cons = idyll:Prelude/List."::"
-}
+data idyll:Main/Point { Point(i64, i64) }
 
 val idyll:Prelude/digitFuel : ptr =
   <idyll:Prelude/DigitFuel.Spent | μ̃ v_20: ptr.
@@ -90,23 +85,20 @@ def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) ! {} =
               idyll:Prelude/digitString(v_71; k_63)))))
   }>
 
-def idyll:Main/second (x_75: ptr; k_76: ptr) ! {} =
-  <x_75 | case {
-    idyll:Prelude/List.Nil =>
-      <0 | k_76>;
-    idyll:Prelude/List."::"(x_77: i64, x_78: ptr) =>
-      <x_78 | case {
-        idyll:Prelude/List.Nil =>
-          <0 | k_76>;
-        idyll:Prelude/List."::"(y_79: i64, x_80: ptr) =>
-          <y_79 | k_76>
-      }>
+def idyll:Main/Point.x (self_75: ptr; k_76: ptr) ! {} =
+  <self_75 | case {
+    idyll:Main/Point.Point(x_77: i64, y_78: i64) =>
+      <x_77 | k_76>
   }>
 
-def idyll:Main/"#entry" (; k_81: ptr) =
-  <idyll:Prelude/List.Nil | μ̃ v_87: ptr.
-    <idyll:Prelude/List."::"(3, v_87) | μ̃ v_86: ptr.
-      <idyll:Prelude/List."::"(2, v_86) | μ̃ v_85: ptr.
-        <idyll:Prelude/List."::"(1, v_85) | μ̃ v_84: ptr.
-          idyll:Main/second(v_84; μ̃ answer_82: i64.
-            idyll:Prelude/showInt(answer_82; k_81))>>>>
+def idyll:Main/flipped (x_79: ptr; k_80: ptr) ! {} =
+  <x_79 | case {
+    idyll:Main/Point.Point(x_81: i64, y_82: i64) =>
+      <idyll:Main/Point.Point(y_82, x_81) | k_80>
+  }>
+
+def idyll:Main/"#entry" (; k_83: ptr) =
+  <idyll:Main/Point.Point(1, 2) | μ̃ v_88: ptr.
+    idyll:Main/flipped(v_88; μ̃ v_86: ptr.
+      idyll:Main/Point.x(v_86; μ̃ answer_84: i64.
+        idyll:Prelude/showInt(answer_84; k_83)))>

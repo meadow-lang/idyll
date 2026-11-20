@@ -378,8 +378,8 @@ fn a_parse_error_in_a_right_hand_side_is_reported_where_it_is() {
         &["parse error: found ')' expected '\\', 'let', 'case', 'if', 'handle', '(', '{', or atom"],
     );
     rejects(
-        "f : (m : Maybe Int) -> Int\nf m = case m of\n  Just n -> (n +)\n  Nothing -> 0\n\nf Nothing",
-        &["parse error: found ')' expected atom"],
+        "f : (m : Maybe Int) -> Int\nf m = case m of\n  Just n -> (n, )\n  Nothing -> 0\n\nf Nothing",
+        &["parse error: found ')' expected '\\', 'let', 'case', 'if', 'handle', '(', '{', or atom"],
     );
 }
 
@@ -401,3 +401,31 @@ fn a_definition_may_give_a_type() {
     // but last, it is still the program's expression
     ok("Nil : List Int", &[], Some("List Int"));
 }
+
+// `type` and `do` are names like any other: an alias is an ordinary
+// definition of a type, and sequencing is `let _ =`.
+#[test]
+fn type_and_do_are_ordinary_names() {
+    ok("type : Int\ntype = 1\n\ndo : Int\ndo = type + 1\n\ndo", &["type : Int", "do : Int"], Some("Int"));
+}
+
+#[test]
+fn an_alias_is_an_ordinary_definition() {
+    ok(
+        "Point : Type\nPoint = (Int, Int)\n\nPair : Type -> Type\nPair a = (a, a)\n\norigin : Pair Int\norigin = (0, 0)\n\norigin",
+        &["Point : Type", "Pair : Type -> Type", "origin : (Int, Int)"],
+        Some("(Int, Int)"),
+    );
+}
+
+// `where` gives an equation definitions of its own, in scope in its body,
+// and in each guard and what the guard chooses
+#[test]
+fn a_where_clause_defines_what_its_equation_uses() {
+    let src = "area : (w : Int) -> (h : Int) -> Int\narea w h = inner * 2\n  where inner = w * h\n\n\
+               sign : (n : Int) -> Int\nsign n\n  | m < 0 = 0 - 1\n  | m == 0 = 0\n  | otherwise = 1\n  where\n    m = n * 3\n\n\
+               hyp : (a : Int) -> (b : Int) -> Int\nhyp a b = sq a + sq b\n  where\n    sq : Int -> Int\n    sq x = x * x\n\n\
+               area 2 3 + sign (0 - 4) + hyp 3 4";
+    ok(src, &["area : (w : [1] Int) -> (h : [1] Int) -> Int", "sign : (n : Int) -> Int", "hyp : (a : Int) -> (b : Int) -> Int"], Some("Int"));
+}
+

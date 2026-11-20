@@ -25,7 +25,8 @@
 --   implicit binder.
 --
 -- `record` is a keyword only before a capital (`context`): it is a name
--- anywhere else, as it is to the Rust lexer.
+-- anywhere else, as it is to the Rust lexer. So are `infixl`, `infixr` and
+-- `infix` before a number.
 
 use Lingua (syntax!, format!)
 use Idyll.Layout (Token, foldToken)
@@ -39,7 +40,6 @@ use Idyll.Layout (Token, foldToken)
     "module" = Module,
     "use" = Use,
     "data" = Data,
-    "type" = Type,
     "Type" = TypeUpper,
     "let" = Let,
     "in" = In,
@@ -47,8 +47,9 @@ use Idyll.Layout (Token, foldToken)
     "effect" = Effect,
     "handle" = Handle,
     "with" = With,
-    "do" = Do,
     "case" = Case,
+    "and" = And,
+    "or" = Or,
     "of" = Of,
     "if" = If,
     "then" = Then,
@@ -87,6 +88,7 @@ use Idyll.Layout (Token, foldToken)
     "upper" = UpperIdent _,
     "lower" = LowerIdent _,
     "goal" = Goal _,
+    "backtick" = BacktickIdent _,
     "conop" = ConOpIdent _,
     "op" = OpIdent _,
     "interp_start" = InterpStart _,
@@ -101,7 +103,10 @@ use Idyll.Layout (Token, foldToken)
     "record" = LowerIdent "record" before UpperIdent _,
     "trait" = LowerIdent "trait" before UpperIdent _,
     "instance" = LowerIdent "instance" before UpperIdent _,
-    "instance_named" = LowerIdent "instance" before LowerIdent _
+    "instance_named" = LowerIdent "instance" before LowerIdent _,
+    "infixl" = LowerIdent "infixl" before Decimal _,
+    "infixr" = LowerIdent "infixr" before Decimal _,
+    "infix" = LowerIdent "infix" before Decimal _
   }
   grammar {
     File = "vlbrace" entries:Entry* "vrbrace"
@@ -116,7 +121,7 @@ use Idyll.Layout (Token, foldToken)
     -- --- items ---
 
     Item = attrs:AttrLine* body:ItemBody
-    ItemBody = ModuleDecl | DataDecl | RecordDecl | TraitDecl | InstanceDecl | EffectDecl | UseDecl | Line
+    ItemBody = ModuleDecl | DataDecl | RecordDecl | TraitDecl | InstanceDecl | EffectDecl | UseDecl | FixityDecl | Line
 
     -- `module M where`, and a block of items, as a file has
     ModuleDecl = "module" name:"upper" "where" open:("{" | "vlbrace") entries:Entry* close:("}" | "vrbrace")
@@ -127,7 +132,9 @@ use Idyll.Layout (Token, foldToken)
     AttrValue = "=" name:CtorName
 
     -- an equation, a signature, or the program's expression
-    Line = lhs:Term eff:Effects? rhs:Rhs?
+    Line = lhs:Term eff:Effects? rhs:Rhs? local:WhereClause?
+    -- `where`, and a block of declarations an equation's right-hand side sees
+    WhereClause = "where" open:("{" | "vlbrace") entries:LetEntry* close:("}" | "vrbrace")
     Effects = "!" row:Row
     Rhs = Plain | Guards
     Plain = "=" body:Term
@@ -165,6 +172,13 @@ use Idyll.Layout (Token, foldToken)
     OpAttr = "@" name:"lower"
     EffectAlias = "=" row:Row
 
+    -- `infixl 6 <+>`, `infixr 5 ++, <:>`, `infix 4 (===)`: how the operators
+    -- named group (see `Fixity`)
+    FixityDecl = kw:("infixl" | "infixr" | "infix") level:"decimal" ops:(FixityOp ("," FixityOp)*)
+    FixityOp = BareOp | ParenOp
+    BareOp = name:("op" | "conop" | "backtick")
+    ParenOp = "(" name:("op" | "conop" | "backtick") ")"
+
     UseDecl = "use" path:("upper" | "qual_upper") glob:"op"? alias:UseAlias? names:UseNames?
     UseAlias = "lower" name:"upper"
     UseNames = "(" names:(UseName ("," UseName)*)? ")"
@@ -198,7 +212,8 @@ use Idyll.Layout (Token, foldToken)
     -- `C a => b`: an auto binder with no name
     Constraint = "=>" result:Term eff:Effects?
     Chain = first:App links:Link*
-    Link = op:("op" | "conop") operand:App
+    -- an operator: a symbol's, a name in backticks, or `and` and `or`
+    Link = op:("op" | "conop" | "backtick" | "and" | "or") operand:App
     App = atoms:(Atom Atom*)
 
     Atom = Name | Number | StrLit | CharLit | Hole | GoalA | TypeA | InfA | OpName | Paren | BoxA | SeqA
@@ -214,16 +229,32 @@ use Idyll.Layout (Token, foldToken)
     GoalA = name:"goal"
     TypeA = "Type"
     InfA = "infinity"
-    OpName = "(" op:("op" | "conop") ")"
-    Paren = "(" items:(Term ("," Term)*)? ")"
+    -- an operator on its own, `(+)`, or a section, `(+ 1)`
+    OpName = "(" op:("op" | "conop" | "backtick" | "and" | "or") operand:Term? ")"
+    -- `(e)`, a tuple, or a section, `(1 +)`
+    Paren = "(" (items:(Term ("," Term)*) trailing:("op" | "conop" | "backtick" | "and" | "or")?)? ")"
     BoxA = "[" inner:Term? "]"
     SeqA = "#" "[" first:Term? rest:SeqRest* "]"
     SeqRest = sep:("," | ";") item:Term?
-    Braced = "{" items:(Term ("," Term)*) rest:BraceRest? "}"
-    BraceRest = "|" (fields:FieldVals | tail:Term)
-    FieldVals = fields:(FieldVal ("," FieldVal)* ","?)
-    FieldVal = name:"lower" "=" value:Term
-    RecordLit = name:("upper" | "qual_upper") "{" fields:FieldVals? "}"
+    -- after a capitalised name, a record's fields, `Point { x, y = 2 }`
+    -- (`View` puts them together, as the Rust parser reads them); else an
+    -- implicit argument, a binder or a row
+    Braced = "{" items:(BracedItem ("," BracedItem)*) rest:BraceRest? "}"
+    -- a term in braces; or, of a record's fields, `x = e`
+    BracedItem = term:Term value:FieldValue?
+    FieldValue = "=" value:Term
+    -- after the `|`: a record update's fields -- the first with its `=`, or
+    -- a field alone with more after it (`{ r | x }` is a row's tail, as in
+    -- `{Log | e}`) -- or a row's tail
+    BraceRest = "|" first:BraceFirst more:BraceMore* comma:","?
+    BraceFirst = EqField | TailTerm
+    EqField = name:"lower" "=" value:Term
+    TailTerm = term:Term
+    BraceMore = "," field:FieldVal
+    -- `x = e`, or `x` alone, which is `x = x`
+    FieldVal = name:"lower" ("=" value:Term)?
+    -- a record of no fields, `P {}`
+    RecordLit = name:("upper" | "qual_upper") "{" "}"
     DotA = "." target:Atom
     -- `f @{d}`: an auto argument given by hand (after a name, `f@{d}`
     -- is read as the name's `AsTail`, and told apart after)
@@ -254,7 +285,10 @@ use Idyll.Layout (Token, foldToken)
     -- a body after its `=` or `->`, or under it a level in
     | Plain = "=" indent(line group(body))
     -- guards a line each, a level in
-    | Line = lhs eff rhs
+    | Line = lhs eff rhs local
+    -- a `where` under its equation, a level in, and its declarations a
+    -- level further
+    | WhereClause = indent(newline "where" open indent(newline entries) close)
     | Guards = indent(guards)
     | Guard = newline "|" group(cond) "=" indent(line group(body))
     | AltPlain = "->" indent(line group(body))

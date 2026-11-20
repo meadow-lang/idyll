@@ -90,6 +90,9 @@ use num_bigint::BigInt;
 
 type Extra<'t> = extra::Err<Rich<'t, Token, SimpleSpan>>;
 
+pub mod fixity;
+pub use fixity::{Assoc, Fixities, Fixity};
+
 /// chumsky's span as ours.
 fn span_of(s: SimpleSpan) -> Span {
     Span::new(s.start, s.end)
@@ -111,6 +114,9 @@ enum Item {
     /// a data type with `@derive(..)` on it, and the instances it derives
     /// (each an `Instance`)
     Derived(LData, Vec<Item>),
+    /// `infixl 6 <+>`: read off the tokens before the file is parsed (see
+    /// [`fixity::declared`]), and so nothing to the program
+    Fixity,
 }
 
 /// What can be written in front of a top-level item, each on a line of its
@@ -402,14 +408,35 @@ std::thread_local! {
     /// its name is where it is in its file (`#instance@<byte>`), whatever
     /// else was read before the file, as front/ names it.
     static BASE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The operators' fixities, for the file being parsed: what its
+    /// operator chains are grouped by.
+    static FIXITIES: std::cell::RefCell<Fixities> = std::cell::RefCell::new(Fixities::new());
+}
+
+/// Where `at` is in the file being parsed, rather than in the source map:
+/// what a name made up for something written there is made of, as front/
+/// makes it.
+fn in_file(at: usize) -> usize {
+    at.saturating_sub(BASE.with(std::cell::Cell::get))
 }
 
 /// The same, for a file whose first byte is at `base` in the source map
-/// its tokens' spans are in.
+/// its tokens' spans are in, with the fixities its own declarations say
+/// (and the language's own): for a file read alone.
 pub fn parse_file(base: usize, src_len: usize, tokens: &[Spanned<Token>]) -> Result<Program, Vec<Diagnostic>> {
+    let (fixities, _) = fixity::table(&fixity::declared(tokens));
+    parse_file_with(base, src_len, tokens, &fixities)
+}
+
+/// The same, with the operators' fixities given: what every file of the
+/// package, the prelude and the packages it depends on declare (see
+/// [`fixity::table`]).
+pub fn parse_file_with(base: usize, src_len: usize, tokens: &[Spanned<Token>], fixities: &Fixities) -> Result<Program, Vec<Diagnostic>> {
     let outer = BASE.with(|b| b.replace(base));
+    let outer_fixities = FIXITIES.with(|f| f.replace(fixities.clone()));
     let parsed = parse_tokens(src_len, tokens);
     BASE.with(|b| b.set(outer));
+    FIXITIES.with(|f| f.replace(outer_fixities));
     parsed
 }
 
@@ -502,6 +529,7 @@ fn build(items: Vec<Attributed>, nested: bool) -> Result<Program, Vec<Diagnostic
                 program.decls.push(d);
             }
             Item::Use(u) => program.uses.push(u),
+            Item::Fixity => {}
             // an instance is a hint, unless it is named, and ends: what it
             // refers to of itself is under its methods' lambdas
             Item::Instance(decls, name, named) => {
@@ -538,6 +566,28 @@ fn build(items: Vec<Attributed>, nested: bool) -> Result<Program, Vec<Diagnostic
         }
     }
     Ok(program)
+}
+
+/// `infixl 6 <+>`, `infixr 5 ++, <:>`, `infix 4 (===)`: how the operators
+/// named group (see [`fixity`]). `infixl` is a keyword only before a number.
+fn fixity_decl<'t, I>() -> impl Parser<'t, I, Item, Extra<'t>> + Clone
+where
+    I: ValueInput<'t, Token = Token, Span = SimpleSpan>,
+{
+    let op = select! { Token::OpIdent(s) => s, Token::ConOpIdent(s) => s, Token::BacktickIdent(s) => s };
+    select! { Token::LowerIdent(s) if fixity::keyword(&s).is_some() => () }
+        .ignore_then(select! { Token::Int(n) = e => (n, e.span()) })
+        .validate(|(n, span): (BigInt, SimpleSpan), _, emitter| match u8::try_from(n) {
+            Ok(level) if level <= 9 => (),
+            _ => emitter.emit(Rich::custom(span, "a fixity's level is from 0 to 9")),
+        })
+        .then(
+            op.clone()
+                .or(op.delimited_by(just(Token::LParen), just(Token::RParen)))
+                .separated_by(just(Token::Comma))
+                .at_least(1),
+        )
+        .map(|_| Item::Fixity)
 }
 
 /// The layout pass always wraps the input in a virtual block, so a program is
@@ -589,6 +639,7 @@ where
         .collect::<Vec<_>>()
         .then(choice((
             module,
+            fixity_decl(),
             data(term.clone()).map(Item::Data),
             record(term.clone()).map(|(d, ps)| Item::Record(d, ps)),
             trait_decl(term.clone()).map(|(d, ps)| Item::Record(d, ps)),
@@ -1519,12 +1570,15 @@ where
             literal().map(Pat::Lit),
             just(Token::Underscore).to(Pat::Wild),
             lower().map(var),
-            // `Point { x = p }`
+            // `Point { x = p }`; `Point { x }` is `Point { x = x }`
             upper
                 .then(
                     lower()
-                        .then_ignore(just(Token::Eq))
-                        .then(pattern(apat.clone()))
+                        .then(just(Token::Eq).ignore_then(pattern(apat.clone())).or_not())
+                        .map(move |(x, p): (Ident, Option<LPat>)| {
+                            let p = p.unwrap_or_else(|| Spanned::new(var(x.clone()), x.span));
+                            (x, p)
+                        })
                         .separated_by(just(Token::Comma))
                         .allow_trailing()
                         .collect::<Vec<(Ident, LPat)>>()
@@ -1663,6 +1717,31 @@ fn decl<'t, I>(
 where
     I: ValueInput<'t, Token = Token, Span = SimpleSpan>,
 {
+    recursive(|decl| decl_with(term, decl)).boxed()
+}
+
+/// An equation's right-hand side, with what its `where` clause defines in
+/// scope: in its body, or in each guard and what the guard chooses.
+fn with_where(rhs: Rhs, local: Option<Vec<LDecl>>) -> Rhs {
+    let Some(local) = local else { return rhs };
+    let within = |e: LTerm| {
+        let span = e.span;
+        Spanned::new(Term::Let(local.clone(), Box::new(e)), span)
+    };
+    match rhs {
+        Rhs::Plain(e) => Rhs::Plain(within(e)),
+        Rhs::Guarded(gs) => Rhs::Guarded(gs.into_iter().map(|(g, e)| (within(g), within(e))).collect()),
+        Rhs::Impossible => Rhs::Impossible,
+    }
+}
+
+fn decl_with<'t, I>(
+    term: impl Parser<'t, I, LTerm, Extra<'t>> + Clone + 't,
+    decl: impl Parser<'t, I, LDecl, Extra<'t>> + Clone + 't,
+) -> Boxed<'t, 't, I, LDecl, Extra<'t>>
+where
+    I: ValueInput<'t, Token = Token, Span = SimpleSpan>,
+{
     let apat = apattern(term.clone());
     // `(x y : [2] a)` gives each name the annotation
     let group = binder_name()
@@ -1676,10 +1755,19 @@ where
         });
     let params = group.or(apat.clone().map(|p| vec![p])).repeated().collect::<Vec<Vec<LPat>>>();
     let guard = just(Token::Bar).ignore_then(term.clone()).then_ignore(just(Token::Eq)).then(term.clone());
+    // `where`, and a block of declarations, as a `let` has
+    let semi = just(Token::VSemi).or(just(Token::Semi));
+    let local = decl.separated_by(semi).allow_trailing().at_least(1).collect::<Vec<LDecl>>();
+    let where_clause = just(Token::Where).ignore_then(choice((
+        local.clone().delimited_by(just(Token::VLBrace), just(Token::VRBrace)),
+        local.delimited_by(just(Token::LBrace), just(Token::RBrace)),
+    )));
     let rhs = choice((
         just(Token::Eq).ignore_then(term.clone()).map(Rhs::Plain),
         guard.repeated().at_least(1).collect::<Vec<(LTerm, LTerm)>>().map(Rhs::Guarded),
-    ));
+    ))
+    .then(where_clause.or_not())
+    .map(|(rhs, local)| with_where(rhs, local));
     let name = lower().or(operator_name().delimited_by(just(Token::LParen), just(Token::RParen)));
     // an equation may define an upper-case name, a type's, as `Matrix r c =
     // Vec r (Vec c Int)` does (its signature, `Matrix : ..`, reads as an
@@ -1702,16 +1790,58 @@ where
                 _ => Err(Rich::custom(span, "expected '=' or a guard")),
             },
         });
-    // `Z + m = m`, `S n + m = S (n + m)`
+    // `Z + m = m`, `S n + m = S (n + m)`, ``a `plus` b = ..``
+    let backticked = select! { Token::BacktickIdent(s) = e if !s.contains('.') => Spanned::new(s, span_of(e.span())) };
     let infix = operand(apat.clone())
-        .then(operator_name())
+        .then(operator_name().or(backticked))
         .then(operand(apat))
         .then(rhs)
         .map(|(((lhs, op), rhs_pat), rhs)| Decl::Def(op, vec![lhs, rhs_pat], None, rhs));
+    // `_ = e`: `e` run for what it does, its value named by nothing (a name
+    // no program can write, so two of them in one `let` are two bindings)
+    let wild = just(Token::Underscore)
+        .map_with(|_, e| {
+            let s: SimpleSpan = e.span();
+            Spanned::new(format!("#_@{}", in_file(s.start)), span_of(s))
+        })
+        .then(just(Token::Colon).ignore_then(comp(term.clone())).or_not())
+        .then_ignore(just(Token::Eq))
+        .then(term.clone())
+        .map(|((f, ty), body)| Decl::Def(f, vec![], ty, Rhs::Plain(body)));
     let sig = name.then_ignore(just(Token::Colon)).then(comp(term)).map(|(f, ty)| Decl::Sig(f, ty));
     // `x : a = e` and `x : a` share a prefix; the equation is tried first and
     // backtracks at the missing `=`
-    choice((prefix, infix, sig)).map_with(|d, e| Spanned::new(d, span_of(e.span()))).labelled("declaration").boxed()
+    choice((wild, prefix, infix, sig)).map_with(|d, e| Spanned::new(d, span_of(e.span()))).labelled("declaration").boxed()
+}
+
+/// An operator between operands: any but `..`, an interval's, which is
+/// not one, and `:?`, which ends a string's hole; a name in backticks; and
+/// `and` and `or`.
+fn chain_operator<'t, I>() -> impl Parser<'t, I, Ident, Extra<'t>> + Clone
+where
+    I: ValueInput<'t, Token = Token, Span = SimpleSpan>,
+{
+    select! {
+        Token::OpIdent(s) = e if s != ".." => Spanned::new(s, span_of(e.span())),
+        Token::ConOpIdent(s) = e if s != ":?" => Spanned::new(s, span_of(e.span())),
+        Token::BacktickIdent(s) = e => Spanned::new(s, span_of(e.span())),
+        Token::And = e => Spanned::new("and".to_string(), span_of(e.span())),
+        Token::Or = e => Spanned::new("or".to_string(), span_of(e.span())),
+    }
+    .labelled("operator")
+}
+
+/// A section, `(+ 1)` or `(1 +)`: a function of the operand it is missing,
+/// `\x -> x + 1` or `\x -> 1 + x`, named from where the section is written
+/// (a name no program can write).
+fn section(op: Ident, lhs: Option<LTerm>, rhs: Option<LTerm>, at: SimpleSpan) -> LTerm {
+    let span = span_of(at);
+    let x = Spanned::new(format!("#section@{}", in_file(at.start)), op.span);
+    let here = op.span;
+    let var = || Spanned::new(Term::Var(x.clone()), here);
+    let body = fixity::binary(lhs.unwrap_or_else(var), op, rhs.unwrap_or_else(var));
+    let param = Param { name: x.clone(), unbox: false, grade: None, ty: None };
+    Spanned::new(Term::Lam(Box::new(Spanned::new(param, x.span)), Box::new(body)), span)
 }
 
 /// `(a, b, c)`: `Pair a (Pair b c)`, a pair nesting to the right; `(a)` is
@@ -1748,13 +1878,18 @@ where
         };
         let any_ident = lower().or(upper).or(qualified);
 
-        // `x = e, ..` in braces: a record's fields
+        // `x = e, ..` in braces: a record's fields; `x` alone is `x = x`, a
+        // pun (and whether it was one)
         let field_values = lower()
-            .then_ignore(just(Token::Eq))
-            .then(term.clone())
+            .then(just(Token::Eq).ignore_then(term.clone()).or_not())
+            .map(|(x, value): (Ident, Option<LTerm>)| {
+                let pun = value.is_none();
+                let value = value.unwrap_or_else(|| Spanned::new(Term::Var(x.clone()), x.span));
+                ((x, value), pun)
+            })
             .separated_by(just(Token::Comma))
             .allow_trailing()
-            .collect::<Vec<(Ident, LTerm)>>();
+            .collect::<Vec<((Ident, LTerm), bool)>>();
         let record_name = select! {
             Token::UpperIdent(s) = e => Spanned::new(s, span_of(e.span())),
             Token::QualUpper(s) = e => Spanned::new(s, span_of(e.span())),
@@ -1773,13 +1908,19 @@ where
             // `Point { x = 1, y = 2 }`
             record_name
                 .then(field_values.clone().delimited_by(just(Token::LBrace), just(Token::RBrace)))
-                .map_with(|(r, fields), e| Spanned::new(Term::RecordLit(r, fields), span_of(e.span()))),
-            // `{ p | x = 3 }`
+                .map_with(|(r, fields), e| {
+                    Spanned::new(Term::RecordLit(r, fields.into_iter().map(|(f, _)| f).collect()), span_of(e.span()))
+                }),
+            // `{ p | x = 3 }`; `{ p | x, y = 2 }` with a pun, but not `{ p |
+            // x }`, which is a row's tail, as in `{Log | e}`
             term.clone()
                 .then_ignore(just(Token::Bar))
                 .then(field_values)
                 .delimited_by(just(Token::LBrace), just(Token::RBrace))
-                .map_with(|(r, fields), e| Spanned::new(Term::Update(Box::new(r), fields), span_of(e.span()))),
+                .try_map_with(|(r, fields), e| match &fields[..] {
+                    [(_, true)] | [] => Err(Rich::custom(e.span(), "a record update says what a field becomes, { r | x = e }")),
+                    _ => Ok(Spanned::new(Term::Update(Box::new(r), fields.into_iter().map(|(f, _)| f).collect()), span_of(e.span()))),
+                }),
             just(Token::Type).map_with(|_, e| Spanned::new(Term::Type, span_of(e.span()))),
             just(Token::Underscore).map_with(|_, e| Spanned::new(Term::Hole, span_of(e.span()))),
             select! { Token::Goal(n) => n }.map_with(|n, e| Spanned::new(Term::Goal(n), span_of(e.span()))),
@@ -1793,13 +1934,28 @@ where
             operator_name()
                 .delimited_by(just(Token::LParen), just(Token::RParen))
                 .map_with(|op, e| Spanned::new(Term::Var(op), span_of(e.span()))),
-            // `(e)`, or a tuple, `(a, b)`
+            // a section, `(+ 1)`: the operator, waiting for what goes on its
+            // left, and everything after it on its right
+            chain_operator()
+                .then(term.clone())
+                .delimited_by(just(Token::LParen), just(Token::RParen))
+                .map_with(|(op, rhs), e| section(op, None, Some(rhs), e.span())),
+            // `(e)`, or a tuple, `(a, b)`; or a section, `(1 +)`, everything
+            // before the operator on its left
             term.clone()
                 .separated_by(just(Token::Comma))
                 .at_least(1)
                 .collect::<Vec<LTerm>>()
+                .then(chain_operator().or_not())
                 .delimited_by(just(Token::LParen), just(Token::RParen))
-                .map_with(|items, e| tuple_term(items, span_of(e.span()))),
+                .validate(|(mut items, op): (Vec<LTerm>, Option<Ident>), e, emitter| match op {
+                    None => tuple_term(items, span_of(e.span())),
+                    Some(op) if items.len() == 1 => section(op, items.pop(), None, e.span()),
+                    Some(op) => {
+                        emitter.emit(Rich::custom(SimpleSpan::from(op.span.range()), "a section takes one operand, not a tuple"));
+                        tuple_term(items, span_of(e.span()))
+                    }
+                }),
             // `[e]`: promotion, or a modality's grade
             term.clone()
                 .delimited_by(just(Token::LBracket), just(Token::RBracket))
@@ -1849,58 +2005,25 @@ where
             })
             .boxed();
 
-        // `a + b` is sugar for applying the primitive named `+` (which the
-        // renamer finds in the global scope), so nothing downstream needs to
-        // know about infix syntax.  Both operators are left-associative.
+        // `a + b * c`: operands and the operators between them, grouped by
+        // the operators' fixities (see [`fixity`]). `a + b` applies what `+`
+        // names, so nothing downstream needs to know about infix syntax.
         let operator = |name: &'static str| {
             select! { Token::OpIdent(s) = e if s == name => Spanned::new(s, span_of(e.span())) }
                 .labelled("operator")
         };
-        let binary = |lhs: LTerm, (op, rhs): (Ident, LTerm)| {
-            let op_span = op.span;
-            let partial_span = lhs.span.merge(op_span);
-            let span = lhs.span.merge(rhs.span);
-            let op = Spanned::new(Term::Var(op), op_span);
-            let partial = Spanned::new(Term::App(Box::new(op), Box::new(lhs)), partial_span);
-            Spanned::new(Term::App(Box::new(partial), Box::new(rhs)), span)
-        };
-        let mul_op = operator("*").or(operator("/")).or(operator("%"));
-        let mul = app.clone().foldl(mul_op.then(app).repeated(), binary).boxed();
-        let add = mul.clone().foldl(operator("+").or(operator("-")).then(mul).repeated(), binary).boxed();
-
-        // `x :: xs` applies the constructor named `::`, and `a ++ b` the
-        // primitive; both associate to the right: `1 :: 2 :: Nil`
-        let cons_op = select! {
-            Token::ConOpIdent(s) = e if s == "::" => Spanned::new(s, span_of(e.span())),
-            Token::OpIdent(s) = e if s == "++" => Spanned::new(s, span_of(e.span())),
-        }
-        .labelled("operator");
-        let cons = add
+        let compare = app
             .clone()
-            .then(cons_op.then(add).repeated().collect::<Vec<(Ident, LTerm)>>())
-            .map(move |(first, rest)| {
-                // a :: (b :: (c :: d)): fold from the right
-                let mut operands = vec![first];
-                let mut ops = Vec::new();
-                for (op, e) in rest {
-                    ops.push(op);
-                    operands.push(e);
+            .then(chain_operator().then(app).repeated().collect::<Vec<(Ident, LTerm)>>())
+            .validate(|(first, rest): (LTerm, Vec<(Ident, LTerm)>), _, emitter| {
+                match FIXITIES.with(|f| fixity::group(first.clone(), rest.clone(), &f.borrow())) {
+                    Ok(t) => t,
+                    // said, and read on as if they grouped to the left
+                    Err((op, why)) => {
+                        emitter.emit(Rich::custom(SimpleSpan::from(op.span.range()), why));
+                        rest.into_iter().fold(first, |l, (op, r)| fixity::binary(l, op, r))
+                    }
                 }
-                let mut acc = operands.pop().expect("there is a first operand");
-                while let (Some(op), Some(lhs)) = (ops.pop(), operands.pop()) {
-                    acc = binary(lhs, (op, acc));
-                }
-                acc
-            })
-            .boxed();
-
-        // comparisons do not chain
-        let compare = cons
-            .clone()
-            .then(operator("<").or(operator("==")).or(operator("!=")).or(operator(">")).or(operator("<=")).or(operator(">=")).then(cons).or_not())
-            .map(move |(lhs, rest)| match rest {
-                None => lhs,
-                Some(rest) => binary(lhs, rest),
             })
             .boxed();
 

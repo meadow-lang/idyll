@@ -27,7 +27,6 @@ use Std.String as S
   | @token("module") Module
   | @token("use") Use
   | @token("data") Data
-  | @token("type") Type
   | @token("Type") TypeUpper
   | @token("let") Let
   | @token("in") In
@@ -35,8 +34,10 @@ use Std.String as S
   | @token("effect") Effect
   | @token("handle") Handle
   | @token("with") With
-  | @token("do") Do
   | @token("case") Case
+  -- short-circuiting, and so not operators a program can define
+  | @token("and") And
+  | @token("or") Or
   | @token("of") Of
   | @token("if") If
   | @token("then") Then
@@ -80,8 +81,10 @@ use Std.String as S
   -- a named hole, `?name`: a goal left for later (longer than the `?` an
   -- operator would take, so it wins)
   | @regex("\\?[_a-z][A-Za-z0-9_']*") Goal String
-  | @regex(":[!$%&*+./<=>?@|\\\\~:^`\\-]+") ConOpIdent String
-  | @regex("[!$%&*+./<=>?@|\\\\~:^`\\-]+") OpIdent String
+  | @regex(":[!$%&*+./<=>?@|\\\\~:^\\-]+") ConOpIdent String
+  | @regex("[!$%&*+./<=>?@|\\\\~:^\\-]+") OpIdent String
+  -- a name in backticks, `` `div` ``, written between its arguments
+  | @regex("`[A-Za-z_][A-Za-z0-9_']*(\\.[A-Za-z_][A-Za-z0-9_']*)*`") Backtick String
   -- The pieces of a string with holes, `"a ${x} b"`, each as written: the
   -- text up to the first `${` (`"a ${`), between two holes, and after the
   -- last (`} b"`). The lexer reads such a string by hand (`interpolated`),

@@ -218,3 +218,15 @@ e = 3
     assert!(out.diagnostics.is_empty(), "{:#?}", diags(&out));
     assert_eq!(out.evaluation, Some(Evaluation::Value("(3, Just 1)".into())));
 }
+
+// A fixity goes with the package that declares it: `<+>` binds looser than
+// `*` in the program as in the package, and not as `infixl 9`, as an
+// operator nothing declares would.
+#[test]
+fn a_packages_fixities_hold_in_the_packages_that_depend_on_it() {
+    let ops = library("Ops", "infixl 6 <+>\n\n@pub\n(<+>) : Int -> Int -> Int\na <+> b = a * 10 + b\n", &[], &[], 1);
+    assert_eq!(ops.fixities.len(), 1);
+    let out = program("use Ops ((<+>))\n\nmain () = printInt (1 <+> 2 * 3)\n", &[&ops], &[("Ops", &ops)]);
+    assert!(out.diagnostics.is_empty(), "{:#?}", diags(&out));
+    assert_eq!(out.printed, "16\n");
+}

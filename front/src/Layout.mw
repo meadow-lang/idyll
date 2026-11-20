@@ -41,7 +41,6 @@ use Std.Result.Result.*
   | Module
   | Use
   | Data
-  | Type
   | TypeUpper
   | Let
   | In
@@ -49,8 +48,9 @@ use Std.Result.Result.*
   | Effect
   | Handle
   | With
-  | Do
   | Case
+  | And
+  | Or
   | Of
   | If
   | Then
@@ -89,6 +89,7 @@ use Std.Result.Result.*
   | UpperIdent String
   | LowerIdent String
   | Goal String
+  | BacktickIdent String
   | ConOpIdent String
   | OpIdent String
   -- the pieces of a string with holes, as written (see `Lex`)
@@ -116,7 +117,6 @@ use Std.Result.Result.*
   | Raw.Module -> Just Token.Module
   | Raw.Use -> Just Token.Use
   | Raw.Data -> Just Token.Data
-  | Raw.Type -> Just Token.Type
   | Raw.TypeUpper -> Just Token.TypeUpper
   | Raw.Let -> Just Token.Let
   | Raw.In -> Just Token.In
@@ -124,8 +124,9 @@ use Std.Result.Result.*
   | Raw.Effect -> Just Token.Effect
   | Raw.Handle -> Just Token.Handle
   | Raw.With -> Just Token.With
-  | Raw.Do -> Just Token.Do
   | Raw.Case -> Just Token.Case
+  | Raw.And -> Just Token.And
+  | Raw.Or -> Just Token.Or
   | Raw.Of -> Just Token.Of
   | Raw.If -> Just Token.If
   | Raw.Then -> Just Token.Then
@@ -164,6 +165,7 @@ use Std.Result.Result.*
   | Raw.UpperIdent s -> Just (Token.UpperIdent s)
   | Raw.LowerIdent s -> Just (Token.LowerIdent s)
   | Raw.Goal s -> Just (Token.Goal s)
+  | Raw.Backtick s -> Just (Token.BacktickIdent s)
   | Raw.ConOpIdent s -> Just (Token.ConOpIdent s)
   | Raw.OpIdent s -> Just (Token.OpIdent s)
   | Raw.InterpStart s -> Just (Token.InterpStart s)
@@ -178,7 +180,6 @@ use Std.Result.Result.*
   | Token.Module -> "module"
   | Token.Use -> "use"
   | Token.Data -> "data"
-  | Token.Type -> "type"
   | Token.TypeUpper -> "Type"
   | Token.Let -> "let"
   | Token.In -> "in"
@@ -186,8 +187,9 @@ use Std.Result.Result.*
   | Token.Effect -> "effect"
   | Token.Handle -> "handle"
   | Token.With -> "with"
-  | Token.Do -> "do"
   | Token.Case -> "case"
+  | Token.And -> "and"
+  | Token.Or -> "or"
   | Token.Of -> "of"
   | Token.If -> "if"
   | Token.Then -> "then"
@@ -226,6 +228,7 @@ use Std.Result.Result.*
   | Token.UpperIdent s -> s
   | Token.LowerIdent s -> s
   | Token.Goal s -> s
+  | Token.BacktickIdent s -> s
   | Token.ConOpIdent s -> s
   | Token.OpIdent s -> s
   | Token.InterpStart s -> s
@@ -284,14 +287,13 @@ fun isLBrace (a : At) : Bool = match a.raw with | Ok Raw.LBrace -> True | _ -> F
 
 -- --- heralds --------------------------------------------------------------------
 
--- What closes a block, besides dedenting: `in` a `let`'s, `where` a `do`'s,
--- and nothing a `where`'s, an `of`'s or a `with`'s.
-data Closer = ByIn | ByWhere | Never
+-- What closes a block, besides dedenting: `in` a `let`'s, and nothing a
+-- `where`'s, an `of`'s or a `with`'s.
+data Closer = ByIn | Never
 
 fun herald (r : Result String Raw) : Maybe Closer =
   match r with
   | Ok Raw.Let -> Just Closer.ByIn
-  | Ok Raw.Do -> Just Closer.ByWhere
   | Ok Raw.Where -> Just Closer.Never
   | Ok Raw.Of -> Just Closer.Never
   | Ok Raw.With -> Just Closer.Never
@@ -302,7 +304,6 @@ fun byKeyword (c : Closer) : Bool = match c with | Closer.Never -> False | _ -> 
 fun closes (r : Result String Raw) (c : Closer) : Bool =
   match (r, c) with
   | (Ok Raw.In, Closer.ByIn) -> True
-  | (Ok Raw.Where, Closer.ByWhere) -> True
   | _ -> False
 
 -- --- marking --------------------------------------------------------------------
@@ -438,7 +439,7 @@ fun open (st : State) (col : Int) (closer : Closer) (at : Int) (ms : [Mark]) (i 
   match st.stack with
   | ctx :: _ if col > ctx.column -> (i + 1, pushed (emit st Token.VLBrace at) col closer)
   -- nothing further right: an empty block, and what follows is a new line
-  -- of the one around it -- but a `let`'s or a `do`'s must hold something
+  -- of the one around it -- but a `let`'s must hold something
   | _ :: _ if not (byKeyword closer) -> indent (emit (emit st Token.VLBrace at) Token.VRBrace at) col at ms i
   | ctx :: _ ->
       ( i + 1,

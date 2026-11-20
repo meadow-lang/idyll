@@ -232,6 +232,43 @@ pub enum Decl {
 /// called that.
 pub const TUPLE: &str = "(,)";
 
+/// Which way operators of one level group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum Assoc {
+    /// `infixl`: `a - b - c` is `(a - b) - c`
+    Left,
+    /// `infixr`: `a :: b :: c` is `a :: (b :: c)`
+    Right,
+    /// `infix`: `a == b == c` is an error asking for parentheses
+    None,
+}
+
+/// How an operator groups: which way, and how tightly, from 0 (loosest) to
+/// 9; application is tighter than any. A fixity belongs to an operator's
+/// spelling, and a package's go with it to the packages that depend on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct Fixity {
+    pub assoc: Assoc,
+    pub level: u8,
+}
+
+impl Fixity {
+    pub fn new(assoc: Assoc, level: u8) -> Fixity {
+        Fixity { assoc, level }
+    }
+}
+
+impl std::fmt::Display for Fixity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let kw = match self.assoc {
+            Assoc::Left => "infixl",
+            Assoc::Right => "infixr",
+            Assoc::None => "infix",
+        };
+        write!(f, "{kw} {}", self.level)
+    }
+}
+
 /// A whole source text, which is one module: declarations, then optionally
 /// an expression to evaluate against them (what the REPL is given, mostly).
 #[derive(Clone, Debug, PartialEq, Eq)]

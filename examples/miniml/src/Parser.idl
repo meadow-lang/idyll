@@ -40,7 +40,7 @@ keyword : (s : String) -> Parser String String
 keyword s = lexeme (P.try (P.thenSkip (C.string s) (P.notFollowedBy (P.satisfy isIdentChar))))
 
 reserved : Vector String
-reserved = V.fromList ("let" :: "rec" :: "in" :: "fun" :: "if" :: "then" :: "else" :: "true" :: "false" :: Nil)
+reserved = V.fromList #["let", "rec", "in", "fun", "if", "then", "else", "true", "false"]
 
 isReserved : (name : String) -> Bool
 isReserved name = V.any (\(r : String) -> r == name) reserved
@@ -81,15 +81,15 @@ binaryE ops next = P.chainl1 (P.defer next) (P.choice (V.map (\(o : String) -> P
 
 @terminating
 mulE : (u : ()) -> Parser String Expr
-mulE u = binaryE (V.fromList ("*" :: "/" :: Nil)) appE
+mulE u = binaryE (V.fromList #["*", "/"]) appE
 
 @terminating
 addE : (u : ()) -> Parser String Expr
-addE u = binaryE (V.fromList ("+" :: "-" :: Nil)) mulE
+addE u = binaryE (V.fromList #["+", "-"]) mulE
 
 @terminating
 cmpE : (u : ()) -> Parser String Expr
-cmpE u = binaryE (V.fromList ("==" :: "<=" :: ">=" :: "<" :: ">" :: Nil)) addE
+cmpE u = binaryE (V.fromList #["==", "<=", ">=", "<", ">"]) addE
 
 @terminating
 atomE : (u : ()) -> Parser String Expr
