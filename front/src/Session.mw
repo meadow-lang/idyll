@@ -25,6 +25,7 @@ use Idyll.Check (checkedAgainst, checkedWanting)
 use Idyll.Eval (quote)
 use Idyll.Elab (goalNamed)
 use Idyll.Tc (Tc, CtorInfo, ctorInfo)
+use Idyll.Elab (Checker)
 use Std.Collections.HashMap as Hm
 use Std.Char as Ch
 use Idyll.Core as C
@@ -333,7 +334,7 @@ fun goalEntry (said : String) : (String, String) =
 
 -- The constructors of the data type `t` is, if it is one: each as a
 -- pattern names it, and its fields.
-fun constructorsOf (tc : Tc s) (t : Core) : Maybe [(String, Int)] ! { St s | e } =
+fun constructorsOf (tc : Checker s) (t : Core) : Maybe [(String, Int)] ! { St s | e } =
   match headOf t with
   | Core.Opaque d dname ->
       M.map

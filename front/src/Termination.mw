@@ -154,7 +154,7 @@ fun lambdas (c : Core) (most : Int) : (Int, Core) =
 -- makes something smaller, and if not, whether one of its calls counts an
 -- `Int` down with nothing to stop it; if it ends, and it is not under a
 -- binder, its members unfold from now on.
-@pub fun checkTermination (tc : Tc s) (ctx : Ctx) (members : [(Int, Core)]) : (Bool, Bool) ! { St s | e } =
+@pub fun checkTermination (tc : Tc s f p) (ctx : Ctx) (members : [(Int, Core)]) : (Bool, Bool) ! { St s | e } =
   let index = V.foldl (\m i -> match V.get members i with | Just (u, _) -> Hm.insert u i m | None -> m) Hm.empty (V.range 0 (V.len members)) in
   -- with metavariables solved and definitions inlined, so that calls made
   -- through them are seen
@@ -217,7 +217,7 @@ fun lambdas (c : Core) (most : Int) : (Int, Core) =
 -- The instances of a recursive group checked at the top level that do not
 -- unfold already (`Checker::unfold_instances`): each unfolds where a
 -- `case` reads a type or a superclass off it.
-@pub fun unfoldInstances (tc : Tc s) (ctx : Ctx) (members : [(Int, Core)]) : () ! { St s | e } =
+@pub fun unfoldInstances (tc : Tc s f p) (ctx : Ctx) (members : [(Int, Core)]) : () ! { St s | e } =
   if V.any (\l -> X.infoAt ctx l == Just Info.Bound) (V.range 0 ctx.lvl) then ()
   else
     V.foldl

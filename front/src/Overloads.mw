@@ -27,6 +27,7 @@ use Idyll.Core as C
 use Idyll.Hir (Ident)
 use Idyll.Value (Value)
 use Idyll.Tc (Tc, Meta, MetaInfo, Origin, CtorInfo)
+use Idyll.Elab (Checker, saveChecker, restoreChecker)
 use Idyll.Tc as T
 use Idyll.Eval (force, eval, quote)
 use Idyll.Usage (Usage)
@@ -44,7 +45,7 @@ use Std.Maybe.Maybe.*
 
 -- The node of the overloaded name heading `t` (`f` in `f a b`), if it heads
 -- one whose meaning has not been chosen.
-@pub fun overloadedHead (tc : Tc s) (t : HirExpr) : Maybe Int ! { St s | e } = headNode (getRef tc.hir) (getRef tc.forced) t
+@pub fun overloadedHead (tc : Checker s) (t : HirExpr) : Maybe Int ! { St s | e } = headNode (getRef tc.front.hir) (getRef tc.forced) t
 
 fun headNode (h : HirArena) forced (t : HirExpr) : Maybe Int =
   match (h, t) with
@@ -54,26 +55,26 @@ fun headNode (h : HirArena) forced (t : HirExpr) : Maybe Int =
   | HirExprVar x -> if V.len (hirIdentUniques h x) > 1 and not (Hm.member t forced) then Just t else None
   | _ -> None
 
-fun errorCount (tc : Tc s) : Int ! { St s | e } = V.len (getRef tc.errors)
+fun errorCount (tc : Checker s) : Int ! { St s | e } = V.len (getRef tc.errors)
 
 -- Elaborate `t`, against `wanted` if it is to have a type, as headed by the
 -- meaning `u` of its overloaded name: whether that made no error. Tried, and
 -- undone.
-fun fits (tc : Tc s) (ctx : Ctx) (t : HirExpr) (head : Int) (u : Int) (wanted : Maybe Value) : Bool ! { St s | e } =
-  let saved = T.save tc in
+fun fits (tc : Checker s) (ctx : Ctx) (t : HirExpr) (head : Int) (u : Int) (wanted : Maybe Value) : Bool ! { St s | e } =
+  let saved = saveChecker tc in
   let before = errorCount tc in
   let w = elaborateAs tc ctx t head u wanted in
   let ok = errorCount tc == before in
-  let w2 = T.restore tc saved in
+  let w2 = restoreChecker tc saved in
   ok
 
 -- The meanings of the name heading `t` that fit.
-fun fitting (tc : Tc s) (ctx : Ctx) (t : HirExpr) (head : Int) (wanted : Maybe Value) : [Int] ! { St s | e } =
-  let h = getRef tc.hir in
+fun fitting (tc : Checker s) (ctx : Ctx) (t : HirExpr) (head : Int) (wanted : Maybe Value) : [Int] ! { St s | e } =
+  let h = getRef tc.front.hir in
   V.filter (\u -> fits tc ctx t head u wanted) (hirIdentUniques h (hirExprVarIdent h head))
 
 -- Elaborate `t` for real, its overloaded name meaning `u`.
-fun elaborateAs (tc : Tc s) (ctx : Ctx) (t : HirExpr) (head : Int) (u : Int) (wanted : Maybe Value) : (Core, Value, Usage) ! { St s | e } =
+fun elaborateAs (tc : Checker s) (ctx : Ctx) (t : HirExpr) (head : Int) (u : Int) (wanted : Maybe Value) : (Core, Value, Usage) ! { St s | e } =
   let w = setRef tc.forced (Hm.insert head u (getRef tc.forced)) in
   match wanted with
   | Just ty ->
@@ -82,7 +83,7 @@ fun elaborateAs (tc : Tc s) (ctx : Ctx) (t : HirExpr) (head : Int) (u : Int) (wa
   | None -> infer tc ctx t
 
 -- Infer or check a term headed by an overloaded name, at `head`.
-@pub fun overloaded (tc : Tc s) (ctx : Ctx) (t : HirExpr) (head : Int) (wanted : Maybe Value) : (Core, Value, Usage) ! { St s | e } =
+@pub fun overloaded (tc : Checker s) (ctx : Ctx) (t : HirExpr) (head : Int) (wanted : Maybe Value) : (Core, Value, Usage) ! { St s | e } =
   let fs = fitting tc ctx t head wanted in
   if V.len fs == 1 then elaborateAs tc ctx t head (V.getOr 0 fs 0) wanted
   else if V.isEmpty fs then
@@ -97,7 +98,7 @@ fun elaborateAs (tc : Tc s) (ctx : Ctx) (t : HirExpr) (head : Int) (u : Int) (wa
     in
     let m = T.newMeta tc (MetaInfo.MetaInfo (getRef tc.at) (Origin.Inferred "an overloaded name's meaning") None) in
     let w1 = setRef tc.placeholders (V.pushBack (getRef tc.placeholders) m) in
-    let w2 = setRef tc.deferred (V.pushBack (getRef tc.deferred) (m, head, t, ctx, ty)) in
+    let w2 = setRef tc.front.deferred (V.pushBack (getRef tc.front.deferred) (m, head, t, ctx, ty)) in
     (Core.Meta m, ty, U.none ())
 
 -- What is put off, chosen once the definition it is in has been checked:
@@ -105,10 +106,10 @@ fun elaborateAs (tc : Tc s) (ctx : Ctx) (t : HirExpr) (head : Int) (u : Int) (wa
 -- auto argument (which may wait on an overloaded name, and the other way
 -- round). Choosing one can settle another, so round until nothing changes;
 -- what still has several meanings then is ambiguous.
-@pub fun settle (tc : Tc s) : () ! { St s | e } =
+@pub fun settle (tc : Checker s) : () ! { St s | e } =
   let autos = A.settleAutos tc False in
-  let waiting = getRef tc.deferred in
-  let w = setRef tc.deferred [] in
+  let waiting = getRef tc.front.deferred in
+  let w = setRef tc.front.deferred [] in
   let progress =
     V.foldl
       (\pr d ->
@@ -124,21 +125,21 @@ fun elaborateAs (tc : Tc s) (ctx : Ctx) (t : HirExpr) (head : Int) (u : Int) (wa
               let w3 = giveUp tc m ctx ty in
               True
             else
-              let w2 = setRef tc.deferred (V.pushBack (getRef tc.deferred) d) in
+              let w2 = setRef tc.front.deferred (V.pushBack (getRef tc.front.deferred) d) in
               pr)
       autos
       waiting
   in
-  if progress and not (V.isEmpty (getRef tc.deferred) and V.isEmpty (getRef tc.deferredAutos) and V.isEmpty (getRef tc.deferredLiterals)) then settle tc
+  if progress and not (V.isEmpty (getRef tc.front.deferred) and V.isEmpty (getRef tc.deferredAutos) and V.isEmpty (getRef tc.deferredLiterals)) then settle tc
   else
     let w4 = A.settleAutos tc True in
-    let rest = getRef tc.deferred in
-    let w5 = setRef tc.deferred [] in
+    let rest = getRef tc.front.deferred in
+    let w5 = setRef tc.front.deferred [] in
     V.foldl
       (\acc d ->
         match d with
         | (m, head, t, ctx, ty) ->
-            let h = getRef tc.hir in
+            let h = getRef tc.front.hir in
             let x = hirExprVarIdent h head in
             let fs = fitting tc ctx t head (Just ty) in
             let w6 = saidAt tc head (ambiguous tc ctx (hirIdentText h x) (hirIdentUniques h x) fs (shownWanted tc ctx ty)) in
@@ -149,7 +150,7 @@ fun elaborateAs (tc : Tc s) (ctx : Ctx) (t : HirExpr) (head : Int) (u : Int) (wa
 -- What was reported about a term put off is all there is to say: it stands
 -- for an error, of a type that is one, so that nothing about it is reported
 -- again.
-fun giveUp (tc : Tc s) (m : Int) (ctx : Ctx) (ty : Value) : () ! { St s | e } =
+fun giveUp (tc : Checker s) (m : Int) (ctx : Ctx) (ty : Value) : () ! { St s | e } =
   let w =
     match force tc ty with
     | Value.Flex f _ -> (match T.meta tc f with | Just (Meta.Unsolved _) -> T.solve tc f Value.Error | _ -> ())
@@ -159,35 +160,35 @@ fun giveUp (tc : Tc s) (m : Int) (ctx : Ctx) (ty : Value) : () ! { St s | e } =
 
 -- The type wanted where a name is used, to show: nothing, if nothing is
 -- known of it yet.
-fun shownWanted (tc : Tc s) (ctx : Ctx) (ty : Value) : [Core] ! { St s | e } =
+fun shownWanted (tc : Checker s) (ctx : Ctx) (ty : Value) : [Core] ! { St s | e } =
   match force tc ty with
   | Value.Flex _ _ -> []
   | _ -> [quote tc ctx.lvl ty]
 
 -- `report`, found at the name at `head`: a term put off is reported long
 -- after it was checked.
-fun saidAt (tc : Tc s) (head : Int) (report : () -> () ! { St s | e }) : () ! { St s | e } =
+fun saidAt (tc : Checker s) (head : Int) (report : () -> () ! { St s | e }) : () ! { St s | e } =
   let before = getRef tc.at in
-  let w = setRef tc.at (metaHirExpr (getRef tc.hir) head) in
+  let w = setRef tc.at (metaHirExpr (getRef tc.front.hir) head) in
   let w2 = report () in
   setRef tc.at before
 
 -- Say that no meaning of the name at `head` fits.
-fun noMeaning (tc : Tc s) (ctx : Ctx) (head : Int) (wanted : [Core]) : () ! { St s | e } =
-  let h = getRef tc.hir in
+fun noMeaning (tc : Checker s) (ctx : Ctx) (head : Int) (wanted : [Core]) : () ! { St s | e } =
+  let h = getRef tc.front.hir in
   let x = hirExprVarIdent h head in
   saidAt tc head (\() -> noneFits tc ctx (hirIdentText h x) (hirIdentUniques h x) wanted)
 
-fun noneFits (tc : Tc s) (ctx : Ctx) (name : String) (us : [Int]) (wanted : [Core]) : () ! { St s | e } =
+fun noneFits (tc : Checker s) (ctx : Ctx) (name : String) (us : [Int]) (wanted : [Core]) : () ! { St s | e } =
   T.errorOf tc "NoMeaning" wanted (V.concat [[name], candidateLines tc ctx name us []])
 
 -- Say that the meanings `fs` of `name` all fit.
-fun ambiguous (tc : Tc s) (ctx : Ctx) (name : String) (us : [Int]) (fs : [Int]) (wanted : [Core]) : () -> () ! { St s | e } =
+fun ambiguous (tc : Checker s) (ctx : Ctx) (name : String) (us : [Int]) (fs : [Int]) (wanted : [Core]) : () -> () ! { St s | e } =
   \() -> T.errorOf tc "AmbiguousName" wanted (V.concat [[name, show (V.len fs), example tc name fs], candidateLines tc ctx name us fs])
 
 -- Each meaning in `us` of `name`, as a line: how it is written, its type,
 -- and where it is from; those in `fs` marked.
-fun candidateLines (tc : Tc s) (ctx : Ctx) (name : String) (us : [Int]) (fs : [Int]) : [String] ! { St s | e } =
+fun candidateLines (tc : Checker s) (ctx : Ctx) (name : String) (us : [Int]) (fs : [Int]) : [String] ! { St s | e } =
   V.map
     (\u ->
       let ty = match X.lookup ctx (Ident.Ident [u] name) with | Just (_, t, _) -> C.shown (getRef tc.linear) (quote tc ctx.lvl t) | None -> "?" in
@@ -199,7 +200,7 @@ fun candidateLines (tc : Tc s) (ctx : Ctx) (name : String) (us : [Int]) (fs : [I
 
 -- One of the meanings in `fs`, written in full, to show how to say which is
 -- meant.
-fun example (tc : Tc s) (name : String) (fs : [Int]) : String ! { St s | e } =
+fun example (tc : Checker s) (name : String) (fs : [Int]) : String ! { St s | e } =
   let known = V.concatMap (\u -> match (getRef tc.meaningOf) u with | (Just w, Just o) -> [(w, o)] | _ -> []) fs in
   match V.head known with
   | Just (written, origin) ->
@@ -209,11 +210,11 @@ fun example (tc : Tc s) (name : String) (fs : [Int]) : String ! { St s | e } =
 
 -- The constructor a pattern means, for what it is matched against: of a
 -- name with several meanings, the one of the type `ty` has.
-@pub fun patternCtor (tc : Tc s) (ctx : Ctx) (pat : HirPattern) (c : HirIdent) (ty : Value) : Maybe Int ! { St s | e } =
+@pub fun patternCtor (tc : Checker s) (ctx : Ctx) (pat : HirPattern) (c : HirIdent) (ty : Value) : Maybe Int ! { St s | e } =
   match Hm.lookup pat (getRef tc.patternChoice) with
   | Just u -> Just u
   | None ->
-      let us = hirIdentUniques (getRef tc.hir) c in
+      let us = hirIdentUniques (getRef tc.front.hir) c in
       if V.len us <= 1 then V.head us
       else
         let candidates =
@@ -233,13 +234,13 @@ fun example (tc : Tc s) (name : String) (fs : [Int]) : String ! { St s | e } =
               let w = setRef tc.patternChoice (Hm.insert pat u (getRef tc.patternChoice)) in
               Just u
             else
-              let name = hirIdentText (getRef tc.hir) c in
+              let name = hirIdentText (getRef tc.front.hir) c in
               let wanted = [quote tc ctx.lvl (force tc ty)] in
               let w = if V.isEmpty fs then noneFits tc ctx name us wanted else (ambiguous tc ctx name us fs wanted) () in
               None
 
 -- The constructor a pattern was found to mean, or the one it names.
-@pub fun patternUnique (tc : Tc s) (pat : HirPattern) (c : HirIdent) : Int ! { St s | e } =
+@pub fun patternUnique (tc : Checker s) (pat : HirPattern) (c : HirIdent) : Int ! { St s | e } =
   match Hm.lookup pat (getRef tc.patternChoice) with
   | Just u -> u
-  | None -> V.getOr (0 - 1) (hirIdentUniques (getRef tc.hir) c) 0
+  | None -> V.getOr (0 - 1) (hirIdentUniques (getRef tc.front.hir) c) 0

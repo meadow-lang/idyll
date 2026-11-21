@@ -7,13 +7,8 @@
 
 use Std.St (StRef, newRef, getRef, setRef)
 use Std.Macro (Reflect)
-use Lingua.Lang as Lang
-use Lingua.Lang (spanMeta)
-use Idyll.Rename (HirArena, HirExpr, freezeHir, newHirBuilder)
-use Idyll.Elab (Cx)
 use Idyll.Usage (Usage)
 use Idyll.Usage as U
-use Std.St (runSt)
 use Idyll.Value (Value, Env, Poly)
 use Idyll.Core (Core)
 use Idyll.Hir (Literal, Ident)
@@ -34,28 +29,28 @@ use Std.Maybe.Maybe.*
 
 -- A metavariable: where it was made (a node of the HIR), where it came
 -- from, and its type if that is known.
-@pub data MetaInfo = MetaInfo Lang.Meta Origin (Maybe MetaTy)
+@pub data MetaInfo p = MetaInfo p Origin (Maybe MetaTy)
 
 -- A use that had to fit a grade still being worked out: at what length of
 -- context, what was used, what was allowed, and whether it is a field's.
 @pub data Waiting = Waiting Int Poly Value Bool String
 
-@pub data Meta = Unsolved MetaInfo | Solved Value MetaInfo
+@pub data Meta p = Unsolved (MetaInfo p) | Solved Value (MetaInfo p)
 
 -- A `_` the program wrote, kept to be reported at the end, when what fills
 -- it is known: the context's length, the metavariable applied to its
 -- spine, and its type.
-@pub data HoleAt = HoleAt Lang.Meta Int Value Value
+@pub data HoleAt p = HoleAt p Int Value Value
 
 -- A goal, `?name`: where it is, its name, and the type wanted there, at a
 -- context's length; and the variables of the definition it is in, each its
 -- name, its level and its type.
-@pub data GoalAt = GoalAt Lang.Meta String Int Value [(String, Int, Value)]
+@pub data GoalAt p = GoalAt p String Int Value [(String, Int, Value)]
 
 -- A question kept for later: at a context's length, a term of type
 -- `actual` where `expected` was wanted, which neither unified nor failed
 -- for good, one being stuck on a metavariable applied to something.
-@pub data Postponed = Postponed Lang.Meta Int Value Value
+@pub data Postponed p = Postponed p Int Value Value
 
 -- What is known of a constructor: its name, its data type's unique, its
 -- position among the type's constructors, how many erased arguments come
@@ -76,12 +71,13 @@ use Std.Maybe.Maybe.*
 @derive(Reflect)
 @pub data OpInfo = OpInfo String Int Int Int Int Bool
 
-@pub record Tc s = {
-  -- the renamed program being checked, whose tables everything reads
-  hir : StRef s HirArena,
-  -- the elaborating pass's function for an expression (`Elab.install`)
-  elab : StRef s (Cx s -> HirExpr -> (Core, Value, Usage) ! { St s }),
-  metas : StRef s [Meta],
+-- The checker's state, generic in two things a front end decides: `f`, what
+-- it keeps of its own beside this (Idyll's is `Elab.Front`: the renamed
+-- program, and the function that elaborates an expression), and `p`, its
+-- places in the source, which this only keeps and hands back.
+@pub record Tc s f p = {
+  front : f,
+  metas : StRef s [Meta p],
   -- the type of every constant (a data type, a constructor, a recursive
   -- definition), by its unique
   constants : StRef s (HashMap Int Value),
@@ -115,22 +111,22 @@ use Std.Maybe.Maybe.*
   errors : StRef s [String],
   -- the same, each where it was found: the node being checked then (`at`,
   -- which `Elab.elaborate` keeps), for the language server
-  placed : StRef s [(Lang.Meta, String)],
+  placed : StRef s [(p, String)],
   -- the errors said in words where the Rust checker's are (`Messages`):
   -- each where, its kind, and what its words are made of, its types kept
   -- as Core to be shown once their metavariables are solved
-  reported : StRef s [(Lang.Meta, Report)],
-  at : StRef s Lang.Meta,
+  reported : StRef s [(p, Report)],
+  at : StRef s p,
   -- a place asked about (or -1), and the innermost node checked yet that
   -- holds it, with its type: what hover says
   want : StRef s Int,
-  found : StRef s (Maybe (Lang.Meta, Core)),
+  found : StRef s (Maybe (p, Core)),
   -- with `want` -2: each binder with no type written, by its unique, the
   -- level it was bound at and the type it got -- an editor's inlay hints
   binders : StRef s [(Int, Int, Value)],
-  holes : StRef s [HoleAt],
-  goals : StRef s [GoalAt],
-  postponed : StRef s [Postponed],
+  holes : StRef s [HoleAt p],
+  goals : StRef s [GoalAt p],
+  postponed : StRef s [Postponed p],
   -- whether the definition being checked is in a linear module, where an
   -- unannotated binder is used once
   linear : StRef s Bool,
@@ -225,18 +221,17 @@ use Std.Maybe.Maybe.*
   -- that the application being inferred is the head of `f x @{d}`
   autoGiven : StRef s Bool,
   -- the meaning chosen for an overloaded name, by the node it was written
-  -- at; the terms put off because more than one still fitted (the
-  -- placeholder, the name's node, the term, its context, and what it is to
-  -- be); and the constructor chosen for an overloaded name in a pattern
+  -- at (the terms put off because more than one still fitted are the front
+  -- end's, `Elab.Front`); and the constructor chosen for an overloaded name
+  -- in a pattern
   forced : StRef s (HashMap Int Int),
-  deferred : StRef s [(Int, Int, HirExpr, Ctx, Value)],
   patternChoice : StRef s (HashMap Int Int),
   -- which data types are linear, as far as worked out; and the type
   -- parameters given what may be a linear type, to check once it is known:
   -- the length of the context, what was given, the parameter, and where
   -- (see `Linear`)
   linearDatas : StRef s (HashMap Int Bool),
-  linearWants : StRef s [(Int, Value, String, Lang.Meta)],
+  linearWants : StRef s [(Int, Value, String, p)],
   -- the prelude's `fromInt` and `fromFloat`, by name, which a literal at a
   -- type variable is read through; and how (`Elab.literalThrough`, given
   -- here as `elab` is)
@@ -247,10 +242,11 @@ use Std.Maybe.Maybe.*
   instanced : StRef s (Ctx -> Literal -> Value -> Bool ! { St s })
 }
 
-@pub fun new () =
+-- A checker with nothing in it yet: the front end's own state, and the
+-- place an error found before any node is checked is said to be at.
+@pub fun new (front : f) (nowhere : p) =
   Tc {
-    hir = newRef (runSt (\() -> freezeHir (newHirBuilder ()))),
-    elab = newRef (\cx t -> (Core.Error, Value.Error, U.unknown ())),
+    front = front,
     metas = newRef [],
     constants = newRef Hm.empty,
     linearDatas = newRef Hm.empty,
@@ -269,7 +265,7 @@ use Std.Maybe.Maybe.*
     errors = newRef [],
     placed = newRef [],
     reported = newRef [],
-    at = newRef (spanMeta 0 0),
+    at = newRef nowhere,
     want = newRef (0 - 1),
     found = newRef None,
     binders = newRef [],
@@ -317,17 +313,16 @@ use Std.Maybe.Maybe.*
     large = newRef Hm.empty,
     autoGiven = newRef False,
     forced = newRef Hm.empty,
-    deferred = newRef [],
     patternChoice = newRef Hm.empty
   }
 
 -- The checker as it is now, to go back to (`restore`): a trial, of a
 -- candidate for an auto argument, is made on the checker itself and then
--- undone. Every table is a value, so this is a copy of each.
-@pub fun save (tc : Tc s) : Tc s ! { St s | e } =
+-- undone. Every table is a value, so this is a copy of each, and `copy`
+-- copies the front end's.
+@pub fun save (tc : Tc s f p) copy : Tc s f p ! { St s | e } =
   Tc {
-    hir = newRef (getRef tc.hir),
-    elab = newRef (getRef tc.elab),
+    front = copy tc.front,
     metas = newRef (getRef tc.metas),
     constants = newRef (getRef tc.constants),
     linearDatas = newRef (getRef tc.linearDatas),
@@ -394,14 +389,12 @@ use Std.Maybe.Maybe.*
     large = newRef (getRef tc.large),
     autoGiven = newRef (getRef tc.autoGiven),
     forced = newRef (getRef tc.forced),
-    deferred = newRef (getRef tc.deferred),
     patternChoice = newRef (getRef tc.patternChoice)
   }
 
--- Back to what `save` kept.
-@pub fun restore (tc : Tc s) (saved : Tc s) : () ! { St s | e } =
-  let w0 = setRef tc.hir (getRef saved.hir) in
-  let w1 = setRef tc.elab (getRef saved.elab) in
+-- Back to what `save` kept, the front end's own by `back`.
+@pub fun restore (tc : Tc s f p) (saved : Tc s f p) back : () ! { St s | e } =
+  let w0 = back tc.front saved.front in
   let w2 = setRef tc.metas (getRef saved.metas) in
   let w3 = setRef tc.constants (getRef saved.constants) in
   let wLinearDatas = setRef tc.linearDatas (getRef saved.linearDatas) in
@@ -456,11 +449,10 @@ use Std.Maybe.Maybe.*
   let w41 = setRef tc.deferredAutos (getRef saved.deferredAutos) in
   let w41b = setRef tc.deferredLiterals (getRef saved.deferredLiterals) in
   let w42 = setRef tc.forced (getRef saved.forced) in
-  let w43 = setRef tc.deferred (getRef saved.deferred) in
   let w44 = setRef tc.patternChoice (getRef saved.patternChoice) in
   ()
 
-@pub fun problem (tc : Tc s) (why : String) = setRef tc.problems (V.pushBack (getRef tc.problems) why)
+@pub fun problem (tc : Tc s f p) (why : String) = setRef tc.problems (V.pushBack (getRef tc.problems) why)
 
 -- What an error's words are made of: its kind, the types it names, and
 -- anything else it says (a name, a grade), as the Rust checker's
@@ -469,12 +461,12 @@ use Std.Maybe.Maybe.*
 
 -- An error with what its words are made of (`Report`), found at the node
 -- being checked.
-@pub fun errorOf (tc : Tc s) (kind : String) (types : [Core]) (words : [String]) =
+@pub fun errorOf (tc : Tc s f p) (kind : String) (types : [Core]) (words : [String]) =
   let w = setRef tc.reported (V.pushBack (getRef tc.reported) (getRef tc.at, Report.Report kind types words)) in
   error tc kind
 
 -- What `act` finds wrong, found at `at`.
-@pub fun placing (tc : Tc s) (at : Lang.Meta) act =
+@pub fun placing (tc : Tc s f p) (at : p) act =
   let before = getRef tc.at in
   let w = setRef tc.at at in
   let x = act () in
@@ -482,71 +474,59 @@ use Std.Maybe.Maybe.*
   x
 
 -- An error with what its words are made of, found at `at`.
-@pub fun errorAt (tc : Tc s) (at : Lang.Meta) (kind : String) (types : [Core]) (words : [String]) =
+@pub fun errorAt (tc : Tc s f p) (at : p) (kind : String) (types : [Core]) (words : [String]) =
   placing tc at (\() -> errorOf tc kind types words)
 
 -- Where metavariable `m` was made, and so where what was left to it is
 -- found.
-@pub fun placeOfMeta (tc : Tc s) (m : Int) : Lang.Meta ! { St s | e } =
+@pub fun placeOfMeta (tc : Tc s f p) (m : Int) : p ! { St s | e } =
   match meta tc m with
   | Just entry -> (match infoOf entry with | MetaInfo.MetaInfo at _ _ -> at)
   | None -> getRef tc.at
 
 -- An error, by its kind's name, found at the node being checked.
-@pub fun error (tc : Tc s) (kind : String) =
+@pub fun error (tc : Tc s f p) (kind : String) =
   let w = setRef tc.placed (V.pushBack (getRef tc.placed) (getRef tc.at, kind)) in
   setRef tc.errors (V.pushBack (getRef tc.errors) kind)
 
--- A node's type, kept if the node holds the place asked about and lies
--- within the one kept before: what hover says of the place.
-@pub fun noteType (tc : Tc s) (at : Lang.Meta) (ty : Core) =
-  let w = getRef tc.want in
-  match at with
-  | Lang.Meta.Meta a b ->
-      if w < a or w > b then ()
-      else
-        (match getRef tc.found with
-         | Just (Lang.Meta.Meta a0 b0, _) -> if a >= a0 and b <= b0 then setRef tc.found (Just (at, ty)) else ()
-         | None -> setRef tc.found (Just (at, ty)))
-
 -- A binder with no type written, and the type it got at level `lvl`,
 -- kept when an editor asks for every binder's type (`want` -2).
-@pub fun noteBinder (tc : Tc s) (unique : Int) (lvl : Int) (ty : Value) =
+@pub fun noteBinder (tc : Tc s f p) (unique : Int) (lvl : Int) (ty : Value) =
   if getRef tc.want != 0 - 2 then () else setRef tc.binders (V.pushBack (getRef tc.binders) (unique, lvl, ty))
 
 -- A goal reported: a warning, said where it is, its kind `Goal` among
 -- the errors the dumps compare.
-@pub fun goal (tc : Tc s) (at : Lang.Meta) (said : String) =
+@pub fun goal (tc : Tc s f p) (at : p) (said : String) =
   let w = setRef tc.placed (V.pushBack (getRef tc.placed) (at, said)) in
   setRef tc.errors (V.pushBack (getRef tc.errors) "Goal")
 
 -- Something this checker cannot check yet.
-@pub fun cannot (tc : Tc s) (what : String) = setRef tc.unsupported (V.pushBack (getRef tc.unsupported) what)
+@pub fun cannot (tc : Tc s f p) (what : String) = setRef tc.unsupported (V.pushBack (getRef tc.unsupported) what)
 
 -- A new metavariable, unsolved.
-@pub fun newMeta (tc : Tc s) (info : MetaInfo) =
+@pub fun newMeta (tc : Tc s f p) (info : MetaInfo p) =
   let ms = getRef tc.metas in
   let w = setRef tc.metas (V.pushBack ms (Meta.Unsolved info)) in
   V.len ms
 
-@pub fun meta (tc : Tc s) (m : Int) : Maybe Meta ! { St s | e } = V.get (getRef tc.metas) m
+@pub fun meta (tc : Tc s f p) (m : Int) : Maybe (Meta p) ! { St s | e } = V.get (getRef tc.metas) m
 
-@pub fun solve (tc : Tc s) (m : Int) (v : Value) =
+@pub fun solve (tc : Tc s f p) (m : Int) (v : Value) =
   let ms = getRef tc.metas in
   match V.get ms m with
   | Just (Meta.Unsolved info) -> setRef tc.metas (V.set ms m (Meta.Solved v info))
   | Just (Meta.Solved _ info) -> setRef tc.metas (V.set ms m (Meta.Solved v info))
   | None -> ()
 
-@pub fun infoOf (entry : Meta) : MetaInfo =
+@pub fun infoOf (entry : Meta p) : MetaInfo p =
   match entry with
   | Meta.Unsolved i -> i
   | Meta.Solved _ i -> i
 
 -- A fresh key, for a slot no name refers to.
-@pub fun freshKey (tc : Tc s) : Int ! { St s | e } =
+@pub fun freshKey (tc : Tc s f p) : Int ! { St s | e } =
   let k = getRef tc.nextKey - 1 in
   let w = setRef tc.nextKey k in
   k
 
-@pub fun ctorInfo (tc : Tc s) (c : Int) : Maybe CtorInfo ! { St s | e } = Hm.lookup c (getRef tc.ctors)
+@pub fun ctorInfo (tc : Tc s f p) (c : Int) : Maybe CtorInfo ! { St s | e } = Hm.lookup c (getRef tc.ctors)

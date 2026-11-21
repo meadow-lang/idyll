@@ -642,8 +642,9 @@ auto arguments in turn, 16 deep. A goal with an error in it (`Debug ?!`,
 for a field whose type named nothing) is not searched for: its error has
 been reported, and every instance would fit it, each one's own goals
 tried in turn, exponentially many. Each trial is made on the checker itself
-and undone: `T.save` copies every table of `Tc` (each a value, so the copy
-is cheap) and `T.restore` puts them back. The innermost auto binder that
+and undone: `Elab.saveChecker` copies every table of `Tc` and of `Front`
+(each a value, so the copy is cheap) and `Elab.restoreChecker` puts them
+back. The innermost auto binder that
 fits is taken; of the hints, exactly one must fit, and only those whose
 type could come to the one wanted (by its head and its first argument's)
 are tried. A search whose type still has a metavariable in it waits
@@ -874,7 +875,12 @@ of its own:
   `bytesToHex`, ...) Meadow's primitives of the same names.
 - **`Tc.mw`**: the checker's state: the metacontext (each metavariable
   unsolved or solved, with where it came from and its type), the errors,
-  the holes, the kept questions, and the tables of what is declared.
+  the holes, the kept questions, and the tables of what is declared. It is
+  `Tc s f p`, generic in what a front end keeps of its own (`f`) and in
+  its places in the source (`p`), which it only keeps and hands back.
+  Idyll's checker is `Elab.Checker s`, `Tc s (Front s) Lang.Meta`, where
+  `Elab.Front` holds the renamed program, the function that elaborates an
+  expression, and the terms an overloaded name put off.
 - **`Eval.mw`** (`eval.rs`): evaluation and reading back (`quote`),
   primitives computing on literals, `case` choosing its alternative, and
   `force`, which looks a metavariable's solution up wherever one is met.
@@ -1309,6 +1315,23 @@ A tool reads its file each time, so the agent may edit it between calls.
 - **Cut**: building Cut and writing its text (rev d12a905, which has the
   roles and native sections, effect variables on definitions, and `@many`
   operations).
+
+### The kernel, to be shared as Strata
+
+Meadow's two-level plan (`docs/2LTT.md` in the meadow repository) checks
+both its levels with a kernel built from this one, a package called
+Strata that this compiler will then depend on. Why: one dependent checker
+for the two languages, not two that drift apart in their logic (Axiom K,
+`Int`, `Div`, which terms a type may mention). To be moved as they are,
+these modules import only each other and Std: `Grade`, `Hir`, `Core`,
+`Value`, `Tc`, `Ctx`, `Eval`, `Unify`, `Termination`, `Positivity`,
+`Usage` and `Graph` (Tarjan's algorithm, which `Scc` and `Positivity`
+share). What ties the checker's state to Idyll's front end is `Tc`'s `f`
+and `p` (above). `Matching` is still Idyll's own, using the elaborator
+and the renamed program throughout: its case trees are to be split from
+its patterns' elaboration first. A change to the kernel keeps the
+differential tests passing, so that the Rust compiler remains a check on
+it.
 
 ## Meadow lessons
 

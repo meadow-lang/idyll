@@ -10,6 +10,7 @@ use Idyll.Core (Core)
 use Idyll.Core as C
 use Idyll.Value as Va
 use Idyll.Tc (Tc, Meta)
+use Idyll.Elab (Checker)
 use Idyll.Eval (eval, quote)
 use Idyll.Ctx (Ctx, Binder, Entry, Info)
 use Idyll.Ctx as X
@@ -44,7 +45,7 @@ use Std.Maybe.Maybe.*
 
 -- How a recursive definition unfolds, closed for another package: its case
 -- tree normalised where it was defined, under its parameters.
-fun exportUnfold (tc : Tc s) (ctx : Ctx) (u : (Va.Env, Int, Core)) : Unfold ! { St s | e } =
+fun exportUnfold (tc : Checker s) (ctx : Ctx) (u : (Va.Env, Int, Core)) : Unfold ! { St s | e } =
   match u with
   | (env, arity, body) ->
       let top = Va.envLen env in

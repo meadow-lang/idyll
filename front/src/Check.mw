@@ -16,6 +16,7 @@ use Idyll.Value (Value, Row)
 use Idyll.Value as Va
 use Idyll.Hir (Icit, Literal)
 use Idyll.Tc (Tc)
+use Idyll.Elab (Checker, newChecker)
 use Idyll.Scc (interleave)
 use Idyll.Tc as T
 use Idyll.Eval (force, apply, eval, quote, row, rowParts, splitComp)
@@ -58,7 +59,7 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
 -- program, the expression under the top-level definitions as `let`s, in
 -- the context of the builtins and the primitives.
 @pub record Checked s = {
-  tc : Tc s,
+  tc : Checker s,
   bodyType : Maybe Core,
   program : Maybe Core,
   -- the same, written out, with its recursive definitions and what each
@@ -132,9 +133,9 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
   -- (each data type after the definitions it mentions, and what mentions
   -- it after it: `Scc.interleave`)
   let (datasInOrder, dataAfter, groups) = interleave h datas (hirModuleGroups h root) in
-  let tc = T.new () in
+  let tc = newChecker () in
   let wwant = setRef tc.want want in
-  let wh = setRef tc.hir h in
+  let wh = setRef tc.front.hir h in
   let out = newElaboratedBuilder () in
   let we = install tc out in
   let w0 = setRef tc.terminating m.terminating in
@@ -281,7 +282,7 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
 -- type, a transparent one with its value, a recursive one with its case
 -- tree, and everything known about their data types, effects and natives,
 -- hints, traits and instances (`Checker::import`).
-fun importAll (tc : Tc s) (ctx : Ctx) (deps : [Compiled]) : Ctx ! { St s | e } =
+fun importAll (tc : Checker s) (ctx : Ctx) (deps : [Compiled]) : Ctx ! { St s | e } =
   -- (the definitions already in the context, the builtins' and the
   -- primitives', by their names: what an exported right-hand side names
   -- them by)
@@ -439,8 +440,8 @@ fun meaningHere (m : Renamed) (u : Int) : (Maybe String, Maybe String) =
 
 -- The effects the runtime handles: the prelude's `Eff`, or failing that,
 -- `Div`.
-fun worldOf (tc : Tc s) (ctx : Ctx) (prelude : [HirGroup]) : Value ! { St s | e } =
-  let h = getRef tc.hir in
+fun worldOf (tc : Checker s) (ctx : Ctx) (prelude : [HirGroup]) : Value ! { St s | e } =
+  let h = getRef tc.front.hir in
   let eff = V.find (\b -> hirIdentText h (hirBindName h b) == "Eff") (V.concatMap (bindsOf h) prelude) in
   match M.andThen (\b -> X.lookup ctx (identOf h (hirBindName h b))) eff with
   | Just (core, _, _) -> eval tc ctx.env core
@@ -449,7 +450,7 @@ fun worldOf (tc : Tc s) (ctx : Ctx) (prelude : [HirGroup]) : Value ! { St s | e 
 -- The effects in `usage` that nothing will handle: all but the world's. A
 -- row variable nothing has said anything about is no more effects, at the
 -- top, where nothing more will.
-fun unhandled (tc : Tc s) (ctx : Ctx) (usage : Usage) (world : Value) =
+fun unhandled (tc : Checker s) (ctx : Ctx) (usage : Usage) (world : Value) =
   match effectsOf tc usage with
   | None -> ()
   | Just effects ->
@@ -469,7 +470,7 @@ fun unhandled (tc : Tc s) (ctx : Ctx) (usage : Usage) (world : Value) =
            else T.errorOf tc "UnhandledEffects" [quote tc ctx.lvl (row tc left)] [])
 
 -- `main : () -> () ! e`, every effect in `e` the runtime's.
-fun checkMain (tc : Tc s) (ctx : Ctx) (main : Ident) (world : Value) : Bool ! { St s | e } =
+fun checkMain (tc : Checker s) (ctx : Ctx) (main : Ident) (world : Value) : Bool ! { St s | e } =
   match X.lookup ctx main with
   | None -> False
   | Just (_, ty, _) ->
@@ -492,7 +493,7 @@ fun sorted (xs : [String]) : [String] =
 
 fun distinct (xs : [String]) : [String] = V.foldl (\acc x -> if V.elem x acc then acc else V.pushBack acc x) [] xs
 
-fun dump (tc : Tc s) (m : Renamed) (body : Maybe Core) : String ! { St s | e } =
+fun dump (tc : Checker s) (m : Renamed) (body : Maybe Core) : String ! { St s | e } =
   let cannot = getRef tc.unsupported in
   if not (V.isEmpty cannot) then "(unsupported: " ++ S.join ", " (sorted (distinct cannot)) ++ ")"
   else
@@ -520,7 +521,7 @@ fun qualified (m : Renamed) (u : Int) (name : String) : String =
 -- The groups entered and the data types declared, each data type once the
 -- groups before it are (`dataAfter`, from `Scc.interleave`), from group `g`
 -- and data type `d` on.
-fun enterInterleaved (tc : Tc s) (ctx : Ctx) (datas : [HirData]) (dataAfter : [Int]) (groups : [HirGroup]) (g : Int) (d : Int) owed lets =
+fun enterInterleaved (tc : Checker s) (ctx : Ctx) (datas : [HirData]) (dataAfter : [Int]) (groups : [HirGroup]) (g : Int) (d : Int) owed lets =
   if g >= V.len groups and d >= V.len datas then (ctx, owed, lets)
   else
     let upto0 = if d < V.len datas then (let a = V.getOr 0 dataAfter d in if a < V.len groups then a else V.len groups) else V.len groups in
