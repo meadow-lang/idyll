@@ -27,7 +27,7 @@ use Idyll.Fixity (Declared)
 use Idyll.Fixity as F
 use Idyll.Layout (layout)
 use Idyll.Rename (renamePackageWith, PackageNames, Exported, namesExports)
-use Idyll.Hir (Visibility)
+use Strata.Hir (Visibility)
 use Idyll.Scc (sccModule)
 use Idyll.Check (checkedAgainst)
 use Idyll.Messages (diagnosticsIn, drawnInFiles, problemAt)
@@ -320,8 +320,12 @@ fun filesOf (dir : String) : [String] ! { Fs | e } =
 
 -- Which compiler this is, for what a build keeps: `make!` tells programs
 -- apart by the file running, and under `meadow run` that is `meadow`, whatever
--- front/ now says. So it is the sources this program was built from.
-fun compilerSalt () : String = show (hash (prelude, stdModules, compilerSources))
+-- front/ now says. So it is the sources this program was built from, and
+-- its manifest, which pins the revision of the kernel it was built with
+-- (Strata's modules being the rest of the checker).
+fun compilerSalt () : String = show (hash (prelude, stdModules, compilerSources, compilerManifest))
+
+def compilerManifest : String = includeStr "../Meadow.toml"
 
 -- The packages a package depends on: each line of its `[dependencies]`,
 -- `Util = { path = "../util" }`, or by git, `Json = { git = "<url>",
@@ -699,26 +703,19 @@ def compilerSources : [String] =
   [
     includeStr "Agent.mw",
     includeStr "Auto.mw",
-    includeStr "Cases.mw",
     includeStr "Cek.mw",
     includeStr "Check.mw",
     includeStr "Compiled.mw",
-    includeStr "Core.mw",
-    includeStr "Ctx.mw",
     includeStr "CutAst.mw",
     includeStr "Decl.mw",
     includeStr "Driver.mw",
     includeStr "Elab.mw",
     includeStr "Elaborated.mw",
-    includeStr "Eval.mw",
     includeStr "Find.mw",
     includeStr "Fixity.mw",
     includeStr "Format.mw",
-    includeStr "Grade.mw",
-    includeStr "Graph.mw",
     includeStr "Handlers.mw",
     includeStr "Harness.mw",
-    includeStr "Hir.mw",
     includeStr "Interface.mw",
     includeStr "Layout.mw",
     includeStr "Lex.mw",
@@ -731,7 +728,6 @@ def compilerSources : [String] =
     includeStr "Num.mw",
     includeStr "Overloads.mw",
     includeStr "Parts.mw",
-    includeStr "Positivity.mw",
     includeStr "Prompt.mw",
     includeStr "Prove.mw",
     includeStr "Prune.mw",
@@ -743,12 +739,7 @@ def compilerSources : [String] =
     includeStr "Surface.mw",
     includeStr "Syntax.mw",
     includeStr "Tactic.mw",
-    includeStr "Tc.mw",
-    includeStr "Termination.mw",
     includeStr "Typer.mw",
-    includeStr "Unify.mw",
-    includeStr "Usage.mw",
-    includeStr "Value.mw",
     includeStr "Workspace.mw",
     includeStr "World.mw"
   ]

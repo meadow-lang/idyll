@@ -851,7 +851,8 @@ renamer does not do yet either), and choosing by type among the names
 several `use`s bring in. No program of the corpus needs either.
 
 The machinery underneath, each piece a port of its Rust module with tests
-of its own:
+of its own (all but `Matching` now Strata's, the kernel shared with
+Meadow: see *The kernel: Strata*):
 
 - **`Grade.mw`** (`grade.rs`): the semiring of use counts (`0`, `1`,
   `0..1`, `1..∞`, `0..∞`, exact counts), with its laws as tests.
@@ -1320,24 +1321,34 @@ A tool reads its file each time, so the agent may edit it between calls.
   roles and native sections, effect variables on definitions, and `@many`
   operations).
 
-### The kernel, to be shared as Strata
+- **Strata**: the kernel, shared with Meadow (below), from the meadow
+  repository's `Strata/` at a pinned revision.
 
-Meadow's two-level plan (`docs/2LTT.md` in the meadow repository) checks
-both its levels with a kernel built from this one, a package called
-Strata that this compiler will then depend on. Why: one dependent checker
-for the two languages, not two that drift apart in their logic (Axiom K,
-`Int`, `Div`, which terms a type may mention). To be moved as they are,
-these modules import only each other and Std: `Grade`, `Hir`, `Core`,
-`Value`, `Tc`, `Ctx`, `Eval`, `Unify`, `Termination`, `Positivity`,
-`Usage`, `Graph` (Tarjan's algorithm, which `Scc` and `Positivity`
-share) and `Cases` (splitting a variable into its constructors, with
-their indices unified). What ties the checker's state to Idyll's front
-end is `Tc`'s `f` and `p` (above). `Matching` stays Idyll's own: it reads
-Idyll's patterns (overloaded constructors, number literals, sequences,
-implicit and dot patterns) and decides where to split, as a front end's
-match compiler does, splitting with `Cases`. A change to the kernel keeps the
-differential tests passing, so that the Rust compiler remains a check on
-it.
+### The kernel: Strata
+
+The kernel is a package of its own, **Strata**, in the meadow repository
+(`Strata/`), which this compiler depends on by revision and Meadow's
+two-level plan (`docs/2LTT.md` there) checks both its levels with. Why: one
+dependent checker for the two languages, not two that drift apart in their
+logic (Axiom K, `Int`, `Div`, which terms a type may mention). Its modules
+were this compiler's, moved as they were, and are used as `Strata.X`:
+`Grade`, `Hir`, `Core`, `Value`, `Tc`, `Ctx`, `Eval`, `Unify`,
+`Termination`, `Positivity`, `Usage`, `Graph` (Tarjan's algorithm, which
+`Scc` and `Positivity` share) and `Cases` (splitting a variable into its
+constructors, with their indices unified). The sections above that name
+them (`Tc.mw`, `Unify.mw`, ...) describe Strata's files.
+
+What ties the checker's state to Idyll's front end is `Tc`'s `f` and `p`
+(above). `Matching` stays Idyll's own: it reads Idyll's patterns
+(overloaded constructors, number literals, sequences, implicit and dot
+patterns) and decides where to split, as a front end's match compiler
+does, splitting with `Cases`.
+
+A change to the kernel is made in Strata, and keeps these differential
+tests passing (or comes with the change here that does), so that the Rust
+compiler remains a check on it. front/'s manifest is part of what
+`Driver.compilerSalt` hashes, so a new Strata revision is a new compiler
+to the caches.
 
 ## Meadow lessons
 
