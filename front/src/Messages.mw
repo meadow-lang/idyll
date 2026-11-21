@@ -12,12 +12,13 @@
 -- to each other, kind by kind as each is ported. Any other error is said
 -- by its kind (`said`).
 
-use Idyll.Tc (Tc, Report)
-use Idyll.Tc as T
-use Idyll.Core as C
-use Idyll.Core (Core)
-use Idyll.Grade as G
-use Idyll.Eval (quote)
+use Strata.Tc (Tc, Report)
+use Idyll.Elab (Checker)
+use Strata.Tc as T
+use Strata.Core as C
+use Strata.Core (Core)
+use Strata.Grade as G
+use Strata.Eval (quote)
 use Lingua.Diagnostic (Diagnostic, errorAt, warningAt, withLabel, withNote, whereAt, message, renderAll)
 use Lingua.Lang (Meta, metaStart)
 use Std.St (StRef, getRef)
@@ -65,7 +66,7 @@ fun labelsIn (inside : Meta -> Bool) (d : Diagnostic) : Diagnostic =
 -- The checker's errors, each once where it was found, in words; a goal,
 -- and a hole filled in, are warnings, since what is around them can still
 -- be worked on.
-@pub fun diagnosticsIn (tc : Tc s) (linear : Bool) : [Diagnostic] ! { St s | e } =
+@pub fun diagnosticsIn (tc : Checker s) (linear : Bool) : [Diagnostic] ! { St s | e } =
   let reports = getRef tc.reported in
   -- (the solutions quoted only if some error is to be said with types)
   let sols = if V.isEmpty reports then [] else solutionsOf tc in
@@ -279,7 +280,7 @@ fun times (linear : Bool) (used : Core) : String =
 -- Each metavariable's solution, quoted, if it is solved with one that
 -- mentions no variable: what the Rust checker's `solved_in` puts in its
 -- place.
-fun solutionsOf (tc : Tc s) : [Maybe Core] ! { St s | e } =
+fun solutionsOf (tc : Checker s) : [Maybe Core] ! { St s | e } =
   V.map
     (\entry ->
       match entry with

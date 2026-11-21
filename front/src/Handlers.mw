@@ -14,23 +14,24 @@
 -- use of `k`: more than once only for an operation declared `@many`.
 
 use Std.St (StRef, newRef, getRef, setRef)
-use Idyll.Hir (Icit)
-use Idyll.Core (Core, OpClause)
-use Idyll.Core as C
-use Idyll.Value (Value, Elim, Row)
-use Idyll.Value as Va
-use Idyll.Grade as G
-use Idyll.Tc (Tc, EffectInfo, OpInfo)
-use Idyll.Tc as T
-use Idyll.Eval (force, apply, eval, quote, row, rowParts, toPoly, splitComp)
-use Idyll.Unify (unify, subtype, effectsFit)
-use Idyll.Usage (Usage)
-use Idyll.Usage as U
-use Idyll.Ctx (Ctx)
-use Idyll.Ctx as X
+use Strata.Hir (Icit)
+use Strata.Core (Core, OpClause)
+use Strata.Core as C
+use Strata.Value (Value, Elim, Row)
+use Strata.Value as Va
+use Strata.Grade as G
+use Strata.Tc (Tc, EffectInfo, OpInfo)
+use Idyll.Elab (Checker)
+use Strata.Tc as T
+use Strata.Eval (force, apply, eval, quote, row, rowParts, toPoly, splitComp)
+use Strata.Unify (unify, subtype, effectsFit)
+use Strata.Usage (Usage)
+use Strata.Usage as U
+use Strata.Ctx (Ctx)
+use Strata.Ctx as X
 use Idyll.Elab (check, infer, insert, freshMeta, leaveBinder, lam, keyOf, hirOf)
-use Idyll.Hir (Ident)
-use Idyll.Hir as H
+use Strata.Hir (Ident)
+use Strata.Hir as H
 use Idyll.Rename
 use Lingua.Lang (Meta, metaStart, spanMeta)
 use Std.Collections.Vector as V
@@ -74,11 +75,11 @@ fun paramsOf (c : Clause) : [Ident] = c.params
 
 fun bodyOf (c : Clause) : HirExpr = c.body
 
-fun opInfo (tc : Tc s) (u : Int) : OpInfo ! { St s | e } =
+fun opInfo (tc : Checker s) (u : Int) : OpInfo ! { St s | e } =
   M.unwrapOr (OpInfo.OpInfo "?" (0 - 1) 0 0 0 False) (Hm.lookup u (getRef tc.ops))
 
 -- Which effect the clauses handle: the one their operations all belong to.
-fun effectOf (tc : Tc s) (clauses : [Clause]) : Maybe (Maybe Int) ! { St s | e } =
+fun effectOf (tc : Checker s) (clauses : [Clause]) : Maybe (Maybe Int) ! { St s | e } =
   V.foldl
     (\acc c ->
       match (acc, opOf c) with
@@ -106,7 +107,7 @@ fun effectOf (tc : Tc s) (clauses : [Clause]) : Maybe (Maybe Int) ! { St s | e }
     clauses
 
 -- `handle body with clauses`, against `expected` if there is one.
-@pub fun handled (tc : Tc s) (ctx : Ctx) (body : HirExpr) (written : [HirHandleClause]) (expected : Maybe Value) : (Core, Value, Usage) ! { St s | e } =
+@pub fun handled (tc : Checker s) (ctx : Ctx) (body : HirExpr) (written : [HirHandleClause]) (expected : Maybe Value) : (Core, Value, Usage) ! { St s | e } =
   let clauses = clausesOf (hirOf tc) written in
   match effectOf tc clauses with
   | None -> failed ()
@@ -121,7 +122,7 @@ fun effectOf (tc : Tc s) (clauses : [Clause]) : Maybe (Maybe Int) ! { St s | e }
 fun clausesFor (clauses : [Clause]) (op : Int) : [Clause] =
   V.filter (\c -> match opOf c with | Just x -> H.uniqueOf x == op | None -> False) clauses
 
-fun handleEffect (tc : Tc s) (ctx : Ctx) (body : HirExpr) (clauses : [Clause]) (expected : Maybe Value) (eff : Int) (info : EffectInfo) : (Core, Value, Usage) ! { St s | e } =
+fun handleEffect (tc : Checker s) (ctx : Ctx) (body : HirExpr) (clauses : [Clause]) (expected : Maybe Value) (eff : Int) (info : EffectInfo) : (Core, Value, Usage) ! { St s | e } =
   match info with
   | EffectInfo.EffectInfo effName kinds ops ->
       let missing = V.filter (\op -> V.isEmpty (clausesFor clauses op)) ops in
@@ -208,7 +209,7 @@ fun handleEffect (tc : Tc s) (ctx : Ctx) (body : HirExpr) (clauses : [Clause]) (
 
 -- One operation's clause: its Core, and its usage, which counts as often as
 -- the operation may be performed.
-fun opClause (tc : Tc s) (ctx : Ctx) (clauses : [Clause]) (op : Int) (args : [Value]) (result : Value) (resumed : Value) (effName : String) : Maybe (OpClause, Usage) ! { St s | e } =
+fun opClause (tc : Checker s) (ctx : Ctx) (clauses : [Clause]) (op : Int) (args : [Value]) (result : Value) (resumed : Value) (effName : String) : Maybe (OpClause, Usage) ! { St s | e } =
   match (V.head (clausesFor clauses op), opInfo tc op) with
   | (None, _) -> None
   | (Just c, OpInfo.OpInfo opName _ _ _ arity many) ->
@@ -261,14 +262,14 @@ fun opClause (tc : Tc s) (ctx : Ctx) (clauses : [Clause]) (op : Int) (args : [Va
                 let whole = V.foldl (\acc eb -> match eb with | (name, at, dom) -> lam tc at name zero dom acc) withXs (V.reverse erased) in
                 Just (OpClause.OpClause op opName (V.len erased) whole, U.scale u2 (Va.polyConstant G.any))))
 
-fun implicits (tc : Tc s) (inner : Ctx) (acc : [(String, Ctx, Value)]) (ty : Value) : (Ctx, [(String, Ctx, Value)], Value) ! { St s | e } =
+fun implicits (tc : Checker s) (inner : Ctx) (acc : [(String, Ctx, Value)]) (ty : Value) : (Ctx, [(String, Ctx, Value)], Value) ! { St s | e } =
   match force tc ty with
   | Value.Pi name Icit.Implicit _ _ dom cod ->
       let lvl = inner.lvl in
       implicits tc (X.bind inner None name dom) (V.pushBack acc (name, inner, dom)) (apply tc cod (Va.vvar lvl name))
   | fty -> (inner, acc, fty)
 
-fun explicits (tc : Tc s) (inner : Ctx) (acc : [(Ident, Ctx, Value, Value)]) (xs : [Ident]) (ty : Value) : Maybe (Ctx, [(Ident, Ctx, Value, Value)], Value) ! { St s | e } =
+fun explicits (tc : Checker s) (inner : Ctx) (acc : [(Ident, Ctx, Value, Value)]) (xs : [Ident]) (ty : Value) : Maybe (Ctx, [(Ident, Ctx, Value, Value)], Value) ! { St s | e } =
   match V.head xs with
   | None -> Just (inner, acc, ty)
   | Just x ->
