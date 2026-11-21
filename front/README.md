@@ -762,6 +762,10 @@ That unification solves the context's own variables (not metavariables):
 matching `xs : Vec n a` against `Cons x rest` defines `n` as `S m`,
 everywhere it occurs, the goal included. Two different constructors mean
 the case cannot happen, so `head : Vec (S n) a -> a` needs no `Nil` case.
+The branching and that unification are the kernel's (`Cases.mw`:
+`instantiate`, `unifyIndices`, `refine`), given by `Matching` the rule for
+how often a field may be used (`fieldGrades`); reading the patterns and
+deciding where to branch is `Matching`'s.
 Missing cases and unreachable equations are reported. `if` is a `case` on
 `Bool`. The fields a split binds are used as often as the value was, times
 their own grade (once, for a data type's fields).
@@ -1325,11 +1329,13 @@ for the two languages, not two that drift apart in their logic (Axiom K,
 `Int`, `Div`, which terms a type may mention). To be moved as they are,
 these modules import only each other and Std: `Grade`, `Hir`, `Core`,
 `Value`, `Tc`, `Ctx`, `Eval`, `Unify`, `Termination`, `Positivity`,
-`Usage` and `Graph` (Tarjan's algorithm, which `Scc` and `Positivity`
-share). What ties the checker's state to Idyll's front end is `Tc`'s `f`
-and `p` (above). `Matching` is still Idyll's own, using the elaborator
-and the renamed program throughout: its case trees are to be split from
-its patterns' elaboration first. A change to the kernel keeps the
+`Usage`, `Graph` (Tarjan's algorithm, which `Scc` and `Positivity`
+share) and `Cases` (splitting a variable into its constructors, with
+their indices unified). What ties the checker's state to Idyll's front
+end is `Tc`'s `f` and `p` (above). `Matching` stays Idyll's own: it reads
+Idyll's patterns (overloaded constructors, number literals, sequences,
+implicit and dot patterns) and decides where to split, as a front end's
+match compiler does, splitting with `Cases`. A change to the kernel keeps the
 differential tests passing, so that the Rust compiler remains a check on
 it.
 

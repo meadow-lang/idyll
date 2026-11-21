@@ -56,6 +56,7 @@ use Idyll.Literals as L
 use Idyll.Overloads as O
 use Idyll.Sequences (checkSeq, inferSeq, arrayLiteral, arrayElement)
 use Idyll.Termination (checkTermination, unfoldInstances, arity)
+use Idyll.Cases (mentions)
 use Std.Collections.Vector as V
 use Std.Sort as Srt
 use Std.Collections.HashMap as Hm
@@ -131,7 +132,6 @@ fun isUnitLit (h : HirArena) (t : HirExpr) : Bool =
   | HirExprLit l -> l == Literal.Unit
   | _ -> False
 
--- Whether a Core term mentions the variable of index `i`.
 -- Whether a type mentions slot `i` where unification could find it: as an
 -- argument of a data type (`MapBy k o v`), not inside a function's
 -- application (`T.Elem self`, which does not say what `self` is).
@@ -153,26 +153,6 @@ fun spineOfCore (c : Core) (args : [Core]) : (Core, [Core]) =
   match c with
   | Core.App f a -> spineOfCore f (V.append [a] args)
   | _ -> (c, args)
-
-@pub fun mentions (c : Core) (i : Int) : Bool =
-  match c with
-  | Core.Var j _ -> j == i
-  | Core.Pi _ _ g r dom cod -> mentions g i or mentions r i or mentions dom i or mentions cod (i + 1)
-  | Core.Lam _ b -> mentions b (i + 1)
-  | Core.Let _ e b -> mentions e i or mentions b (i + 1)
-  | Core.App a b -> mentions a i or mentions b i
-  | Core.BoxTy a b -> mentions a i or mentions b i
-  | Core.GradeAdd a b -> mentions a i or mentions b i
-  | Core.GradeMul a b -> mentions a i or mentions b i
-  | Core.GradeRange a b -> mentions a i or mentions b i
-  | Core.BoxIntro a -> mentions a i
-  | Core.Unbox a -> mentions a i
-  | Core.Runtime _ a -> mentions a i
-  | Core.Comp a e -> mentions a i or mentions e i
-  | Core.Handle b r ops -> mentions b i or mentions r i or V.any (\o -> match o with | OpClause.OpClause _ _ _ body -> mentions body i) ops
-  | Core.Row ls ts -> V.any (\x -> mentions x i) (V.append ls ts)
-  | Core.Case s alts -> mentions s i or V.any (\a -> match a with | CaseAlt.CaseAlt _ _ vars body -> mentions body (i + V.len vars)) alts
-  | _ -> False
 
 -- --- metavariables ---------------------------------------------------------------
 

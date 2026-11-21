@@ -52,12 +52,13 @@ use Idyll.Usage (Usage)
 use Idyll.Usage as U
 use Idyll.Ctx (Ctx, Info)
 use Idyll.Ctx as X
-use Idyll.Elab (check, infer, insert, freshMeta, closeEffects, leaveKey, leaveBinder, lam, gradeFits, fitsOrWaits, joinUsage, defaultGrade, mentions, keyOf, effectsOf, hirOf, isLinear, inferredGrade, settleGrade)
+use Idyll.Elab (check, infer, insert, freshMeta, closeEffects, leaveKey, leaveBinder, lam, gradeFits, fitsOrWaits, joinUsage, defaultGrade, keyOf, effectsOf, hirOf, isLinear, inferredGrade, settleGrade)
 use Idyll.Hir (Ident)
 use Idyll.Hir as H
 use Idyll.Rename
 use Lingua.Lang as Lang
 use Idyll.Sequences (seqPatternCtors)
+use Idyll.Cases (Unified, ctorOf, isCtor, ctorArity, describe, instantiate, unifyIndices, refineGoal, abandon, resubst)
 use Std.Collections.Vector as V
 use Std.String as S
 use Std.Collections.HashMap as Hm
@@ -77,11 +78,6 @@ data Problem = Problem HirClause Int [HirPattern] [(HirPattern, Target)] [(Ident
 data How = ByCon | ByLit Literal
 
 data Step = Done | Fails | Splits Int How | Failed
-
--- Unifying a constructor's indices with a variable's: possible (the
--- context with what was learned, and the substitution), impossible, or no
--- telling.
-data Unified = Refined Ctx (Maybe Env) | Absurd | Stuck Value Value
 
 -- What one match finds out along the way.
 record Matcher s = {
@@ -129,11 +125,6 @@ fun peel (hir : HirArena) (p : HirPattern) : HirPattern =
   | _ -> p
 
 fun uniqueIn (hir : HirArena) (x : HirIdent) : Int = V.getOr (0 - 1) (hirIdentUniques hir x) 0
-
-fun ctorOf (tc : Checker s) (c : Int) : CtorInfo ! { St s | e } =
-  M.unwrapOr (CtorInfo.CtorInfo "?" (0 - 1) 0 0 0) (T.ctorInfo tc c)
-
-fun isCtor (tc : Checker s) (c : Int) : Bool ! { St s | e } = M.isSome (T.ctorInfo tc c)
 
 -- --- entry points ------------------------------------------------------------------
 
@@ -296,27 +287,6 @@ fun runMatch (tc : Checker s) (ctx : Ctx) (clauses : [HirClause]) (problems : [P
         (V.range 0 (V.len clauses))
     in
     (core, usage)
-
--- A case no clause covers, as the patterns that would match it: each
--- argument as far as the splits have made it out (`_` where they have not),
--- as the Rust checker's `describe` says it.
-fun describe (tc : Checker s) (ctx : Ctx) (args : [Int]) : String ! { St s | e } =
-  let nested = V.len args > 1 in
-  S.join " " (V.map (\l -> shownPattern tc (X.value ctx l) nested) args)
-
-fun shownPattern (tc : Checker s) (v : Value) (nested : Bool) : String ! { St s | e } =
-  match force tc v with
-  | Value.Opaque c name sp ->
-      (match T.ctorInfo tc c with
-       | Just (CtorInfo.CtorInfo _ _ _ params _) ->
-           let args = V.concatMap (\e -> match e with | Elim.App a -> [shownPattern tc a True] | _ -> []) (V.drop sp params) in
-           if V.isEmpty args then name
-           else
-             let shown = if S.startsWith ":" name and V.len args == 2 then "${V.getOr "" args 0} ${name} ${V.getOr "" args 1}" else name ++ " " ++ S.join " " args in
-             if nested then "(" ++ shown ++ ")" else shown
-       | None -> "_")
-  | Value.Lit l -> C.literalShown l
-  | _ -> "_"
 
 -- --- the tree ---------------------------------------------------------------------
 
@@ -809,7 +779,7 @@ fun splitData (tc : Checker s) (m : Matcher s) (ctx : Ctx) (problems : [Problem]
     V.map
       (\c ->
         let hints = V.map (\i -> fieldHint tc ctx problems k c i) (V.range 0 (ctorArity tc c)) in
-        (c, instantiate tc ctx k c hints))
+        (c, instantiate tc ctx k c hints (fieldGrades tc ctx k)))
       ctors
   in
   -- an erased value can be matched on when its type leaves it one
@@ -871,6 +841,15 @@ fun slotGrade (tc : Checker s) (ctx : Ctx) (k : Int) : Value ! { St s | e } =
   | Just g -> g
   | None -> gradeValue (if isLinear tc (X.typeAt ctx k) then G.one else defaultGrade tc)
 
+-- The grade a field of a type taken out of slot `k` is multiplied by: the
+-- fields of a value have its grade; but a value of a linear type is used
+-- once only for its fields of linear types, the rest copied out of it as
+-- often as wanted.
+fun fieldGrades (tc : Checker s) (ctx : Ctx) (k : Int) =
+  let whole = slotGrade tc ctx k in
+  let linearSlot = isLinear tc (X.typeAt ctx k) and (match Va.asConstant (toPoly tc whole) with | Just g -> not (G.isZero g) | None -> False) in
+  \dom -> if linearSlot and not (isLinear tc dom) then gradeValue (defaultGrade tc) else whole
+
 -- Whether no value of a type has fields.
 fun fieldless (tc : Checker s) (ty : Value) : Bool ! { St s | e } =
   match force tc ty with
@@ -896,42 +875,6 @@ fun splitUse (tc : Checker s) (ctx : Ctx) (k : Int) : Usage ! { St s | e } =
       (match Va.asConstant grade with
        | Just g -> if G.isZero g then U.var key else U.scale (U.var key) grade
        | None -> U.scale (U.var key) grade)
-
-fun ctorArity (tc : Checker s) (c : Int) : Int ! { St s | e } = match ctorOf tc c with | CtorInfo.CtorInfo _ _ _ ps fs -> ps + fs
-
--- Bind the arguments of constructor `c` as new variables, and unify the
--- variable in slot `k` with `c` applied to them, indices and all.
-fun instantiate (tc : Checker s) (ctx : Ctx) (k : Int) (c : Int) (hints : [Maybe String]) : (Ctx, [(Int, Int, String, Value)], Unified) ! { St s | e } =
-  let cty0 = M.unwrapOr Value.Error (Hm.lookup c (getRef tc.constants)) in
-  -- (the fields of a value have its grade; but a value of a linear type is
-  -- used once only for its fields of linear types, the rest copied out of
-  -- it as often as wanted)
-  let whole = slotGrade tc ctx k in
-  let linearSlot = isLinear tc (X.typeAt ctx k) and (match Va.asConstant (toPoly tc whole) with | Just g -> not (G.isZero g) | None -> False) in
-  let (inner, delta, cty) = telescope tc whole linearSlot ctx [] cty0 hints in
-  match (force tc (X.typeAt ctx k), force tc cty) with
-  | (Value.Opaque _ _ indices, Value.Opaque _ _ result) ->
-      let apps = \sp -> V.concatMap (\e -> match e with | Elim.App a -> [a] | _ -> []) sp in
-      let spine = V.map (\dl -> match dl with | (l, _, hint, _) -> Elim.App (Va.vvar l hint)) delta in
-      let name = match ctorOf tc c with | CtorInfo.CtorInfo n _ _ _ _ -> n in
-      let eqs = V.pushBack (V.zip (apps indices) (apps result)) (X.value ctx k, Value.Opaque c name spine) in
-      (inner, delta, unifyIndices tc inner eqs)
-  | _ -> (inner, delta, Unified.Absurd)
-
-fun telescope (tc : Checker s) (whole : Value) (linearSlot : Bool) (inner : Ctx) (delta : [(Int, Int, String, Value)]) (cty : Value) (hints : [Maybe String]) : (Ctx, [(Int, Int, String, Value)], Value) ! { St s | e } =
-  match V.head hints with
-  | None -> (inner, delta, cty)
-  | Just hint0 ->
-      (match force tc cty with
-       | Value.Pi name _ grade _ dom cod ->
-           let hint = match hint0 with | Just h -> h | None -> if name == "_" then "x" else name in
-           let key = T.freshKey tc in
-           let lvl = inner.lvl in
-           let w = if linearSlot and not (isLinear tc dom) then gradeValue (defaultGrade tc) else whole in
-           let g = Va.polyValue (Va.polyMul (toPoly tc grade) (toPoly tc w)) in
-           let inner2 = X.bindKeyed inner key hint dom (Just g) in
-           telescope tc whole linearSlot inner2 (V.pushBack delta (lvl, key, hint, g)) (apply tc cod (Va.vvar lvl hint)) (V.drop hints 1)
-       | _ -> (inner, delta, cty))
 
 -- A name for the `i`th argument of constructor `c`, from the first pattern
 -- that names it.
@@ -996,7 +939,7 @@ fun emptySplit (tc : Checker s) (m : Matcher s) (ctx : Ctx) : Maybe (Core, Usage
                       let empty =
                         V.all
                           (\c ->
-                            match instantiate tc ctx k c (V.replicate (ctorArity tc c) None) with
+                            match instantiate tc ctx k c (V.replicate (ctorArity tc c) None) (fieldGrades tc ctx k) with
                             | (_, _, Unified.Absurd) -> True
                             | _ -> False)
                           ctors
@@ -1010,103 +953,6 @@ fun emptySplit (tc : Checker s) (m : Matcher s) (ctx : Ctx) : Maybe (Core, Usage
              | _ -> None))
     None
     (V.reverse (V.range start ctx.lvl))
-
--- --- unifying indices -------------------------------------------------------------
-
--- Equations between values solved for the context's own variables, which
--- matching is how they become known.
-fun unifyIndices (tc : Checker s) (ctx : Ctx) (eqs : [(Value, Value)]) : Unified ! { St s | e } =
-  solveIndices tc ctx eqs []
-
-fun asVar (ctx : Ctx) (v : Value) : Maybe Int =
-  match v with
-  | Value.Rigid x _ [] -> if X.unknownAt ctx x then Just x else None
-  | _ -> None
-
-fun solveIndices (tc : Checker s) (ctx : Ctx) (work : [(Value, Value)]) (sigma : [(Int, Value)]) : Unified ! { St s | e } =
-  let l = ctx.lvl in
-  match V.head work with
-  | None ->
-      if V.isEmpty sigma then Unified.Refined ctx None
-      else
-        let env = sigmaEnv ctx sigma in
-        Unified.Refined (refine tc ctx sigma env) (Just env)
-  | Just (a0, b0) ->
-      let more = V.drop work 1 in
-      let a = force tc (applySigma tc ctx sigma a0) in
-      let b = force tc (applySigma tc ctx sigma b0) in
-      (match (asVar ctx a, asVar ctx b) with
-       | (Just x, Just y) ->
-           if x == y then solveIndices tc ctx more sigma
-           -- two variables: the older one kept, the one likelier named
-           else if x > y then solveIndices tc ctx more (assign tc ctx sigma x b)
-           else solveIndices tc ctx more (assign tc ctx sigma y a)
-       | (Just x, None) -> oneVar tc ctx more sigma x b a b
-       | (None, Just x) -> oneVar tc ctx more sigma x a a b
-       | (None, None) ->
-           (match (a, b) with
-            | (Value.Opaque c1 _ s1, Value.Opaque c2 _ s2) ->
-                if isCtor tc c1 and isCtor tc c2 then
-                  if c1 != c2 then Unified.Absurd
-                  else
-                    let pairs = V.concatMap (\pr -> match pr with | (Elim.App x, Elim.App y) -> [(x, y)] | _ -> []) (V.zip s1 s2) in
-                    solveIndices tc ctx (V.append more pairs) sigma
-                else if unify tc l a b then solveIndices tc ctx more sigma
-                else Unified.Stuck a b
-            | (Value.Lit x, Value.Lit y) -> if x != y then Unified.Absurd else solveIndices tc ctx more sigma
-            | _ -> if unify tc l a b then solveIndices tc ctx more sigma else Unified.Stuck a b))
-
-fun oneVar (tc : Checker s) (ctx : Ctx) (more : [(Value, Value)]) (sigma : [(Int, Value)]) (x : Int) (t : Value) (a : Value) (b : Value) : Unified ! { St s | e } =
-  if not (mentions (quote tc ctx.lvl t) (ctx.lvl - x - 1)) then solveIndices tc ctx more (assign tc ctx sigma x t)
-  -- `n = S n`
-  else if rigidlyIn tc x t then Unified.Absurd
-  else Unified.Stuck a b
-
-fun rigidlyIn (tc : Checker s) (x : Int) (t : Value) : Bool ! { St s | e } =
-  match force tc t with
-  | Value.Rigid y _ sp -> y == x and V.isEmpty sp
-  | Value.Opaque c _ sp -> isCtor tc c and V.any (\e -> match e with | Elim.App a -> rigidlyIn tc x a | _ -> False) sp
-  | _ -> False
-
--- `x := t` added, keeping the substitution idempotent.
-fun assign (tc : Checker s) (ctx : Ctx) (sigma : [(Int, Value)]) (x : Int) (t : Value) : [(Int, Value)] ! { St s | e } =
-  let single = sigmaEnv ctx [(x, t)] in
-  V.pushBack (V.map (\kv -> match kv with | (k, s) -> (k, eval tc single (quote tc ctx.lvl s))) sigma) (x, t)
-
--- A substitution as an environment: each solved variable its solution,
--- every other itself.
-fun sigmaEnv (ctx : Ctx) (sigma : [(Int, Value)]) : Env =
-  V.foldl
-    (\env k ->
-      let v = match V.find (\kv -> fst kv == k) sigma with | Just (_, s) -> s | None -> Va.vvar k (X.nameAt ctx k) in
-      Va.push env v)
-    (Va.emptyEnv ())
-    (V.range 0 ctx.lvl)
-
-fun applySigma (tc : Checker s) (ctx : Ctx) (sigma : [(Int, Value)]) (v : Value) : Value ! { St s | e } =
-  if V.isEmpty sigma then v else eval tc (sigmaEnv ctx sigma) (quote tc ctx.lvl v)
-
--- The goal, in a case that learned `sigma`. A goal still a bare
--- metavariable is an unannotated result type, left as it is.
-fun refineGoal (tc : Checker s) (l : Int) (sigma : Maybe Env) (goal : Value) : Value ! { St s | e } =
-  match force tc goal with
-  | Value.Flex _ _ -> goal
-  | _ -> resubst tc l sigma goal
-
--- A result type left unsolved by a match that failed: an error, so it is
--- not reported again as unsolved.
-fun abandon (tc : Checker s) (ty : Value) =
-  match force tc ty with
-  | Value.Flex m _ ->
-      (match T.meta tc m with
-       | Just (Meta.Unsolved _) -> T.solve tc m Value.Error
-       | _ -> ())
-  | _ -> ()
-
-fun resubst (tc : Checker s) (l : Int) (sigma : Maybe Env) (v : Value) : Value ! { St s | e } =
-  match sigma with
-  | None -> v
-  | Just env -> eval tc env (quote tc l v)
 
 fun resubstProblems (tc : Checker s) (l : Int) (sigma : Maybe Env) (problems : [Problem]) : [Problem] ! { St s | e } =
   match sigma with
@@ -1130,26 +976,3 @@ fun resubstProblems (tc : Checker s) (l : Int) (sigma : Maybe Env) (problems : [
                 (V.map (\x -> match x with | (n, t) -> (n, target t)) bs)
                 (V.map (\x -> match x with | (e, t) -> (e, target t)) ds))
         problems
-
--- The context, having learned `sigma`: each solved variable defined as its
--- solution, and every value and type that could mention one brought up to
--- date. Slots before the first solved one stay as they are.
-fun refine (tc : Checker s) (ctx : Ctx) (sigma : [(Int, Value)]) (env : Env) : Ctx ! { St s | e } =
-  let first = V.foldl (\acc kv -> if fst kv < acc then fst kv else acc) ctx.lvl sigma in
-  let l = ctx.lvl in
-  let old = Va.envValues ctx.env in
-  let (next, newEnv) =
-    V.foldl
-    (\acc k ->
-      match acc with
-      | (c, newEnv) ->
-          let v = V.getOr Value.Error old k in
-          if k < first then (c, Va.push newEnv v)
-          else
-            let ty = eval tc env (quote tc l (X.typeAt ctx k)) in
-            let solved = V.any (\kv -> fst kv == k) sigma in
-            (X.refined c k ty solved, Va.push newEnv (eval tc env (quote tc l v))))
-      (ctx, Va.emptyEnv ())
-      (V.range 0 ctx.lvl)
-  in
-  { next | env = newEnv }
