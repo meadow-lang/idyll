@@ -1344,6 +1344,15 @@ What ties the checker's state to Idyll's front end is `Tc`'s `f` and `p`
 patterns) and decides where to split, as a front end's match compiler
 does, splitting with `Cases`.
 
+Strata also has Meadow's compile-time level, beside the run-time `Type n`:
+`MetaType n`, `Code a`, `quote { t }` and the splice `$c`, with
+`$(quote t)` reducing to `t`. Idyll has no compile-time level, so its
+elaborator never makes these. Where front/ matches on every form of a
+term, these get the plain arm: `Elaborated` writes them as an error, and
+`Typer` knows no type for them and gives `MetaType` and `Code` no
+representation (they are compile-time). `Link` looks inside them for what
+a package uses.
+
 A change to the kernel is made in Strata, and keeps these differential
 tests passing (or comes with the change here that does), so that the Rust
 compiler remains a check on it. front/'s manifest is part of what

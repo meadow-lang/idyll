@@ -100,6 +100,9 @@ fun isUniverse (tc : Checker s) (v : Value) : Bool ! { St s | e } = match force 
   | Value.LitTy (Builtin.Number n) -> TRep.Number n
   | Value.LitTy _ -> TRep.Erased
   | Value.Type _ -> TRep.Erased
+  -- compile-time types, nothing at run time
+  | Value.MetaType _ -> TRep.Erased
+  | Value.Code _ -> TRep.Erased
   | Value.Row _ -> TRep.Erased
   | Value.Pi _ _ _ _ _ _ -> TRep.Ptr
   | Value.BoxTy _ _ -> TRep.Ptr
@@ -684,4 +687,10 @@ fun rowUnion (row : Row) (more : Row) : Row =
       (match M.map (\t -> force tc t) (tyOf tc ctx r) with
        | Just (Value.Pi _ _ _ _ _ cod) -> Just (fst (splitComp tc (apply tc cod (Va.vvar ctx.lvl "x"))))
        | _ -> None)
+  -- Strata's compile-time level: Idyll's elaborator never makes these, and
+  -- their typing rules would come with the rule that did
+  | Core.MetaType _ -> None
+  | Core.Code _ -> None
+  | Core.Quote _ -> None
+  | Core.Splice _ -> None
   | Core.Error -> None
