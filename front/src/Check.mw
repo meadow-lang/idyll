@@ -84,7 +84,10 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
   preludeTop : [Int],
   -- the top-level definitions whose values compute with no effects, which
   -- may be left out when nothing uses them (`Prune`)
-  pure : [Int]
+  pure : [Int],
+  -- the effects the runtime handles, which the program's expression may
+  -- perform: the prelude's `Eff`
+  world : Value
 }
 
 -- The module checked, and written as the differential test compares it:
@@ -275,7 +278,8 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
           match Hm.lookup u ctx.names with
           | Just (Entry.Local level) -> (match V.get ctx.binders level with | Just (Binder.Binder Info.Defined _ _ _ _) -> True | _ -> False)
           | _ -> False)
-        toplevel
+        toplevel,
+    world
   }
 
 -- Declare what the packages depended on give: each constant with its

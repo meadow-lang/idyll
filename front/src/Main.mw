@@ -65,6 +65,7 @@ use Lingua.Green (dump)
 use Lingua.Diagnostic (renderAll, Diagnostic)
 use Lingua.Lang (Meta, metaStart, metaEnd)
 use Idyll.Messages as Messages
+use Idyll.Recheck as Recheck
 use Std.Collections.Vector as V
 use Std.Result.Result.*
 use Std.Maybe.Maybe.*
@@ -121,6 +122,7 @@ cli! {
     | errors "What is wrong with each file's syntax, drawn where it is" { files : [String] "the files" }
     | rename "Each file renamed: its HIR" { files : [String] "the files" } with Dump
     | types "Each file's declarations' types, and its errors" { files : [String] "the files" } with Dump
+    | recheck "Each file's declarations, as elaborated, checked again by Strata's checker of Core" { files : [String] "the files" } with Dump
     | messages "Each file's errors, in words: each one's headline and label" { files : [String] "the files" } with Dump
     | cut "Each file lowered to Cut" { files : [String] "the files" } with Dump
     | parted "A package's parts, and their dumps" { name : String "the package's name"  dir : String "its sources" } with Dump
@@ -150,6 +152,7 @@ fun main () =
   | (every, Tool.Errors r) -> V.foldl (\u f -> each f (errorsIn f)) () r.files
   | (every, Tool.Rename r) -> withPreludeOf r.dump.prelude (\prelude -> V.foldl (\u f -> each f (renamed prelude)) () r.files)
   | (every, Tool.Types r) -> withPreludeOf r.dump.prelude (\prelude -> eachAgainstStd prelude r.dump.std r.files typed typedAgainst)
+  | (every, Tool.Recheck r) -> withPreludeOf r.dump.prelude (\prelude -> eachAgainstStd prelude r.dump.std r.files rechecked recheckedAgainst)
   | (every, Tool.Messages r) -> withPreludeOf r.dump.prelude (\prelude -> eachAgainstStd prelude r.dump.std r.files (\pre text -> messagesIn pre None text) (\pre names std text -> messagesIn pre (Just (names, std)) text))
   | (every, Tool.Cut r) -> withPreludeOf r.dump.prelude (\prelude -> eachAgainstStd prelude r.dump.std r.files cutOf cutAgainst)
   | (every, Tool.Parted r) -> withPreludeOf r.dump.prelude (\prelude -> packageDump prelude r.name r.dir (\modules texts -> partedDump prelude r.name modules texts))
@@ -368,6 +371,26 @@ fun typedWith prelude std (text : String) : String =
       in
       (match renamed with
        | (m, problems) -> if V.isEmpty problems then checkModule (sccModule m) else "(error)")
+
+-- A program's declarations checked again by Strata's checker
+-- (`Recheck`); `(error)` if it does not parse or rename.
+fun rechecked prelude (text : String) : String =
+  match Surface.parsed text with
+  | Err _ -> "(error)"
+  | Ok prog ->
+      (match renameModule prog prelude with
+       | (m, problems) -> if V.isEmpty problems then Recheck.recheck (sccModule m) [] else "(error)")
+
+-- The same, against Std compiled, if it names Std.
+fun recheckedAgainst prelude (names : Rename.PackageNames) (std : Compiled) (text : String) : String =
+  match Surface.parsed text with
+  | Err _ -> "(error)"
+  | Ok prog ->
+      if not (S.contains "Std" text) then rechecked prelude text
+      else
+        let vis = Rename.mentionsVisibility (Rename.programOf prog) in
+        (match Rename.renamePackageWith "Main" [([], prog)] prelude [("Std", names)] [] std.high True vis with
+         | (m, _, problems) -> if V.isEmpty problems then Recheck.recheck (sccModule m) [std] else "(error)")
 
 -- A whole package checked, its modules each a path and a program.
 -- A package checked whole and compiled, as those that depend on it see it:

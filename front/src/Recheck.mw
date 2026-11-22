@@ -1,0 +1,102 @@
+-- Recheck: what this compiler elaborates, checked again by Strata's own
+-- checker of Core (`Strata.Check`), which is not the elaborator that made
+-- it. Why: a check of the elaborator's output that does not share its
+-- bugs. The elaborator and Strata.Check share the kernel's evaluator and
+-- unifier, but not the rules: what one lets through for a reason of its
+-- own, the other has to accept for its own reason.
+--
+-- Each declaration of the program's own (not the prelude's, which every
+-- program has) is checked where the elaborator left it:
+--
+-- - a top-level `let`, its right-hand side against the type its binder
+--   has, in the context of the definitions before it;
+-- - a recursive definition, its body against its constant's type, in the
+--   context it was checked in;
+-- - the program's expression (or `main ()`), against its type, in the
+--   context of every definition.
+--
+-- Strata.Check is blind to grades (it checks every binder as if of grade
+-- ω), so this says nothing of how often a variable is used: that is
+-- `Usage`'s.
+
+use Std.St (getRef, runSt)
+use Strata.Core (Core)
+use Strata.Core as C
+use Strata.Tc (Meta)
+use Strata.Ctx (Ctx)
+use Strata.Ctx as X
+use Strata.Eval (quote)
+use Strata.Check as Ch
+use Strata.Check (Verdict)
+use Idyll.Check (Checked, checkedAgainst)
+use Idyll.Rename
+use Idyll.Interface
+use Std.Collections.HashMap as Hm
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+-- A module checked against the packages it depends on, then each of its
+-- declarations checked again: a line each, `name: verdict`. `(errors)` if
+-- checking it found something wrong, as there is nothing sound to check
+-- again then.
+@pub fun recheck (m : Renamed) (deps : [Compiled]) : String =
+  runSt (\() ->
+    let c = checkedAgainst m False deps in
+    if not (V.isEmpty (getRef c.tc.errors)) then "(errors)"
+    else S.join "\n" (V.map (\l -> fst l ++ ": " ++ Ch.verdictText (snd l)) (verdicts c m.first)))
+
+-- Each of the program's own declarations, by name, and what Strata.Check
+-- said of it.
+fun verdicts (c : Checked s) (first : Int) : [(String, Verdict)] ! { St s | e } =
+  let tc = c.tc in
+  let cx = Ch.checker tc (Ch.ctorsFromTc tc) in
+  -- Strata.Check is handed Core with every solved metavariable its
+  -- solution, as a compiled package keeps it (`Core.zonked`)
+  let metas = getRef tc.metas in
+  let solutions = V.map (\i -> match V.get metas i with | Just (Meta.Solved v _) -> Just (quote tc 0 v) | _ -> None) (V.range 0 (V.len metas)) in
+  -- a recursive definition is a function, performing nothing as it is
+  -- defined (`decl`); a top-level `let` and the program's expression run
+  -- as the program starts, so may perform what the runtime handles
+  -- (`run`), the prelude's `Eff`
+  let declAllowing = \ctx ty term allowed -> Ch.definitionAllowing cx ctx (C.zonked ty solutions) (Just (C.zonked term solutions)) allowed in
+  let decl = \ctx ty term -> Ch.definition cx ctx (C.zonked ty solutions) (Just (C.zonked term solutions)) in
+  let run = \ctx ty term -> declAllowing ctx ty term c.world in
+  let top = c.top in
+  -- the `let`s are the innermost binders of the top-level context, one
+  -- each, in the order the program wraps them (`Elab.wrapLets`)
+  let rhss = V.concatMap (\w -> match w with | Just (x, rhs) -> [(x, rhs)] | None -> []) c.lets in
+  let base = top.lvl - V.len rhss in
+  let lets =
+    V.concatMap
+      (\i ->
+        let l = base + i in
+        match (V.get rhss i, X.keyAt top l) with
+        | (Just (x, rhs), Just u) ->
+            if u < first then []
+            else
+              let ctx = X.prefix top l in
+              [(x, run ctx (quote tc l (X.typeAt top l)) rhs)]
+        | _ -> [])
+      (V.range 0 (V.len rhss))
+  in
+  let names = getRef tc.recNames in
+  let recs =
+    V.concatMap
+      (\d ->
+        match d with
+        | (u, l, body) ->
+            if u < first then []
+            else
+              (match Hm.lookup u (getRef tc.constants) with
+               | Just ty -> [(Hm.getOr "?" u names, decl (X.prefix top l) (quote tc l ty) body)]
+               | None -> []))
+      (getRef tc.recDefs)
+  in
+  let body =
+    match c.answer with
+    | Just (core, ty) -> [("(expression)", run top ty core)]
+    | None -> []
+  in
+  V.concat [lets, recs, body]
