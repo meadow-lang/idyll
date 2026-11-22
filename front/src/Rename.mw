@@ -744,6 +744,30 @@ pass! {
     | Ident { uniques } -> [(uniques, here)]
 }
 
+-- The same, each with the name as it is written: what an editor colours,
+-- found by its spelling where a name's place is its whole declaration.
+pass! {
+  pub namedOccurrences : Hir -> [([Int], String, Meta)] from Module
+    fold [] V.append
+    | Ident { uniques, text } -> [(uniques, text, here)]
+}
+
+-- Those of the program's own declarations and its expression: not the
+-- prelude's, renamed with it, whose places are in the prelude's own text
+-- and would be taken for bytes of the program's.
+@pub fun programNamed (m : Renamed) : [([Int], String, Meta)] =
+  let h = hirArena m.hir in
+  let root = hirRoot m.hir in
+  let own = \x -> V.getOr (0 - 1) (hirIdentUniques h x) 0 >= m.first in
+  let binds = \g -> match (h, g) with | HirGroupNonRec b -> [b] | HirGroupRec bs -> bs in
+  V.concat [
+    V.concatMap (\d -> if own (hirDataName h d) then namedOccurrencesData h d else []) (hirModuleDatas h root),
+    V.concatMap (\e -> if own (hirEffectName h e) then namedOccurrencesEffect h e else []) (hirModuleEffects h root),
+    V.concatMap (\n -> if own (hirNativeName h n) then namedOccurrencesNative h n else []) (hirModuleNatives h root),
+    V.concatMap (\g -> if V.any (\b -> own (hirBindName h b)) (binds g) then namedOccurrencesGroup h g else []) (hirModuleGroups h root),
+    (match hirModuleBody h root with | Just b -> namedOccurrencesExpr h b | None -> [])
+  ]
+
 -- An identifier, written.
 fun idNode out (m : Meta) (x : Ident) = match x with | Ident.Ident us t -> newHirIdent out m us t
 

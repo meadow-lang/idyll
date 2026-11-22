@@ -575,6 +575,47 @@ fun classes (reply : Maybe Json) : [Int] =
         (V.range 0 (V.len xs))
   | _ -> []
 
+-- Each token the server coloured, where it is: its line, its column, and
+-- its class (`keyword` 0, `type` 1, `enumMember` 2, `function` 3,
+-- `variable` 4, `namespace` 8, `comment` 9).
+fun tokensOf (reply : Maybe Json) : [(Int, Int, Int)] =
+  match M.andThen (J.path ["result", "data"]) reply with
+  | Just (J.Json.Array xs) ->
+      let n = \i -> M.unwrapOr 0 (M.andThen J.asInt (V.get xs i)) in
+      (match V.foldl
+         (\acc k ->
+           match acc with
+           | (out, line, col) ->
+               let dl = n (k * 5) in
+               let l = line + dl in
+               let c = if dl == 0 then col + n (k * 5 + 1) else n (k * 5 + 1) in
+               (V.pushBack out (l, c, n (k * 5 + 3)), l, c))
+         ([], 0, 0)
+         (V.range 0 (V.len xs / 5)) with
+       | (out, _, _) -> out)
+  | _ -> []
+
+fun colourAt (tokens : [(Int, Int, Int)]) (line : Int) (col : Int) : Maybe Int =
+  M.map (\t -> match t with | (_, _, c) -> c) (V.find (\t -> match t with | (l, c, _) -> l == line and c == col) tokens)
+
+@test fun aDataTypeIsATypeWhereverItIsNamed () =
+  let text = "-- one\n\ndata Choice = Rock | Paper\n\nf : (c : Choice) -> Choice\nf c = Rock\n" in
+  let ts = tokensOf (V.get (told [opening "file:///a.idl" text, asking 1 "textDocument/semanticTokens/full" (inFile "file:///a.idl")] serveServer) 1) in
+  -- (the prelude's names, renamed with the file, colour nothing of it: `c`
+  -- is where one of them would have been)
+  assertEq
+    (V.map (\p -> match p with | (l, c) -> colourAt ts l c) [(0, 0), (2, 0), (2, 5), (2, 14), (2, 21), (4, 5), (4, 9), (4, 20), (5, 6)])
+    [Just 9, Just 0, Just 1, Just 2, Just 2, Just 4, Just 1, Just 1, Just 2]
+    "a comment, data, Choice a type, Rock and Paper constructors, c a variable, Choice, Choice, Rock"
+
+@test fun aUseColoursItsModuleItsAliasAndWhatItBringsIn () =
+  let text = "use Std.String as S\nuse Std.Console (println)\n\nmain = println (S.trim \" x \")\n" in
+  let ts = tokensOf (V.get (told [opening "file:///a.idl" text, asking 1 "textDocument/semanticTokens/full" (inFile "file:///a.idl")] serveServer) 1) in
+  assertEq
+    (V.map (\p -> match p with | (l, c) -> colourAt ts l c) [(0, 4), (0, 15), (0, 18), (1, 4), (1, 17), (3, 16)])
+    [Just 8, Just 0, Just 8, Just 8, Just 3, Just 3]
+    "Std.String, as, S, Std.Console, println, S.trim"
+
 @test fun aTypeAndAConstructorAreColouredApart () =
   let text = "f : Maybe Int -> Int\nf m = case m of\n  Just x -> x\n  Nothing -> 0\n" in
   let said = told [opening "file:///a.idl" text, asking 1 "textDocument/semanticTokens/full" (inFile "file:///a.idl")] serveServer in

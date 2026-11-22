@@ -26,6 +26,7 @@ use Idyll.Eval (quote)
 use Idyll.Elab (goalNamed)
 use Idyll.Tc (Tc, CtorInfo, ctorInfo)
 use Std.Collections.HashMap as Hm
+use Std.Collections.HashMap (HashMap)
 use Std.Char as Ch
 use Idyll.Core as C
 use Idyll.Core (Core)
@@ -446,21 +447,47 @@ fun inFile (m : Meta) (base : Int) (text : String) : Bool =
   | Err _ -> []
 
 -- What each name of `text` is, where the checker knows: the byte its
--- occurrence starts at, and `type`, `enumMember`, `function` or
--- `variable`, as an editor colours them. A capital is a type or a
--- constructor, which its spelling cannot say and its declaration can; a
--- name the program does not declare (a parameter, a `let`) is left to its
--- spelling.
+-- occurrence starts at, and `type`, `enumMember`, `function`, `variable`,
+-- `namespace` or `keyword`, as an editor colours them. A capital is a type
+-- or a constructor, which its spelling cannot say and its declaration can;
+-- a name the program does not declare (a parameter, a `let`) is left to its
+-- spelling. A qualified name is one token, `S.trim`, and what it names is
+-- what the token is. A `use` says what it names: its module, its alias, and the names
+-- it brings in, which are what they are where the file uses them.
 @pub fun resolvedIn (text : String) (package : Maybe (PackageContext, () -> [Dependency] ! e)) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : [(Int, String)] ! e =
   let (ready, base) = preparedFor text package prelude std in
   match ready with
   | Ok (m, deps, _) ->
-      let declared =
+      -- what each unique is: a data type or an effect is a type, a
+      -- constructor a constructor, an operation a function, and anything
+      -- else what its type makes it -- the checker's declarations, and each
+      -- dependency's. (A constructor is declared under its type's unique, as
+      -- `Choice.Rock`, so it is not read off the declarations.)
+      let (declared, kinds, ctorNames) =
         runSt (\() ->
           let c = checkedAgainst (sccModule m) False deps in
-          V.map (\d -> match d with | (u, name, ty) -> (u, name, C.shown m.linearBody ty)) (St.getRef c.tc.declared))
+          let ds = V.map (\d -> match d with | (u, name, ty) -> (u, name, C.shown m.linearBody ty)) (St.getRef c.tc.declared) in
+          let fromDeps =
+            V.concatMap
+              (\d -> match d with | (cp : Compiled) -> V.map (\k -> match k with | Constant.Constant u name ty _ _ -> (u, name, C.shown m.linearBody ty)) cp.constants)
+              deps
+          in
+          let typed =
+            V.foldl
+              (\acc d -> match d with | (u, name, ty) -> if S.contains "." name then acc else Hm.insert u (nameKind name ty) acc)
+              Hm.empty
+              (V.append fromDeps ds)
+          in
+          let tagged = \acc us k -> V.foldl (\a u -> Hm.insert u k a) acc us in
+          let ks =
+            tagged
+              (tagged (tagged (tagged typed (Hm.keys (St.getRef c.tc.datas)) "type") (Hm.keys (St.getRef c.tc.effects)) "type")
+                 (Hm.keys (St.getRef c.tc.ctors)) "enumMember")
+              (Hm.keys (St.getRef c.tc.ops)) "function"
+          in
+          let names = V.map (\i -> match i with | CtorInfo.CtorInfo n _ _ _ _ -> n) (Hm.values (St.getRef c.tc.ctors)) in
+          (ds, ks, names))
       in
-      let kinds = V.foldl (\acc d -> match d with | (u, name, ty) -> Hm.insert u (nameKind name ty) acc) Hm.empty declared in
       let declaredHere = V.filter (\d -> match d with | (u, _, _) -> u >= m.first) declared in
       -- (a definition's name is one occurrence, but its signature and each
       -- of its equations begin with it: each is coloured as it is)
@@ -470,23 +497,117 @@ fun inFile (m : Meta) (base : Int) (text : String) : Bool =
           (\l -> match l with | (at, word) -> (match Hm.lookup word byName with | Just k -> [(at, k)] | None -> []))
           (lineHeads text)
       in
-      V.append heads (V.concatMap
-        (\o ->
-          match o with
-          | (us, place) ->
-              if not (inFile place base text) then []
-              else
-                (match metaBack place base with
-                 | Meta.Meta a _ ->
-                     (match V.head (V.concatMap (\u -> match Hm.lookup u kinds with | Just k -> [k] | None -> []) us) with
-                      | Just k -> [(a, k)]
-                      -- (a type is not among what the checker declares: a
-                      -- capital it does not know is one)
-                      | None ->
-                          if not (V.isEmpty us) and (match V.head (S.chars (S.drop text a)) with | Just c -> Ch.isUpper c | None -> False) then [(a, "type")]
-                          else [])))
-        (Rename.occurrencesModule (Rename.hirArena m.hir) (Rename.hirRoot m.hir)))
+      let occurring =
+        V.concatMap
+          (\o ->
+            match o with
+            | (us, written, place) ->
+                if not (inFile place base text) then []
+                else
+                  (match metaBack place base with
+                   | Meta.Meta a b ->
+                       (match (nameWithin text written a b, kindOfNamed kinds ctorNames us written) with
+                        | (Just at, Just k) -> [(at, written, k)]
+                        | _ -> [])))
+          (Rename.programNamed m)
+      in
+      -- what each name the file uses is, by how it is written: what a
+      -- name a `use` brings in is
+      let used = V.foldl (\acc o -> match o with | (_, written, k) -> Hm.insert written k acc) Hm.empty occurring in
+      V.concat [heads, V.map (\o -> match o with | (at, _, k) -> (at, k)) occurring, usesIn text used]
   | Err _ -> []
+
+-- What a name is, by the uniques it stands for, else by how it is written:
+-- a capital no unique was found for is a constructor if one is called that.
+fun kindOfNamed (kinds : HashMap Int String) (ctorNames : [String]) (us : [Int]) (written : String) : Maybe String =
+  match V.head (V.concatMap (\u -> match Hm.lookup u kinds with | Just k -> [k] | None -> []) us) with
+  | Just k -> Just k
+  | None ->
+      let last = M.unwrapOr written (V.last (S.split "." written)) in
+      let capital = match V.head (S.chars last) with | Just c -> Ch.isUpper c | None -> False in
+      if capital and not (V.isEmpty us) then Just "type"
+      else if capital and V.elem last ctorNames then Just "enumMember"
+      else None
+
+-- Where `name` is written, as a name of its own, from byte `a` up to `b` of
+-- `text`: a name's place is often all of what declares it (`data Choice =
+-- ..` for `Choice`, `(c : a) -> b` for `c`), and the name is in it. A
+-- qualified name's is where its qualifier starts, `S` of `S.trim`: the
+-- token's.
+fun nameWithin (text : String) (name : String) (a : Int) (b : Int) : Maybe Int =
+  if S.isEmpty name then None
+  else
+    match S.indexOfFrom name text a with
+    | Just i ->
+        if i + S.byteLength name > b then None
+        else if wordEdge text i and wordEdge text (i + S.byteLength name) then Just (qualifierStart text i)
+        else nameWithin text name (i + 1) b
+    | None -> None
+
+-- Where the qualifiers before byte `i` of `text` start (`Std.String.` of
+-- `Std.String.trim`), or `i` if it has none.
+fun qualifierStart (text : String) (i : Int) : Int =
+  if dotBefore text i then
+    let back = V.takeWhile nameChar (V.reverse (S.chars (S.slice text (if i < 65 then 0 else i - 65) (i - 1)))) in
+    if V.isEmpty back then i else qualifierStart text (i - 1 - S.byteLength (S.fromChars back))
+  else i
+
+-- Whether byte `i` of `text` is not inside a name: what is either side of it
+-- is not both part of one.
+fun wordEdge (text : String) (i : Int) : Bool =
+  let before = V.last (S.chars (S.slice text (if i < 4 then 0 else i - 4) i)) in
+  let after = V.head (S.chars (S.slice text i (i + 4))) in
+  not (M.unwrapOr False (M.map nameChar before) and M.unwrapOr False (M.map nameChar after))
+
+fun dotBefore (text : String) (i : Int) : Bool =
+  i > 0 and S.slice text (i - 1) i == "."
+
+fun nameChar (c : Char) : Bool = Ch.isAlphaNum c or c == '_' or c == '\''
+
+-- Each `use` of `text`: its module a namespace, `as` a keyword and its alias
+-- a namespace, and each name it brings in what the file uses it as.
+fun usesIn (text : String) (used : HashMap String String) : [(Int, String)] =
+  let starts = V.foldl (\acc l -> V.pushBack acc (M.unwrapOr 0 (V.last acc) + S.byteLength l + 1)) [0] (S.split "\n" text) in
+  V.concatMap
+    (\s ->
+      let line = S.slice text s (M.unwrapOr (S.byteLength text) (S.indexOfFrom "\n" text s)) in
+      let at = if S.startsWith "@pub use " line then s + 9 else if S.startsWith "use " line then s + 4 else 0 - 1 in
+      if at < 0 then [] else useFrom text used at)
+    starts
+
+-- A `use` from byte `at`, its module's name: what it says (`usesIn`).
+fun useFrom (text : String) (used : HashMap String String) (at : Int) : [(Int, String)] =
+  let path = spanWhile text at (\c -> nameChar c or c == '.') in
+  let afterPath = skipSpaces text path in
+  let module = [(at, "namespace")] in
+  if S.slice text afterPath (afterPath + 3) == "as " then
+    let alias = skipSpaces text (afterPath + 3) in
+    let aliasEnd = spanWhile text alias nameChar in
+    V.concat [module, [(afterPath, "keyword"), (alias, "namespace")], useNames text used (skipSpaces text aliasEnd)]
+  else V.append module (useNames text used afterPath)
+
+-- The names in the parentheses of a `use` at byte `at`, if it has them.
+fun useNames (text : String) (used : HashMap String String) (at : Int) : [(Int, String)] =
+  if S.slice text at (at + 1) != "(" then []
+  else
+    let close = M.unwrapOr (S.byteLength text) (S.indexOfFrom ")" text at) in
+    namesBetween text used (at + 1) close
+
+fun namesBetween (text : String) (used : HashMap String String) (at : Int) (close : Int) : [(Int, String)] =
+  let from = spanWhile text at (\c -> not (nameChar c)) in
+  if from >= close then []
+  else
+    let to = spanWhile text from nameChar in
+    let here = match Hm.lookup (S.slice text from to) used with | Just k -> [(from, k)] | None -> [] in
+    V.append here (namesBetween text used to close)
+
+-- The first byte from `at` on of `text` whose character is not `keep`.
+fun spanWhile (text : String) (at : Int) (keep : Char -> Bool) : Int =
+  match V.head (S.chars (S.slice text at (at + 4))) with
+  | Just c -> if keep c then spanWhile text (at + S.byteLength (S.fromChars [c])) keep else at
+  | None -> at
+
+fun skipSpaces (text : String) (at : Int) : Int = spanWhile text at (\c -> c == ' ' or c == '\t')
 
 -- The type each parameter and `let` of `text` with none written got,
 -- each said after the name: the byte the name ends at, and the type shown.
@@ -538,7 +659,7 @@ fun lineHeads (text : String) : [(Int, String)] =
       let holding =
         V.filter
           (\o -> match o with | (us, place) -> not (V.isEmpty us) and inFile place base text and contains place (at + base))
-          (Rename.occurrencesModule (Rename.hirArena m.hir) (Rename.hirRoot m.hir))
+          (V.map (\o -> match o with | (us, _, place) -> (us, place)) (Rename.programNamed m))
       in
       let named =
         V.concatMap
