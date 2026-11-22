@@ -1361,6 +1361,31 @@ term, these get the plain arm: `Elaborated` writes them as an error, and
 representation (they are compile-time). `Link` looks inside them for what
 a package uses.
 
+Strata has a checker of whole Core terms of its own, `Strata.Check`,
+separate from either language's elaborator: bidirectional and blind to
+grades, made of the kernel's evaluator, unifier and `Cases`. `Recheck`
+(the `recheck` command) runs it over what this compiler elaborates. Each
+of a program's own declarations is checked where the elaborator left it,
+with every solved metavariable substituted (`Core.zonked`):
+- each top-level `let`, against its binder's type, in the context of the
+  definitions before it (`Ctx.prefix`);
+- each recursive definition, against its constant's type;
+- the program's expression.
+
+A recursive definition must perform nothing (`Check.definition`). A
+top-level `let` and the expression run as the program starts, so they may
+perform what the runtime handles, the prelude's `Eff`
+(`Check.definitionAllowing`, given `Checked.world`).
+
+The differential test `strata_accepts_what_front_elaborates` fails on any
+declaration it rejects, and counts the forms it does not check yet. Why:
+the elaborator and this checker share the kernel but not their rules, so
+a declaration the elaborator lets through wrongly is one the other is
+unlikely to accept for the same wrong reason.
+
+Strata also has an ascription, `Runtime (Note.Has t) e`. Idyll writes
+none, and `Lower` runs one as the term it ascribes.
+
 A change to the kernel is made in Strata, and keeps these differential
 tests passing (or comes with the change here that does), so that the Rust
 compiler remains a check on it. front/'s manifest is part of what

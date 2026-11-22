@@ -1037,7 +1037,9 @@ fun term (l : L s) (env : LEnv) (c : Tm) (k : CutCons) : CutStmt ! { St s | e } 
        | ElaboratedNoteKind.Binds ->
            if kindElaboratedTerm a inner == ElaboratedTermKind.Unbox then unbox l env c (elaboratedTermUnboxExpr a inner) k
            else if M.isNone (lambda l c) then term l env inner k
-           else sCut l (closure l env c) k)
+           else sCut l (closure l env c) k
+       -- an ascription runs as the term it ascribes
+       | ElaboratedNoteKind.Has -> term l env inner k)
   | ElaboratedTermLam _ _ -> sCut l (closure l env c) k
   | ElaboratedTermLet x rhs body ->
       let v = name l x in

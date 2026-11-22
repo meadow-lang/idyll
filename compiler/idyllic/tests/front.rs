@@ -194,6 +194,58 @@ fn the_types_agree() {
     );
 }
 
+/// Strata's own checker of Core (`Strata.Check`, run by front/'s
+/// `Recheck`) accepts every declaration front/ elaborates from a program
+/// that checks. That checker shares the kernel with front/'s elaborator but
+/// not its rules, so this is a check on what the elaborator writes that
+/// neither compiler's differential gives. A form it does not check yet is
+/// counted, by form, not failed; a rejection fails.
+#[test]
+fn strata_accepts_what_front_elaborates() {
+    let std_dir = repo().join("lib/Std/src");
+    let std_dir = std_dir.to_string_lossy();
+    let programs = corpus();
+    let args = ["recheck", "--prelude", "_prelude.txt", "--std", &std_dir];
+    let theirs = match dumps(&args, &[("_prelude.txt", idyllic::pipeline::PRELUDE)], &programs) {
+        Ok(d) => d,
+        Err(why) if why.starts_with("no meadow") => {
+            eprintln!("{why}: front/ was not checked");
+            return;
+        }
+        Err(why) => panic!("{why}"),
+    };
+    let mut accepted = 0;
+    let mut unsupported = std::collections::BTreeMap::<String, (usize, String)>::new();
+    let mut rejected = Vec::new();
+    for ((name, _), dump) in programs.iter().zip(&theirs) {
+        for line in dump.lines() {
+            let Some((decl, verdict)) = line.split_once(": ") else { continue };
+            if verdict == "accepted" {
+                accepted += 1;
+            } else if let Some(form) = verdict.strip_prefix("not supported yet: ") {
+                unsupported.entry(form.to_string()).or_insert_with(|| (0, format!("{name}: {decl}"))).0 += 1;
+            } else {
+                rejected.push(format!("{name}: {decl}: {verdict}"));
+            }
+        }
+    }
+    let refused: usize = unsupported.values().map(|v| v.0).sum();
+    eprintln!(
+        "recheck: {} programs, {accepted} declarations accepted, {} rejected, {refused} not checked yet",
+        programs.len(),
+        rejected.len()
+    );
+    for (form, (n, first)) in &unsupported {
+        eprintln!("    {n:5}  {form} (first: {first})");
+    }
+    assert!(
+        rejected.is_empty(),
+        "Strata.Check rejects {} declarations front/ elaborated:\n{}",
+        rejected.len(),
+        rejected.join("\n")
+    );
+}
+
 /// The headlines of the checker's errors that front/ says as this
 /// compiler does, its kinds ported a few at a time (front/'s `Messages`),
 /// each as a pattern: `*` stands for what a headline names (a name, a

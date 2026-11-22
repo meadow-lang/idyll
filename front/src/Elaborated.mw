@@ -69,6 +69,8 @@ use Std.Maybe.Maybe.*
   Note + Binds { grade : Maybe Grade, ty : Maybe Term }
   Note + Forced {}
   Note + Goal { name : String }
+  -- what the term was ascribed (Strata's; Idyll makes none)
+  Note + Has { ty : Term }
 }
 
 -- --- writing a checked module -------------------------------------------------------
@@ -105,6 +107,7 @@ use Std.Maybe.Maybe.*
         | Note.Binds g ty -> newElaboratedNoteBinds out m g (M.map go ty)
         | Note.Forced -> newElaboratedNoteForced out m
         | Note.Goal n -> newElaboratedNoteGoal out m n
+        | Note.Has ty -> newElaboratedNoteHas out m (go ty)
       in
       newElaboratedTermRuntime out m n (go a)
   | Core.Comp a r -> newElaboratedTermComp out m (go a) (go r)
@@ -171,3 +174,4 @@ use Std.Maybe.Maybe.*
   | ElaboratedNoteBinds g ty -> Note.Binds g (M.map (\t -> coreOf a t) ty)
   | ElaboratedNoteForced -> Note.Forced
   | ElaboratedNoteGoal n -> Note.Goal n
+  | ElaboratedNoteHas ty -> Note.Has (coreOf a ty)
