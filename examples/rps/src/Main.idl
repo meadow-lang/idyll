@@ -33,11 +33,14 @@ parseChoice : (s : String) -> Maybe Choice
 parseChoice s = choiceOf (S.toLower (S.trim s))
 
 choiceOf : (w : String) -> Maybe Choice
-choiceOf w =
-  if w == "rock" then Just Rock else if w == "r" then Just Rock
-  else if w == "paper" then Just Paper else if w == "p" then Just Paper
-  else if w == "scissors" then Just Scissors else if w == "s" then Just Scissors
-  else Nothing
+choiceOf w = case w of
+  "rock" -> Just Rock
+  "r" -> Just Rock
+  "paper" -> Just Paper
+  "p" -> Just Paper
+  "scissors" -> Just Scissors
+  "s" -> Just Scissors
+  _ -> Nothing
 
 -- Who beats whom, once. Everything else is worked out from this.
 beats : (c : Choice) -> Choice

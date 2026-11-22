@@ -11,17 +11,17 @@ effect idyll:Prelude/Console { putStr(str) -> unit; putErr(str) -> unit; readLin
 
 effect idyll:Prelude/Log { logAt(i64, str) -> unit }
 
-def idyll:Prelude/putStrLn (s_2: str; k_3: ptr) =
+def idyll:Prelude/putStrLn (s_2: str; k_3: ptr) ! {idyll:Prelude/Console} =
   prim concatStrings([s_2, "\n"]; μ̃ v_4: str.
     perform idyll:Prelude/Console.putStr(v_4; k_3))
 
-def idyll:Std/Log.info (message_6: str; k_7: ptr) =
+def idyll:Std/Log.info (message_6: str; k_7: ptr) ! {idyll:Prelude/Log} =
   perform idyll:Prelude/Log.logAt(1, message_6; k_7)
 
-def idyll:Std/Log.error (message_9: str; k_10: ptr) =
+def idyll:Std/Log.error (message_9: str; k_10: ptr) ! {idyll:Prelude/Log} =
   perform idyll:Prelude/Log.logAt(3, message_9; k_10)
 
-def idyll:Main/main (u_12: unit; k_13: ptr) =
+def idyll:Main/main (u_12: unit; k_13: ptr) ! {idyll:Prelude/Console, idyll:Prelude/Log} =
   idyll:Std/Log.info("starting"; μ̃ a_14: unit.
     idyll:Std/Log.error("something went wrong"; μ̃ b_15: unit.
       idyll:Prelude/putStrLn("done"; k_13)))

@@ -144,7 +144,6 @@ fun worded (sols : [Maybe Core]) (linear : Bool) (at : Meta) (r : Report) : Diag
       else if kind == "NotImpossible" then withLabel at "some values match these patterns" (errorAt at "not impossible")
       else if kind == "MisplacedImplicitPattern" then
         withLabel at "`{p}` matches an implicit argument, and `@{p}` an auto one, where the type has one next" (errorAt at "no implicit argument is here to match")
-      else if kind == "StringPattern" then withLabel at "use a guard with a comparison instead" (errorAt at "strings cannot be matched on yet")
       else if kind == "LevelNotANumber" then withLabel at "level variables are not supported yet" (errorAt at "a universe level is a number")
       else if kind == "HandlerMixesEffects" then withLabel at "this operation belongs to another effect than the clauses before it" (errorAt at "one handler, one effect")
       else if kind == "HandlerHandlesNothing" then withLabel at "give it a clause for each operation of the effect it is for" (errorAt at "this handler handles nothing")
