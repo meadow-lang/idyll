@@ -1240,7 +1240,8 @@ fn checked_dump(checked: &idyllic_typecheck::TypeCheckResult) -> String {
 
 // --- the rename, written out --------------------------------------------------
 //
-// As `front/src/Hir.mw` writes it: the program's own part of the module, a line
+// As `Strata.Hir` writes it (the kernel front/ shares with Meadow, from
+// meadow's `Strata/src/Hir.mw`): the program's own part of the module, a line
 // for each declaration, every name `text@unique`. `renumbered` then numbers
 // the uniques in the order they first appear, on both sides, so that what is
 // compared is which use is of which binder, not how each renamer counts.

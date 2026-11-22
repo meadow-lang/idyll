@@ -25,20 +25,21 @@
 -- for is a `def` of the program's own.
 
 use Std.St (StRef, newRef, getRef, setRef)
-use Idyll.Hir (Literal)
-use Idyll.Core (Core, Builtin, Prim, Head)
+use Strata.Hir (Literal)
+use Strata.Core (Core, Builtin, Prim, Head)
 use Idyll.Elaborated
 use Idyll.Elaborated (Elaborated!)
 use Lingua (pass!)
-use Idyll.Core as IC
-use Idyll.Value (Value)
-use Idyll.Grade (Grade)
-use Idyll.Grade as G
-use Idyll.Tc (Tc, Meta, CtorInfo, OpInfo, EffectInfo)
-use Idyll.Tc as T
-use Idyll.Eval (quote)
-use Idyll.Ctx (Ctx)
-use Idyll.Ctx as X
+use Strata.Core as IC
+use Strata.Value (Value)
+use Strata.Grade (Grade)
+use Strata.Grade as G
+use Strata.Tc (Tc, Meta, CtorInfo, OpInfo, EffectInfo)
+use Idyll.Elab (Checker)
+use Strata.Tc as T
+use Strata.Eval (quote)
+use Strata.Ctx (Ctx)
+use Strata.Ctx as X
 use Idyll.Typer (TRep, Shown)
 use Idyll.Typer as Ty
 use Idyll.Prune as Pr
@@ -152,7 +153,7 @@ data ShowDefs = ShowDefs Sym (Maybe Sym) (Maybe Sym)
 data Head2 = HCall Sym | HCon Sym | HPerform Sym [Bool] Bool | HPrim String
 
 record L s = {
-  tc : Tc s,
+  tc : Checker s,
   -- the Cut being written, and the program's tables, read off as data for
   -- the typer once each
   out : CutBuilder s,

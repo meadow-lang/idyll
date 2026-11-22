@@ -12,15 +12,16 @@
 -- unknown type is taken to be the default.
 
 use Std.St (StRef, newRef, getRef, setRef)
-use Idyll.Hir (Literal)
-use Idyll.Core (Core, Builtin)
-use Idyll.Core as C
-use Idyll.Value (Value)
-use Idyll.Tc (Tc, Meta, MetaInfo, Origin)
-use Idyll.Tc as T
-use Idyll.Eval (force, eval, blocked, quote)
-use Idyll.Unify (unify)
-use Idyll.Ctx (Ctx)
+use Strata.Hir (Literal)
+use Strata.Core (Core, Builtin)
+use Strata.Core as C
+use Strata.Value (Value)
+use Strata.Tc (Tc, Meta, MetaInfo, Origin)
+use Idyll.Elab (Checker)
+use Strata.Tc as T
+use Strata.Eval (force, eval, blocked, quote)
+use Strata.Unify (unify)
+use Strata.Ctx (Ctx)
 use Idyll.Num as N
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as Hm
@@ -51,7 +52,7 @@ fun defaultOf (lit : Literal) : Builtin =
 
 -- `lit` read at `b`, which `readsAs` says it can be; an integer too big
 -- for its type is an error, and wrapped.
-@pub fun readNumber (tc : Tc s) (lit : Literal) (b : Builtin) : Literal ! { St s | e } =
+@pub fun readNumber (tc : Checker s) (lit : Literal) (b : Builtin) : Literal ! { St s | e } =
   match (lit, b) with
   | (Literal.Int n, Builtin.Number w) if not (C.isFloatType w) ->
       let k = N.wrap w n in
@@ -62,7 +63,7 @@ fun defaultOf (lit : Literal) : Builtin =
 
 -- A number literal checked against `ty`, a type still to be worked out: a
 -- placeholder, read once it is known.
-@pub fun deferLiteral (tc : Tc s) (ctx : Ctx) (lit : Literal) (ty : Value) : Core ! { St s | e } =
+@pub fun deferLiteral (tc : Checker s) (ctx : Ctx) (lit : Literal) (ty : Value) : Core ! { St s | e } =
   let m = T.newMeta tc (MetaInfo.MetaInfo (getRef tc.at) (Origin.Inferred "a number") None) in
   let w = setRef tc.placeholders (V.pushBack (getRef tc.placeholders) m) in
   let w2 = setRef tc.deferredLiterals (V.pushBack (getRef tc.deferredLiterals) (m, ctx, ty, lit)) in
@@ -73,7 +74,7 @@ fun defaultOf (lit : Literal) : Builtin =
 -- Nil) 0`, whose list's type is what the search for `showFirst`'s instance,
 -- and so `0`'s type, waits on (`Checker::settle_free_literals`). Whether
 -- any was read.
-@pub fun settleFreeLiterals (tc : Tc s) : Bool ! { St s | e } =
+@pub fun settleFreeLiterals (tc : Checker s) : Bool ! { St s | e } =
   let waiting = getRef tc.deferredLiterals in
   let free = V.filter (\d -> match d with | (m, ctx, ty, lit) -> isBareMeta tc ty) waiting in
   let rest = V.filter (\d -> match d with | (m, ctx, ty, lit) -> not (isBareMeta tc ty)) waiting in
@@ -82,7 +83,7 @@ fun defaultOf (lit : Literal) : Builtin =
   let w2 = setRef tc.deferredLiterals (V.append (getRef tc.deferredLiterals) rest) in
   progress
 
-fun isBareMeta (tc : Tc s) (ty : Value) : Bool ! { St s | e } =
+fun isBareMeta (tc : Checker s) (ty : Value) : Bool ! { St s | e } =
   match force tc ty with
   | Value.Flex _ sp -> V.isEmpty sp
   | _ -> False
@@ -90,7 +91,7 @@ fun isBareMeta (tc : Tc s) (ty : Value) : Bool ! { St s | e } =
 -- The literals that waited for their types, read where their types are
 -- known now; with `last`, every one, an unknown type taken to be the
 -- default. Whether any was read.
-@pub fun settleLiterals (tc : Tc s) (last : Bool) : Bool ! { St s | e } =
+@pub fun settleLiterals (tc : Checker s) (last : Bool) : Bool ! { St s | e } =
   let waiting = getRef tc.deferredLiterals in
   let w = setRef tc.deferredLiterals [] in
   V.foldl

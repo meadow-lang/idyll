@@ -642,8 +642,9 @@ auto arguments in turn, 16 deep. A goal with an error in it (`Debug ?!`,
 for a field whose type named nothing) is not searched for: its error has
 been reported, and every instance would fit it, each one's own goals
 tried in turn, exponentially many. Each trial is made on the checker itself
-and undone: `T.save` copies every table of `Tc` (each a value, so the copy
-is cheap) and `T.restore` puts them back. The innermost auto binder that
+and undone: `Elab.saveChecker` copies every table of `Tc` and of `Front`
+(each a value, so the copy is cheap) and `Elab.restoreChecker` puts them
+back. The innermost auto binder that
 fits is taken; of the hints, exactly one must fit, and only those whose
 type could come to the one wanted (by its head and its first argument's)
 are tried. A search whose type still has a metavariable in it waits
@@ -761,6 +762,10 @@ That unification solves the context's own variables (not metavariables):
 matching `xs : Vec n a` against `Cons x rest` defines `n` as `S m`,
 everywhere it occurs, the goal included. Two different constructors mean
 the case cannot happen, so `head : Vec (S n) a -> a` needs no `Nil` case.
+The branching and that unification are the kernel's (`Cases.mw`:
+`instantiate`, `unifyIndices`, `refine`), given by `Matching` the rule for
+how often a field may be used (`fieldGrades`); reading the patterns and
+deciding where to branch is `Matching`'s.
 Missing cases and unreachable equations are reported. `if` is a `case` on
 `Bool`. The fields a split binds are used as often as the value was, times
 their own grade (once, for a data type's fields).
@@ -846,7 +851,8 @@ renamer does not do yet either), and choosing by type among the names
 several `use`s bring in. No program of the corpus needs either.
 
 The machinery underneath, each piece a port of its Rust module with tests
-of its own:
+of its own (all but `Matching` now Strata's, the kernel shared with
+Meadow: see *The kernel: Strata*):
 
 - **`Grade.mw`** (`grade.rs`): the semiring of use counts (`0`, `1`,
   `0..1`, `1..∞`, `0..∞`, exact counts), with its laws as tests.
@@ -874,7 +880,12 @@ of its own:
   `bytesToHex`, ...) Meadow's primitives of the same names.
 - **`Tc.mw`**: the checker's state: the metacontext (each metavariable
   unsolved or solved, with where it came from and its type), the errors,
-  the holes, the kept questions, and the tables of what is declared.
+  the holes, the kept questions, and the tables of what is declared. It is
+  `Tc s f p`, generic in what a front end keeps of its own (`f`) and in
+  its places in the source (`p`), which it only keeps and hands back.
+  Idyll's checker is `Elab.Checker s`, `Tc s (Front s) Lang.Meta`, where
+  `Elab.Front` holds the renamed program, the function that elaborates an
+  expression, and the terms an overloaded name put off.
 - **`Eval.mw`** (`eval.rs`): evaluation and reading back (`quote`),
   primitives computing on literals, `case` choosing its alternative, and
   `force`, which looks a metavariable's solution up wherever one is met.
@@ -1317,6 +1328,35 @@ A tool reads its file each time, so the agent may edit it between calls.
 - **Cut**: building Cut and writing its text (rev d12a905, which has the
   roles and native sections, effect variables on definitions, and `@many`
   operations).
+
+- **Strata**: the kernel, shared with Meadow (below), from the meadow
+  repository's `Strata/` at a pinned revision.
+
+### The kernel: Strata
+
+The kernel is a package of its own, **Strata**, in the meadow repository
+(`Strata/`), which this compiler depends on by revision and Meadow's
+two-level plan (`docs/2LTT.md` there) checks both its levels with. Why: one
+dependent checker for the two languages, not two that drift apart in their
+logic (Axiom K, `Int`, `Div`, which terms a type may mention). Its modules
+were this compiler's, moved as they were, and are used as `Strata.X`:
+`Grade`, `Hir`, `Core`, `Value`, `Tc`, `Ctx`, `Eval`, `Unify`,
+`Termination`, `Positivity`, `Usage`, `Graph` (Tarjan's algorithm, which
+`Scc` and `Positivity` share) and `Cases` (splitting a variable into its
+constructors, with their indices unified). The sections above that name
+them (`Tc.mw`, `Unify.mw`, ...) describe Strata's files.
+
+What ties the checker's state to Idyll's front end is `Tc`'s `f` and `p`
+(above). `Matching` stays Idyll's own: it reads Idyll's patterns
+(overloaded constructors, number literals, sequences, implicit and dot
+patterns) and decides where to split, as a front end's match compiler
+does, splitting with `Cases`.
+
+A change to the kernel is made in Strata, and keeps these differential
+tests passing (or comes with the change here that does), so that the Rust
+compiler remains a check on it. front/'s manifest is part of what
+`Driver.compilerSalt` hashes, so a new Strata revision is a new compiler
+to the caches.
 
 ## Meadow lessons
 
