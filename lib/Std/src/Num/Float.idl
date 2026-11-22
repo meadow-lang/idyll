@@ -14,7 +14,7 @@
 -- is the prelude's, from any float to an `Int`; `ceil` and `round` are
 -- here, to the same.
 
-use Std.Bool (not, and, or)
+use Std.Bool (not)
 
 -- π, and the whole turn.
 @pub
@@ -56,7 +56,7 @@ isFinite x = x - x == 0.0
 @pub
 sqrt : (x : Float) -> Float
 sqrt x =
-  if or (x == 0.0) (not (isFinite x)) then (if x < 0.0 then 0.0 / 0.0 else x)
+  if x == 0.0 or not (isFinite x) then (if x < 0.0 then 0.0 / 0.0 else x)
   else if x < 0.0 then 0.0 / 0.0
   else scaled x 1.0
 
@@ -183,7 +183,7 @@ atanFrom x2 n acc =
 @pub
 atan2 : (y : Float) -> (x : Float) -> Float
 atan2 y x =
-  if or (isNaN x) (isNaN y) then 0.0 / 0.0
+  if isNaN x or isNaN y then 0.0 / 0.0
   else if x > 0.0 then atan (y / x)
   else if x < 0.0 then (if y < 0.0 then atan (y / x) - pi else atan (y / x) + pi)
   else if y > 0.0 then pi / 2.0
@@ -254,7 +254,7 @@ timesTwoTo x k = if k > 0 then timesTwoTo (x * 2.0) (k - 1) else if k < 0 then t
 @pub
 ln : (x : Float) -> Float
 ln x =
-  if or (isNaN x) (x < 0.0) then 0.0 / 0.0
+  if isNaN x or x < 0.0 then 0.0 / 0.0
   else if x == 0.0 then 0.0 - 1.0 / 0.0
   else if not (isFinite x) then x
   else lnFrom x 0
@@ -279,9 +279,9 @@ atanhFrom s2 n acc = if n < 0 then acc else atanhFrom s2 (n - 1) (1.0 / toFloat 
 pow : (x : Float) -> (y : Float) -> Float
 pow x y =
   if y == 0.0 then 1.0
-  else if or (isNaN x) (isNaN y) then 0.0 / 0.0
+  else if isNaN x or isNaN y then 0.0 / 0.0
   else if x > 0.0 then exp (y * ln x)
   else if x == 0.0 then (if y > 0.0 then 0.0 else 1.0 / 0.0)
-  else if and (toFloat (floor y) == y) (abs y < 9007199254740992.0) then
+  else if toFloat (floor y) == y and abs y < 9007199254740992.0 then
     let p = exp (y * ln (0.0 - x)) in if floor y % 2 == 0 then p else 0.0 - p
   else 0.0 / 0.0

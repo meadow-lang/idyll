@@ -10,6 +10,17 @@
 -- parameter smaller. That covers structural recursion on any argument,
 -- mutual recursion, and lexicographic orders like Ackermann's.
 --
+-- A recursion on an `Int` has no constructor to take apart, so it is seen
+-- to end by a measure, where a test bounds it: each `Int` parameter has
+-- three, each a parameter of its own to the size-change test (`Slot`).
+-- Counting down, `f (n - 1)` under a test that `n` is above a number,
+-- makes `n` smaller; counting up, `f (i + 1)` under a test that `i` is
+-- below a number, or below a parameter `n` passed on as it is, makes `n -
+-- i` smaller. Up and down are measures apart: a loop that counts down and
+-- then up again does not end. `f 0 = ..; f n = f (n - 1)` is not seen to
+-- end, as it does not for a negative `n`. The measures are looked for only
+-- when the group is not seen to end without them.
+--
 -- A group that terminates, at the top level, becomes transparent: its
 -- members unfold in types when applied to enough arguments that their case
 -- trees can choose (`Eval.unfold`), so `S n + m` computes to `S (n + m)`. A
@@ -17,7 +28,8 @@
 -- be vouched for with `@terminating`.
 
 use Std.St (StRef, newRef, getRef, setRef)
-use Idyll.Core (Core, CaseAlt, Head, OpClause)
+use Idyll.Core (Core, CaseAlt, Head, OpClause, Prim)
+use Idyll.Hir (Literal)
 use Idyll.Value (Value)
 use Idyll.Value as Va
 use Idyll.Tc (Tc)
@@ -45,7 +57,34 @@ fun andThen (a : Int) (b : Int) : Int = if a == 0 or b == 0 then 0 else if a == 
 
 -- A call: from which member, to which, and for each of the caller's
 -- parameters and each of the callee's, how the argument relates to it.
+-- With measures, each "parameter" is a `Slot`.
 data Call = Call Int Int [[Int]]
+
+-- What the size-change test compares, of a definition of `n` parameters:
+-- the parameters themselves, and with measures each one counted down, each
+-- counted up to a number, and each counted up to another, `Gap q p` being
+-- `q - p` (`Checker::check_termination`'s `Slot`).
+data Slot = Param Int | Down Int | Up Int | Gap Int Int
+
+-- The most parameters a definition may have for its gaps to be measured.
+fun mostGaps () : Int = 6
+
+fun slots (n : Int) (measured : Bool) : Int =
+  if not measured then n else if n <= mostGaps () then 3 * n + n * n else 3 * n
+
+fun slot (i : Int) (n : Int) (measured : Bool) : Slot =
+  if not measured or i < n then Slot.Param i
+  else if i < 2 * n then Slot.Down (i - n)
+  else if i < 3 * n then Slot.Up (i - 2 * n)
+  else Slot.Gap ((i - 3 * n) / n) ((i - 3 * n) % n)
+
+-- A variable (its level), or a number, in a comparison.
+data Atom = Var Int | Number
+
+fun isNumber (a : Atom) : Bool = match a with | Atom.Number -> True | _ -> False
+
+-- What a branch knows, of a test it is under: `lo < hi`, or `lo <= hi`.
+data Fact = Fact Atom Atom
 
 fun keyOf (c : Call) : String =
   match c with
@@ -112,38 +151,56 @@ fun lambdas (c : Core) (most : Int) : (Int, Core) =
 @pub fun arity (c : Core) : Int = fst (lambdasOf c)
 
 -- After a recursive group is checked: whether every loop of calls in it
--- makes something smaller; if so, and it is not under a binder, its
--- members unfold from now on.
-@pub fun checkTermination (tc : Tc s) (ctx : Ctx) (members : [(Int, Core)]) : Bool ! { St s | e } =
+-- makes something smaller, and if not, whether one of its calls counts an
+-- `Int` down with nothing to stop it; if it ends, and it is not under a
+-- binder, its members unfold from now on.
+@pub fun checkTermination (tc : Tc s) (ctx : Ctx) (members : [(Int, Core)]) : (Bool, Bool) ! { St s | e } =
   let index = V.foldl (\m i -> match V.get members i with | Just (u, _) -> Hm.insert u i m | None -> m) Hm.empty (V.range 0 (V.len members)) in
   -- with metavariables solved and definitions inlined, so that calls made
   -- through them are seen
   let bodies = V.map (\mc -> match mc with | (_, core) -> quote tc ctx.lvl (eval tc ctx.env core)) members in
   let arities = V.map (\mc -> match mc with | (_, core) -> arity core) members in
-  let calls = newRef [] in
-  let w =
-    V.foldl
-      (\acc f ->
-        let (n, inner) = lambdas (V.getOr Core.Error bodies f) (V.getOr 0 arities f) in
-        let walk =
-          Walk {
-            base = ctx.lvl,
-            origin = newRef (V.map (\p -> Just (p, same ())) (V.range 0 n)),
-            splits = newRef [],
-            index,
-            arities,
-            from = f,
-            calls
-          }
-        in
-        term walk inner (ctx.lvl + n))
-      ()
-      (V.range 0 (V.len members))
+  -- the parameters alone, and then, if a call counts, with measures
+  let walked =
+    \(measured : Bool) ->
+      let calls = newRef [] in
+      let counts = newRef False in
+      let countedDown = newRef False in
+      let w =
+        V.foldl
+          (\acc f ->
+            let (n, inner) = lambdas (V.getOr Core.Error bodies f) (V.getOr 0 arities f) in
+            let walk =
+              Walk {
+                base = ctx.lvl,
+                origin = newRef (V.map (\p -> Just (p, same ())) (V.range 0 n)),
+                splits = newRef [],
+                facts = newRef [],
+                measured,
+                counts,
+                countedDown,
+                index,
+                arities,
+                from = f,
+                calls
+              }
+            in
+            term walk inner (ctx.lvl + n))
+          ()
+          (V.range 0 (V.len members))
+      in
+      (terminates (dedupe (getRef calls)) (V.map (\n -> slots n measured) arities), getRef counts, getRef countedDown)
   in
-  if not (terminates (dedupe (getRef calls)) arities) then False
+  let (plainly, counts, _) = walked False in
+  let (ends, countedDown) =
+    if plainly then (True, False)
+    else if counts then (match walked True with | (e, _, d) -> (e, d))
+    else (False, False)
+  in
+  if not ends then (False, countedDown)
   -- only a group with no enclosing variables: one nested under a binder is
   -- known by its binding site, so its instances could not be told apart
-  else if V.any (\l -> X.infoAt ctx l == Just Info.Bound) (V.range 0 ctx.lvl) then True
+  else if V.any (\l -> X.infoAt ctx l == Just Info.Bound) (V.range 0 ctx.lvl) then (True, False)
   else
     let w2 =
       V.foldl
@@ -155,7 +212,7 @@ fun lambdas (c : Core) (most : Int) : (Int, Core) =
         ()
         members
     in
-    True
+    (True, False)
 
 -- The instances of a recursive group checked at the top level that do not
 -- unfold already (`Checker::unfold_instances`): each unfolds where a
@@ -188,6 +245,13 @@ record Walk s = {
   base : Int,
   origin : StRef s [Maybe (Int, Int)],
   splits : StRef s [(Int, [Int], Maybe (Int, Int))],
+  -- what the tests around here say (with measures); whether calls are
+  -- summarised with measures; whether a call passes a parameter plus or
+  -- minus a number; and whether one counts down with no test to stop it
+  facts : StRef s [Fact],
+  measured : Bool,
+  counts : StRef s Bool,
+  countedDown : StRef s Bool,
   index : HashMap Int Int,
   arities : [Int],
   from : Int,
@@ -222,6 +286,104 @@ fun originOf (w : Walk s) (c : Core) (lvl : Int) : Maybe (Int, Int) ! { St s | e
              (getRef w.splits)
        | _ -> None)
 
+-- The parameter a variable is, as it is.
+fun paramOf (w : Walk s) (c : Core) (lvl : Int) : Maybe Int ! { St s | e } =
+  match c with
+  | Core.Runtime _ inner -> paramOf w inner lvl
+  | Core.Var _ _ -> (match originOf w c lvl with | Just (p, r) -> if r == same () then Just p else None | None -> None)
+  | _ -> None
+
+-- A positive number, written.
+fun numberOf (c : Core) : Maybe Int =
+  match c with
+  | Core.Lit (Literal.Int k) -> if k >= 1 then Just k else None
+  | _ -> None
+
+-- A parameter plus or minus a number: which, and by how much.
+fun stepped (w : Walk s) (c : Core) (lvl : Int) : Maybe (Int, Int) ! { St s | e } =
+  match c with
+  | Core.Runtime _ inner -> stepped w inner lvl
+  | Core.App (Core.App (Core.Prim Prim.IntSub) a) b ->
+      (match (paramOf w a lvl, numberOf b) with
+       | (Just p, Just k) -> Just (p, 0 - k)
+       | _ -> None)
+  | Core.App (Core.App (Core.Prim Prim.IntAdd) a) b ->
+      (match (paramOf w a lvl, numberOf b, numberOf a, paramOf w b lvl) with
+       | (Just p, Just k, _, _) -> Just (p, k)
+       | (_, _, Just k, Just p) -> Just (p, k)
+       | _ -> None)
+  | _ -> None
+
+-- The parameter a fact's variable is, as it is.
+fun factParam (w : Walk s) (a : Atom) : Maybe Int ! { St s | e } =
+  match a with
+  | Atom.Var l ->
+      if l < w.base then None
+      else (match M.andThen (\o -> o) (V.get (getRef w.origin) (l - w.base)) with | Just (p, r) -> if r == same () then Just p else None | None -> None)
+  | Atom.Number -> None
+
+-- A variable or a number, in a comparison.
+fun atomOf (c : Core) (lvl : Int) : Maybe Atom =
+  match c with
+  | Core.Runtime _ inner -> atomOf inner lvl
+  | Core.Var i _ -> Just (Atom.Var (lvl - i - 1))
+  | Core.Lit (Literal.Int _) -> Just Atom.Number
+  | _ -> None
+
+-- What a test says where it is true, and where it is false: `a < b`, or
+-- else `b <= a`; `not t` (a `case` of `t` giving the other `Bool`) the
+-- other way round.
+fun condition (c : Core) (lvl : Int) : Maybe (Fact, Fact) =
+  match c with
+  | Core.Runtime _ inner -> condition inner lvl
+  | Core.App (Core.App (Core.Prim Prim.IntLt) a) b ->
+      (match (atomOf a lvl, atomOf b lvl) with
+       | (Just x, Just y) -> Just (Fact.Fact x y, Fact.Fact y x)
+       | _ -> None)
+  | Core.Case s alts ->
+      let gives =
+        \(b : Bool) ->
+          match V.find (\a -> match a with | CaseAlt.CaseAlt (Head.BoolLit v) _ _ _ -> v == b | _ -> False) alts with
+          | Just (CaseAlt.CaseAlt _ _ _ (Core.Lit (Literal.Bool v))) -> Just v
+          | _ -> None
+      in
+      (match (condition s lvl, gives True, gives False) with
+       | (Just (yes, no), Just True, Just False) -> Just (yes, no)
+       | (Just (yes, no), Just False, Just True) -> Just (no, yes)
+       | _ -> None)
+  | _ -> None
+
+fun boundedBelow (w : Walk s) (p : Int) : Bool ! { St s | e } =
+  V.any (\f -> match f with | Fact.Fact lo hi -> isNumber lo and factParam w hi == Just p) (getRef w.facts)
+
+fun boundedAbove (w : Walk s) (p : Int) : Bool ! { St s | e } =
+  V.any (\f -> match f with | Fact.Fact lo hi -> factParam w lo == Just p and isNumber hi) (getRef w.facts)
+
+fun boundedBy (w : Walk s) (p : Int) (q : Int) : Bool ! { St s | e } =
+  V.any (\f -> match f with | Fact.Fact lo hi -> factParam w lo == Just p and factParam w hi == Just q) (getRef w.facts)
+
+-- How the callee's slot `to` relates to the caller's slot `from`, the
+-- callee's arguments being `args`.
+fun related (w : Walk s) (from : Slot) (to : Slot) (args : [Core]) (lvl : Int) : Int ! { St s | e } =
+  let param = \j -> match V.get args j with | Just a -> paramOf w a lvl | None -> None in
+  let step = \j -> match V.get args j with | Just a -> stepped w a lvl | None -> None in
+  match (from, to) with
+  | (Slot.Param p, Slot.Param j) ->
+      (match M.andThen (\a -> originOf w a lvl) (V.get args j) with
+       | Just (q, rel) -> if q == p then rel else unknown ()
+       | None -> unknown ())
+  | (Slot.Down p, Slot.Down j) ->
+      if param j == Just p then same ()
+      else (match step j with | Just (q, k) -> if q == p and k < 0 and boundedBelow w p then smaller () else unknown () | None -> unknown ())
+  | (Slot.Up p, Slot.Up j) ->
+      if param j == Just p then same ()
+      else (match step j with | Just (q, k) -> if q == p and k > 0 and boundedAbove w p then smaller () else unknown () | None -> unknown ())
+  | (Slot.Gap q p, Slot.Gap jq jp) ->
+      if q == p or param jq != Just q then unknown ()
+      else if param jp == Just p then same ()
+      else (match step jp with | Just (r, k) -> if r == p and k > 0 and boundedBy w p q then smaller () else unknown () | None -> unknown ())
+  | _ -> unknown ()
+
 fun under (w : Walk s) (n : Int) (origin : Maybe (Int, Int)) (body : Core) (lvl : Int) =
   let before = getRef w.origin in
   let u = setRef w.origin (V.append before (V.replicate n origin)) in
@@ -237,11 +399,13 @@ fun term (w : Walk s) (c : Core) (lvl : Int) =
   | Core.Let _ e body ->
       let u = term w e lvl in
       under w 1 (originOf w e lvl) body lvl
-  -- what comes out of a split is smaller than what went in
+  -- what comes out of a split is smaller than what went in; and a branch
+  -- of a test knows what the test said
   | Core.Case s alts ->
       let u = term w s lvl in
       let whole = originOf w s lvl in
       let o = M.map (\pr -> match pr with | (p, _) -> (p, smaller ())) whole in
+      let test = if w.measured then condition s lvl else None in
       V.foldl
         (\acc alt ->
           match alt with
@@ -250,7 +414,15 @@ fun term (w : Walk s) (c : Core) (lvl : Int) =
               let u2 = setRef w.splits (V.pushBack before (con, V.range lvl (lvl + V.len vars), whole)) in
               let u3 = under w (V.len vars) o body lvl in
               setRef w.splits before
-          | CaseAlt.CaseAlt _ _ vars body -> under w (V.len vars) o body lvl)
+          | CaseAlt.CaseAlt (Head.BoolLit b) _ vars body ->
+              let known = getRef w.facts in
+              let u2 =
+                match test with
+                | Just (yes, no) -> setRef w.facts (V.pushBack known (if b then yes else no))
+                | None -> ()
+              in
+              let u3 = under w (V.len vars) o body lvl in
+              setRef w.facts known)
         ()
         alts
   | Core.App _ _ -> call w c lvl
@@ -279,17 +451,23 @@ fun call (w : Walk s) (c : Core) (lvl : Int) =
     | Core.Opaque fu _ ->
         (match Hm.lookup fu w.index with
          | Just to ->
-             let params = V.getOr 0 w.arities w.from in
+             let n = V.getOr 0 w.arities w.from in
+             let m = V.getOr 0 w.arities to in
              let matrix =
                V.map
-                 (\p ->
-                   V.map
-                     (\j ->
-                       match M.andThen (\a -> originOf w a lvl) (V.get args j) with
-                       | Just (q, rel) -> if q == p then rel else unknown ()
-                       | None -> unknown ())
-                     (V.range 0 (V.getOr 0 w.arities to)))
-                 (V.range 0 params)
+                 (\r -> V.map (\c -> related w (slot r n w.measured) (slot c m w.measured) args lvl) (V.range 0 (slots m w.measured)))
+                 (V.range 0 (slots n w.measured))
+             in
+             let u2 =
+               V.foldl
+                 (\acc j ->
+                   match M.andThen (\a -> stepped w a lvl) (V.get args j) with
+                   | Just (p, k) ->
+                       let u3 = setRef w.counts True in
+                       if k < 0 and w.measured and not (boundedBelow w p) then setRef w.countedDown True else ()
+                   | None -> ())
+                 ()
+                 (V.range 0 m)
              in
              setRef w.calls (V.pushBack (getRef w.calls) (Call.Call w.from to matrix))
          | None -> ())

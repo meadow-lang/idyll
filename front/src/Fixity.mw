@@ -1,0 +1,191 @@
+-- How operators group: `infixl 6 <+>`, as in Haskell and Meadow -- the Rust
+-- compiler's `idyllic_parser::fixity`, which this agrees with.
+--
+-- A fixity belongs to an operator's spelling, not to one definition of it.
+-- The language's own operators have theirs (`builtin`), the prelude's pipes
+-- among them; a declaration may repeat one of those but not change it.
+-- Every other operator is what a declaration says -- in its module, a
+-- module of its package it imports, or a package it depends on -- or
+-- `infixl 9` if none does. They are known before a file is parsed
+-- (`declared` reads them off its tokens), so that `Surface` groups an
+-- operator chain as it reads it.
+
+use Lingua.Lang (spanMeta)
+use Std.Macro (Reflect)
+use Lingua.Diagnostic (Diagnostic, errorAt, withLabel)
+use Idyll.Layout (Token, Laid)
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+-- Which way operators of one level group: `infixl` to the left, `a - b -
+-- c` is `(a - b) - c`; `infixr` to the right; `infix` neither, so that `a
+-- == b == c` asks for parentheses.
+@derive(PartialEq, Reflect)
+@pub data Assoc = Left | Right | Neither
+
+-- How an operator groups: which way, and how tightly, from 0 (loosest) to
+-- 9; application is tighter than any.
+@derive(PartialEq, Reflect)
+@pub data Fixity = Fixity Assoc Int
+
+-- An operator's fixity, as a package declares it for those that depend on
+-- it.
+@derive(Reflect)
+@pub data Declared = Declared String Fixity
+
+@pub fun assocOf (f : Fixity) : Assoc = match f with | Fixity.Fixity a _ -> a
+
+@pub fun levelOf (f : Fixity) : Int = match f with | Fixity.Fixity _ l -> l
+
+-- What an operator nothing declares is.
+@pub def fallback = Fixity.Fixity Assoc.Left 9
+
+-- The language's own operators' fixities: `*` `/` `%` (`infixl 7`), `+`
+-- `-` (`infixl 6`), `::` `++` (`infixr 5`), the comparisons (`infix 4`),
+-- `and` (`infixr 3`) and `or` (`infixr 2`), and the prelude's pipes, `|>`
+-- (`infixl 1`) and `<|` (`infixr 0`), which a file read alone groups as a
+-- program does.
+@pub fun builtin (op : String) : Maybe Fixity =
+  match op with
+  | "|>" -> Just (Fixity.Fixity Assoc.Left 1)
+  | "<|" -> Just (Fixity.Fixity Assoc.Right 0)
+  | "or" -> Just (Fixity.Fixity Assoc.Right 2)
+  | "and" -> Just (Fixity.Fixity Assoc.Right 3)
+  | "*" -> Just (Fixity.Fixity Assoc.Left 7)
+  | "/" -> Just (Fixity.Fixity Assoc.Left 7)
+  | "%" -> Just (Fixity.Fixity Assoc.Left 7)
+  | "+" -> Just (Fixity.Fixity Assoc.Left 6)
+  | "-" -> Just (Fixity.Fixity Assoc.Left 6)
+  | "::" -> Just (Fixity.Fixity Assoc.Right 5)
+  | "++" -> Just (Fixity.Fixity Assoc.Right 5)
+  | "==" -> Just (Fixity.Fixity Assoc.Neither 4)
+  | "!=" -> Just (Fixity.Fixity Assoc.Neither 4)
+  | "<" -> Just (Fixity.Fixity Assoc.Neither 4)
+  | ">" -> Just (Fixity.Fixity Assoc.Neither 4)
+  | "<=" -> Just (Fixity.Fixity Assoc.Neither 4)
+  | ">=" -> Just (Fixity.Fixity Assoc.Neither 4)
+  | _ -> None
+
+-- The fixity of `op`, given those declared.
+@pub fun fixityOf (table : [(String, Fixity)]) (op : String) : Fixity =
+  match builtin op with
+  | Just f -> f
+  | None -> M.unwrapOr fallback (M.map snd (V.find (\e -> fst e == op) table))
+
+-- `infixl 6`, as a declaration writes it.
+@pub fun shown (f : Fixity) : String =
+  match f with
+  | Fixity.Fixity a l ->
+      let kw = match a with | Assoc.Left -> "infixl" | Assoc.Right -> "infixr" | Assoc.Neither -> "infix" in
+      "${kw} ${show l}"
+
+-- The keyword a declaration starts with, and the way it groups: it is a
+-- keyword only before a number, and a name anywhere else.
+@pub fun keyword (word : String) : Maybe Assoc =
+  match word with
+  | "infixl" -> Just Assoc.Left
+  | "infixr" -> Just Assoc.Right
+  | "infix" -> Just Assoc.Neither
+  | _ -> None
+
+-- The fixity declarations in a file's tokens, laid out: each operator
+-- declared, where, and its fixity. A declaration that is not well formed
+-- is the parser's to report; this takes what it can.
+@pub fun declared (tokens : [Laid]) : [(String, Int, Int, Fixity)] =
+  V.concatMap (\i -> declaredAt tokens i) (V.range 0 (V.len tokens))
+
+fun declaredAt (ts : [Laid]) (i : Int) : [(String, Int, Int, Fixity)] =
+  match (V.get ts i, V.get ts (i + 1)) with
+  | (Just t, Just n) ->
+      (match (t.token, n.token) with
+       | (Token.LowerIdent w, Token.Decimal digits) ->
+           (match (keyword w, S.toInt digits) with
+            | (Just a, Just l) if l >= 0 and l <= 9 and startsItem ts i -> opsFrom ts (i + 2) (Fixity.Fixity a l) []
+            | _ -> [])
+       | _ -> [])
+  | _ -> []
+
+-- Whether an item starts at token `i`.
+fun startsItem (ts : [Laid]) (i : Int) : Bool =
+  if i == 0 then True
+  else
+    match V.get ts (i - 1) with
+    | Just p -> (match p.token with | Token.VLBrace -> True | Token.VSemi -> True | Token.LBrace -> True | Token.Semi -> True | _ -> False)
+    | None -> True
+
+-- The operators a declaration names from token `j`, bare or parenthesised,
+-- separated by commas.
+fun opsFrom (ts : [Laid]) (j : Int) (f : Fixity) (acc : [(String, Int, Int, Fixity)]) : [(String, Int, Int, Fixity)] =
+  let one =
+    match V.get ts j with
+    | Just a if M.isSome (opText a.token) -> M.map (\s -> (s, a.from, a.to, j + 1)) (opText a.token)
+    | Just a if isParen a.token ->
+        (match (V.get ts (j + 1), V.get ts (j + 2)) with
+         | (Just b, Just c) if M.isSome (opText b.token) and isClose c.token -> M.map (\s -> (s, b.from, b.to, j + 3)) (opText b.token)
+         | _ -> None)
+    | _ -> None
+  in
+  match one with
+  | None -> acc
+  | Just (s, from, to, next) ->
+      let more = V.pushBack acc (s, from, to, f) in
+      (match V.get ts next with
+       | Just c if isComma c.token -> opsFrom ts (next + 1) f more
+       | _ -> more)
+
+fun opText (t : Token) : Maybe String =
+  match t with
+  | Token.OpIdent s -> Just s
+  | Token.ConOpIdent s -> Just s
+  | Token.BacktickIdent s -> Just (unquoted s)
+  | _ -> None
+
+-- A name in backticks, without them.
+@pub fun unquoted (s : String) : String = S.slice s 1 (S.byteLength s - 1)
+
+fun isParen (t : Token) : Bool = match t with | Token.LParen -> True | _ -> False
+
+fun isClose (t : Token) : Bool = match t with | Token.RParen -> True | _ -> False
+
+fun isComma (t : Token) : Bool = match t with | Token.Comma -> True | _ -> False
+
+-- The fixities `declared` come to (those of the packages depended on and
+-- the parts imported first, then the file's own), and what is wrong with
+-- them: a built-in operator's changed, or two declarations of one operator
+-- that disagree, said where the later is.
+@pub fun table (declared : [(String, Int, Int, Fixity)]) : ([(String, Fixity)], [Diagnostic]) =
+  V.foldl
+    (\acc d ->
+      match (acc, d) with
+      | ((t, errs), (op, from, to, f)) ->
+          let at = spanMeta from to in
+          (match builtin op with
+           | Just own ->
+               if own == f then (t, errs)
+               else (t, V.pushBack errs (withLabel at "`${op}` is `${shown own}`, not `${shown f}`" (errorAt at "the fixity of `${op}` cannot change")))
+           | None ->
+               (match V.find (\e -> fst e == op) t with
+                | Just (_, before) ->
+                    if before == f then (t, errs)
+                    else (t, V.pushBack errs (withLabel at "this says `${shown f}`, but `${shown before}` was declared first" (errorAt at "two fixities for `${op}`")))
+                | None -> (V.pushBack t (op, f), errs))))
+    ([], [])
+    declared
+
+-- A package's own declarations, once each, for the packages that depend
+-- on it: none of the language's own.
+@pub fun own (declared : [(String, Int, Int, Fixity)]) : [Declared] =
+  V.foldl
+    (\acc d ->
+      match d with
+      | (op, _, _, f) ->
+          if M.isSome (builtin op) or V.any (\e -> match e with | Declared.Declared o _ -> o == op) acc then acc
+          else V.pushBack acc (Declared.Declared op f))
+    []
+    declared
+
+-- Declarations from elsewhere, placed nowhere, ahead of a file's own.
+@pub fun fromElsewhere (ds : [Declared]) : [(String, Int, Int, Fixity)] =
+  V.map (\d -> match d with | Declared.Declared op f -> (op, 0, 0, f)) ds

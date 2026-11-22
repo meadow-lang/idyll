@@ -4,7 +4,7 @@ answer str
 
 data idyll:Prelude/DigitFuel { Spent; More(ptr) }
 
-data idyll:Main/Point { Point(i64, i64) }
+effect idyll:Main/Tick { tick(i64) -> unit }
 
 val idyll:Prelude/digitFuel : ptr =
   <idyll:Prelude/DigitFuel.Spent | μ̃ v_20: ptr.
@@ -28,6 +28,9 @@ val idyll:Prelude/digitFuel : ptr =
                                       <idyll:Prelude/DigitFuel.More(v_3) | μ̃ v_2: ptr.
                                         <idyll:Prelude/DigitFuel.More(v_2) | μ̃ v_1: ptr.
                                           <idyll:Prelude/DigitFuel.More(v_1) | halt>>>>>>>>>>>>>>>>>>>>>
+
+val idyll:Main/type : i64 =
+  <1 | halt>
 
 def idyll:Prelude/digitString (d_22: i64; k_23: ptr) ! {} =
   prim eq(d_22, 0; μ̃ v__24: bool.
@@ -67,39 +70,47 @@ def idyll:Prelude/showInt (n_52: i64; k_53: ptr) ! {} =
       idyll:Prelude/negativeDigits(idyll:Prelude/digitFuel, n_52; μ̃ v_58: str.
         prim concatStrings(["-", v_58]; k_53))))
 
-def idyll:Prelude/negativeDigits (fuel_61: ptr, n_62: i64; k_63: ptr) ! {} =
-  <fuel_61 | case {
+def idyll:Main/three (u_62: unit; k_63: ptr) ! {idyll:Main/Tick} =
+  perform idyll:Main/Tick.tick(1; μ̃ v___132_64: unit.
+    perform idyll:Main/Tick.tick(2; μ̃ v___149_65: unit.
+      prim add(idyll:Main/type, 1; μ̃ do_66: i64.
+        perform idyll:Main/Tick.tick(do_66; k_63))))
+
+def idyll:Prelude/negativeDigits (fuel_67: ptr, n_68: i64; k_69: ptr) ! {} =
+  <fuel_67 | case {
     idyll:Prelude/DigitFuel.Spent =>
-      <"" | k_63>;
-    idyll:Prelude/DigitFuel.More(fuel_64: ptr) =>
-      prim sub(0, 10; μ̃ v_74: i64.
-        prim lt(v_74, n_62; μ̃ v__65: bool.
-          prim if(v__65; μ̃ u_72: unit.
-            prim div(n_62, 10; μ̃ v_70: i64.
-              idyll:Prelude/negativeDigits(fuel_64, v_70; μ̃ v_66: str.
-                prim mod(n_62, 10; μ̃ v_69: i64.
-                  prim sub(0, v_69; μ̃ v_68: i64.
-                    idyll:Prelude/digitString(v_68; μ̃ v_67: str.
-                      prim concatStrings([v_66, v_67]; k_63)))))), μ̃ u_73: unit.
-            prim sub(0, n_62; μ̃ v_71: i64.
-              idyll:Prelude/digitString(v_71; k_63)))))
+      <"" | k_69>;
+    idyll:Prelude/DigitFuel.More(fuel_70: ptr) =>
+      prim sub(0, 10; μ̃ v_80: i64.
+        prim lt(v_80, n_68; μ̃ v__71: bool.
+          prim if(v__71; μ̃ u_78: unit.
+            prim div(n_68, 10; μ̃ v_76: i64.
+              idyll:Prelude/negativeDigits(fuel_70, v_76; μ̃ v_72: str.
+                prim mod(n_68, 10; μ̃ v_75: i64.
+                  prim sub(0, v_75; μ̃ v_74: i64.
+                    idyll:Prelude/digitString(v_74; μ̃ v_73: str.
+                      prim concatStrings([v_72, v_73]; k_69)))))), μ̃ u_79: unit.
+            prim sub(0, n_68; μ̃ v_77: i64.
+              idyll:Prelude/digitString(v_77; k_69)))))
   }>
 
-def idyll:Main/flip (x_75: ptr; k_76: ptr) ! {} =
-  <x_75 | case {
-    idyll:Main/Point.Point(x_77: i64, y_78: i64) =>
-      <idyll:Main/Point.Point(y_78, x_77) | k_76>
-  }>
-
-def idyll:Main/"#show Point" (x_81: ptr; k_82: ptr) ! {} =
-  <x_81 | case {
-    idyll:Main/Point.Point(f_83: i64, f_84: i64) =>
-      idyll:Prelude/showInt(f_83; μ̃ s_85: str.
-        idyll:Prelude/showInt(f_84; μ̃ s_86: str.
-          prim concatStrings(["Point", " ", s_85, " ", s_86]; k_82)))
-  }>
-
-def idyll:Main/"#entry" (; k_79: ptr) =
-  <idyll:Main/Point.Point(1, 2) | μ̃ v_88: ptr.
-    idyll:Main/flip(v_88; μ̃ answer_80: ptr.
-      idyll:Main/"#show Point"(answer_80; k_79))>
+def idyll:Main/"#entry" (; k_81: ptr) =
+  handle {
+    idyll:Main/Tick.tick(n_84: i64; r_85: ptr, k_86: ptr) =>
+      <cocase {
+        apply(s_87: i64; k_88: ptr) ! {} =>
+          <r_85 | apply(unit; μ̃ g_89: ptr.
+            prim mul(s_87, 10; μ̃ v_91: i64.
+              prim add(v_91, n_84; μ̃ v_90: i64.
+                <g_89 | apply(v_90; k_88)>)))>
+      } | k_86>;
+    return(v__92: unit; k_93: ptr) =>
+      <cocase {
+        apply(s_94: i64; k_95: ptr) ! {} =>
+          <s_94 | k_95>
+      } | k_93>
+  } in μ b_97.
+    idyll:Main/three(unit; b_97)
+  ; μ̃ f_83: ptr.
+    <f_83 | apply(0; μ̃ answer_82: i64.
+      idyll:Prelude/showInt(answer_82; k_81))>

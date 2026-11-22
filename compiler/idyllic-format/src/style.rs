@@ -91,7 +91,10 @@ fn rule_of(kind: Kind) -> Option<&'static [Elem]> {
         Kind::WrittenSemi => &[TIGHT, Tok(";")],
         Kind::Plain => &[Tok("="), BODY],
         // guards a line each, a level in
-        Kind::Line => &[WHOLE, EFFECTS, Child(&[Kind::Plain, Kind::Guards], false)],
+        Kind::Line => &[WHOLE, EFFECTS, Child(&[Kind::Plain, Kind::Guards], false), Child(&[Kind::WhereClause], false)],
+        // a `where` under its equation, a level in, and its declarations a
+        // level further
+        Kind::WhereClause => &[IndentBy(UNIT, &[NEWLINE, Tok("where"), OPENS, DECLARATIONS, CLOSES])],
         Kind::Guards => &[IndentBy(UNIT, &[Child(&[Kind::Guard], true)])],
         Kind::Guard => &[NEWLINE, Tok("|"), GROUPED, Tok("="), BODY],
         Kind::AltPlain => &[Tok("->"), BODY],

@@ -56,8 +56,11 @@ fn the_parses_agree() {
 fn unplaced(dump: &str) -> String {
     let mut out = String::with_capacity(dump.len());
     let mut rest = dump;
-    while let Some(at) = rest.find("#instance@") {
-        let (head, tail) = rest.split_at(at + "#instance@".len());
+    // a name made up from where something is written: an instance with no
+    // name of its own, `_ = e`'s, a section's parameter
+    let marks = ["#instance@", "#_@", "#section@"];
+    while let Some((at, mark)) = marks.iter().filter_map(|m| rest.find(m).map(|at| (at, m))).min() {
+        let (head, tail) = rest.split_at(at + mark.len());
         out.push_str(head);
         rest = tail.trim_start_matches(|c: char| c.is_ascii_digit());
     }

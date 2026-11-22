@@ -28,6 +28,7 @@ pub enum Kind {
     AttrArg,
     AttrValue,
     Line,
+    WhereClause,
     Effects,
     Plain,
     Guards,
@@ -54,6 +55,10 @@ pub enum Kind {
     OpAttr,
     EffectAlias,
     UseDecl,
+    FixityDecl,
+    FixityOp,
+    BareOp,
+    ParenOp,
     UseAlias,
     UseNames,
     UseName,
@@ -90,8 +95,12 @@ pub enum Kind {
     SeqA,
     SeqRest,
     Braced,
+    BracedItem,
+    FieldValue,
     BraceRest,
-    FieldVals,
+    EqField,
+    TailTerm,
+    BraceMore,
     FieldVal,
     RecordLit,
     DotA,
@@ -348,8 +357,10 @@ impl Reader {
         matches!(self.nth(n), Some(Token::UpperIdent(_)))
     }
 
+    /// An operator between operands: a symbol's, a name in backticks, or
+    /// `and` and `or`.
     fn nth_op(&self, n: usize) -> bool {
-        matches!(self.nth(n), Some(Token::OpIdent(_) | Token::ConOpIdent(_)))
+        matches!(self.nth(n), Some(Token::OpIdent(_) | Token::ConOpIdent(_) | Token::BacktickIdent(_) | Token::And | Token::Or))
     }
 
     fn at_word(&self, word: &str) -> bool {
@@ -472,6 +483,7 @@ impl Reader {
                 Some(Token::Data) => r.data_decl(),
                 Some(Token::Effect) => r.effect_decl(),
                 Some(Token::Use) => r.use_decl(),
+                _ if r.fixity_at() => r.fixity_decl(),
                 _ if r.at_word("record") && r.nth_upper(1) => r.record_decl(),
                 _ if r.at_word("trait") && r.nth_upper(1) => r.trait_decl(),
                 _ if r.at_word("instance") && (r.nth_upper(1) || r.nth_lower(1)) => r.instance_decl(),
@@ -559,7 +571,15 @@ impl Reader {
                 })
             } else {
                 Ok(())
+            }?;
+            // `where`, and a block of declarations
+            if r.at(Token::Where) {
+                r.node(Kind::WhereClause, |r| {
+                    r.advance();
+                    r.block(Self::line)
+                })?;
             }
+            Ok(())
         })
     }
 
@@ -772,6 +792,44 @@ impl Reader {
         })
     }
 
+    /// Whether a fixity declaration starts here: `infixl` before a number.
+    fn fixity_at(&self) -> bool {
+        ["infixl", "infixr", "infix"].iter().any(|w| self.at_word(w)) && matches!(self.nth(1), Some(Token::Int(_)))
+    }
+
+    /// `infixl 6 <+>, (<->)`
+    fn fixity_decl(&mut self) -> Read {
+        self.node(Kind::FixityDecl, |r| {
+            r.advance();
+            r.advance();
+            r.fixity_op()?;
+            while r.at(Token::Comma) {
+                r.advance();
+                r.fixity_op()?;
+            }
+            Ok(())
+        })
+    }
+
+    fn fixity_op(&mut self) -> Read {
+        self.node(Kind::FixityOp, |r| {
+            if r.at(Token::LParen) {
+                r.node(Kind::ParenOp, |r| {
+                    r.advance();
+                    if !r.nth_op(0) {
+                        return Err(r.stuck());
+                    }
+                    r.advance();
+                    r.expect(Token::RParen)
+                })
+            } else if r.nth_op(0) {
+                r.node(Kind::BareOp, |r| Ok(r.advance()))
+            } else {
+                Err(r.stuck())
+            }
+        })
+    }
+
     fn use_name(&mut self) -> Read {
         self.node(Kind::UseName, |r| {
             if r.at(Token::LParen) {
@@ -948,9 +1006,9 @@ impl Reader {
         match self.nth(0) {
             Some(Token::LowerIdent(_) | Token::QualLower(_)) => self.name(),
             Some(Token::UpperIdent(_) | Token::QualUpper(_)) => {
-                // `T { x = 1 }` is a record; `T {a}` a name and what is given it
-                let record = self.nth_is(1, Token::LBrace)
-                    && (self.nth_is(2, Token::RBrace) || (self.nth_lower(2) && self.nth_is(3, Token::Eq)));
+                // `T {}` is a record; `T { x = 1 }` a name and braces, which
+                // are read as the record's fields after (as front/ reads them)
+                let record = self.nth_is(1, Token::LBrace) && self.nth_is(2, Token::RBrace);
                 if record {
                     self.record_lit()
                 } else {
@@ -964,11 +1022,16 @@ impl Reader {
             Some(Token::Goal(_)) => self.node(Kind::GoalA, |r| Ok(r.advance())),
             Some(Token::Type) => self.node(Kind::TypeA, |r| Ok(r.advance())),
             Some(Token::Infinity) => self.node(Kind::InfA, |r| Ok(r.advance())),
+            // `(+)`, or a section, `(+ 1)`
             Some(Token::LParen) if self.nth_op(1) => self.node(Kind::OpName, |r| {
                 r.advance();
                 r.advance();
+                if !r.at(Token::RParen) {
+                    r.term()?;
+                }
                 r.expect(Token::RParen)
             }),
+            // `(e)`, a tuple, or a section, `(1 +)`
             Some(Token::LParen) => self.node(Kind::Paren, |r| {
                 r.advance();
                 if !r.at(Token::RParen) {
@@ -976,6 +1039,9 @@ impl Reader {
                     while r.at(Token::Comma) {
                         r.advance();
                         r.term()?;
+                    }
+                    if r.nth_op(0) {
+                        r.advance();
                     }
                 }
                 r.expect(Token::RParen)
@@ -1006,19 +1072,35 @@ impl Reader {
             }),
             Some(Token::LBrace) => self.node(Kind::Braced, |r| {
                 r.advance();
-                r.term()?;
+                r.braced_item()?;
                 while r.at(Token::Comma) {
                     r.advance();
-                    r.term()?;
+                    r.braced_item()?;
                 }
+                // a record update's fields, the first with its `=`, or a pun
+                // with more after it; or a row's tail
                 if r.at(Token::Bar) {
                     r.node(Kind::BraceRest, |r| {
                         r.advance();
                         if r.nth_lower(0) && r.nth_is(1, Token::Eq) {
-                            r.field_vals()
+                            r.node(Kind::EqField, |r| {
+                                r.advance();
+                                r.advance();
+                                r.term()
+                            })?;
                         } else {
-                            r.term()
+                            r.node(Kind::TailTerm, |r| r.term())?;
                         }
+                        while r.at(Token::Comma) && r.nth_lower(1) {
+                            r.node(Kind::BraceMore, |r| {
+                                r.advance();
+                                r.field_val()
+                            })?;
+                        }
+                        if r.at(Token::Comma) {
+                            r.advance();
+                        }
+                        Ok(())
                     })?;
                 }
                 r.expect(Token::RBrace)
@@ -1077,36 +1159,38 @@ impl Reader {
         })
     }
 
+    /// `P {}`
     fn record_lit(&mut self) -> Read {
         self.node(Kind::RecordLit, |r| {
             r.advance();
             r.advance();
-            if !r.at(Token::RBrace) {
-                r.field_vals()?;
-            }
             r.expect(Token::RBrace)
         })
     }
 
-    fn field_vals(&mut self) -> Read {
-        self.node(Kind::FieldVals, |r| {
-            r.field_val()?;
-            while r.at(Token::Comma) && r.nth_lower(1) {
-                r.advance();
-                r.field_val()?;
-            }
-            if r.at(Token::Comma) {
-                r.advance();
+    /// A term in braces; or, of a record's fields, `x = e`
+    fn braced_item(&mut self) -> Read {
+        self.node(Kind::BracedItem, |r| {
+            r.term()?;
+            if r.at(Token::Eq) {
+                r.node(Kind::FieldValue, |r| {
+                    r.advance();
+                    r.term()
+                })?;
             }
             Ok(())
         })
     }
 
+    /// `x = e`, or `x` alone, a pun
     fn field_val(&mut self) -> Read {
         self.node(Kind::FieldVal, |r| {
             r.expect_lower()?;
-            r.expect(Token::Eq)?;
-            r.term()
+            if r.at(Token::Eq) {
+                r.advance();
+                r.term()?;
+            }
+            Ok(())
         })
     }
 }

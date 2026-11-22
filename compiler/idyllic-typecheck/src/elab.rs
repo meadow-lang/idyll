@@ -975,7 +975,9 @@ impl Checker {
                 //    combinators, took most of the time Std took to check.)
                 //    An instance is vouched for too, and is checked as ever.
                 let vouched = bs.iter().all(|b| b.name.unique.is_some_and(|u| self.terminating.contains(&u) && !self.hints.contains(&u)));
-                let terminates = !vouched && self.check_termination(&ctx_rec, &members);
+                let ended = if vouched { None } else { Some(self.check_termination(&ctx_rec, &members)) };
+                let terminates = ended.as_ref().is_some_and(|e| e.ends);
+                let counted_down = ended.as_ref().is_some_and(|e| e.counted_down);
                 self.unfold_instances(&ctx_rec, &members);
                 if !terminates {
                     for (b, ty) in bs.iter().zip(&sigs) {
@@ -985,7 +987,7 @@ impl Checker {
                         let core = members.iter().find(|(u, _)| Some(*u) == b.name.unique).map(|(_, c)| c);
                         if let Some(core) = core {
                             if !self.declares_div(ctx_rec.lvl, ty.clone(), super::termination::arity(core)) {
-                                self.error(b.id, TypeErrorKind::MayNotTerminate(b.name.text.clone()));
+                                self.error(b.id, TypeErrorKind::MayNotTerminate(b.name.text.clone(), counted_down));
                             }
                         }
                     }

@@ -90,7 +90,8 @@ fn walk(t: &mut Typer, s: &Scope, c: &Rc<Core>, out: &mut Vec<(String, Rep)>, sc
 
 fn rep_of(src: &str, name: &str) -> Rep {
     let all = binders(src);
-    all.iter().find(|(x, _)| x == name).unwrap_or_else(|| panic!("{src}\nno binder {name} in {all:?}")).1
+    // the program's own, after the prelude's
+    all.iter().rev().find(|(x, _)| x == name).unwrap_or_else(|| panic!("{src}\nno binder {name} in {all:?}")).1
 }
 
 #[test]

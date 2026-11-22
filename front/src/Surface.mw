@@ -39,6 +39,8 @@ use Idyll.Syntax
 use Idyll.Syntax.Idyll.*
 use Idyll.Hir (Icit, Literal, Visibility, literal)
 use Idyll.Layout (layout)
+use Idyll.Fixity (Fixity, Declared)
+use Idyll.Fixity as F
 use Lingua.Red as R
 use Lingua.Red (Syntax)
 use Std.St (runSt)
@@ -163,8 +165,15 @@ use Std.Result.Result.*
 
 -- --- reading a program --------------------------------------------------------
 
--- `input`'s program, or what is wrong with it.
-@pub fun parsed (input : String) : Result [Diagnostic] SurfaceProgram =
+-- `input`'s program, or what is wrong with it: its operators grouped by
+-- the language's fixities and its own declarations (as the Rust parser
+-- reads a file alone).
+@pub fun parsed (input : String) : Result [Diagnostic] SurfaceProgram = parsedWith [] input
+
+-- The same, with the fixities declared elsewhere -- by the packages it
+-- depends on and the parts of its package it imports -- ahead of its own
+-- (see `Fixity`). What is wrong with them together is the driver's to say.
+@pub fun parsedWith (elsewhere : [Declared]) (input : String) : Result [Diagnostic] SurfaceProgram =
   let laid = layout input in
   if not (V.isEmpty laid.problems) then
     Err (V.map (\pr -> match pr with | (at, m) -> errorAt (spanMeta at at) m) laid.problems)
@@ -173,15 +182,16 @@ use Std.Result.Result.*
     | (g, errs) ->
         if not (V.isEmpty errs) then Err (parseErrors g errs)
         else
-          match runSt (\() -> collect (\() -> written (R.root g))) with
+          let table = fst (F.table (V.append (F.fromElsewhere elsewhere) (F.declared laid.tokens))) in
+          match runSt (\() -> collect (\() -> written table (R.root g))) with
           | (prog, said) ->
               -- a node read twice says what is wrong with it twice
               let wrong = V.foldl (\acc d -> if V.elem d acc then acc else V.pushBack acc d) [] said in
               if V.isEmpty wrong then Ok prog else Err wrong
 
-fun written (root : Syn) =
+fun written (table : [(String, Fixity)]) (root : Syn) =
   let out = newSurfaceBuilder () in
-  let r = lowerSurfaceFile () out top root in
+  let r = lowerSurfaceFile () out (withFixities table) root in
   SurfaceProgram (freezeSurface out) r
 
 -- What the parse test compares: the program, or `(error)`.
@@ -210,13 +220,20 @@ def noAttrs = Attrs { seq = None, vis = None, native = False, terminating = Fals
 
 -- What the passes carry down the tree: a record's earlier fields, which a
 -- later one's type reads off `self` -- each field's name, and the record's
--- (`idyllic_ast::substitute`) -- and the attributes on the item being read.
+-- (`idyllic_ast::substitute`) -- the attributes on the item being read, and
+-- the operators' fixities.
 record Cx = {
   subst : [(String, String)],
-  attrs : Attrs
+  attrs : Attrs,
+  -- how the file's operators group (see `Fixity`)
+  fixities : [(String, Fixity)]
 }
 
-def top = Cx { subst = [], attrs = noAttrs }
+def top = Cx { subst = [], attrs = noAttrs, fixities = [] }
+
+fun fixitiesOf (cx : Cx) : [(String, Fixity)] = cx.fixities
+
+fun withFixities (table : [(String, Fixity)]) : Cx = Cx { subst = [], attrs = noAttrs, fixities = table }
 
 -- Where nothing is replaced: inside a `let`, a `case`, a handler, a record
 -- update, a grade.
@@ -276,7 +293,13 @@ fun firstOf (c : IdyllChain) : [IdyllAtom] =
 
 fun linksOf (c : IdyllChain) : [IdyllLink] = idyllChainLinks c
 
-fun opText (l : IdyllLink) : String = textOf (idyllLinkOp l)
+-- An operator's name: a name in backticks without them.
+fun opText (l : IdyllLink) : String = opName (idyllLinkOp l)
+
+fun opName (op : Maybe Syn) : String =
+  match op with
+  | Just o -> if R.kindOf o == TokenBacktickIdent then F.unquoted (R.text o) else R.text o
+  | None -> ""
 
 fun annotOf (op : IdyllOp) : Maybe IdyllAnnot =
   match idyllOpTail op with
@@ -330,7 +353,14 @@ fun var out (cx : Cx) (m : Meta) (x : String) =
 fun binary out (m : Meta) (op : String) l r = app out m (app out m (newSurfaceExprVar out m (nameAt out m op)) l) r
 
 -- `l op r`, with `op` where it is written, and `l op` what is between.
+-- `a and b` is `if a then b else False`, and `a or b` is `if a then True
+-- else b`, which look at `b` only if they have to.
 fun binaryAt out (m : Meta) (opAt : Meta) (op : String) l r =
+  if op == "and" or op == "or" then
+    let alt = \b body -> newSurfaceAlt out m (newSurfacePatLit out m (Literal.Bool b)) (newSurfaceRhsPlain out m body) in
+    let truth = \b -> lit out m (Literal.Bool b) in
+    newSurfaceExprCase out m l (if op == "and" then [alt True r, alt False (truth False)] else [alt True (truth True), alt False r])
+  else
   let partial = spanMeta (metaStart (metaSurfaceExpr out l)) (metaEnd opAt) in
   app out m (app out partial (newSurfaceExprVar out opAt (nameAt out opAt op)) l) r
 
@@ -507,7 +537,7 @@ fun hexEscape (at : Syn) (cs : [Char]) (i : Int) (most : Int) (n : Int) (value :
 
 pass! {
   lowerSurface : Idyll -> Surface with cx from File, Term, Atom
-    | File { raw entries } -> program out node
+    | File { raw entries } -> program out (fixitiesOf cx) node
     | Op {} -> (match asIdyllOp node with | Just op -> opFrom out cx op 0 | None -> hole out here)
     | Lam { raw binders, raw body } -> lam out cx here binders body
     | LetE {} -> (match asIdyllLetE node with | Just l -> letE out cx l | None -> hole out here)
@@ -533,16 +563,32 @@ pass! {
     | GoalA { raw name } -> Goal { name = S.drop (R.text name) 1 }
     | TypeA {} -> Type {}
     | InfA {} -> Inf {}
-    | OpName { raw op } ->
-        (let u = if R.kindOf op == TokenConOpIdent then bad node "a constructor operator is not a term on its own" else () in
-         var out cx here (R.text op))
-    -- `(a, b, c)` is `(,) a ((,) b c)`, and `(a)` is `a`
-    | Paren { raw items } ->
+    -- `(+)`; or a section, `(+ 1)`, everything after the operator on its
+    -- right
+    | OpName { raw op, raw operand } ->
+        (match operand with
+         | Just t -> section out here op None (Just (lowerSurfaceTerm () out cx t))
+         | None ->
+             (let u =
+                if R.kindOf op == TokenConOpIdent then bad node "a constructor operator is not a term on its own"
+                else if R.kindOf op != TokenOpIdent then bad node "not an operator on its own: a section needs an operand"
+                else ()
+              in
+              var out cx here (R.text op)))
+    -- `(a, b, c)` is `(,) a ((,) b c)`, and `(a)` is `a`; `(1 +)` is a
+    -- section, everything before the operator on its left
+    | Paren { raw items, raw trailing } ->
         (if V.isEmpty items then Expr.Lit { lit = Literal.Unit }
          else
            (let ts = V.map (\t -> lowerSurfaceTerm () out cx t) items in
             let n = V.len ts in
-            V.foldr (\x acc -> binary out here "(,)" x acc) (V.getOr (hole out here) ts (n - 1)) (V.take ts (n - 1))))
+            let tuple = \u -> V.foldr (\x acc -> binary out here "(,)" x acc) (V.getOr (hole out here) ts (n - 1)) (V.take ts (n - 1)) in
+            match trailing with
+            | Just op if n == 1 -> section out here op (V.head ts) None
+            | Just op ->
+                let u = bad op "a section takes one operand, not a tuple" in
+                tuple ()
+            | None -> tuple ()))
     | BoxA { raw inner } ->
         (match inner with
          | Just t -> Box { expr = lowerSurfaceTerm () out cx t }
@@ -555,8 +601,8 @@ pass! {
     | Braced {} ->
         (match asIdyllBraced node with
          | Just b ->
-             (match (only (idyllBracedItems b), M.andThen idyllBraceRestFields (idyllBracedRest b)) with
-              | (Just e, Just fs) -> Update { expr = lowerSurfaceTerm () out (plain cx) (syntaxIdyllTerm e), fields = fieldVals out (plain cx) fs }
+             (match (M.andThen only (bracedTerms b), M.andThen (\r -> updateFields out (plain cx) r) (idyllBracedRest b)) with
+              | (Just e, Just fs) -> Update { expr = lowerSurfaceTerm () out (plain cx) (syntaxIdyllTerm e), fields = fs }
               | _ -> (let u = bad node "braces in a term are a record update, { r | x = e }" in Hole {}))
          | None -> hole out here)
     | RecordLit {} ->
@@ -564,7 +610,7 @@ pass! {
          | Just r ->
              Expr.Record {
                name = nameAt out (match idyllRecordLitName r with | Just n -> metaOf n | None -> here) (textOf (idyllRecordLitName r)),
-               fields = (match idyllRecordLitFields r with | Just fs -> fieldVals out cx fs | None -> [])
+               fields = []
              }
          | None -> hole out here)
     | DotA {} -> (let u = bad node "not a term" in Hole {})
@@ -617,10 +663,121 @@ fun interpolation out (cx : Cx) (i : IdyllInterpA) =
   | None -> lit out m (Literal.Str "")
   | Just lastPart -> V.foldr (\p acc -> binary out m "#append" p acc) lastPart (V.take parts (V.len parts - 1))
 
-fun fieldVals out (cx : Cx) (fs : IdyllFieldVals) =
-  V.map
-    (\f -> newSurfaceField out (metaOf (syntaxIdyllFieldVal f)) (nameOf out (M.unwrapOr (syntaxIdyllFieldVal f) (idyllFieldValName f))) (termOr out cx (metaOf (syntaxIdyllFieldVal f)) (idyllFieldValValue f)))
-    (idyllFieldValsFields fs)
+-- A record update's fields, after its `|`: the first with its `=`, or a
+-- field alone with more after it; or nothing, if they are a row's tail.
+fun updateFields out (cx : Cx) (rest : IdyllBraceRest) =
+  let more = idyllBraceRestMore rest in
+  let first =
+    match idyllBraceRestFirst rest with
+    | Just (IdyllBraceFirst.EqField f) ->
+        let fm = metaOf (syntaxIdyllEqField f) in
+        Just (newSurfaceField out fm (nameOf out (M.unwrapOr (syntaxIdyllEqField f) (idyllEqFieldName f))) (termOr out cx fm (idyllEqFieldValue f)))
+    | Just (IdyllBraceFirst.TailTerm t) if not (V.isEmpty more) ->
+        let tm = metaOf (syntaxIdyllTailTerm t) in
+        (match M.andThen punName (idyllTailTermTerm t) with
+         | Just x -> Just (newSurfaceField out tm (nameOf out x) (var out cx (metaOf x) (R.text x)))
+         | None ->
+             let u = bad (syntaxIdyllTailTerm t) "a field is named, x or x = e" in
+             None)
+    | _ -> None
+  in
+  M.map (\f -> V.append [f] (V.concatMap (\b -> match idyllBraceMoreField b with | Just v -> [fieldValOf out cx v] | None -> []) more)) first
+
+-- The terms in braces, if none of them is a record's `x = e`.
+fun bracedTerms (b : IdyllBraced) : Maybe [IdyllTerm] =
+  let items = idyllBracedItems b in
+  if V.any (\i -> M.isSome (idyllBracedItemValue i)) items then None
+  else Just (V.concatMap (\i -> match idyllBracedItemTerm i with | Just t -> [t] | None -> []) items)
+
+-- A capitalised name, and the braces after it, if they are a record's
+-- fields: each a name alone, or `x = e`.
+fun recordAfter (a : IdyllAtom) (b : IdyllBraced) : Maybe IdyllName =
+  match a with
+  | IdyllAtom.Name n ->
+      let upper = nameKind n == TokenUpperIdent or nameKind n == TokenQualUpper in
+      let fields = V.all (\i -> M.isSome (M.andThen punName (idyllBracedItemTerm i))) (idyllBracedItems b) in
+      if upper and M.isNone (idyllNameAsTail n) and M.isNone (idyllBracedRest b) and fields then Just n else None
+  | _ -> None
+
+-- Atoms, each a capitalised name and the record's fields after it taken
+-- together, as the Rust parser reads them: `Point { x, y = 2 }`.
+data Piece = One IdyllAtom | Fields IdyllName IdyllBraced
+
+fun pieces (atoms : [IdyllAtom]) : [Piece] =
+  V.foldl
+    (\acc a ->
+      match (V.last acc, a) with
+      | (Just (Piece.One prev), IdyllAtom.Braced b) ->
+          (match recordAfter prev b with
+           | Just n -> V.pushBack (V.popBack acc) (Piece.Fields n b)
+           | None -> V.pushBack acc (Piece.One a))
+      | _ -> V.pushBack acc (Piece.One a))
+    []
+    atoms
+
+-- Where a record's name and fields are.
+fun fieldsMeta (n : IdyllName) (b : IdyllBraced) : Meta =
+  spanMeta (metaStart (metaOf (syntaxIdyllName n))) (metaEnd (metaOf (syntaxIdyllBraced b)))
+
+-- Each of a record's fields: its name, and what is written for it, or
+-- nothing for a name alone.
+fun bracedFields (b : IdyllBraced) : [(Syn, Maybe IdyllTerm)] =
+  V.concatMap
+    (\i ->
+      match M.andThen punName (idyllBracedItemTerm i) with
+      | Just x -> [(x, M.andThen idyllFieldValueValue (idyllBracedItemValue i))]
+      | None -> [])
+    (idyllBracedItems b)
+
+-- `Point { x, y = 2 }`, built: `x` alone is `x = x`.
+fun recordTerm out (cx : Cx) (n : IdyllName) (b : IdyllBraced) =
+  let nm = metaOf (syntaxIdyllName n) in
+  newSurfaceExprRecord
+    out
+    (fieldsMeta n b)
+    (nameAt out nm (nameText n))
+    (V.map
+      (\f ->
+        match f with
+        | (x, Just v) -> newSurfaceField out (metaOf x) (nameOf out x) (lowerSurfaceTerm () out cx (syntaxIdyllTerm v))
+        | (x, None) -> newSurfaceField out (metaOf x) (nameOf out x) (var out cx (metaOf x) (R.text x)))
+      (bracedFields b))
+
+-- ... and matched: `x` alone binds `x`.
+fun recordPat out (cx : Cx) (n : IdyllName) (b : IdyllBraced) =
+  let nm = metaOf (syntaxIdyllName n) in
+  newSurfacePatRecord
+    out
+    (fieldsMeta n b)
+    (nameAt out nm (nameText n))
+    (V.map
+      (\f ->
+        match f with
+        | (x, Just v) -> newSurfacePatField out (metaOf x) (nameOf out x) (patOfTerm out cx (syntaxIdyllTerm v))
+        | (x, None) -> newSurfacePatField out (metaOf x) (nameOf out x) (newSurfacePatBind out (metaOf x) (newSurfaceParam out (metaOf x) (nameOf out x) False None None)))
+      (bracedFields b))
+
+-- A term that is a name alone, `x`: its token.
+fun punName (t : IdyllTerm) : Maybe Syn =
+  match t with
+  | IdyllTerm.Op op ->
+      (match (idyllOpChain op, idyllOpTail op) with
+       | (Just c, None) ->
+           if not (V.isEmpty (linksOf c)) then None
+           else
+             (match only (firstOf c) with
+              | Just (IdyllAtom.Name n) -> if plainName TokenLowerIdent (IdyllAtom.Name n) then idyllNameName n else None
+              | _ -> None)
+       | _ -> None)
+  | _ -> None
+
+-- `x = e`; or `x` alone, which is `x = x`.
+fun fieldValOf out (cx : Cx) (f : IdyllFieldVal) =
+  let fm = metaOf (syntaxIdyllFieldVal f) in
+  let name = M.unwrapOr (syntaxIdyllFieldVal f) (idyllFieldValName f) in
+  match idyllFieldValValue f with
+  | Just v -> newSurfaceField out fm (nameOf out name) (lowerSurfaceTerm () out cx (syntaxIdyllTerm v))
+  | None -> newSurfaceField out fm (nameOf out name) (var out cx (metaOf name) (R.text name))
 
 -- A chain and what follows it: an annotation, or an arrow -- a dependent one
 -- when what is before it is binders. `skip` atoms at its start are grades,
@@ -695,7 +852,7 @@ fun domain (a : IdyllAtom) : Maybe ([Syn], Icit, IdyllAnnot) =
           | (ns, an) ->
               if V.len ns > 1 and M.map R.text (V.head ns) == Just "auto" then (V.drop ns 1, Icit.Auto, an)
               else (ns, Icit.Implicit, an))
-        (M.andThen (\t -> annotatedNames t False) (only (idyllBracedItems b)))
+        (M.andThen (\t -> annotatedNames t False) (M.andThen only (bracedTerms b)))
   | _ -> None
 
 -- `x y : a` in parentheses: the names, and the annotation.
@@ -757,65 +914,97 @@ fun gradeOf out (cx : Cx) (g : IdyllAtom) =
       newSurfaceGrade out m (termOr out cx m (V.get items 0)) (Just (termOr out cx m (V.get items 1)))
   | _ -> newSurfaceGrade out m (anyGrade out m) None
 
--- An operator chain, grouped by levels.
+-- An operator chain, grouped by the operators' fixities (see `Fixity`); an
+-- interval's `..`, which is no operator, splits it first.
 fun chainTerm out (cx : Cx) (chain : IdyllChain) (skip : Int) =
-  let m = metaOf (syntaxIdyllChain chain) in
+  let at = syntaxIdyllChain chain in
+  let m = metaOf at in
   let links = linksOf chain in
-  let u =
-    V.foldl
-      (\acc l -> if levelOf (opText l) == 0 then bad (syntaxIdyllLink l) "not an operator here: ${opText l}" else acc)
-      ()
-      links
-  in
   let operands =
     V.append
       [match idyllChainFirst chain with | Just a -> appTerm out cx a skip | None -> hole out m]
       (V.map (\l -> match idyllLinkOperand l with | Just a -> appTerm out cx a 0 | None -> hole out m) links)
   in
   let opsAt = V.map (\l -> match idyllLinkOp l with | Just op -> metaOf op | None -> m) links in
-  grouped out (syntaxIdyllChain chain) operands (V.map opText links) opsAt 0 (V.len operands - 1) 5
-
-fun levelOf (op : String) : Int =
-  if op == "*" or op == "/" or op == "%" then 1
-  else if op == "+" or op == "-" then 2
-  else if op == "::" or op == "++" then 3
-  else if op == "<" or op == "==" or op == "!=" or op == ">" or op == "<=" or op == ">=" then 4
-  else if op == ".." then 5
-  else 0
-
--- Operands `lo` to `hi` and the operators between (operator `i` is after
--- operand `i`), grouped at `level` and tighter.
-fun grouped out (at : Syn) xs (ops : [String]) (opsAt : [Meta]) (lo : Int) (hi : Int) (level : Int) =
-  let m = metaOf at in
-  -- operands `a` to `b`: the chain's own ends where they are its ends
-  let between = \a b ->
-    let last = V.len xs - 1 in
-    spanMeta
-      (if a == 0 then metaStart m else metaStart (metaSurfaceExpr out (V.getOr (hole out m) xs a)))
-      (if b == last then metaEnd m else metaEnd (metaSurfaceExpr out (V.getOr (hole out m) xs b)))
-  in
-  if level == 0 then V.getOr (hole out m) xs lo
+  let ops = V.map opText links in
+  let last = V.len operands - 1 in
+  let dots = V.filter (\i -> V.getOr "" ops i == "..") (V.range 0 (V.len ops)) in
+  if V.isEmpty dots then grouped out cx at operands ops opsAt 0 last
+  else if V.len dots == 1 then
+    let d = V.getOr 0 dots 0 in
+    newSurfaceExprRange out m (grouped out cx at operands ops opsAt 0 d) (grouped out cx at operands ops opsAt (d + 1) last)
   else
-    let here = V.filter (\i -> levelOf (V.getOr "" ops i) == level) (V.range lo hi) in
-    if V.isEmpty here then grouped out at xs ops opsAt lo hi (level - 1)
+    let u = bad at "comparisons and intervals do not chain" in
+    hole out m
+
+-- Operands `a` to `b` of a chain: where they are, the chain's own ends
+-- where they are its ends.
+fun spanBetween out (at : Syn) xs (a : Int) (b : Int) =
+  let m = metaOf at in
+  let last = V.len xs - 1 in
+  spanMeta
+    (if a == 0 then metaStart m else metaStart (metaSurfaceExpr out (V.getOr (hole out m) xs a)))
+    (if b == last then metaEnd m else metaEnd (metaSurfaceExpr out (V.getOr (hole out m) xs b)))
+
+-- Operands `lo` to `hi`, and the operators between (operator `i` is after
+-- operand `i`), grouped by their fixities, as `idyllic_parser::fixity::
+-- group` groups them: where two of one level do not group the same way,
+-- it says so, and reads on.
+fun grouped out (cx : Cx) (at : Syn) xs (ops : [String]) (opsAt : [Meta]) (lo : Int) (hi : Int) =
+  match climb out cx at xs ops opsAt hi (V.getOr (hole out (metaOf at)) xs lo) lo lo 0 with
+  | (e, _) -> e
+
+-- `lhs`, operands `start` to `i`, and the operators after it of level
+-- `min` and up, as far as operand `hi`: what they come to, and the last
+-- operand they took.
+fun climb out (cx : Cx) (at : Syn) xs (ops : [String]) (opsAt : [Meta]) (hi : Int) lhs (start : Int) (i : Int) (min : Int) =
+  if i >= hi then (lhs, i)
+  else
+    let op = V.getOr "" ops i in
+    let here = F.fixityOf cx.fixities op in
+    if F.levelOf here < min then (lhs, i)
     else
-      let starts = V.append [lo] (V.map (\i -> i + 1) here) in
-      let ends = V.append here [hi] in
-      let parts = V.map (\b -> match b with | (s, e) -> grouped out at xs ops opsAt s e (level - 1)) (V.zip starts ends) in
-      let opNames = V.map (\i -> V.getOr "" ops i) here in
-      let opPlaces = V.map (\i -> V.getOr m opsAt i) here in
-      let startOf = \i -> if i == 0 then lo else V.getOr lo here (i - 1) + 1 in
-      let endOf = \i -> if i == V.len here then hi else V.getOr hi here i in
-      let opAt = \i -> V.getOr m opPlaces i in
-      let n = V.len here in
-      let part = \i -> V.getOr (hole out m) parts i in
-      if level >= 4 then
-        let u = if n > 1 then bad at "comparisons and intervals do not chain" else () in
-        if level == 5 then newSurfaceExprRange out (between lo hi) (part 0) (part 1) else binaryAt out (between lo hi) (opAt 0) (V.getOr "" opNames 0) (part 0) (part 1)
-      else if level == 3 then
-        V.foldr (\i acc -> binaryAt out (between (startOf i) hi) (opAt i) (V.getOr "" opNames i) (part i) acc) (part n) (V.range 0 n)
-      else
-        V.foldl (\acc i -> binaryAt out (between lo (endOf (i + 1))) (opAt i) (V.getOr "" opNames i) acc (part (i + 1))) (part 0) (V.range 0 n)
+      match rightOf out cx at xs ops opsAt hi op here (V.getOr (hole out (metaOf at)) xs (i + 1)) (i + 1) with
+      | (rhs, k) ->
+          let joined = binaryAt out (spanBetween out at xs start k) (V.getOr (metaOf at) opsAt i) op lhs rhs in
+          climb out cx at xs ops opsAt hi joined start k min
+
+-- The right operand of `op`, of fixity `here`: operand `j`, with the
+-- operators after it that bind tighter, or group to the right with it.
+fun rightOf out (cx : Cx) (at : Syn) xs (ops : [String]) (opsAt : [Meta]) (hi : Int) (op : String) (here : Fixity) rhs (j : Int) =
+  if j >= hi then (rhs, j)
+  else
+    let next = V.getOr "" ops j in
+    let after = F.fixityOf cx.fixities next in
+    if F.levelOf after > F.levelOf here then
+      (match climb out cx at xs ops opsAt hi rhs j j (F.levelOf here + 1) with
+       | (r, k) -> rightOf out cx at xs ops opsAt hi op here r k)
+    else if F.levelOf after == F.levelOf here then
+      (match (F.assocOf here, F.assocOf after) with
+       | (F.Assoc.Right, F.Assoc.Right) ->
+           (match climb out cx at xs ops opsAt hi rhs j j (F.levelOf here) with
+            | (r, k) -> rightOf out cx at xs ops opsAt hi op here r k)
+       | (F.Assoc.Left, F.Assoc.Left) -> (rhs, j)
+       | _ ->
+           let why =
+             if here == after then "`${op}` and `${next}` are both `${F.shown here}`, and do not chain: write parentheses"
+             else "`${op}` is `${F.shown here}` and `${next}` is `${F.shown after}`, which do not group the same way: write parentheses"
+           in
+           let u = say (errorAt (V.getOr (metaOf at) opsAt j) why) in
+           (rhs, j))
+    else (rhs, j)
+
+-- A section, `(+ 1)` or `(1 +)`: a function of the operand it is missing,
+-- `\x -> x + 1` or `\x -> 1 + x`, named from where it is written (a name
+-- no program can write), as the Rust parser names it.
+fun section out (m : Meta) (op : Syn) lhs rhs =
+  let opAt = metaOf op in
+  let x = "#section@" ++ show (metaStart m) in
+  let var = \u -> newSurfaceExprVar out opAt (nameAt out opAt x) in
+  let l = match lhs with | Just e -> e | None -> var () in
+  let r = match rhs with | Just e -> e | None -> var () in
+  let body = binaryAt out (spanMeta (metaStart (metaSurfaceExpr out l)) (metaEnd (metaSurfaceExpr out r))) opAt (opName (Just op)) l r in
+  newSurfaceExprLam out m (newSurfaceParam out opAt (nameAt out opAt x) False None None) body
 
 -- Atoms applied to each other, each with the fields read off it: `f x.y` is
 -- `f (x.y)`.
@@ -825,7 +1014,10 @@ fun appTerm out (cx : Cx) (a : IdyllApp) (skip : Int) =
   -- or an auto one, `@{d}` (after a name, read as its `AsTail`)
   let terms =
     V.foldl
-      (\acc atom ->
+      (\acc piece ->
+        match piece with
+        | Piece.Fields n b -> V.pushBack acc (recordTerm out cx n b, Icit.Explicit)
+        | Piece.One atom ->
         match atom with
         | IdyllAtom.DotA d ->
             (match V.last acc with
@@ -834,7 +1026,7 @@ fun appTerm out (cx : Cx) (a : IdyllApp) (skip : Int) =
                  let u = bad (syntaxIdyllDotA d) "a field of nothing" in
                  acc)
         | IdyllAtom.Braced b if not (V.isEmpty acc) and M.isNone (idyllBracedRest b) and V.len (idyllBracedItems b) == 1 ->
-            (match only (idyllBracedItems b) with
+            (match M.andThen only (bracedTerms b) with
              | Just t -> V.pushBack acc (lowerSurfaceTerm () out (plain cx) (syntaxIdyllTerm t), Icit.Implicit)
              | None -> acc)
         | IdyllAtom.AutoA x if not (V.isEmpty acc) ->
@@ -847,7 +1039,7 @@ fun appTerm out (cx : Cx) (a : IdyllApp) (skip : Int) =
              | None -> acc)
         | _ -> V.pushBack acc (lowerSurfaceAtom () out cx (syntaxIdyllAtom atom), Icit.Explicit))
       []
-      (V.drop (idyllAppAtoms a) skip)
+      (pieces (V.drop (idyllAppAtoms a) skip))
   in
   match V.head terms with
   | Just (f, _) ->
@@ -864,7 +1056,7 @@ fun appTerm out (cx : Cx) (a : IdyllApp) (skip : Int) =
 -- `f@{d}`, a name with an auto argument after it: the argument.
 fun autoTail (n : IdyllName) : Maybe IdyllTerm =
   match M.andThen idyllAsTailPat (idyllNameAsTail n) with
-  | Just (IdyllAtom.Braced b) if M.isNone (idyllBracedRest b) -> only (idyllBracedItems b)
+  | Just (IdyllAtom.Braced b) if M.isNone (idyllBracedRest b) -> M.andThen only (bracedTerms b)
   | _ -> None
 
 fun fieldName out (dot : IdyllDotA) =
@@ -915,14 +1107,15 @@ fun rowOf out (cx : Cx) (r : IdyllRow) =
       let atoms = idyllAppAtoms a in
       (match only atoms with
        | Just (IdyllAtom.Braced b) ->
-           let labels = V.map (\t -> lowerSurfaceTerm () out cx (syntaxIdyllTerm t)) (idyllBracedItems b) in
+           let labels = V.map (\t -> lowerSurfaceTerm () out cx (syntaxIdyllTerm t)) (M.unwrapOr [] (bracedTerms b)) in
            (match idyllBracedRest b with
             | None -> newSurfaceExprRow out m labels None
             | Just rest ->
-                if M.isSome (idyllBraceRestFields rest) then
-                  let u = bad (syntaxIdyllBraceRest rest) "a row's tail is an effect" in
-                  newSurfaceExprRow out m labels None
-                else newSurfaceExprRow out m labels (Just (termOr out cx m (idyllBraceRestTail rest))))
+                (match (idyllBraceRestFirst rest, V.isEmpty (idyllBraceRestMore rest)) with
+                 | (Just (IdyllBraceFirst.TailTerm t), True) -> newSurfaceExprRow out m labels (Just (termOr out cx m (idyllTailTermTerm t)))
+                 | _ ->
+                     let u = bad (syntaxIdyllBraceRest rest) "a row's tail is an effect" in
+                     newSurfaceExprRow out m labels None))
        | _ ->
            let one =
              V.map
@@ -955,7 +1148,7 @@ fun lam out (cx : Cx) (m : Meta) (binders : [Syn]) (body : Syn) =
 -- `{x}` or `@{x}`, a lambda's binder for its next implicit or auto argument.
 fun implicitName (a : IdyllAtom) : Maybe (Icit, String) =
   match a with
-  | IdyllAtom.Braced b if M.isNone (idyllBracedRest b) -> M.map (\x -> (Icit.Implicit, x)) (loneName (only (idyllBracedItems b)))
+  | IdyllAtom.Braced b if M.isNone (idyllBracedRest b) -> M.map (\x -> (Icit.Implicit, x)) (loneName (M.andThen only (bracedTerms b)))
   | IdyllAtom.AutoA x -> M.map (\y -> (Icit.Auto, y)) (loneName (idyllAutoAArg x))
   | _ -> None
 
@@ -1186,7 +1379,7 @@ pass! {
     | OpName {} -> (let u = bad node "not a pattern" in Wild {})
     -- `{p}`, the next implicit argument, and `@{p}`, the next auto one
     | Braced {} ->
-        (match M.andThen (\b -> if M.isNone (idyllBracedRest b) then only (idyllBracedItems b) else None) (asIdyllBraced node) with
+        (match M.andThen (\b -> if M.isNone (idyllBracedRest b) then M.andThen only (bracedTerms b) else None) (asIdyllBraced node) with
          | Just t -> Implicit { icit = Icit.Implicit, pat = patOfTerm out cx (syntaxIdyllTerm t) }
          | None -> (let u = bad node "not a pattern" in Wild {}))
     | AutoA {} ->
@@ -1208,19 +1401,7 @@ pass! {
          | Just r ->
              Pat.Record {
                name = nameAt out (match idyllRecordLitName r with | Just n -> metaOf n | None -> here) (textOf (idyllRecordLitName r)),
-               fields =
-                 (match idyllRecordLitFields r with
-                  | Just fs ->
-                      V.map
-                        (\f ->
-                          let fm = metaOf (syntaxIdyllFieldVal f) in
-                          newSurfacePatField
-                            out
-                            fm
-                            (nameAt out fm (textOf (idyllFieldValName f)))
-                            (match idyllFieldValValue f with | Just v -> patOfTerm out cx (syntaxIdyllTerm v) | None -> newSurfacePatWild out fm))
-                        (idyllFieldValsFields fs)
-                  | None -> [])
+               fields = []
              }
          | None -> Wild {})
     | DotA { raw target } ->
@@ -1268,16 +1449,25 @@ fun patChainOr out (cx : Cx) (m : Meta) (c : Maybe IdyllChain) =
 -- A constructor applied to patterns, or one pattern.
 fun patOperand out (cx : Cx) (a : IdyllApp) =
   let m = metaOf (syntaxIdyllApp a) in
-  let atoms = idyllAppAtoms a in
-  match V.get atoms 0 with
-  | Just c if V.len atoms >= 2 ->
+  let ps = pieces (idyllAppAtoms a) in
+  match V.get ps 0 with
+  | Just (Piece.One c) if V.len ps >= 2 ->
       if plainName TokenUpperIdent c or plainName TokenQualUpper c then
-        newSurfacePatCon out m (nameAt out (metaOf (syntaxIdyllAtom c)) (atomText c)) (V.concatMap (\x -> patAtoms out cx x) (V.drop atoms 1))
+        newSurfacePatCon out m (nameAt out (metaOf (syntaxIdyllAtom c)) (atomText c)) (V.concatMap (\x -> piecePats out cx x) (V.drop ps 1))
       else
         let u = bad (syntaxIdyllApp a) "only a constructor is applied in a pattern" in
         newSurfacePatWild out m
-  | Just x -> lowerPatAtom () out cx (syntaxIdyllAtom x)
-  | None -> newSurfacePatWild out m
+  | Just (Piece.Fields n b) if V.len ps == 1 -> recordPat out cx n b
+  | Just (Piece.One x) -> lowerPatAtom () out cx (syntaxIdyllAtom x)
+  | _ ->
+      let u = bad (syntaxIdyllApp a) "only a constructor is applied in a pattern" in
+      newSurfacePatWild out m
+
+-- A piece as the patterns it is.
+fun piecePats out (cx : Cx) (p : Piece) =
+  match p with
+  | Piece.One a -> patAtoms out cx a
+  | Piece.Fields n b -> [recordPat out cx n b]
 
 -- A term read again as the pattern it is.
 fun patOfTerm out (cx : Cx) (t : Syn) =
@@ -1294,7 +1484,10 @@ fun patOfTerm out (cx : Cx) (t : Syn) =
 -- anything else is a pattern.
 fun params out (cx : Cx) (atoms : [IdyllAtom]) =
   V.concatMap
-    (\a ->
+    (\piece ->
+      match piece with
+      | Piece.Fields n b -> [recordPat out cx n b]
+      | Piece.One a ->
       let m = metaOf (syntaxIdyllAtom a) in
       let group =
         match a with
@@ -1309,7 +1502,7 @@ fun params out (cx : Cx) (atoms : [IdyllAtom]) =
               | (g, ty) -> newSurfacePatBind out m (newSurfaceParam out m (binderName out x) False g (Just ty)))
             ns
       | None -> patAtoms out cx a)
-    atoms
+    (pieces atoms)
 
 -- An atom as the patterns it is: `x @{p}` is two, `x` and then `@{p}`, as
 -- the Rust parser reads them.
@@ -1370,10 +1563,42 @@ fun upperSig out (m : Meta) (e : SurfaceExpr) =
     else None
   else None
 
+-- A `where` clause's declarations.
+fun whereDecls out (cx : Cx) (w : IdyllWhereClause) =
+  let at = syntaxIdyllWhereClause w in
+  let u = braced at (idyllWhereClauseOpen w) (idyllWhereClauseClose w) in
+  let entries = V.map (\x -> match x with | IdyllLetEntry.Line y -> Just y | IdyllLetEntry.Sep _ -> None) (idyllWhereClauseEntries w) in
+  let lines = separated at entries False True in
+  V.concatMap
+    (\ln ->
+      match lineItem out cx ln with
+      | Item.Decl d -> [d]
+      | _ ->
+          let v = bad (syntaxIdyllLine ln) "expected a declaration" in
+          [])
+    lines
+
+-- What a line with a `where` clause and no equation is told.
+fun noWhere (line : IdyllLine) =
+  match idyllLineLocal line with
+  | Just w -> bad (syntaxIdyllWhereClause w) "a where clause belongs to an equation"
+  | None -> ()
+
+fun plainRhs (line : IdyllLine) : Bool = match idyllLineRhs line with | Just (IdyllRhs.Plain _) -> True | _ -> False
+
+-- An equation's right-hand side, with what its `where` clause defines in
+-- scope: in its body, or in each guard and what the guard chooses (each
+-- read again, as the Rust parser copies them).
 fun rhsOf out (cx : Cx) (line : IdyllLine) =
   let m = metaOf (syntaxIdyllLine line) in
+  let within =
+    \e ->
+      match idyllLineLocal line with
+      | Just w -> newSurfaceExprLet out (metaSurfaceExpr out e) (whereDecls out (plain cx) w) e
+      | None -> e
+  in
   match idyllLineRhs line with
-  | Just (IdyllRhs.Plain p) -> Just (newSurfaceRhsPlain out (metaOf (syntaxIdyllPlain p)) (termOr out cx m (idyllPlainBody p)))
+  | Just (IdyllRhs.Plain p) -> Just (newSurfaceRhsPlain out (metaOf (syntaxIdyllPlain p)) (within (termOr out cx m (idyllPlainBody p))))
   | Just (IdyllRhs.Guards gs) ->
       Just
         (newSurfaceRhsGuarded
@@ -1382,7 +1607,7 @@ fun rhsOf out (cx : Cx) (line : IdyllLine) =
            (V.map
               (\g ->
                 let gm = metaOf (syntaxIdyllGuard g) in
-                newSurfaceGuard out gm (termOr out cx gm (idyllGuardCond g)) (termOr out cx gm (idyllGuardBody g)))
+                newSurfaceGuard out gm (within (termOr out cx gm (idyllGuardCond g))) (within (termOr out cx gm (idyllGuardBody g))))
               (idyllGuardsGuards gs)))
   | None -> None
 
@@ -1395,7 +1620,7 @@ fun lineItem out (cx : Cx) (line : IdyllLine) =
   let effects = idyllLineEff line in
   let noEffects = \u -> if M.isSome effects then bad at "effects go on a type" else () in
   let notEquation = \u -> let v = bad at "an equation is f x = e or l + r = e" in Item.Nothing in
-  let sig = \f ty -> if cx.attrs.native then Item.Decl (newSurfaceDeclNative out m f ty) else Item.Decl (newSurfaceDeclSig out m f ty) in
+  let sig = \f ty -> let w = noWhere line in if cx.attrs.native then Item.Decl (newSurfaceDeclNative out m f ty) else Item.Decl (newSurfaceDeclSig out m f ty) in
   match idyllLineLhs line with
   | Just (IdyllTerm.Op op) ->
       let chain = idyllOpChain op in
@@ -1408,7 +1633,24 @@ fun lineItem out (cx : Cx) (line : IdyllLine) =
         | Just (IdyllAtom.Name n) if nameKind n == TokenLowerIdent and M.isSome (autoTail n) and M.isSome (idyllLineRhs line) -> idyllNameName n
         | _ -> None
       in
-      (match (match M.andThen defName (V.head atoms) with | Just f -> Just f | None -> tailed) with
+      -- `_ = e`: `e` run for what it does, its value named by nothing (a
+      -- name no program can write, so two in one `let` are two bindings)
+      let wild =
+        match V.head atoms with
+        | Just (IdyllAtom.Hole h) if V.len atoms == 1 and V.isEmpty links and not (hasArrow op) and plainRhs line ->
+            let at = syntaxIdyllHole h in
+            (match R.textRange at with | (from, _) -> Just (nameAt out (metaOf at) ("#_@" ++ display from)))
+        | _ -> None
+      in
+      (match wild with
+       | Just f ->
+           let ty = match annotOf op with | Just an -> Just (comp out cx m (idyllAnnotTy an) effects) | None -> None in
+           let u = if M.isSome ty then () else noEffects () in
+           (match rhsOf out cx line with
+            | Just r -> Item.Decl (newSurfaceDeclDef out m f [] ty r)
+            | None -> Item.Nothing)
+       | None ->
+      match (match M.andThen defName (V.head atoms) with | Just f -> Just f | None -> tailed) with
        | Just f if V.isEmpty links and not (hasArrow op) ->
            (match (annotOf op, idyllLineRhs line) with
             | (Just an, Just _) ->
@@ -1432,12 +1674,13 @@ fun lineItem out (cx : Cx) (line : IdyllLine) =
                  | _ -> expr out cx line))
        | _ ->
            (match (only links, idyllLineRhs line) with
-            | (Just l, Just _) if isKind TokenOpIdent (idyllLinkOp l) and not (hasTail op) ->
+            -- `l + r = e`, or ``l `plus` r = e``
+            | (Just l, Just _) if (isKind TokenOpIdent (idyllLinkOp l) or (isKind TokenBacktickIdent (idyllLinkOp l) and not (S.contains "." (opText l)))) and not (hasTail op) ->
                 let u = noEffects () in
                 let lhs = match M.andThen idyllChainFirst chain with | Just a -> patOperand out cx a | None -> newSurfacePatWild out m in
                 let rhs = match idyllLinkOperand l with | Just a -> patOperand out cx a | None -> newSurfacePatWild out m in
                 (match (rhsOf out cx line, idyllLinkOp l) with
-                 | (Just r, Just o) -> Item.Decl (newSurfaceDeclDef out m (nameOf out o) [lhs, rhs] None r)
+                 | (Just r, Just o) -> Item.Decl (newSurfaceDeclDef out m (newSurfaceName out (metaOf o) (opText l)) [lhs, rhs] None r)
                  | _ -> Item.Nothing)
             | (_, Just _) -> notEquation ()
             | _ -> expr out cx line))
@@ -1461,6 +1704,7 @@ fun headParams out (cx : Cx) (atoms : [IdyllAtom]) =
 fun expr out (cx : Cx) (line : IdyllLine) =
   let at = syntaxIdyllLine line in
   let m = metaOf at in
+  let w = noWhere line in
   let u = if M.isSome (idyllLineEff line) then bad at "effects go on a type" else () in
   let e = termOr out cx m (idyllLineLhs line) in
   if not cx.attrs.native then Item.Expr e
@@ -2322,10 +2566,10 @@ fun equationsOf out (m : Meta) (eqs : [SurfaceDecl]) (arity : Int) =
 
 -- An item, under its attributes: what it is, and what is wrong with where
 -- they are.
-fun itemOf out (it : IdyllItem) =
+fun itemOf out (table : [(String, Fixity)]) (it : IdyllItem) =
   let at = syntaxIdyllItem it in
   let a = attrsOf at (idyllItemAttrs it) in
-  let cx = { top | attrs = a } in
+  let cx = { top | attrs = a, fixities = table } in
   let item =
     match idyllItemBody it with
     | Just (IdyllItemBody.DataDecl d) ->
@@ -2340,7 +2584,13 @@ fun itemOf out (it : IdyllItem) =
     | Just (IdyllItemBody.InstanceDecl d) -> instanceDecl out cx d
     | Just (IdyllItemBody.EffectDecl d) -> effectDecl out cx d
     | Just (IdyllItemBody.UseDecl d) -> Item.Use (useDecl out cx d)
-    | Just (IdyllItemBody.ModuleDecl d) -> Item.Module (moduleDecl out d)
+    | Just (IdyllItemBody.ModuleDecl d) -> Item.Module (moduleDecl out table d)
+    -- read off the tokens before the file was parsed (`Fixity.declared`),
+    -- and so nothing to the program
+    | Just (IdyllItemBody.FixityDecl d) ->
+        let written = M.unwrapOr (syntaxIdyllFixityDecl d) (idyllFixityDeclLevel d) in
+        let u = match S.toInt (R.text written) with | Just l if l >= 0 and l <= 9 -> () | _ -> bad written "a fixity's level is from 0 to 9" in
+        Item.Nothing
     | Just (IdyllItemBody.Line l) ->
         (match lineItem out cx l with
          -- an upper-case signature with an attribute on it
@@ -2409,25 +2659,25 @@ record Parts = {
   modules : [SurfaceModule]
 }
 
-fun program out (root : Syn) =
+fun program out (table : [(String, Fixity)]) (root : Syn) =
   let file = asIdyllFile root in
   let entries =
     match file with
     | Just f -> idyllFileEntries f
     | None -> []
   in
-  fileOf out root entries False
+  fileOf out table root entries False
 
 -- `module M where`: its block is a program, as a file is, with no
 -- expression of its own.
-fun moduleDecl out (d : IdyllModuleDecl) =
+fun moduleDecl out (table : [(String, Fixity)]) (d : IdyllModuleDecl) =
   let at = syntaxIdyllModuleDecl d in
   let u = braced at (idyllModuleDeclOpen d) (idyllModuleDeclClose d) in
   let name = nameOf out (M.unwrapOr at (idyllModuleDeclName d)) in
-  newSurfaceModule out (metaOf at) name (fileOf out at (idyllModuleDeclEntries d) True)
+  newSurfaceModule out (metaOf at) name (fileOf out table at (idyllModuleDeclEntries d) True)
 
 -- The items of a file, or of a module inside one (`nested`), as a program.
-fun fileOf out (root : Syn) (raw : [IdyllEntry]) (nested : Bool) =
+fun fileOf out (table : [(String, Fixity)]) (root : Syn) (raw : [IdyllEntry]) (nested : Bool) =
   let m = metaOf root in
   let entries = V.map (\x -> match x with | IdyllEntry.Item y -> Just y | IdyllEntry.Sep _ -> None) raw in
   let items = separated root entries True False in
@@ -2440,7 +2690,7 @@ fun fileOf out (root : Syn) (raw : [IdyllEntry]) (nested : Bool) =
         | Just it ->
             let at = syntaxIdyllItem it in
             let im = metaOf at in
-            (match itemOf out it with
+            (match itemOf out table it with
              | (item, (a : Attrs)) ->
                  let p = { p | linear = p.linear or a.linear } in
                  (match item with

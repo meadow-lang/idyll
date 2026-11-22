@@ -16,7 +16,7 @@ fn lower(s: &str) -> Token {
 #[test]
 fn keywords_win_ties_but_longer_identifiers_win_on_length() {
     assert_eq!(kinds("let letter in inner"), [Let, lower("letter"), In, lower("inner")]);
-    assert_eq!(kinds("Type Types type"), [Type, UpperIdent("Types".into()), Type]);
+    assert_eq!(kinds("Type Types type"), [Type, UpperIdent("Types".into()), lower("type")]);
     assert_eq!(kinds("_ _x x'"), [Underscore, lower("_x"), lower("x'")]);
 }
 
