@@ -59,6 +59,9 @@ fun mentions (own : Compiled) (dep : Compiled) (c : Core) : Bool =
       go s or V.any (\a -> match a with | CaseAlt.CaseAlt h _ _ body -> (match h with | Head.Con u -> owns dep u | _ -> False) or go body) alts
   | Core.Handle b r ops -> go b or go r or V.any (\o -> match o with | OpClause.OpClause u _ _ body -> owns dep u or go body) ops
   | Core.Row ls ts -> V.any go ls or V.any go ts
+  | Core.Code a -> go a
+  | Core.Quote a -> go a
+  | Core.Splice a -> go a
   | _ -> False
 
 -- The packages a program is to be linked with: all of `deps`, but Std only

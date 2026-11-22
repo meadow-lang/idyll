@@ -111,6 +111,11 @@ use Std.Maybe.Maybe.*
   | Core.Row ls ts -> newElaboratedTermRow out m (V.map go ls) (V.map go ts)
   | Core.Handle body r ops ->
       newElaboratedTermHandle out m (go body) (go r) (V.map (\o -> match o with | OpClause.OpClause u x n b -> newElaboratedOpClause out m u x n (go b)) ops)
+  -- Strata's compile-time level, which Idyll's elaborator never makes
+  | Core.MetaType _ -> newElaboratedTermError out m
+  | Core.Code _ -> newElaboratedTermError out m
+  | Core.Quote _ -> newElaboratedTermError out m
+  | Core.Splice _ -> newElaboratedTermError out m
   | Core.Error -> newElaboratedTermError out m
 
 -- A module checked, written out: its expression; its recursive
