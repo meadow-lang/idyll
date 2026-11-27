@@ -1107,6 +1107,11 @@ fun defineGlobal (tc : Checker s) (ctx : Ctx) (g : HirGroup) : () ! { St s | e }
       | (c, ps, ws) ->
           -- (an enclosing definition's grades are not this group's to settle)
           let outer = Hm.keys (getRef tc.inferred) in
+          -- (a top-level group's types kept for an editor if it is the
+          -- program's own)
+          let from = getRef tc.front.typing in
+          let h0 = hirOf tc in
+          let wt = if from >= 0 and getRef tc.lets == 0 then setRef tc.front.recording (V.all (\b -> H.uniqueOf (bindName h0 b) >= from) (groupBinds h0 g)) else () in
           let (next, p, wr) = checkGroup tc c g in
           -- (a top-level definition's value, by its name: what a
           -- dependency's exported right-hand side names the prelude's by)
@@ -1231,7 +1236,15 @@ fun leaveGroups (usage : Usage) (pending : [Pending]) : Usage =
 @pub record Front s = {
   hir : StRef s HirArena,
   elab : StRef s (Cx s -> HirExpr -> (Core, Value, Usage) ! { St s }),
-  deferred : StRef s [(Int, Int, HirExpr, Ctx, Value)]
+  deferred : StRef s [(Int, Int, HirExpr, Ctx, Value)],
+  -- for an editor, every type of the program's own terms kept: the
+  -- program's first unique (`typing`, -1 to keep none), whether the group
+  -- being checked is the program's (`recording`: the prelude's, checked
+  -- with it, has places in the prelude's own text), and the types kept,
+  -- each with its place, in the order they were checked
+  typing : StRef s Int,
+  recording : StRef s Bool,
+  types : StRef s [(Lang.Meta, Core)]
 }
 
 -- Idyll's checker: the kernel's state with Idyll's own beside it, its
@@ -1243,19 +1256,24 @@ fun leaveGroups (usage : Usage) (pending : [Pending]) : Usage =
     (Front {
       hir = newRef (runSt (\() -> freezeHir (newHirBuilder ()))),
       elab = newRef (\cx t -> (Core.Error, Value.Error, U.unknown ())),
-      deferred = newRef []
+      deferred = newRef [],
+      typing = newRef (0 - 1),
+      recording = newRef False,
+      types = newRef []
     })
     (Lang.spanMeta 0 0)
 
 -- The checker as it is now, to go back to (`restoreChecker`), Idyll's own
 -- tables with the kernel's.
 @pub fun saveChecker (tc : Checker s) : Checker s ! { St s | e } =
-  T.save tc (\(fr : Front s) -> Front { hir = newRef (getRef fr.hir), elab = newRef (getRef fr.elab), deferred = newRef (getRef fr.deferred) })
+  T.save tc (\(fr : Front s) -> Front { hir = newRef (getRef fr.hir), elab = newRef (getRef fr.elab), deferred = newRef (getRef fr.deferred), typing = newRef (getRef fr.typing), recording = newRef (getRef fr.recording), types = newRef (getRef fr.types) })
 
 @pub fun restoreChecker (tc : Checker s) (saved : Checker s) : () ! { St s | e } =
   T.restore tc saved (\(fr : Front s) (old : Front s) ->
     let w1 = setRef fr.hir (getRef old.hir) in
     let w2 = setRef fr.elab (getRef old.elab) in
+    -- (the types an attempt given up on kept are given up with it)
+    let w3 = setRef fr.types (getRef old.types) in
     setRef fr.deferred (getRef old.deferred))
 
 -- A node's type, kept if the node holds the place asked about and lies
@@ -1297,7 +1315,11 @@ fun elaborate (tc : Checker s) (cx : Cx s) (t : HirExpr) : (Core, Value, Usage) 
   let answer = elaborateAt tc cx t in
   let w2 = setRef tc.at before in
   -- (and its type, if a place in it is asked about)
-  let w3 = if getRef tc.want >= 0 then (match answer with | (_, ty, _) -> noteType tc here (quote tc cx.ctx.lvl ty)) else () in
+  let w3 =
+    if getRef tc.want >= 0 then (match answer with | (_, ty, _) -> noteType tc here (quote tc cx.ctx.lvl ty))
+    else if getRef tc.front.recording then (match answer with | (_, ty, _) -> setRef tc.front.types (V.pushBack (getRef tc.front.types) (here, quote tc cx.ctx.lvl ty)))
+    else ()
+  in
   answer
 
 fun elaborateAt (tc : Checker s) (cx : Cx s) (t : HirExpr) : (Core, Value, Usage) ! { St s | e } =

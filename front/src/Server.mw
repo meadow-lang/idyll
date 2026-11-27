@@ -11,13 +11,15 @@ use Idyll.Session
 use Idyll.Syntax (parseIdyll)
 use Std.Exn (toResult)
 use Std.Result.Result.*
-use Lingua.Lsp (pathOf, Asked, rangeIn, rangeJson, lineStarts, uriOf, positionIn)
+use Lingua.Lsp (pathOf, Asked, rangeIn, rangeJson, lineStarts, uriOf, positionIn, locationIn)
+use Idyll.Surface as Surface
+use Idyll.Rename as Rename
 use Lingua.Lang (Meta)
 use Std.String as S
 use Idyll.Driver as D
 use Idyll.Workspace as Ws
 use Std.Path as Path
-use Std.Fs (exists, readToString, readToStringOr, createDirAll, writeString)
+use Std.Fs (exists, readToString, readToStringOr, createDirAll, writeString, removeFile, tryReadDir)
 use Std.Maybe as M
 use Std.Collections.Vector as V
 use Std.Char as Ch
@@ -46,6 +48,41 @@ lsp! {
 fun openedIn db file (uri : String) =
   let path = pathOf uri in
   setSessionPackage db file (M.andThen (\root -> contextOf root path) (packageRoot (Path.parent path)))
+
+-- Std compiled, as an earlier run of this server kept it (`D.editorStdFile`),
+-- read back the first time a file that names it is checked; or, if no run
+-- did, compiled then and kept. Compiling it is half a minute, which is
+-- otherwise what every start of the server waited before it could say
+-- anything of such a file. (Meadow's server compiles its library once a
+-- process too, but in milliseconds; this one keeps it across processes.)
+fun stdKept db file =
+  if answered False (\() -> sessionStdRead db 0) then ()
+  else if not (namesStd db file) then ()
+  else
+    let file = D.editorStdFile () in
+    let kept = match answered (Ok 0) (\() -> loadSession db file) with | Ok n -> n | Err _ -> 0 in
+    let w = setSessionStdRead db 0 True in
+    if kept > 0 then ()
+    else
+      let s = answered (Err "") (\() -> sessionStd db 0) in
+      let saved = answered (Ok ()) (\() -> saveSession db file) in
+      -- (what a compiler built from other sources kept is no use to this
+      -- one, and is a dozen megabytes)
+      match Path.parent file with
+      | Just dir ->
+          V.foldl
+            (\acc f -> if S.startsWith "editor-" f and S.endsWith ".json" f and Path.join dir f != file then (match removeFile (Path.join dir f) with | _ -> ()) else acc)
+            ()
+            (tryReadDir dir)
+      | None -> ()
+
+-- Whether a file is checked with Std: it names Std, or its package does
+-- (`Session.stdNamed`), and it is not of Std itself.
+fun namesStd db file =
+  answered False (\() ->
+    match sessionPackage db file with
+    | Just pc -> pc.name != "Std" and (stdNamed pc or S.contains "Std" (sessionSource db file))
+    | None -> S.contains "Std" (sessionSource db file))
 
 -- The nearest directory from `dir` up with an `Idyll.toml` in it.
 fun packageRoot (dir : Maybe String) : Maybe String ! { Fs | e } =
@@ -97,18 +134,22 @@ fun answered fallback act = match toResult act with | Ok x -> x | Err _ -> fallb
 -- The package a file is a module of, if the editor said where it is.
 fun packageIn db file = answered None (\() -> M.map (\pc -> (pc, \u -> sessionDependencies db file)) (sessionPackage db file))
 
-fun diagnosticsOf db file = answered [] (\() -> sessionProblems db file)
+fun diagnosticsOf db file =
+  let w = stdKept db file in
+  answered [] (\() -> sessionProblems db file)
 
 fun treeOf db file = answered (fst (parseIdyll "")) (\() -> fst (sessionParsed db file))
 
 -- What the term at a place is: its type, as the checker found it, and,
 -- of a name the file defines at the start of a line, the `--` comment above
 -- its definition. A binder (a parameter, a `let`) is no term: on one, it is
--- the type the binder got, as its inlay hint says.
+-- the type the binder got, as its inlay hint says. All of it looked up in
+-- the file's analysis, worked out once an edit (`Session.Analysis`).
 fun hoverAt db file at =
   answered None (\() ->
     let text = sessionSource db file in
-    let named = answered None (\() -> namedAtIn text (packageIn db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at) in
+    let a = sessionAnalysis db file in
+    let named = namedFrom a text at in
     let bound =
       match named with
       | Just (Meta.Meta d e, _) ->
@@ -127,7 +168,7 @@ fun hoverAt db file at =
       | None ->
           if S.isEmpty word then None
           else
-            (match answered None (\() -> declaredAtIn text (packageIn db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at word) with
+            (match declaredFrom a text at word with
              | Just (place, shown) -> Just (place, M.unwrapOr shown written)
              | None ->
                  (match (written, wordStart text at) with
@@ -138,7 +179,7 @@ fun hoverAt db file at =
       match (bound, declared) with
       | (Just b, _) -> Just b
       | (_, Just d) -> Just d
-      | _ -> typeAtIn text (packageIn db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at
+      | _ -> typeFrom a at
     in
     let doc = match named with | Just (Meta.Meta d _, _) -> if startsLine text d then docAbove text d else "" | None -> "" in
     M.map (\p -> match p with | (place, ty) -> (place, "```idyll\n${ty}\n```" ++ (if S.isEmpty doc then "" else "\n\n" ++ doc))) typed)
@@ -189,14 +230,14 @@ fun docAbove (text : String) (at : Int) : String =
 -- its equation or its binder.
 fun definitionAt db file at =
   answered [] (\() ->
-    match namedAtIn (sessionSource db file) (packageIn db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at with
+    match namedFrom (sessionAnalysis db file) (sessionSource db file) at with
     | Just (d, _) -> [(file, d)]
     | None -> [])
 
 -- Every place the name at a place is named.
 fun referencesAt db file at =
   answered [] (\() ->
-    match namedAtIn (sessionSource db file) (packageIn db file) (sessionPrelude db 0) (\u -> sessionStd db 0) at with
+    match namedFrom (sessionAnalysis db file) (sessionSource db file) at with
     | Just (_, places) -> V.map (\p -> (file, p)) places
     | None -> [])
 
@@ -224,10 +265,73 @@ fun resolvedOf db file = answered [] (\() -> sessionResolved db file)
 -- definition in one of the compiler's IRs.
 def serverRequests =
   [
+    ("textDocument/definition", definitionAsked),
     ("textDocument/codeLens", lensesOf),
     ("textDocument/inlayHint", hintsOf),
     ("idyll/ir", irAsked)
   ]
+
+-- `textDocument/definition`, answered here rather than by Lingua, which
+-- knows only the files the editor has open: a name another module of the
+-- package defines goes to that module's file, and one another package
+-- gives (Std too) to the declaration that binds it in the module that gives
+-- it, or that module's top if none there does (a name it passes on).
+fun definitionAsked db (a : Asked) =
+  let target = answered None (\() -> definedFrom (sessionAnalysis db a.file) (sessionSource db a.file) (packageIn db a.file) (\u -> reachedBy db a.file) a.offset) in
+  let here = pathOf (uriOf a.docs a.file) in
+  let at = \found m -> match found with | Just (file, text) -> [locationAt file text m] | None -> [] in
+  J.jArray
+    (match target with
+     | None -> []
+     | Just (Defined.Here m) -> [locationIn a (a.file, m)]
+     | Just (Defined.InModule path m) ->
+         at (M.map (\file -> (file, readToStringOr "" file)) (M.andThen (\root -> moduleFileIn root path) (packageRoot (Path.parent here)))) m
+     | Just (Defined.InPackage package path name) ->
+         (match packageModule here package path with
+          | Just (file, text) ->
+              let m = match Surface.parsed text with | Ok p -> M.unwrapOr (Meta.Meta 0 0) (Rename.declarationNamed p name) | Err _ -> Meta.Meta 0 0 in
+              [locationAt file text m]
+          | None -> []))
+
+-- The packages a file is checked with, compiled: Std, and those its
+-- package depends on. What a name another package gives is looked up in.
+fun reachedBy db file =
+  V.append
+    (answered [] (\() -> match sessionStd db 0 with | Ok (_, c) -> [c] | Err _ -> []))
+    (answered [] (\() -> V.map (\d -> match d with | (_, _, c) -> c) (sessionDependencies db file)))
+
+-- A place in a file on disk, as the protocol says a location.
+fun locationAt (file : String) (text : String) (m : Meta) =
+  J.jObject [("uri", J.jString (fileUri file)), ("range", rangeJson text (lineStarts text) m)]
+
+-- The `file:` uri of a path on disk, as an editor opens it.
+@pub fun fileUri (path : String) : String =
+  let p = S.join "/" (S.split "\\" path) in
+  let escaped = S.join "%20" (S.split " " (S.join "%25" (S.split "%" p))) in
+  if S.startsWith "/" escaped then "file://" ++ escaped else "file:///" ++ escaped
+
+-- The file of the module `path` among the package's under `dir`.
+fun moduleFileIn (dir : String) (path : [String]) : Maybe String ! { Fs | e } =
+  let src = Path.join dir "src" in
+  M.map (\rel -> Path.join src rel) (V.find (\rel -> D.modulePathIn (Path.join src rel) == path) (D.idlFiles src []))
+
+-- The file, and its text, of the module `path` of the package `package`,
+-- which the package of the file at `here` reaches: Std as it is written
+-- out, another by the paths and lock file a build goes by. (A path may name
+-- its package first.)
+fun packageModule (here : String) (package : String) (path : [String]) : Maybe (String, String) ! { Fs, Process | e } =
+  if package == "Std" then D.stdModuleFile path
+  else
+    match packageRoot (Path.parent here) with
+    | None -> None
+    | Just root ->
+        let manifest = readToStringOr "" (Path.join root "Idyll.toml") in
+        let found = V.foldl (\acc d -> packagesFrom root [root] acc d) [] (D.dependencyDirs root root manifest) in
+        (match V.find (\f -> match f with | (_, (n : Needed)) -> n.name == package) found with
+         | Just (dir, _) ->
+             let file = match moduleFileIn dir path with | Just f -> Just f | None -> moduleFileIn dir (V.drop path 1) in
+             M.map (\f -> (f, readToStringOr "" f)) file
+         | None -> None)
 
 -- The type each parameter and `let` with none written got, after its
 -- name.
@@ -666,3 +770,38 @@ fun colourAt (tokens : [(Int, Int, Int)]) (line : Int) (col : Int) : Maybe Int =
   let e = assertEq (firstAt wrong) (Just (J.jInt 3, J.jInt 4)) "where it is in Main.idl" in
   let hovered = told [opening uri "use Helper (double)\n\nx : Int\nx = double 2\n", hovering 1 uri 3 4] serveServer in
   assertEq (M.andThen (J.path ["result", "contents", "value"]) (V.get hovered 1)) (Just (J.jString "```idyll\ndouble : Int -> Int\n```")) "Helper's double, on hover: its signature"
+
+-- Where a reply to `textDocument/definition` goes: the file (the end of
+-- its uri) and the line and column it starts at.
+fun wentTo (reply : Maybe Json) : Maybe (String, Json, Json) =
+  let first = M.andThen (\r -> match r with | J.Json.Array xs -> V.get xs 0 | other -> Just other) (M.andThen (J.get "result") reply) in
+  match (M.andThen (J.get "uri") first, M.andThen (J.path ["range", "start", "line"]) first, M.andThen (J.path ["range", "start", "character"]) first) with
+  | (Just (J.Json.String uri), Just line, Just column) -> Just (M.unwrapOr uri (V.last (S.split "/" uri)), line, column)
+  | _ -> None
+
+-- A name another module of the package defines goes to that module's file:
+-- a definition to its equation, a constructor to where its type declares
+-- it. (The package's root module is renamed first, its places from 0.)
+@test fun aDefinitionInAnotherModuleIsInItsFile () =
+  let dir = "target/lsp-definition" in
+  let a = createDirAll (dir ++ "/src") in
+  let b = writeString (dir ++ "/Idyll.toml", "[package]\nname = \"lspdef\"\nversion = \"0.1.0\"\n") in
+  let c = writeString (dir ++ "/src/Helper.idl", "@pub\ndouble : Int -> Int\ndouble n = n + n\n\n@pub\ndata Shape = Circle Int | Square Int\n") in
+  let uri = "file://" ++ dir ++ "/src/Main.idl" in
+  let text = "use Helper (double, Shape)\n\nx : Int\nx = double 2\n\ny : Shape\ny = Shape.Square 3\n" in
+  let said = told [opening uri text, asked 1 "textDocument/definition" uri 3 5, asked 2 "textDocument/definition" uri 6 11] serveServer in
+  let d = assertEq (wentTo (V.get said 1)) (Just ("Helper.idl", J.jInt 2, J.jInt 0)) "double, at its equation in Helper.idl" in
+  assertEq (wentTo (V.get said 2)) (Just ("Helper.idl", J.jInt 5, J.jInt 26)) "Square, where Shape declares it"
+
+-- A name Std gives goes to the module of Std that gives it, as Std is
+-- written out (`Driver.stdModuleFile`).
+@test fun aNameStdGivesIsInStdsFile () =
+  let uri = "file:///std-definition.idl" in
+  let said = told [opening uri "use Std.Maybe (withDefault)\n\nx : Int\nx = withDefault 1 Nothing\n", asked 1 "textDocument/definition" uri 3 6] serveServer in
+  assertEq (M.map (\w -> match w with | (file, _, _) -> file) (wentTo (V.get said 1))) (Just "Maybe.idl") "Std's Maybe.idl"
+
+-- A name the program takes from elsewhere is not the definition around
+-- it: on it, there are no references of the program's own to find.
+@test fun aNameFromElsewhereIsNotTheDefinitionAroundIt () =
+  let said = told [opening "file:///a.idl" "f : Int -> Bool\nf n = intGe n 0\n", asked 1 "textDocument/references" "file:///a.idl" 1 7] serveServer in
+  assertEq (M.andThen (J.get "result") (V.get said 1)) (Just (J.jArray [])) "intGe is the prelude's, not f's equation"

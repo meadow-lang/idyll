@@ -1152,6 +1152,35 @@ fun twice (r : Rn s) (modules : [([String], SurfaceProgram)]) =
     body = surfaceFileBody a f
   }
 
+-- Where a module's text binds `name` at its top: a data type, a
+-- constructor, a field, an effect, an operation, or a definition, which is
+-- bound at its first equation (as `occurrences` has it), else at its
+-- signature. What going to a definition in another package reads, where
+-- there are no uniques to go by but the name the package exports.
+@pub fun declarationNamed (p : SurfaceProgram) (name : String) : Maybe Meta = V.head (declarationsNamed p name)
+
+-- Each place a module's text binds `name` at its top (two types may each
+-- have a constructor of it), in the order `declarationNamed` prefers.
+@pub fun declarationsNamed (p : SurfaceProgram) (name : String) : [Meta] =
+  let a = surfaceArena p in
+  let f = surfaceRoot p in
+  let at = \n -> if surfaceNameText a n == name then [metaSurfaceName a n] else [] in
+  let datas =
+    V.concatMap
+      (\d ->
+        V.concat [
+          at (surfaceDataName a d),
+          V.concatMap (\c -> match (a, c) with | SurfaceCtorFields n _ -> at n | SurfaceCtorSig n _ -> at n) (surfaceDataCtors a d),
+          V.concatMap at (surfaceDataFields a d)
+        ])
+      (surfaceFileDatas a f)
+  in
+  let effects = V.concatMap (\e -> V.append (at (surfaceEffectName a e)) (V.concatMap (\o -> at (surfaceOpSigName a o)) (surfaceEffectOps a e))) (surfaceFileEffects a f) in
+  let decls = surfaceFileDecls a f in
+  let defs = V.concatMap (\d -> match (a, d) with | SurfaceDeclDef n _ _ _ -> at n | _ -> []) decls in
+  let sigs = V.concatMap (\d -> match (a, d) with | SurfaceDeclSig n _ -> at n | SurfaceDeclNative n _ -> at n | _ -> []) decls in
+  V.concat [datas, effects, defs, sigs]
+
 -- What each `use` of a program calls the module it names, if it calls it
 -- something: its alias (`use Std.Collections.List as L` calls it `L`).
 @pub fun aliasesOf (p : SurfaceProgram) : [(String, [String])] =

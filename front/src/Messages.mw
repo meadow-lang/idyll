@@ -280,7 +280,7 @@ fun times (linear : Bool) (used : Core) : String =
 -- Each metavariable's solution, quoted, if it is solved with one that
 -- mentions no variable: what the Rust checker's `solved_in` puts in its
 -- place.
-fun solutionsOf (tc : Checker s) : [Maybe Core] ! { St s | e } =
+@pub fun solutionsOf (tc : Checker s) : [Maybe Core] ! { St s | e } =
   V.map
     (\entry ->
       match entry with
@@ -291,7 +291,7 @@ fun solutionsOf (tc : Checker s) : [Maybe Core] ! { St s | e } =
 -- `c` with each metavariable `sols` has a solution for replaced by it,
 -- and the solution's own in turn: a mismatch's types as the Rust checker
 -- shows them once the module is checked.
-fun solvedIn (sols : [Maybe Core]) (c : Core) : Core =
+@pub fun solvedIn (sols : [Maybe Core]) (c : Core) : Core =
   C.transform c 0 (\x d ->
     match x with
     | Core.Meta m -> (match V.get sols m with | Just (Just a) -> Just (solvedIn sols a) | _ -> None)

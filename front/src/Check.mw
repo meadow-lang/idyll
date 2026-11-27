@@ -127,7 +127,14 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
 
 -- The same, keeping the type of the innermost node that holds the place
 -- `want` (`Tc.found`), for hover.
-@pub fun checkedWanting (m : Renamed) (entry : Bool) (deps : [Compiled]) (want : Int) : Checked s ! { St s | e } =
+@pub fun checkedWanting (m : Renamed) (entry : Bool) (deps : [Compiled]) (want : Int) : Checked s ! { St s | e } = checkedKeeping m entry deps want False
+
+-- The same, for an editor: each binder with no type written kept with its
+-- type (`want` -2, inlay hints), and every term's type with its place
+-- (`Front.types`), so that one check of an edit answers every hover.
+@pub fun checkedForEditor (m : Renamed) (deps : [Compiled]) : Checked s ! { St s | e } = checkedKeeping m False deps (0 - 2) True
+
+fun checkedKeeping (m : Renamed) (entry : Bool) (deps : [Compiled]) (want : Int) (typing : Bool) : Checked s ! { St s | e } =
   let h = hirArena m.hir in
   let root = hirRoot m.hir in
   let datas = hirModuleDatas h root in
@@ -138,6 +145,7 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
   let (datasInOrder, dataAfter, groups) = interleave h datas (hirModuleGroups h root) in
   let tc = newChecker () in
   let wwant = setRef tc.want want in
+  let wtyping = setRef tc.front.typing (if typing then m.first else 0 - 1) in
   let wh = setRef tc.front.hir h in
   let out = newElaboratedBuilder () in
   let we = install tc out in
@@ -211,6 +219,8 @@ fun bindUnique (h : HirArena) (b : HirBind) : Int = uniqueOf h (hirBindName h b)
     match hirModuleBody h root with
     | Just e ->
         let w = setRef tc.linear m.linearBody in
+        -- (the expression is the program's own, its types kept if asked)
+        let wr = setRef tc.front.recording (getRef tc.front.typing >= 0) in
         let mark = V.len (getRef tc.recDefs) in
         let (core0, ty, usage) = infer tc ctx e in
         let wUses = setRef bodyUses (Just usage) in

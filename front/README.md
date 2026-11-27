@@ -26,7 +26,7 @@ does, how it is checked, and why it is built the way it is.
 | The CEK machine | `Cek.mw`, `World.mw` | done: the same answer, in the same number of steps, as `idyll-eval` on every program that runs (211) |
 | Cut | `Lower.mw`, `Typer.mw`, `Prune.mw`, `CutAst.mw`, `Emit.mw` | done: the same Cut as `idyllic-cut` on every program that lowers (212) |
 | The formatter | `Syntax.mw` (a `format!`), `Format.mw` | done: `Idyll fmt`; every program comes out as the same program, and formatting it again changes nothing |
-| The language server | `Session.mw` (a `database!`), `Server.mw` (an `lsp!`) | begun: `Idyll lsp` publishes what is wrong with each open file where it is, says a term's type on hover, colours a file and sets it out |
+| The language server | `Session.mw` (a `database!`), `Server.mw` (an `lsp!`) | begun: `Idyll lsp` publishes what is wrong with each open file where it is, says a term's type on hover, goes to definitions across files, colours a file and sets it out; one check an edit answers its requests, and Std is kept between runs |
 | The REPL | `Prompt.mw` (a `repl!`), over the same session | begun: `Idyll repl` keeps the declarations entered, runs expressions on Glade (the CEK machine where Meadow cannot be run), and says each answer and type as the Rust REPL does; it finds by type, searches for proofs, and fills goals in tactic mode |
 | Tools for agents | `Agent.mw` (an `mcp!`), `Harness.mw`, over the same session | done: `Idyll agent` serves checking, goals, types, search, proof search and tactics over the Model Context Protocol |
 
@@ -1140,9 +1140,21 @@ So far the server:
   declaration's own);
 - says on hover what a term's type is and, of a name the file defines, the
   `--` comment above its definition (past its signature and attributes);
-- goes to a name's definition (where it is first bound), and finds every
-  place it is named, from every name of the renamed program with its place
-  (`Rename.occurrences`, a `pass!` fold);
+- goes to a name's definition, in whichever file it is, and finds every
+  place it is named in the file, from every name of the renamed program
+  with its place (`Rename.programNamed`). The name clicked on is the
+  innermost one written there, as wide as it is spelled, so a name the
+  program takes from elsewhere is never the definition around it. A name
+  of the package's own goes to its binder: of its places, the one that holds
+  a declaration of it in its module's text (`Rename.declarationsNamed`).
+  That is not simply its first place, as the package's root module comes
+  first, and a constructor's place is its type's whole declaration. A name
+  below the package's first unique is another package's, Std's among them,
+  and is looked up in what that package exports (`Exported`, a type's
+  members): the module that gives it, read from disk (Std as it is written
+  out, `Driver.stdModuleFile`), and the declaration there that binds it.
+  Lingua answers a definition only in a file the editor has open, so
+  `textDocument/definition` is the server's own request;
 - completes names: the variables in scope at the cursor, then the
   program's and the prelude's, with their types. The variables are what a
   goal there would list: the name being written is made a goal,
@@ -1170,8 +1182,8 @@ So far the server:
 - shows inlay hints, the type each parameter and `let` with none written
   got. With `want` -2 the checker keeps every such binder, its unique, its
   level and its type (`Tc.noteBinder`, called where a lambda or a local
-  `let` binds), and `Session.hintsIn` quotes each and says it after the
-  name's first place;
+  `let` binds), and the analysis quotes each and says it after the name's
+  first place;
 - puts a lens above each `@test`, which the extension runs with the Rust
   driver's `idyll test --exact`, by its whole name (`Module.test`);
 - answers `idyll/ir`, of its own: the definition the cursor is in, as HIR
@@ -1183,6 +1195,34 @@ So far the server:
   package's file is lowered linked with what it depends on, which its calls
   need (`Lower.cutTextOwn`);
 - formats a file as `Idyll fmt` does.
+
+**One check an edit.** Hover, going to a definition, references and the
+inlay hints are lookups in one query, `analysis` (`Session.Analysis`): the
+file renamed in its package and checked once, keeping every name with its
+uniques, spelling and place, the type of every one of the program's own
+terms with its place, what the names the file uses are declared to be, and
+the binders' hints. The checker keeps the terms' types when asked
+(`Check.checkedForEditor`, Idyll's own `Front.typing`). It keeps them only
+while it checks the program's own top-level groups and expression, since
+the prelude's are checked with them and have places in the prelude's text.
+A type is shown with what its metavariables were solved with, as a
+mismatch's are (`Messages.solvedIn`). Why: each hover used to rename and
+check the package again, once for each thing it said, up to three renames
+and two checks a hover (half a second to a second); now an edit costs one
+check, the first time it is asked about, and a hover nothing. Meadow's
+server is built the same way: one compile an edit, then lookups by
+position in what it built (its `Analysis`).
+
+**Std, kept between runs.** Compiling Std takes half a minute, which is
+what every start of the server used to wait before it could say anything
+of a file that names Std. The `std` query is `persisted`
+(`Session.StdBuilt`, `Reflect`). The first time a file that names Std is
+checked (`Server.stdKept`), the server reads back what an earlier run kept,
+`~/.idyll/std/<hash>/editor-<salt>.json`. If there is none, it compiles Std
+and writes it there. The salt is the compiler's (`Driver.editorStdFile`:
+its prelude, Std and sources), so a compiler built from other sources
+never reads another's, and writing one removes the others beside it. A
+start is then a second and a half to the first diagnostics, not thirty.
 
 What is wrong is said as the Rust checker says it (`Messages.mw`): where
 the checker reports an error, it keeps what
@@ -1221,10 +1261,11 @@ of this.
 The checker keeps the node it is checking (`Tc.at`, set around each node by
 `Elab.elaborate`) and each error with it (`Tc.placed`), beside the kinds
 the differential tests compare. The renamer does the same around the names
-it resolves (`Rn.at`, `atNode`; `Renamed.problemsAt`). For hover, the file is checked again with
-the place asked about (`Check.checkedWanting`). The type of the innermost
-node that holds the place is kept (`Tc.found`), and Std and the prelude
-come from the session.
+it resolves (`Rn.at`, `atNode`; `Renamed.problemsAt`). For hover, the
+type of the innermost term that holds the place is looked up in the file's
+analysis (above), and Std and the prelude come from the session. Where
+there is no session to keep one, the file is checked again with the place
+asked about (`Check.checkedWanting`, `Tc.found`).
 
 `Idyll repl` (`Prompt.mw`) is a `repl!` over the same session. It does
 what the Rust REPL does (`pipeline::Session`):
