@@ -17,11 +17,11 @@ use Lingua.Lang (Meta, spanMeta)
 use Idyll.Syntax (Idyll, parseIdyll)
 use Idyll.Surface (SurfaceProgram)
 use Idyll.Surface as Surface
-use Idyll.Rename (PackageNames, Exported)
+use Idyll.Rename (PackageNames, Exported, TypeGiven, Member)
 use Strata.Hir (Visibility)
 use Idyll.Rename as Rename
 use Idyll.Scc (sccModule)
-use Idyll.Check (checkedAgainst, checkedWanting)
+use Idyll.Check (checkedAgainst, checkedWanting, checkedForEditor)
 use Strata.Eval (quote)
 use Idyll.Elab (goalNamed)
 use Strata.Tc (Tc, CtorInfo, ctorInfo)
@@ -37,9 +37,10 @@ use Idyll.Driver as D
 use Idyll.Format as Fmt
 use Idyll.Lower as Lo
 use Idyll.Parts as Parts
-use Idyll.Messages (diagnosticsIn, placedDiagnostics, said, problemAt, shiftedBack, metaBack)
+use Idyll.Messages (diagnosticsIn, placedDiagnostics, said, problemAt, shiftedBack, metaBack, solutionsOf, solvedIn)
 use Std.St (runSt)
 use Std.St as St
+use Std.Macro (Reflect, Datum, toDatum, fromDatum)
 use Std.Collections.Vector as V
 use Std.String as S
 use Std.Maybe as M
@@ -66,14 +67,26 @@ database! {
          | Just pc -> dependenciesCompiled pc.needs (stdNamed pc) (queryPrelude 0) (\u -> queryStd 0)
          | None -> [])
     | query prelude (unit : Int) : Result [Diagnostic] SurfaceProgram = Surface.parsed D.prelude
-    | query std (unit : Int) : Result String (PackageNames, Compiled) = stdOf (queryPrelude 0)
+    | query std (unit : Int) : Result String (PackageNames, Compiled) =
+        (match queryStdBuilt 0 with | StdBuilt.Built ns c -> Ok (ns, c) | StdBuilt.Failed why -> Err why)
+    -- (kept between runs of an editor's server, which would otherwise
+    -- compile Std each time it starts: `Server`'s `stdKept`)
+    | persisted query stdBuilt (unit : Int) : StdBuilt =
+        (match stdOf (queryPrelude 0) with | Ok (ns, c) -> StdBuilt.Built ns c | Err why -> StdBuilt.Failed why)
+    -- whether a server has read back what it kept of Std (`stdKept`)
+    | input stdRead (unit : Int) : Bool
     | query problems (file : Int) : [Diagnostic] =
         problemsIn (querySource file) (M.map (\pc -> (pc, \u -> queryDependencies file)) (queryPackage file)) (queryPrelude 0) (\u -> queryStd 0)
     | query formatted (file : Int) : String = formattedOf (querySource file)
+    -- one rename and one check of a file, for an editor (`Analysis`): what
+    -- a hover, going to a definition, finding references and the inlay
+    -- hints look up, worked out again only when the file, or what it is
+    -- checked with, changes
+    | query analysis (file : Int) : Analysis =
+        analysisIn (querySource file) (M.map (\pc -> (pc, \u -> queryDependencies file)) (queryPackage file)) (queryPrelude 0) (\u -> queryStd 0)
     -- the type of each binder of a file with none written, for an editor's
     -- inlay hints (`Server`)
-    | query hints (file : Int) : [(Int, String)] =
-        hintsIn (querySource file) (M.map (\pc -> (pc, \u -> queryDependencies file)) (queryPackage file)) (queryPrelude 0) (\u -> queryStd 0)
+    | query hints (file : Int) : [(Int, String)] = (\(a : Analysis) -> a.hints) (queryAnalysis file)
     -- a file as the HIR and as Cut, for an editor to show beside it
     -- (`Server`'s `idyll/ir`): kept until it changes, as the cursor moves
     | query hirShown (file : Int) : String =
@@ -88,6 +101,11 @@ database! {
     -- declaration is entered
     | query catalog (unit : Int) : [(String, Core, String)] = catalogOf (queryEarlier 0) (queryPrelude 0) (\u -> queryStd 0)
 }
+
+-- Std compiled, or why it could not be: the `std` query's answer, in a
+-- shape that can be written down and read back (`Reflect`).
+@derive(Reflect)
+@pub data StdBuilt = Built PackageNames Compiled | Failed String
 
 -- A proof under way in tactic mode (`Tactic`): the declarations, with
 -- what has been built so far in the goal's place; the goals left, the one
@@ -245,13 +263,19 @@ fun prepared (text : String) (prelude : Result [Diagnostic] SurfaceProgram) (std
   | None -> (prepared text prelude std, 0)
   | Just (pc, built) -> M.unwrapOr (prepared text prelude std, 0) (packagePrepared text pc built prelude std)
 
-fun packagePrepared (text : String) (pc : PackageContext) (built : () -> [Dependency] ! e) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : Maybe (Result [Diagnostic] (Rename.Renamed, [Compiled], [Diagnostic]), Int) ! e =
+-- A package's modules as they are renamed together, the file's own as
+-- `text` has it: in import order, each its path, its text, and the byte its
+-- places start at (the modules before it, end to end, a line apart).
+fun packageLayout (text : String) (pc : PackageContext) : [([String], String, Int)] =
   let modules = V.pushBack (V.filter (\m -> fst m != pc.own) pc.others) (pc.own, text) in
   let ordered = inImportOrder pc.name modules in
   let bases = V.foldl (\acc m -> V.pushBack acc (M.unwrapOr 0 (V.last acc) + S.byteLength (snd m) + 1)) [0] ordered in
-  let ownAt = M.unwrapOr 0 (V.find (\i -> M.map fst (V.get ordered i) == Just pc.own) (V.range 0 (V.len ordered))) in
-  let base = V.getOr 0 bases ownAt in
-  let parsedAll = V.map (\i -> match V.get ordered i with | Just (p, t) -> (p, Surface.parsed (S.repeat "\n" (V.getOr 0 bases i) ++ t)) | None -> ([], Err [])) (V.range 0 (V.len ordered)) in
+  V.map (\i -> match V.get ordered i with | Just (p, t) -> (p, t, V.getOr 0 bases i) | None -> ([], "", 0)) (V.range 0 (V.len ordered))
+
+fun packagePrepared (text : String) (pc : PackageContext) (built : () -> [Dependency] ! e) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : Maybe (Result [Diagnostic] (Rename.Renamed, [Compiled], [Diagnostic]), Int) ! e =
+  let laid = packageLayout text pc in
+  let base = M.unwrapOr 0 (M.map (\l -> match l with | (_, _, b) -> b) (V.find (\l -> match l with | (p, _, _) -> p == pc.own) laid)) in
+  let parsedAll = V.map (\l -> match l with | (p, t, b) -> (p, Surface.parsed (S.repeat "\n" b ++ t))) laid in
   match V.find (\x -> fst x == pc.own) parsedAll with
   | Just (_, Err ds) -> Just (Err ds, base)
   | _ ->
@@ -394,10 +418,38 @@ fun headOf (t : Core) : Core =
 
 -- Every name of the program's own, with the unique it stands for and where
 -- it is (`Rename.occurrences`).
-fun ownOccurrences (m : Rename.Renamed) : [(Int, Meta)] =
-  V.concatMap
-    (\o -> match o with | (us, place) -> V.concatMap (\u -> if u >= m.first then [(u, place)] else []) us)
-    (Rename.occurrencesModule (Rename.hirArena m.hir) (Rename.hirRoot m.hir))
+fun ownOccurrences (m : Rename.Renamed) : [(Int, Meta)] = V.filter (\o -> fst o >= m.first) (everyOccurrence m)
+
+-- Every name the program names, its own and those it takes from the
+-- prelude and other packages, each with the unique it stands for. Not
+-- those in the prelude's own declarations, renamed with the program, whose
+-- places are in the prelude's text and would be taken for bytes of a
+-- package's root module, whose places start at 0 too (`Rename.programNamed`).
+fun everyOccurrence (m : Rename.Renamed) : [(Int, Meta)] =
+  V.concatMap (\o -> match o with | (us, _, place) -> V.map (\u -> (u, place)) us) (Rename.programNamed m)
+
+-- The name clicked on at byte `at` (of the package's places) of the file
+-- whose places start at `base`: the innermost of the names written just
+-- there, as wide as they are spelled, so that the definition around it is
+-- not taken for it; else the innermost name there at all.
+fun clickedAt (m : Rename.Renamed) (base : Int) (text : String) (at : Int) : Maybe (Int, Meta) =
+  let named =
+    V.concatMap
+      (\o -> match o with | (us, t, p) -> if inFile p base text and contains p at then V.map (\u -> (u, t, p)) us else [])
+      (Rename.programNamed m)
+  in
+  let pick = \os -> innermostAt (V.map (\o -> match o with | (u, _, p) -> (u, p)) os) at in
+  match pick (V.filter (\o -> match o with | (_, t, p) -> S.byteLength t == width p) named) with
+  | Just found -> Just found
+  | None -> pick named
+
+-- Of the names whose places hold byte `at`, the innermost: the one that
+-- is clicked on, not the definition around it.
+fun innermostAt (os : [(Int, Meta)]) (at : Int) : Maybe (Int, Meta) =
+  V.foldl
+    (\best o -> if not (contains (snd o) at) then best else (match best with | Just b -> (if width (snd o) < width (snd b) then Just o else best) | None -> Just o))
+    None
+    os
 
 -- Where the name at byte `at` of `text` is defined, and every place it is
 -- named (the definition among them): of the program's own names, each
@@ -411,14 +463,246 @@ fun ownOccurrences (m : Rename.Renamed) : [(Int, Meta)] =
   let (ready, base) = preparedFor text package prelude std in
   match ready with
   | Ok (m, _, _) ->
-      let own = V.filter (\o -> inFile (snd o) base text) (ownOccurrences m) in
-      let holding = V.filter (\o -> contains (snd o) (at + base)) own in
-      (match V.foldl (\best o -> match best with | Just b -> (if width (snd o) < width (snd b) then Just o else best) | None -> Just o) None holding with
+      let here = V.filter (\o -> inFile (snd o) base text) (everyOccurrence m) in
+      -- (the name clicked on is found among every name, so that one the
+      -- program takes from elsewhere is not the definition around it; it
+      -- has no places of the program's own to find, or to rename)
+      (match clickedAt m base text (at + base) with
        | Just (u, _) ->
-           let places = V.map (\p -> metaBack p base) (sortedPlaces (V.concatMap (\o -> if fst o == u then [snd o] else []) own)) in
-           M.map (\d -> (d, places)) (V.head places)
+           if u < m.first then None
+           else
+             let places = V.map (\p -> metaBack p base) (sortedPlaces (V.concatMap (\o -> if fst o == u then [snd o] else []) here)) in
+             M.map (\d -> (d, places)) (V.head places)
        | None -> None)
   | Err _ -> None
+
+-- Where the name at byte `at` of a file is defined, wherever that is.
+@pub data Defined =
+  -- in the file itself
+  Here Meta
+  -- in another module of its package: the module's path, and the place in
+  -- the module's text
+  | InModule [String] Meta
+  -- in a package it depends on, Std too: the package, the module that gives
+  -- the name, and the name, which a declaration of that module binds
+  | InPackage String [String] String
+
+-- Where the name at byte `at` of `text` is defined: of the package's own
+-- names, where it is first bound, in whichever of its modules; of a name
+-- another package gives, the module that gives it (`Exported`), with the
+-- name a declaration there binds. None of a name the prelude gives, or of
+-- a place that names nothing.
+@pub fun definedAtIn (text : String) (package : Maybe (PackageContext, () -> [Dependency] ! e)) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) (at : Int) : Maybe Defined ! e =
+  match fst (preparedFor text package prelude std) with
+  | Ok (_, deps, _) -> definedFrom (analysisIn text package prelude std) text package (\u -> deps) at
+  | Err _ -> None
+
+-- The same, from an analysis of `text`, with the packages it was checked
+-- against (`deps`, Std among them, asked for only if they are needed),
+-- which a name below its first unique is looked for in.
+@pub fun definedFrom (a : Analysis) (text : String) (package : Maybe (PackageContext, () -> [Dependency] ! e)) (deps : () -> [Compiled] ! e) (at : Int) : Maybe Defined ! e =
+  match clickedIn a text (at + a.base) with
+  | Just (u, clicked) ->
+      if u >= a.first then
+        let places = sortedPlaces (V.concatMap (\o -> match o with | (us, _, p) -> if V.elem u us then [p] else []) a.named) in
+        (match package with
+         | Just (pc, _) ->
+             (match binderIn (packageLayout text pc) places (spelledIn a clicked) with
+              | Just (path, d) -> Just (if path == pc.own then Defined.Here d else Defined.InModule path d)
+              | None -> M.andThen (\d -> placedIn text package a.base d) (V.head places))
+         | None -> M.andThen (\d -> placedIn text package a.base d) (V.head places))
+      else givenBy (deps ()) u
+  | None -> None
+
+-- --- an editor's analysis ---------------------------------------------------------
+
+-- What one rename and one check of a file, in its package, tell an editor:
+-- every name, where it is and what it stands for; the type of each of the
+-- program's own terms; what the names the file uses are declared to be;
+-- and the type of each binder with none written. Worked out once an edit
+-- (the `analysis` query), so that a hover, going to a definition, finding
+-- references and the inlay hints are each a lookup in it, as Meadow's
+-- server answers from its `Analysis`, and not a rename and a check of
+-- their own.
+@pub record Analysis = {
+  -- where the file's places start among its package's, and the package's
+  -- first unique: those below it are the prelude's and other packages'
+  base : Int,
+  first : Int,
+  -- whether renaming found nothing wrong: a term's type is not said if it
+  -- did, as the term may not be the one written
+  clean : Bool,
+  linear : Bool,
+  -- every name of the program's own declarations and expression: its
+  -- uniques, its spelling and where it is (the package's places)
+  named : [([Int], String, Meta)],
+  -- the type of each of the program's own terms in this file, and where
+  -- it is (the file's places), in the order they were checked
+  types : [(Meta, Core)],
+  -- each name declared that the file names: its unique, name and type
+  declared : [(Int, String, Core)],
+  -- each binder with no type written: the byte after its name, and its type
+  hints : [(Int, String)],
+  -- what the metavariables were solved with, which a type is shown through
+  solutions : [Maybe Core]
+}
+
+def noAnalysis : Analysis =
+  Analysis { base = 0, first = 0, clean = False, linear = False, named = [], types = [], declared = [], hints = [], solutions = [] }
+
+@pub fun analysisIn (text : String) (package : Maybe (PackageContext, () -> [Dependency] ! e)) (prelude : Result [Diagnostic] SurfaceProgram) (std : () -> Result String (PackageNames, Compiled) ! e) : Analysis ! e =
+  let (ready, base) = preparedFor text package prelude std in
+  match ready with
+  | Err _ -> noAnalysis
+  | Ok (m, deps, renaming) ->
+      runSt (\() ->
+        let c = checkedForEditor (sccModule m) deps in
+        let tc = c.tc in
+        let named = Rename.programNamed m in
+        let here = V.filter (\o -> match o with | (_, _, p) -> inFile p base text) named in
+        let usedHere = V.foldl (\acc o -> match o with | (us, _, _) -> V.foldl (\a u -> Hm.insert u True a) acc us) Hm.empty here in
+        let declared = V.filter (\d -> match d with | (u, _, _) -> Hm.member u usedHere) (St.getRef tc.declared) in
+        let types = V.concatMap (\t -> match t with | (p, ty) -> if inFile p base text then [(metaBack p base, ty)] else []) (St.getRef tc.front.types) in
+        -- (as `hintsIn` has them)
+        let own = V.concatMap (\o -> match o with | (us, _, p) -> V.concatMap (\u -> if u >= m.first then [(u, p)] else []) us) here in
+        let hints =
+          V.concatMap
+            (\b ->
+              match b with
+              | (u, lvl, ty) ->
+                  (match V.head (sortedPlaces (V.concatMap (\o -> if fst o == u then [snd o] else []) own)) with
+                   | Just place -> (match metaBack place base with | Meta.Meta _ e -> [(e, C.shown m.linearBody (quote tc lvl ty))])
+                   | None -> []))
+            (St.getRef tc.binders)
+        in
+        Analysis { base, first = m.first, clean = V.isEmpty renaming, linear = m.linearBody, named, types, declared, hints, solutions = solutionsOf tc })
+
+-- A type, as an analysis shows it: what was solved since put in.
+fun shownIn (a : Analysis) (ty : Core) : String = C.shown a.linear (solvedIn a.solutions ty)
+
+-- `namedAtIn`, from an analysis of `text`.
+@pub fun namedFrom (a : Analysis) (text : String) (at : Int) : Maybe (Meta, [Meta]) =
+  match clickedIn a text (at + a.base) with
+  | Just (u, _) ->
+      if u < a.first then None
+      else
+        let places = V.map (\p -> metaBack p a.base) (sortedPlaces (V.concatMap (\o -> match o with | (us, _, p) -> if V.elem u us and inFile p a.base text then [p] else []) a.named)) in
+        M.map (\d -> (d, places)) (V.head places)
+  | None -> None
+
+-- `clickedAt`, from an analysis.
+fun clickedIn (a : Analysis) (text : String) (at : Int) : Maybe (Int, Meta) =
+  let named =
+    V.concatMap
+      (\o -> match o with | (us, t, p) -> if inFile p a.base text and contains p at then V.map (\u -> (u, t, p)) us else [])
+      a.named
+  in
+  let pick = \os -> innermostAt (V.map (\o -> match o with | (u, _, p) -> (u, p)) os) at in
+  match pick (V.filter (\o -> match o with | (_, t, p) -> S.byteLength t == width p) named) with
+  | Just found -> Just found
+  | None -> pick named
+
+-- `typeAtIn`, from an analysis: the innermost term holding byte `at`, the
+-- last checked of those as wide (as `Elab.noteType` keeps it).
+@pub fun typeFrom (a : Analysis) (at : Int) : Maybe (Meta, String) =
+  if not a.clean then None
+  else
+    M.map
+      (\t -> match t with | (p, ty) -> (p, shownIn a ty))
+      (V.foldl
+        (\best t ->
+          match t with
+          | (p, _) ->
+              if not (contains p at) then best
+              else (match best with | Just (q, _) -> (if within p q then Just t else best) | None -> Just t))
+        None
+        a.types)
+
+-- `declaredAtIn`, from an analysis: the declared name `word` written at
+-- byte `at`, and its type.
+@pub fun declaredFrom (a : Analysis) (text : String) (at : Int) (word : String) : Maybe (Meta, String) =
+  let holding = V.filter (\o -> match o with | (us, _, p) -> not (V.isEmpty us) and inFile p a.base text and contains p (at + a.base)) a.named in
+  let found =
+    V.concatMap
+      (\o -> match o with | (us, _, place) -> V.concatMap (\d -> match d with | (u, name, ty) -> if V.elem u us and name == word then [(place, name, ty)] else []) a.declared)
+      holding
+  in
+  match V.foldl (\best x -> match (best, x) with | (Just (p0, _, _), (p, _, _)) -> (if width p < width p0 then Just x else best) | (None, _) -> Just x) None found with
+  | Just (place, name, ty) -> Just (metaBack place a.base, "${name} : ${shownIn a ty}")
+  | None -> None
+
+-- The name as the program writes it at a place, its last part if it is
+-- qualified (`Var` of `Expr.Var`).
+fun spelledIn (a : Analysis) (place : Meta) : String =
+  match V.find (\o -> match o with | (_, _, p) -> p == place) a.named with
+  | Just (_, t, _) -> (match V.last (S.split "." t) with | Just last -> (if S.isEmpty last then t else last) | None -> t)
+  | None -> ""
+
+-- Which of a name's places binds it, and where its declaration is: the
+-- place that holds a declaration of the name in its module's text. (The
+-- earliest place is not it in a package, whose root module comes first; a
+-- binder's place is its whole declaration, a constructor's its type's.)
+fun binderIn (laid : [([String], String, Int)]) (places : [Meta]) (name : String) : Maybe ([String], Meta) =
+  if S.isEmpty name then None
+  else
+    V.foldl
+      (\found p ->
+        match found with
+        | Just _ -> found
+        | None ->
+            (match V.find (\l -> match l with | (_, t, b) -> inFile p b t) laid with
+             | Just (path, t, b) ->
+                 -- (parsed where it is in the package, so its places are the
+                 -- package's, as `p` is)
+                 (match Surface.parsed (S.repeat "\n" b ++ t) with
+                  | Ok prog ->
+                      M.map (\d -> (path, metaBack d b)) (V.find (\d -> within d p) (Rename.declarationsNamed prog name))
+                  | Err _ -> None)
+             | None -> None))
+      None
+      places
+
+-- Whether `inner` is within `outer`.
+fun within (inner : Meta) (outer : Meta) : Bool =
+  match (inner, outer) with | (Meta.Meta a b, Meta.Meta c d) -> c <= a and b <= d
+
+-- Which module of the package a place of it is in, and where in that
+-- module's text.
+fun placedIn (text : String) (package : Maybe (PackageContext, () -> [Dependency] ! e)) (base : Int) (d : Meta) : Maybe Defined =
+  if inFile d base text then Just (Defined.Here (metaBack d base))
+  else
+    match package with
+    | Just (pc, _) ->
+        M.map
+          (\l -> match l with | (p, _, b) -> Defined.InModule p (metaBack d b))
+          (V.find (\l -> match l with | (_, t, b) -> inFile d b t) (packageLayout text pc))
+    | None -> None
+
+-- The package that named its own thing `u`, the module that gives it and
+-- its name there: a name the package exports, or a constructor, operation
+-- or field of a type it exports, found under its type's module.
+fun givenBy (deps : [Compiled]) (u : Int) : Maybe Defined =
+  match V.find (\(c : Compiled) -> u >= c.low and u < c.high) deps with
+  | None -> None
+  | Just c ->
+      let exports = Rename.namesExports c.names in
+      let exported = \v -> V.find (\x -> match x with | Exported.Exported _ _ w _ -> w == v) exports in
+      (match exported u with
+       | Just (Exported.Exported path name _ _) -> Just (Defined.InPackage c.name path name)
+       | None ->
+           V.foldl
+             (\acc t ->
+               match acc with
+               | Just _ -> acc
+               | None ->
+                   (match t with
+                    | TypeGiven.TypeGiven tu _ members ->
+                        (match V.find (\x -> match x with | Member.Member _ w -> w == u) members with
+                         | Just (Member.Member name _) ->
+                             M.map (\x -> match x with | Exported.Exported path _ _ _ -> Defined.InPackage c.name path name) (exported tu)
+                         | None -> None)))
+             None
+             (Rename.namesTypes c.names))
 
 -- Whether a place of a package is in the file whose places start at `base`.
 fun inFile (m : Meta) (base : Int) (text : String) : Bool =

@@ -283,13 +283,28 @@ fun writtenStd () : () ! { Fs, Process | e } =
     (\acc m ->
       match m with
       | (path, text) ->
-          let file = if path == "" then "Lib.idl" else S.join "/" (S.split "." path) ++ ".idl" in
-          let full = Path.join (Path.join dir "src") file in
+          let full = stdFileIn dir path in
           let made = createDirAll (M.unwrapOr dir (Path.parent full)) in
           let w2 = unlessSame full text in
           ())
     ()
     stdModules
+
+-- The file Std's module `path` (`Collections.Vector`, or `` for its
+-- `Lib`) is written to, Std being written out under `dir`.
+fun stdFileIn (dir : String) (path : String) : String =
+  Path.join (Path.join dir "src") (if path == "" then "Lib.idl" else S.join "/" (S.split "." path) ++ ".idl")
+
+-- Std's module `path` (as a `use` names it, `Std` first or not): the file it
+-- is written out to, Std written out if it is not yet, and its text. Where
+-- going to a definition Std gives goes.
+@pub fun stdModuleFile (path : [String]) : Maybe (String, String) ! { Fs, Process | e } =
+  let inStd = if V.getOr "" path 0 == "Std" then V.drop path 1 else path in
+  match V.find (\m -> fst m == S.join "." inStd) stdModules with
+  | Just (p, text) ->
+      let w = writtenStd () in
+      Just (stdFileIn (stdDir ()) p, text)
+  | None -> None
 
 -- `text` written to `file`, unless it is there already.
 fun unlessSame (file : String) (text : String) : () ! { Fs | e } =
@@ -324,6 +339,11 @@ fun filesOf (dir : String) : [String] ! { Fs | e } =
 -- its manifest, which pins the revision of the kernel it was built with
 -- (Strata's modules being the rest of the checker).
 fun compilerSalt () : String = show (hash (prelude, stdModules, compilerSources, compilerManifest))
+
+-- Where the language server keeps Std compiled between runs (`Session`'s
+-- persisted `std`): beside Std written out, by this compiler's salt, so that
+-- a compiler built from other sources never reads another's.
+@pub fun editorStdFile () : String ! { Process | e } = Path.join (stdDir ()) "editor-${compilerSalt ()}.json"
 
 def compilerManifest : String = includeStr "../Meadow.toml"
 
